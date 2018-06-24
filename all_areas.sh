@@ -1,8 +1,5 @@
 #!/bin/bash
-for i in $1; do 
+for i in "$@"; do 
 echo "==== $i ===="
-if ./Mapper.py $i; then
-: ; else 
-break 
-fi
+./Mapper.py $i;
 done

@@ -91,7 +91,7 @@ def main():
             if r.exits[0].direction == r.exits[1].direction.invert():
                 rdb[r.exits[0].n_room].replace_exit(vnum, r.exits[1].n_room, r.exits[1].distance)
                 rdb[r.exits[1].n_room].replace_exit(vnum, r.exits[0].n_room, r.exits[0].distance)
-                rdb[r.exits[0].n_room].fixups.append((r, r.exits[0].direction.invert()))
+                rdb[r.exits[0].n_room].fixups.append((r, r.exits[0].direction.invert(), r.exits[0].distance))
                 del rdb[vnum]
                 print('[*] Trimmed hallway %d.'%(vnum))
 
@@ -123,16 +123,16 @@ def main():
                 (model.x[ex.n_room].value + .25, y_max - model.y[ex.n_room].value + y_min + .25))
 
     def plot_fixup(dwg, room, x, y):
-        for r, d in room.fixups:
+        for r, d, dist in room.fixups:
             mod_x, mod_y = x, y
             if d == Direction.north:
-                mod_y -= 1
+                mod_y -= dist
             elif d == Direction.east:
-                mod_x += 1
+                mod_x += dist
             elif d == Direction.south:
-                mod_y += 1
+                mod_y += dist
             elif d == Direction.west:
-                mod_x -= 1
+                mod_x -= dist
             elif d == Direction.up:
                 pass
             elif d == Direction.down:
