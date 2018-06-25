@@ -60,6 +60,89 @@ class Exit():
     def __repr__(self):
         return '%d -> %d (%d %s)'%(self.p_room, self.n_room, self.distance, self.direction.name)
 
+class Plotter():
+    lift = 0.2
+
+    def proj_room(self, vnum, border=2):
+        if None in (self.model.x[vnum].value, self.model.y[vnum].value, self.model.z[vnum].value): return None
+        return ((self.model.x[vnum].value + 0.1*self.model.z[vnum].value,
+                 self.y_max - self.model.y[vnum].value + self.y_min - self.lift*self.model.z[vnum].value),
+                self.model.z[vnum].value)
+
+    def proj_exit(self, ex, border=2):
+        if None in (self.model.x[ex.p_room].value, self.model.y[ex.p_room].value, self.model.z[ex.p_room].value): return None
+        if None in (self.model.x[ex.n_room].value, self.model.y[ex.n_room].value, self.model.z[ex.n_room].value): return None
+        return ((self.model.x[ex.p_room].value + .25 + self.lift/2*self.model.z[ex.p_room].value,
+                 self.y_max - self.model.y[ex.p_room].value + self.y_min + .25 - self.lift*self.model.z[ex.p_room].value),
+                (self.model.x[ex.n_room].value + .25 + self.lift/2*self.model.z[ex.n_room].value,
+                 self.y_max - self.model.y[ex.n_room].value + self.y_min + .25 - self.lift*self.model.z[ex.n_room].value),
+                self.model.z[ex.p_room].value)
+
+    def plot_fixup(self, dwg, room, x, y, z):
+        rooms = []
+        for r, d, dist in room.fixups:
+            mod_x, mod_y, mod_z = x, y, z
+            if d == Direction.north:
+                mod_y -= dist
+            elif d == Direction.east:
+                mod_x += dist
+            elif d == Direction.south:
+                mod_y += dist
+            elif d == Direction.west:
+                mod_x -= dist
+            elif d == Direction.up:
+                mod_x += dist/2*self.lift
+                mod_y -= dist*self.lift
+                mod_z += 1
+            elif d == Direction.down:
+                mod_x -= dist/2*self.lift
+                mod_y += dist*self.lift
+                mod_z -= 1
+            rooms.append((mod_z, (mod_x, mod_y)))
+            rooms += self.plot_fixup(dwg, r, mod_x, mod_y, mod_z)
+        return rooms
+
+    def __init__(self, name, rdb, exits, model):
+        self.name = name
+        self.rdb = rdb
+        self.exits = exits
+        self.model = model
+        self.x_min = min([model.x[i].value for i in model.x if model.x[i].value is not None])
+        self.x_max = max([model.x[i].value for i in model.x if model.x[i].value is not None])
+        self.y_min = min([model.y[i].value for i in model.y if model.y[i].value is not None])
+        self.y_max = max([model.y[i].value for i in model.y if model.y[i].value is not None])
+
+    def plot(self):
+        dwg = svgwrite.Drawing(self.name, profile='tiny',
+                               size=((self.x_max - self.x_min + 6)*cm, (self.y_max - self.y_min + 6)*cm),
+                               viewBox='%d %d %d %d'%(self.x_min-2, self.y_min-2, self.x_max+3, self.y_max+6))
+
+        exits = []
+        rooms = []
+        for ex in self.exits:
+            projection = self.proj_exit(ex)
+            if not projection: continue
+            exits.append((projection[2], projection[0], projection[1]))
+        for vnum, room in self.rdb.items():
+            print('[%d] %s:'%(vnum, room.name), self.model.x[vnum].value, self.model.y[vnum].value, self.model.z[vnum].value)
+            projection = self.proj_room(vnum)
+            if not projection: continue
+            rooms.append((projection[1], projection[0]))
+            rooms += self.plot_fixup(dwg, room, projection[0][0], projection[0][1], projection[1])
+        exits.sort(key=lambda x: x[0])
+        rooms.sort(key=lambda x: x[0])
+
+        while len(exits) or len(rooms):
+            e = exits[0][0] if len(exits) else None
+            r = rooms[0][0] if len(rooms) else None
+            if e is not None and (r is None or r >= e):
+                dimen = exits.pop(0)
+                dwg.add(dwg.line(start=dimen[1], end=dimen[2], stroke_width=.05, stroke='black'))
+            else:
+                dwg.add(dwg.rect(insert=rooms.pop(0)[1], size=(.5,.5), fill='red', stroke='black', stroke_width=0.025))
+        dwg.save()
+        return
+
 def main():
     parser = AreaParser.Parser()
     with open(sys.argv[1], 'r') as f:
@@ -72,18 +155,21 @@ def main():
         elif section[0] == '#AREA':
             area = section[1]
             print(area)
-#    return
 
     rdb = {r[0]: Room(r) for r in rooms}
+
     for vnum, r in rdb.items():
         # remove exits to other areas
         r.exits = [e for e in r.exits if e.n_room in rdb.keys()]
-        # add placeholder for one-ways so we don't remove them later
-        for e in r.exits:
-             if not vnum in [e1.n_room for e1 in rdb[e.n_room].exits]:
-                 rdb[e.n_room].exits.append(e)
 
     for vnum, r in list(rdb.items()):
+        # remove one-ways (they tend to violate embedding constraints)
+        pre = len(r.exits)
+        r.exits = [e for e in r.exits if
+                   any(vnum == e0.n_room and e0.direction == e.direction.invert() \
+                       for e0 in rdb[e.n_room].exits)]
+        if len(r.exits) != pre: print('[*] Removed one-way at %d.'%(vnum))
+
         # clean up potential hallways
         if len(r.exits) == 2:
             # if bidirectional and straight
@@ -103,54 +189,9 @@ def main():
     
     model = solve(rdb, exits)
 
-    x_min = min([model.x[i].value for i in model.x if model.x[i].value])
-    x_max = max([model.x[i].value for i in model.x if model.x[i].value])
-    y_min = min([model.y[i].value for i in model.y if model.y[i].value])
-    y_max = max([model.y[i].value for i in model.y if model.y[i].value])
-    print(x_min, x_max, y_min, y_max)
+    dwg = Plotter(sys.argv[1]+'.svg', rdb, exits, model)
+    dwg.plot()
 
-    dwg = svgwrite.Drawing(sys.argv[1]+'.svg', profile='tiny',
-                           size=((x_max - x_min + 6)*cm, (y_max - y_min + 6)*cm),
-                           viewBox='%d %d %d %d'%(x_min-2, y_min-2, x_max+3, y_max+6))
-    dwg_exits = dwg.add(dwg.g(id='exits', stroke='black'))
-    dwg_rooms = dwg.add(dwg.g(id='rooms', fill='red'))
-
-    def proj_room(room, border=2):
-        return (model.x[room].value, y_max - model.y[room].value + y_min)
-
-    def proj_exit(ex, border=2):
-        return ((model.x[ex.p_room].value + .25, y_max - model.y[ex.p_room].value + y_min + .25),
-                (model.x[ex.n_room].value + .25, y_max - model.y[ex.n_room].value + y_min + .25))
-
-    def plot_fixup(dwg, room, x, y):
-        for r, d, dist in room.fixups:
-            mod_x, mod_y = x, y
-            if d == Direction.north:
-                mod_y -= dist
-            elif d == Direction.east:
-                mod_x += dist
-            elif d == Direction.south:
-                mod_y += dist
-            elif d == Direction.west:
-                mod_x -= dist
-            elif d == Direction.up:
-                pass
-            elif d == Direction.down:
-                pass
-            dwg_rooms.add(dwg.rect(insert=(mod_x, mod_y), size=(.5,.5), fill='blue'))
-            plot_fixup(dwg, r, mod_x, mod_y)
-
-    for ex in exits:
-        projection = proj_exit(ex)
-        dwg_exits.add(dwg.line(start=projection[0], end=projection[1], stroke_width=.1))
-    for room in rdb.keys():
-        print('[%d] %s:'%(rdb[room].vnum, rdb[room].name), model.x[room].value, model.y[room].value, model.z[room].value)
-        if model.x[room].stale == True: continue
-        projection = proj_room(room)
-        dwg_rooms.add(dwg.rect(insert=projection, size=(.5,.5)))
-        plot_fixup(dwg, rdb[room], projection[0], projection[1])
-        
-    dwg.save()
     exit(0)
 
 def solve(rdb, exits):
@@ -273,8 +314,10 @@ def solve(rdb, exits):
             model.crossings.add(model.z[exits[a].n_room] - model.z[exits[b].n_room] <= \
                                 model.M*(1 - model.relations[a,b,Direction.down]) - model.d_min)
 
-    SolverFactory('cbc').solve(model, tee=True)
-    #model.pprint()
+    solver = SolverFactory('cbc')
+    solver.options['ratio'] = .05
+    solver.solve(model, tee=True)
+#    model.pprint()
     return model
 
 if __name__=='__main__':
