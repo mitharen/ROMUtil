@@ -1,11 +1,14 @@
 #!/usr/bin/env python
 
 import sys
-import AreaParser
-from pyomo.environ import *
+import enum
+
 import svgwrite
 from svgwrite import cm
-import enum
+import pyomo.opt
+from pyomo.environ import *
+
+import AreaParser
 
 class Direction(enum.IntEnum):
     north=0
@@ -60,75 +63,69 @@ class Exit():
     def __repr__(self):
         return '%d -> %d (%d %s)'%(self.p_room, self.n_room, self.distance, self.direction.name)
 
+    def __hash__(self):
+        r0, r1, d = (self.p_room, self.n_room, self.direction) if self.p_room < self.n_room \
+            else (self.n_room, self.p_room, self.direction.invert())
+        return hash('%d %d %d'%(r0, r1, d))
+
 class Plotter():
-    lift = 0.2
+    lift = 0.15
+    colors = ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet']
 
-    def proj_room(self, vnum, border=2):
-        if None in (self.model.x[vnum].value, self.model.y[vnum].value, self.model.z[vnum].value): return None
-        return ((self.model.x[vnum].value + 0.1*self.model.z[vnum].value,
-                 self.y_max - self.model.y[vnum].value + self.y_min - self.lift*self.model.z[vnum].value),
-                self.model.z[vnum].value)
+    def proj_room(self, room):
+        if None in (room.x, room.y, room.z): return None
+        return ((2 + room.x + self.lift*room.z,
+                 3 + (self.y_max - room.y) - self.lift*room.z),
+                room.z)
 
-    def proj_exit(self, ex, border=2):
-        if None in (self.model.x[ex.p_room].value, self.model.y[ex.p_room].value, self.model.z[ex.p_room].value): return None
-        if None in (self.model.x[ex.n_room].value, self.model.y[ex.n_room].value, self.model.z[ex.n_room].value): return None
-        return ((self.model.x[ex.p_room].value + .25 + self.lift/2*self.model.z[ex.p_room].value,
-                 self.y_max - self.model.y[ex.p_room].value + self.y_min + .25 - self.lift*self.model.z[ex.p_room].value),
-                (self.model.x[ex.n_room].value + .25 + self.lift/2*self.model.z[ex.n_room].value,
-                 self.y_max - self.model.y[ex.n_room].value + self.y_min + .25 - self.lift*self.model.z[ex.n_room].value),
-                self.model.z[ex.p_room].value)
+    def proj_exit(self, rdb, ex):
+        if None in (rdb[ex.p_room].x, rdb[ex.p_room].y, rdb[ex.p_room].z): return None
+        start = (2 + rdb[ex.p_room].x + .25 + self.lift*rdb[ex.p_room].z,
+                 3 + (self.y_max - rdb[ex.p_room].y) + .25 - self.lift*rdb[ex.p_room].z)
 
-    def plot_fixup(self, dwg, room, x, y, z):
-        rooms = []
-        for r, d, dist in room.fixups:
-            mod_x, mod_y, mod_z = x, y, z
-            if d == Direction.north:
-                mod_y -= dist
-            elif d == Direction.east:
-                mod_x += dist
-            elif d == Direction.south:
-                mod_y += dist
-            elif d == Direction.west:
-                mod_x -= dist
-            elif d == Direction.up:
-                mod_x += dist/2*self.lift
-                mod_y -= dist*self.lift
-                mod_z += 1
-            elif d == Direction.down:
-                mod_x -= dist/2*self.lift
-                mod_y += dist*self.lift
-                mod_z -= 1
-            rooms.append((mod_z, (mod_x, mod_y)))
-            rooms += self.plot_fixup(dwg, r, mod_x, mod_y, mod_z)
-        return rooms
+        if ex.n_room in rdb.keys():
+            if None in (rdb[ex.n_room].x, rdb[ex.n_room].y, rdb[ex.n_room].z): return None
+            end = (2 + rdb[ex.n_room].x + .25 + self.lift*rdb[ex.n_room].z,
+                   3 + (self.y_max - rdb[ex.n_room].y) + .25 - self.lift*rdb[ex.n_room].z)
+        else:
+            if ex.direction == Direction.north:
+                end = (start[0], start[1]-1)
+            elif ex.direction == Direction.east:
+                end = (start[0]+1, start[1])
+            elif ex.direction == Direction.south:
+                end = (start[0], start[1]+1)
+            elif ex.direction == Direction.west:
+                end = (start[0]-1, start[1])
+            elif ex.direction == Direction.up:
+                end = (start[0]+self.lift, start[1]-self.lift)
+            elif ex.direction == Direction.down:
+                end = (start[0]-self.lift, start[1]+self.lift)
 
-    def __init__(self, name, rdb, exits, model):
+        return (start, end, rdb[ex.p_room].z)
+
+    def __init__(self, name, rdb, exits):
         self.name = name
         self.rdb = rdb
         self.exits = exits
-        self.model = model
-        self.x_min = min([model.x[i].value for i in model.x if model.x[i].value is not None])
-        self.x_max = max([model.x[i].value for i in model.x if model.x[i].value is not None])
-        self.y_min = min([model.y[i].value for i in model.y if model.y[i].value is not None])
-        self.y_max = max([model.y[i].value for i in model.y if model.y[i].value is not None])
 
     def plot(self):
+        self.x_max = max([r.x for r in self.rdb.values()])
+        self.y_max = max([r.y for r in self.rdb.values()])
+    
         dwg = svgwrite.Drawing(self.name, profile='tiny',
-                               size=((self.x_max - self.x_min + 6)*cm, (self.y_max - self.y_min + 6)*cm),
-                               viewBox='%d %d %d %d'%(self.x_min-2, self.y_min-2, self.x_max+3, self.y_max+6))
+                               size=((self.x_max+4)*cm, (self.y_max+6)*cm),
+                               viewBox='0 0 %d %d'%(self.x_max+4, self.y_max+6))
 
         exits = []
         rooms = []
         for ex in self.exits:
-            projection = self.proj_exit(ex)
+            projection = self.proj_exit(self.rdb, ex)
             if not projection: continue
             exits.append((projection[2], projection[0], projection[1]))
-        for vnum, room in self.rdb.items():
-            print('[%d] %s:'%(vnum, room.name), self.model.x[vnum].value, self.model.y[vnum].value, self.model.z[vnum].value)
-            projection = self.proj_room(vnum)
+        for room in self.rdb.values():
+            projection = self.proj_room(room)
             if not projection: continue
             rooms.append((projection[1], projection[0]))
-            rooms += self.plot_fixup(dwg, room, projection[0][0], projection[0][1], projection[1])
         exits.sort(key=lambda x: x[0])
         rooms.sort(key=lambda x: x[0])
 
@@ -139,91 +136,56 @@ class Plotter():
                 dimen = exits.pop(0)
                 dwg.add(dwg.line(start=dimen[1], end=dimen[2], stroke_width=.05, stroke='black'))
             else:
-                dwg.add(dwg.rect(insert=rooms.pop(0)[1], size=(.5,.5), fill='red', stroke='black', stroke_width=0.025))
+                dimen = rooms.pop(0)
+                dwg.add(dwg.rect(insert=dimen[1], size=(.5,.5), fill=self.colors[min(6, int(dimen[0]))], stroke='black', stroke_width=0.025))
         dwg.save()
         return
 
-def main():
-    parser = AreaParser.Parser()
-    with open(sys.argv[1], 'r') as f:
-        area = parser.parse(f.read())
-
-    for section in area:
-        if section[0] == '#ROOMS':
-            rooms = section[1]
-            print('%s: %d'%(section[0], len(section[1]) if section[1] else 0))
-        elif section[0] == '#AREA':
-            area = section[1]
-            print(area)
-
-    rdb = {r[0]: Room(r) for r in rooms}
-
-    for vnum, r in rdb.items():
-        # remove exits to other areas
-        r.exits = [e for e in r.exits if e.n_room in rdb.keys()]
-
-    for vnum, r in list(rdb.items()):
-        # remove one-ways (they tend to violate embedding constraints)
-        pre = len(r.exits)
-        r.exits = [e for e in r.exits if
-                   any(vnum == e0.n_room and e0.direction == e.direction.invert() \
-                       for e0 in rdb[e.n_room].exits)]
-        if len(r.exits) != pre: print('[*] Removed one-way at %d.'%(vnum))
-
-        # clean up potential hallways
-        if len(r.exits) == 2:
-            # if bidirectional and straight
-            if not all(vnum in [e1.n_room for e1 in rdb[e0.n_room].exits] for e0 in r.exits): continue
-            if r.exits[0].direction == r.exits[1].direction.invert():
-                rdb[r.exits[0].n_room].replace_exit(vnum, r.exits[1].n_room, r.exits[1].distance)
-                rdb[r.exits[1].n_room].replace_exit(vnum, r.exits[0].n_room, r.exits[0].distance)
-                rdb[r.exits[0].n_room].fixups.append((r, r.exits[0].direction.invert(), r.exits[0].distance))
-                del rdb[vnum]
-                print('[*] Trimmed hallway %d.'%(vnum))
-
-    # collect unique exits
-    exits = []
-    for r in rdb.values():
-        for e in r.exits:
-            if e not in exits: exits.append(e)
-    
-    model = solve(rdb, exits)
-
-    dwg = Plotter(sys.argv[1]+'.svg', rdb, exits, model)
-    dwg.plot()
-
-    exit(0)
+def restore_rooms(room):
+    rooms = []
+    for r, d, dist in room.fixups:
+        r.x, r.y, r.z = room.x, room.y, room.z
+        if d == Direction.north:
+            r.y += dist
+        elif d == Direction.east:
+            r.x += dist
+        elif d == Direction.south:
+            r.y -= dist
+        elif d == Direction.west:
+            r.x -= dist
+        elif d == Direction.up:
+            r.z += dist
+        elif d == Direction.down:
+            r.z -= dist
+        rooms.append(r)
+        rooms += restore_rooms(r)
+    return rooms
 
 def solve(rdb, exits):
     # construct model
     model = ConcreteModel()
     model.Rooms = Set(initialize=rdb.keys())
     model.Exits = RangeSet(0, len(exits)-1)
-    model.Directions = RangeSet(0, Direction.mod.value)
+    model.Directions = RangeSet(0, Direction.mod.value-1)
     model.M = Param(initialize=sum([e.distance for e in exits]))
+
     # room position
     model.x = Var(model.Rooms, within=Integers, bounds=(0,len(exits)))
     model.y = Var(model.Rooms, within=Integers, bounds=(0,len(exits)))
     model.z = Var(model.Rooms, within=Integers, bounds=(0,len(exits)))
-    # exit lengths
+    # exits
     model.l_max = Var(model.Exits, within=PositiveIntegers)
     model.l_min = Param(model.Exits, initialize=lambda model, x: exits[x].distance)
-
-    # objective to minimize max exit lengths
-    model.obj = Objective(expr=sum([model.l_max[e] for e in model.Exits]))
 
     # constraints for exit crossings
     model.d_min = Param(initialize=1)
     model.crossings = ConstraintList()
-
     # constraints for relative position of rooms
     model.relations = Var(model.Exits, model.Exits, model.Directions, within=Boolean)
     model.relative_pos = ConstraintList()
 
     # add constraints
     for i, ex in enumerate(exits):
-        print('[*] Exit %d/%d'%(i+1,len(exits)))
-
         # relative position O(e)
         if ex.direction not in (Direction.east, Direction.west):
             model.relative_pos.add(model.x[ex.p_room] == model.x[ex.n_room])
@@ -250,8 +212,6 @@ def solve(rdb, exits):
         elif ex.direction == Direction.down:
             model.relative_pos.add(model.z[ex.p_room] >= model.z[ex.n_room] + model.l_min[i])
             model.relative_pos.add(model.z[ex.p_room] <= model.z[ex.n_room] + model.l_max[i])
-        else:
-            print('[!] New Direction')
 
         # ex crossings O(e^2)
         non_incidents = [j for j,v in enumerate(exits) if \
@@ -314,11 +274,86 @@ def solve(rdb, exits):
             model.crossings.add(model.z[exits[a].n_room] - model.z[exits[b].n_room] <= \
                                 model.M*(1 - model.relations[a,b,Direction.down]) - model.d_min)
 
+    # objective to minimize max exit lengths
+    model.obj = Objective(expr=sum([model.l_max[e] for e in model.Exits]))
+
     solver = SolverFactory('cbc')
     solver.options['ratio'] = .05
-    solver.solve(model, tee=True)
-#    model.pprint()
-    return model
+    return model, solver.solve(model, tee=False)
+
+def main():
+    parser = AreaParser.Parser()
+    with open(sys.argv[1], 'r') as f:
+        area = parser.parse(f.read())
+
+    for section in area:
+        if section[0] == '#ROOMS':
+            rooms = section[1]
+        elif section[0] == '#AREA':
+            area = section[1]
+
+    # construct rooms for manipulation
+    rdb = {r[0]: Room(r) for r in rooms}
+    odd_exits = []
+
+    for vnum, r in list(rdb.items()):
+        # remove exits to other areas and one-ways (they tend to violate embedding constraints)
+        for e in list(r.exits):
+            if e.n_room not in rdb.keys():
+                odd_exits.append(e)
+                r.exits.remove(e)
+            elif not any(vnum == e0.n_room and e0.direction == e.direction.invert() \
+                         for e0 in rdb[e.n_room].exits):
+                print('%s [*] Removed one-way or zone exit at %d.'%(area[1], vnum))
+                odd_exits.append(e)
+                r.exits.remove(e)
+
+        # clean up potential hallways
+        if len(r.exits) == 2:
+            # if bidirectional and straight
+            if not all(vnum in [e1.n_room for e1 in rdb[e0.n_room].exits] for e0 in r.exits): continue
+            if r.exits[0].direction == r.exits[1].direction.invert():
+                rdb[r.exits[0].n_room].replace_exit(vnum, r.exits[1].n_room, r.exits[1].distance)
+                rdb[r.exits[1].n_room].replace_exit(vnum, r.exits[0].n_room, r.exits[0].distance)
+                rdb[r.exits[0].n_room].fixups.append((r, r.exits[0].direction.invert(), r.exits[0].distance))
+                del rdb[vnum]
+                print('%s [*] Trimmed hallway %d.'%(area[1], vnum))
+
+    # collect normal exits for solve/plotting
+    exits = list(set([e for r in rdb.values() for e in r.exits]))
+
+    # solve
+    print('%s [+] Solving for %d exits...'%(area[1], len(exits)))
+    model, results = solve(rdb, exits)
+    if not results.solver.termination_condition == pyomo.opt.TerminationCondition.optimal:
+        print('%s [-] Solver failed!%s' %(area[1], str(results.solver)))
+        exit(0)
+    else:
+        print('%s [+] Solve completed. Plotting...'%(area[1]))
+    # model.display()
+
+    # retrieve room positions and restore collapsed rooms
+    for vnum, room in list(rdb.items()):
+        room.x = model.x[vnum].value
+        room.y = model.y[vnum].value
+        room.z = model.z[vnum].value
+        for r in restore_rooms(room):
+            rdb[r.vnum] = r
+
+    # shift room base to (0,0,0) 
+    x_min = min([r.x for r in rdb.values()])
+    y_min = min([r.y for r in rdb.values()])
+    z_min = min([r.z for r in rdb.values()])
+    for r in rdb.values():
+        r.x -= x_min
+        r.y -= y_min
+        r.z -= z_min
+
+    # plot
+    dwg = Plotter(sys.argv[2], rdb, exits+odd_exits)
+    dwg.plot()
+
+    exit(0)
 
 if __name__=='__main__':
     main()
