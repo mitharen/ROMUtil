@@ -170,9 +170,9 @@ def solve(rdb, exits):
     model.M = Param(initialize=sum([e.distance for e in exits]))
 
     # room position
-    model.x = Var(model.Rooms, within=Integers, bounds=(0,len(exits)))
-    model.y = Var(model.Rooms, within=Integers, bounds=(0,len(exits)))
-    model.z = Var(model.Rooms, within=Integers, bounds=(0,len(exits)))
+    model.x = Var(model.Rooms, within=Integers, bounds=(0,model.M))
+    model.y = Var(model.Rooms, within=Integers, bounds=(0,model.M))
+    model.z = Var(model.Rooms, within=Integers, bounds=(0,model.M))
     # exits
     model.l_max = Var(model.Exits, within=PositiveIntegers)
     model.l_min = Param(model.Exits, initialize=lambda model, x: exits[x].distance)
@@ -279,7 +279,7 @@ def solve(rdb, exits):
 
     solver = SolverFactory('cbc')
     solver.options['ratio'] = .05
-    return model, solver.solve(model, tee=False)
+    return model, solver.solve(model, tee=True)
 
 def main():
     parser = AreaParser.Parser()
@@ -330,13 +330,12 @@ def main():
         exit(0)
     else:
         print('%s [+] Solve completed. Plotting...'%(area[1]))
-    # model.display()
 
     # retrieve room positions and restore collapsed rooms
     for vnum, room in list(rdb.items()):
-        room.x = model.x[vnum].value
-        room.y = model.y[vnum].value
-        room.z = model.z[vnum].value
+        room.x = model.x[vnum].value if model.x[vnum].value else 0
+        room.y = model.y[vnum].value if model.y[vnum].value else 0
+        room.z = model.z[vnum].value if model.z[vnum].value else 0
         for r in restore_rooms(room):
             rdb[r.vnum] = r
 
