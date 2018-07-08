@@ -35,7 +35,7 @@ class Room():
         self.vnum = r[0]
         self.name = r[1]
         self.desc = r[2]
-        self.exits = [] if not r[2] else [Exit(e, self.vnum) for e in r[3] if e is not None]
+        self.exits = [] if not r[3] else [Exit(e, self.vnum) for e in r[3] if e is not None]
         self.fixups = []
         self.dummy = False
 
