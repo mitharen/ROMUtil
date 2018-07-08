@@ -387,7 +387,7 @@ def graph(rdb, name, area):
     # insert dummy rooms for zone exits
     for e in exits:
         if e.n_room not in rdb:
-            rdb[e.n_room] = Room((e.p_room, '', None))
+            rdb[e.n_room] = Room((e.p_room, '', '', None))
             rdb[e.n_room].dummy = True
 
     # solve
