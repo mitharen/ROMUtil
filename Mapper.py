@@ -140,13 +140,14 @@ class Plotter():
                 if room.dummy: continue
                 projection = self.proj_room(room)
                 g = dwg.g(visibility='hidden')
-                g.add(dwg.rect(fill='white', insert=(projection[0]+.5, projection[1]+.5), size=(11,4),
+                etext = 'Exits: ' + ', '.join([ex.direction.name for ex in room.exits])
+                desc = room.desc.split('\n')+[etext]
+                g.add(dwg.rect(fill='white', insert=(projection[0]+.5, projection[1]+.5), size=(11,2+len(desc)/3),
                                stroke='black', stroke_width=0.05))
                 text = dwg.text('', insert=(projection[0]+.7, projection[1]+1.1), #size=(100,100),
                                 font_size='.3', font_family='Arial', fill='black')
                 text.add(dwg.tspan(room.name, font_size='.4'))
-                etext = 'Exits: ' + ', '.join([ex.direction.name for ex in room.exits])
-                for line in room.desc.split('\n')+[etext]:
+                for line in desc:
                     text.add(dwg.tspan(line, x=[projection[0]+.7], dy=['1.4em']))
                 g.add(text)
                 r = dwg.rect(insert=projection, size=(.5,.5),
