@@ -208,7 +208,7 @@ class Parser():
         '''room : VNUM EOL str STRING EOL str STRING EOL \
                   NUMBER flags NUMBER optional EOL \
                   room_optionals S EOL'''
-        p[0] = (p[1], p[4], p[14])
+        p[0] = (p[1], p[4], p[7], p[14])
 #        print('Room: %s'%(p[4]))
     def p_room_optional(self, p):
         '''room_optional : door
