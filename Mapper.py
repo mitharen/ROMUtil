@@ -1,16 +1,24 @@
 #!/usr/bin/env python
 
-import sys
-import os
+import argparse
 import enum
 import itertools
+import logging
+import os
+import sys
 
+import networkx as nx
+from networkx.algorithms.dag import is_directed_acyclic_graph
 import svgwrite
 from svgwrite import cm
 import pyomo.opt
+import pyomo.util.infeasible
 from pyomo.environ import *
 
 import AreaParser
+
+logging.basicConfig()
+log = logging.getLogger()
 
 class Direction(enum.IntEnum):
     north=0
@@ -41,38 +49,38 @@ class Room():
 
     def replace_exit(self, orig, replacement, distance):
         for e in self.exits:
-            if e.n_room == orig:
-                e.n_room = replacement
+            if e.dst == orig:
+                e.dst = replacement
                 e.distance += distance
 
     def __repr__(self):
-        return '[%d: %s] {%s}'%(self.vnum, self.name, self.exits)
+        return f'[{self.vnum}: {self.name}] {{{self.exits}}}'
             
 class Exit():
     def __init__(self, e, source, fake=False, distance=1):
-        self.p_room = source
-        self.n_room = e[1]
+        self.src = source
+        self.dst = e[1]
         self.direction = Direction(direction_matrix[e[0]])
         self.distance = distance
         self.one_way = False
 
     def __eq__(self, e):
-        if self.p_room == e.p_room and self.n_room == e.n_room and \
+        if self.src == e.src and self.dst == e.dst and \
            self.direction == e.direction: return True
-        if self.p_room == e.n_room and self.n_room == e.p_room and \
+        if self.src == e.dst and self.dst == e.src and \
            self.direction == e.direction.invert(): return True
         return False
 
-    def __contains__(self, e):
-        return e in (self.p_room, self.n_room)
+    def __contains__(self, room):
+        return room in (self.src, self.dst)
 
     def __repr__(self):
-        return '%d -> %d (%d %s)'%(self.p_room, self.n_room, self.distance, self.direction.name)
+        return f'{self.src} -> {self.dst} ({self.distance} {self.direction.name})'
 
     def __hash__(self):
-        r0, r1, d = (self.p_room, self.n_room, self.direction) if self.p_room < self.n_room \
-            else (self.n_room, self.p_room, self.direction.invert())
-        return hash('%d %d %d'%(r0, r1, d))
+        r0, r1, d = (self.src, self.dst, self.direction) if self.src < self.dst \
+            else (self.dst, self.src, self.direction.invert())
+        return hash(f'{r0} {r1} {d}')
 
 class Plotter():
     lift = 0.15
@@ -84,14 +92,14 @@ class Plotter():
                 2+self.lift*self.z_max + (self.y_max - room.y) - self.lift*room.z)
 
     def proj_exit(self, ex):
-        if None in (self.rdb[ex.p_room].x, self.rdb[ex.p_room].y, self.rdb[ex.p_room].z): return None
-        start = (2 + self.rdb[ex.p_room].x + .25 + self.lift*self.rdb[ex.p_room].z,
-                 2+self.lift*self.z_max + (self.y_max - self.rdb[ex.p_room].y) + .25 - self.lift*self.rdb[ex.p_room].z)
+        if None in (self.rdb[ex.src].x, self.rdb[ex.src].y, self.rdb[ex.src].z): return None
+        start = (2 + self.rdb[ex.src].x + .25 + self.lift*self.rdb[ex.src].z,
+                 2+self.lift*self.z_max + (self.y_max - self.rdb[ex.src].y) + .25 - self.lift*self.rdb[ex.src].z)
 
-        if ex.n_room in self.rdb.keys():
-            if None in (self.rdb[ex.n_room].x, self.rdb[ex.n_room].y, self.rdb[ex.n_room].z): return None
-            end = (2 + self.rdb[ex.n_room].x + .25 + self.lift*self.rdb[ex.n_room].z,
-                   2+self.lift*self.z_max + (self.y_max - self.rdb[ex.n_room].y) + .25 - self.lift*self.rdb[ex.n_room].z)
+        if ex.dst in self.rdb.keys():
+            if None in (self.rdb[ex.dst].x, self.rdb[ex.dst].y, self.rdb[ex.dst].z): return None
+            end = (2 + self.rdb[ex.dst].x + .25 + self.lift*self.rdb[ex.dst].z,
+                   2+self.lift*self.z_max + (self.y_max - self.rdb[ex.dst].y) + .25 - self.lift*self.rdb[ex.dst].z)
         else:
             if ex.direction == Direction.north:
                 end = (start[0], start[1]-1)
@@ -121,14 +129,14 @@ class Plotter():
 
         dwg = svgwrite.Drawing(self.name, profile='full',
                                size=((self.x_max+4+11+z_space)*cm, (self.y_max+4+4+z_space)*cm),
-                               viewBox='0 0 %d %d'%(self.x_max+4+11+z_space, self.y_max+4+4+z_space))
+                               viewBox=f'0 0 {self.x_max+4+11+z_space} {self.y_max+4+4+z_space}')
 
-        exits = sorted(self.exits, key=lambda x: max(self.rdb[x.p_room].z, self.rdb[x.n_room].z))
+        exits = sorted(self.exits, key=lambda x: max(self.rdb[x.src].z, self.rdb[x.dst].z))
         rooms = sorted(self.rdb.values(), key=lambda r: r.z)
         descs = []
 
         while len(exits) or len(rooms):
-            e = self.rdb[exits[0].p_room].z if len(exits) else None
+            e = self.rdb[exits[0].src].z if len(exits) else None
             r = rooms[0].z if len(rooms) else None
             if e is not None and (r is None or r >= e):
                 ex = exits.pop(0)
@@ -185,219 +193,228 @@ def restore_rooms(room):
         rooms += restore_rooms(r)
     return rooms
 
+def mfas(edges):
+    '''
+    minimum feedback arc set for a graph
+    '''
+    graph = nx.DiGraph(edges)
+
+    labels = {u:v for u,v in zip(graph.nodes, range(graph.order()))}
+    nx.relabel.relabel_nodes(graph, labels, copy=False)
+    nx.drawing.nx_pydot.to_pydot(graph).write_svg('test.svg')
+
+    model = ConcreteModel()
+    model.Nodes = RangeSet(0, graph.order())
+
+    model.N = Param(initialize=graph.order())
+
+    model.b = Var(model.Nodes, model.Nodes, within=Binary)
+    model.p = Var(model.Nodes, within=NonNegativeIntegers, bounds=(0,model.N))
+    model.order = ConstraintList()
+
+    # each node must be ordered per the edges unless excluded
+    for u,v in graph.edges:
+        model.order.add((model.p[v] - model.p[u]) + (model.N * model.b[u,v]) >= 1)
+
+    model.obj = Objective(expr=sum([model.b[u,v] for u,v in graph.edges]))
+
+    solver = SolverFactory('cbc')
+    #solver.options['ratio'] = .05
+    result = solver.solve(model, tee=False)
+    return [(u,v) for u,v in edges if model.b[labels[u],labels[v]].value]
+
 def solve(rdb, exits):
+    # construct model
+    m = ConcreteModel()
+
+    # statics
+    m.Rooms = Set(initialize=rdb.keys())
+    m.Exits = RangeSet(0, len(exits)-1)
+    m.Directions = RangeSet(0, Direction.mod.value-1)
+
+    # maximum value (infinity)
+    m.M = Param(initialize=sum([e.distance for e in exits]))
+    # minimum spacing between rooms
+    m.d_min = Param(initialize=1)
+    # l_min is the minimum length of the exit to account for hallways
+    m.l_min = Param(m.Exits, initialize=lambda m, x: exits[x].distance)
+
+    # room position (constraints will determine these)
+    m.x = Var(m.Rooms, within=Integers, bounds=(0,m.M))
+    m.y = Var(m.Rooms, within=Integers, bounds=(0,m.M))
+    m.z = Var(m.Rooms, within=Integers, bounds=(0,m.M))
+    # allow cutting exits to handle mazes (objective will minimize this)
+    m.cut = Var(m.Exits, within=Binary)
+    # l_max is the maximum length of each exit (objective will minimize this)
+    m.l_max = Var(m.Exits, within=PositiveIntegers)
+
+    # constraints for relative position of rooms
+    m.relative_pos = ConstraintList()
+    m.one_ways = VarList(within=NonNegativeIntegers, bounds=(0,m.M))
+    m.one_way_pos = ConstraintList()
+    one_ways = []
+
+    # one-ways are often non-euclidean and would be cut, but we want to keep the rooms close together
+    one_way_exits = [e for e in exits if not e in rdb[e.dst].exits]
+
+    # add constraints
+    for i, ex in enumerate(exits):
+        # we add one-ways to the objective to try to keep the ends close
+        if ex in one_way_exits:
+            ex.one_way = True
+            x_off = m.d_min if ex.direction == Direction.east else -m.d_min if ex.direction == Direction.west else 0
+            y_off = m.d_min if ex.direction == Direction.north else -m.d_min if ex.direction == Direction.south else 0
+            z_off = m.d_min if ex.direction == Direction.up else -m.d_min if ex.direction == Direction.down else 0
+            X = m.one_ways.add()
+            Y = m.one_ways.add()
+            Z = m.one_ways.add()
+            x_diff = m.x[ex.dst] - m.x[ex.src] - x_off
+            m.one_way_pos.add(x_diff <= X)
+            m.one_way_pos.add(-x_diff <= X)
+            y_diff = m.y[ex.dst] - m.y[ex.src] - y_off
+            m.one_way_pos.add(y_diff <= Y)
+            m.one_way_pos.add(-y_diff <= Y)
+            z_diff = m.z[ex.dst] - m.z[ex.src] - z_off
+            m.one_way_pos.add(z_diff <= Z)
+            m.one_way_pos.add(-z_diff <= Z)
+            one_ways.append(X+Y+Z)
+            continue
+
+        # relative position O(e)
+        if ex.dst != ex.src:
+            if ex.direction not in (Direction.east, Direction.west):
+                m.relative_pos.add(m.x[ex.src] == m.x[ex.dst])
+            if ex.direction not in (Direction.north, Direction.south):
+                m.relative_pos.add(m.y[ex.src] == m.y[ex.dst])
+            if ex.direction not in (Direction.up, Direction.down):
+                m.relative_pos.add(m.z[ex.src] == m.z[ex.dst])
+
+            if ex.direction == Direction.north:
+                m.relative_pos.add(m.y[ex.src] + m.l_min[i] <= m.y[ex.dst])
+                m.relative_pos.add(m.y[ex.src] + m.l_max[i] >= m.y[ex.dst])
+            elif ex.direction == Direction.east:
+                m.relative_pos.add(m.x[ex.src] + m.l_min[i] <= m.x[ex.dst])
+                m.relative_pos.add(m.x[ex.src] + m.l_max[i] >= m.x[ex.dst])
+            elif ex.direction == Direction.south:
+                m.relative_pos.add(m.y[ex.src] >= m.y[ex.dst] + m.l_min[i])
+                m.relative_pos.add(m.y[ex.src] <= m.y[ex.dst] + m.l_max[i])
+            elif ex.direction == Direction.west:
+                m.relative_pos.add(m.x[ex.src] >= m.x[ex.dst] + m.l_min[i])
+                m.relative_pos.add(m.x[ex.src] <= m.x[ex.dst] + m.l_max[i])
+            elif ex.direction == Direction.up:
+                m.relative_pos.add(m.z[ex.src] + m.l_min[i] <= m.z[ex.dst])
+                m.relative_pos.add(m.z[ex.src] + m.l_max[i] >= m.z[ex.dst])
+            elif ex.direction == Direction.down:
+                m.relative_pos.add(m.z[ex.src] >= m.z[ex.dst] + m.l_min[i])
+                m.relative_pos.add(m.z[ex.src] <= m.z[ex.dst] + m.l_max[i])
+
+    # objective to minimize max exit lengths and distance of one-ways
+    m.obj = Objective(expr=sum([m.l_max[e] for e in m.Exits]) + sum([way for way in one_ways]))
+
+    # constraints for exit crossings
     # add fake looped exits for no-exit rooms to prevent overlapping placement
     for room in rdb.values():
         if not len(room.exits):
             exit = Exit((0, room.vnum), room.vnum)
             room.exits.append(exit)
             exits.append(exit)
-
-    # construct model
-    model = ConcreteModel()
-    model.Rooms = Set(initialize=rdb.keys())
-    model.Exits = RangeSet(0, len(exits)-1)
-    model.Directions = RangeSet(0, Direction.mod.value-1)
-    model.M = Param(initialize=sum([e.distance for e in exits]))
-    model.d_min = Param(initialize=1)
-
-    # room position
-    model.x = Var(model.Rooms, within=Integers, bounds=(0,model.M))
-    model.y = Var(model.Rooms, within=Integers, bounds=(0,model.M))
-    model.z = Var(model.Rooms, within=Integers, bounds=(0,model.M))
-    # exits
-    model.l_max = Var(model.Exits, within=PositiveIntegers)
-    model.l_min = Param(model.Exits, initialize=lambda model, x: exits[x].distance)
-
-    # constraints for relative position of rooms
-    model.relative_pos = ConstraintList()
-    model.one_ways = VarList(within=NonNegativeIntegers, bounds=(0,model.M))
-    model.one_way_pos = ConstraintList()
-    one_ways = []
-
-    # add constraints
-    for i, ex in enumerate(exits):
-        # one-ways tend to violate embedding constraints, so add them to objective and then ignore
-        # mazes also break embedding constraints, so let's treat obvious ones as one-ways
-        if not ex in rdb[ex.n_room].exits or \
-           len([e for e in rdb[ex.p_room].exits if ex.n_room in e]) > 1:
-            ex.one_way = True
-            x_off = model.d_min if ex.direction == Direction.east else -model.d_min if ex.direction == Direction.west else 0
-            y_off = model.d_min if ex.direction == Direction.north else -model.d_min if ex.direction == Direction.south else 0
-            z_off = model.d_min if ex.direction == Direction.up else -model.d_min if ex.direction == Direction.down else 0
-            X = model.one_ways.add()
-            Y = model.one_ways.add()
-            Z = model.one_ways.add()
-            x_diff = model.x[ex.n_room] - model.x[ex.p_room] - x_off
-            model.one_way_pos.add(x_diff <= X)
-            model.one_way_pos.add(-x_diff <= X)
-            y_diff = model.y[ex.n_room] - model.y[ex.p_room] - y_off
-            model.one_way_pos.add(y_diff <= Y)
-            model.one_way_pos.add(-y_diff <= Y)
-            z_diff = model.z[ex.n_room] - model.z[ex.p_room] - z_off
-            model.one_way_pos.add(z_diff <= Z)
-            model.one_way_pos.add(-z_diff <= Z)
-            one_ways.append(X+Y+Z)
-            continue
-
-        # relative position O(e)
-        # loops create contradictions for relative position
-        if ex.n_room != ex.p_room:
-            if ex.direction not in (Direction.east, Direction.west):
-                model.relative_pos.add(model.x[ex.p_room] == model.x[ex.n_room])
-            if ex.direction not in (Direction.north, Direction.south):
-                model.relative_pos.add(model.y[ex.p_room] == model.y[ex.n_room])
-            if ex.direction not in (Direction.up, Direction.down):
-                model.relative_pos.add(model.z[ex.p_room] == model.z[ex.n_room])
-
-            if ex.direction == Direction.north:
-                model.relative_pos.add(model.y[ex.p_room] + model.l_min[i] <= model.y[ex.n_room])
-                model.relative_pos.add(model.y[ex.p_room] + model.l_max[i] >= model.y[ex.n_room])
-            elif ex.direction == Direction.east:
-                model.relative_pos.add(model.x[ex.p_room] + model.l_min[i] <= model.x[ex.n_room])
-                model.relative_pos.add(model.x[ex.p_room] + model.l_max[i] >= model.x[ex.n_room])
-            elif ex.direction == Direction.south:
-                model.relative_pos.add(model.y[ex.p_room] >= model.y[ex.n_room] + model.l_min[i])
-                model.relative_pos.add(model.y[ex.p_room] <= model.y[ex.n_room] + model.l_max[i])
-            elif ex.direction == Direction.west:
-                model.relative_pos.add(model.x[ex.p_room] >= model.x[ex.n_room] + model.l_min[i])
-                model.relative_pos.add(model.x[ex.p_room] <= model.x[ex.n_room] + model.l_max[i])
-            elif ex.direction == Direction.up:
-                model.relative_pos.add(model.z[ex.p_room] + model.l_min[i] <= model.z[ex.n_room])
-                model.relative_pos.add(model.z[ex.p_room] + model.l_max[i] >= model.z[ex.n_room])
-            elif ex.direction == Direction.down:
-                model.relative_pos.add(model.z[ex.p_room] >= model.z[ex.n_room] + model.l_min[i])
-                model.relative_pos.add(model.z[ex.p_room] <= model.z[ex.n_room] + model.l_max[i])
-
-    # objective to minimize max exit lengths and distance of one-ways
-    model.obj = Objective(expr=sum([model.l_max[e] for e in model.Exits]) + sum([way for way in one_ways]))
-
-    print('[+] Entering solving loop...')
-
-    # constraints for exit crossings
     # loops don't help for crossings unless they're the only exit in a room
-    considered = [ex for ex in exits if ex.n_room != ex.p_room or len(rdb[ex.n_room].exits) > 1]
-    non_incidents = list(filter(lambda ex: ex[0].p_room not in ex[1] and ex[0].n_room not in ex[1],
+    considered = [ex for ex in exits if ex.dst != ex.src or len(rdb[ex.dst].exits) > 1]
+    non_incidents = list(filter(lambda ex: ex[0].src not in ex[1] and ex[0].dst not in ex[1],
                                 itertools.combinations(considered, 2)))
-    print('[!] %d possible overlaps.'%(len(non_incidents)))
-    model.crossings = ConstraintList()
+    log.info(f'{len(non_incidents)} possible overlaps.')
+    m.crossings = ConstraintList()
     relations=0
 
     solver = SolverFactory('cbc')
     solver.options['ratio'] = .05
 
+    # iteratively solve and progressively add more constraints
     while True:
-        result = solver.solve(model, tee=False)
+        result = solver.solve(m, tee=False)
+        if result.solver.termination_condition == pyomo.opt.TerminationCondition.infeasible:
+#            pyomo.util.infeasible.log_infeasible_constraints(m, log_expression=True)
+            return m, result
+        # add number of constraints equal to the square root of the possible overlaps
+        need_constraints = int(sqrt(len(non_incidents)))
+        # examine exit pairs and add constraints if intersecting
         for pair in non_incidents:
+            # connection a and b
             ex, nx = pair
-            if None in [model.x[ex.p_room].value, model.x[ex.n_room].value, model.x[nx.p_room].value, model.x[nx.n_room].value,
-                        model.y[ex.p_room].value, model.y[ex.n_room].value, model.y[nx.p_room].value, model.y[nx.n_room].value,
-                        model.z[ex.p_room].value, model.z[ex.n_room].value, model.z[nx.p_room].value, model.z[nx.n_room].value]: continue
-            if max(model.x[ex.p_room].value, model.x[ex.n_room].value) < min(model.x[nx.p_room].value, model.x[nx.n_room].value) or \
-               min(model.x[ex.p_room].value, model.x[ex.n_room].value) < max(model.x[nx.p_room].value, model.x[nx.n_room].value) or \
-               max(model.y[ex.p_room].value, model.y[ex.n_room].value) < min(model.y[nx.p_room].value, model.y[nx.n_room].value) or \
-               min(model.y[ex.p_room].value, model.y[ex.n_room].value) < max(model.y[nx.p_room].value, model.y[nx.n_room].value) or \
-               max(model.z[ex.p_room].value, model.z[ex.n_room].value) < min(model.z[nx.p_room].value, model.z[nx.n_room].value) or \
-               min(model.z[ex.p_room].value, model.z[ex.n_room].value) < max(model.z[nx.p_room].value, model.z[nx.n_room].value): continue
+            # ignore if either room doesn't have a concrete position
+            if None in [m.x[ex.src].value, m.x[ex.dst].value, m.x[nx.src].value, m.x[nx.dst].value,
+                        m.y[ex.src].value, m.y[ex.dst].value, m.y[nx.src].value, m.y[nx.dst].value,
+                        m.z[ex.src].value, m.z[ex.dst].value, m.z[nx.src].value, m.z[nx.dst].value]: continue
+            # ignore if not intersecting
+            if max(m.x[ex.src].value, m.x[ex.dst].value) < min(m.x[nx.src].value, m.x[nx.dst].value) or \
+               min(m.x[ex.src].value, m.x[ex.dst].value) > max(m.x[nx.src].value, m.x[nx.dst].value) or \
+               max(m.y[ex.src].value, m.y[ex.dst].value) < min(m.y[nx.src].value, m.y[nx.dst].value) or \
+               min(m.y[ex.src].value, m.y[ex.dst].value) > max(m.y[nx.src].value, m.y[nx.dst].value) or \
+               max(m.z[ex.src].value, m.z[ex.dst].value) < min(m.z[nx.src].value, m.z[nx.dst].value) or \
+               min(m.z[ex.src].value, m.z[ex.dst].value) > max(m.z[nx.src].value, m.z[nx.dst].value): continue
 
-            relation = Var(model.Directions, within=Boolean)
-            model.add_component('relation%d'%(relations), relation)
+            log.debug(f'Found intersection between [({m.x[ex.src].value}, {m.y[ex.src].value}, {m.z[ex.src].value}) to ({m.x[ex.dst].value}, {m.y[ex.dst].value}, {m.z[ex.dst].value})] and [({m.x[nx.src].value}, {m.y[nx.src].value}, {m.z[nx.src].value}) to ({m.x[nx.dst].value}, {m.y[nx.dst].value}, {m.z[nx.dst].value})]')
+
+            # pick at least one direction to enforce a non-intersection inequality
+            relation = Var(m.Directions, within=Boolean)
+            m.add_component(f'relation{relations}', relation)
             relations += 1
-            model.crossings.add(sum([relation[i] for i in range(Direction.mod)]) >= 1)
+            m.crossings.add(sum([relation[i] for i in range(Direction.mod)]) >= 1)
 
-            # north
-            model.crossings.add(model.y[ex.p_room] - model.y[nx.p_room] >= \
-                                model.d_min - model.M*(1 - relation[Direction.north]))
-            model.crossings.add(model.y[ex.p_room] - model.y[nx.n_room] >= \
-                                model.d_min - model.M*(1 - relation[Direction.north]))
-            model.crossings.add(model.y[ex.n_room] - model.y[nx.p_room] >= \
-                                model.d_min - model.M*(1 - relation[Direction.north]))
-            model.crossings.add(model.y[ex.n_room] - model.y[nx.n_room] >= \
-                                model.d_min - model.M*(1 - relation[Direction.north]))
-            # east
-            model.crossings.add(model.x[ex.p_room] - model.x[nx.p_room] <= \
-                                model.M*(1 - relation[Direction.east]) - model.d_min)
-            model.crossings.add(model.x[ex.p_room] - model.x[nx.n_room] <= \
-                                model.M*(1 - relation[Direction.east]) - model.d_min)
-            model.crossings.add(model.x[ex.n_room] - model.x[nx.p_room] <= \
-                                model.M*(1 - relation[Direction.east]) - model.d_min)
-            model.crossings.add(model.x[ex.n_room] - model.x[nx.n_room] <= \
-                                model.M*(1 - relation[Direction.east]) - model.d_min)
-            # south
-            model.crossings.add(model.y[ex.p_room] - model.y[nx.p_room] <= \
-                                model.M*(1 - relation[Direction.south]) - model.d_min)
-            model.crossings.add(model.y[ex.p_room] - model.y[nx.n_room] <= \
-                                model.M*(1 - relation[Direction.south]) - model.d_min)
-            model.crossings.add(model.y[ex.n_room] - model.y[nx.p_room] <= \
-                                model.M*(1 - relation[Direction.south]) - model.d_min)
-            model.crossings.add(model.y[ex.n_room] - model.y[nx.n_room] <= \
-                                model.M*(1 - relation[Direction.south]) - model.d_min)
-            # west
-            model.crossings.add(model.x[ex.p_room] - model.x[nx.p_room] >= \
-                                model.d_min - model.M*(1 - relation[Direction.west]))
-            model.crossings.add(model.x[ex.p_room] - model.x[nx.n_room] >= \
-                                model.d_min - model.M*(1 - relation[Direction.west]))
-            model.crossings.add(model.x[ex.n_room] - model.x[nx.p_room] >= \
-                                model.d_min - model.M*(1 - relation[Direction.west]))
-            model.crossings.add(model.x[ex.n_room] - model.x[nx.n_room] >= \
-                                model.d_min - model.M*(1 - relation[Direction.west]))
-            # up
-            model.crossings.add(model.z[ex.p_room] - model.z[nx.p_room] >= \
-                                model.d_min - model.M*(1 - relation[Direction.up]))
-            model.crossings.add(model.z[ex.p_room] - model.z[nx.n_room] >= \
-                                model.d_min - model.M*(1 - relation[Direction.up]))
-            model.crossings.add(model.z[ex.n_room] - model.z[nx.p_room] >= \
-                                model.d_min - model.M*(1 - relation[Direction.up]))
-            model.crossings.add(model.z[ex.n_room] - model.z[nx.n_room] >= \
-                                model.d_min - model.M*(1 - relation[Direction.up]))
-            # down
-            model.crossings.add(model.z[ex.p_room] - model.z[nx.p_room] <= \
-                                model.M*(1 - relation[Direction.down]) - model.d_min)
-            model.crossings.add(model.z[ex.p_room] - model.z[nx.n_room] <= \
-                                model.M*(1 - relation[Direction.down]) - model.d_min)
-            model.crossings.add(model.z[ex.n_room] - model.z[nx.p_room] <= \
-                                model.M*(1 - relation[Direction.down]) - model.d_min)
-            model.crossings.add(model.z[ex.n_room] - model.z[nx.n_room] <= \
-                                model.M*(1 - relation[Direction.down]) - model.d_min)
+            # each set of inequalities is enough to guarantee that the first exit line falls outside the second
+            prod = list(itertools.product((ex.src, ex.dst), (nx.src, nx.dst)))
+            for p,q in prod: m.crossings.add(m.x[p] - m.x[q] >= m.d_min - m.M*(1 - relation[Direction.east]))
+            for p,q in prod: m.crossings.add(m.y[p] - m.y[q] >= m.d_min - m.M*(1 - relation[Direction.north]))
+            for p,q in prod: m.crossings.add(m.z[p] - m.z[q] >= m.d_min - m.M*(1 - relation[Direction.up]))
+            for p,q in prod: m.crossings.add(m.x[p] - m.x[q] <= m.M*(1 - relation[Direction.west]) - m.d_min)
+            for p,q in prod: m.crossings.add(m.y[p] - m.y[q] <= m.M*(1 - relation[Direction.south]) - m.d_min)
+            for p,q in prod: m.crossings.add(m.z[p] - m.z[q] <= m.M*(1 - relation[Direction.down]) - m.d_min)
 
             non_incidents.remove(pair)
-            break
+            need_constraints -= 1
+            if need_constraints == 0: break
         else:
             break
             
-    print('[!] %d/%d overlaps converted into constraints.'%(relations, len(non_incidents)))
-    return model, result
+    log.debug(f'{relations}/{len(non_incidents)} overlaps converted into constraints.')
+    return m, result
 
 def graph(rdb, name, area):
     # clean up hallways (improves performance)
     for vnum, r in list(rdb.items()):
         if len(r.exits) == 2:
             # if real, bidirectional and straight
-            if not all(e.n_room in rdb.keys() for e in r.exits): continue
-            if not all([e in rdb[e.n_room].exits for e in r.exits]): continue
+            if not all(e.dst in rdb.keys() for e in r.exits): continue
+            if not all([e in rdb[e.dst].exits for e in r.exits]): continue
             if r.exits[0].direction == r.exits[1].direction.invert():
-                rdb[r.exits[0].n_room].replace_exit(vnum, r.exits[1].n_room, r.exits[1].distance)
-                rdb[r.exits[1].n_room].replace_exit(vnum, r.exits[0].n_room, r.exits[0].distance)
-                rdb[r.exits[0].n_room].fixups.append((r, r.exits[0].direction.invert(), r.exits[0].distance))
+                rdb[r.exits[0].dst].replace_exit(vnum, r.exits[1].dst, r.exits[1].distance)
+                rdb[r.exits[1].dst].replace_exit(vnum, r.exits[0].dst, r.exits[0].distance)
+                rdb[r.exits[0].dst].fixups.append((r, r.exits[0].direction.invert(), r.exits[0].distance))
                 del rdb[vnum]
-                print('%s [*] Trimmed hallway %d.'%(area[1], vnum))
+                log.debug(f'{area[1]} Trimmed hallway {vnum}.')
 
     # collect normal exits for solve/plotting
     exits = list(set([e for r in rdb.values() for e in r.exits]))
 
     # insert dummy rooms for zone exits
     for e in exits:
-        if e.n_room not in rdb:
-            rdb[e.n_room] = Room((e.p_room, '', '', None))
-            rdb[e.n_room].dummy = True
+        if e.dst not in rdb:
+            rdb[e.dst] = Room((e.src, '', '', None))
+            rdb[e.dst].dummy = True
+
+    if not len(exits):
+        log.warning(f'Ignoring disconnected room: {rdb.popitem()}')
+        return
 
     # solve
-    print('%s [+] Solving for %d exits...'%(area[1], len(exits)))
+    log.info(f'{area[1]} Solving for {len(exits)} exits...')
     model, results = solve(rdb, exits)
     if not results.solver.termination_condition == pyomo.opt.TerminationCondition.optimal:
-        print('%s [-] Solver failed!%s' %(area[1], str(results.solver)))
+        log.error(f'{area[1]} Solver failed!')
+        log.debug(f'{str(results.solver)}')
+        return
     else:
-        print('%s [+] Solve completed. Plotting...'%(area[1]))
+        log.info(f'{area[1]} Solve completed. Plotting...')
 
     # retrieve room positions and restore collapsed rooms
     for vnum, room in list(rdb.items()):
@@ -422,46 +439,55 @@ def graph(rdb, name, area):
 
     return
 
-def main():
-    parser = AreaParser.Parser()
-    with open(sys.argv[1], 'r') as f:
-        area = parser.parse(f.read())
+def main(area_files, outbase):
+    rdb = {}
+    for area_file in area_files:
+        parser = AreaParser.Parser()
+        try:
+            area = parser.parse(area_file.read())
+        except Exception as e:
+            log.error(e)
+            continue
 
-    for section in area:
-        if section[0] == '#ROOMS':
-            rooms = section[1]
-        elif section[0] == '#AREA':
-            area = section[1]
+        rooms = []
+        for section in area:
+            if section[0] == '#ROOMS':
+                rooms = section[1]
+            elif section[0] == '#AREA':
+                area = section[1]
 
-    # construct rooms for graphing
-    rdb = {r[0]: Room(r) for r in rooms}
+        # construct rooms for graphing
+        rdb.update({r[0]: Room(r) for r in rooms})
 
-    # break into connected graphs
-    count = 0
-    graphs = []
-    while len(rdb):
-        stack = [rdb.popitem()[1]]
-        sub_graph = {}
-        while len(stack):
-            r = stack.pop()
-            sub_graph[r.vnum] = r
-            for e in r.exits:
-                if e.n_room not in sub_graph.keys():
-                    if e.n_room in rdb.keys():
-                        stack.append(rdb.pop(e.n_room))
-                    else:
-                        for g in graphs:
-                            if e.n_room in g:
-                                graphs.remove(g)
-                                sub_graph.update(g)
-        graphs.append(sub_graph)
+    if not rdb:
+        log.error('No rooms to plot.')
+        exit(0)
 
-    for g in graphs:
-        name, ext = os.path.splitext(sys.argv[2])
-        graph(g, name+str(count)+ext, area)
-        count += 1
+    # make a graph from the exits
+    edges = [(e.src, e.dst)
+             for r in rdb.values()
+             for e in r.exits
+             if e.src in rdb.keys() and e.dst in rdb.keys()]
+    g = nx.DiGraph(edges)
+
+    # graph each sub graph separately
+    for i, sub_graph in enumerate(nx.connected_components(g.to_undirected())):
+        graph({node: rdb[node] for node in sub_graph}, f'{outbase}{i}.svg', area)
 
     exit(0)
 
 if __name__=='__main__':
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('areas', nargs='+', type=argparse.FileType('r'), help='.ARE file for parsing')
+    parser.add_argument('-outbase', help='output base name')
+    parser.add_argument('-d', '--debug', action='store_true', help="Show debug info")
+    args = parser.parse_args()
+
+    if args.debug:
+        log.setLevel(logging.DEBUG)
+
+    outbase = args.outbase
+    if not outbase:
+        outbase, _ = os.path.splitext(args.areas[0].name) 
+
+    main(args.areas, outbase)

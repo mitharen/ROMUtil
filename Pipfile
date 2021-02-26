@@ -6,8 +6,12 @@ name = "pypi"
 [packages]
 pyomo = "*"
 svgwrite = "*"
+tqdm = "*"
+networkx = "*"
+pydot = "*"
+graphviz = "*"
 
 [dev-packages]
 
 [requires]
-python_version = "3.6"
+python_version = "3.9"
