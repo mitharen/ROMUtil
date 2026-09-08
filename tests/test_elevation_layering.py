@@ -397,3 +397,89 @@ class TestGraphAndCliEdgeCases:
         with pytest.raises(SystemExit) as exc:
             main([are_file], outbase)
         assert exc.value.code == 0
+
+
+class TestElevationPaintersLayering:
+    """Automated regression tests asserting painter's algorithm Z-order and depth sorting."""
+
+    def test_svg_elevation_layer_strict_ascending_z_order(self, tmp_path):
+        out_svg = str(tmp_path / "scrambled_floors.svg")
+        # Insert rooms in scrambled order: Z=3, Z=0, Z=2, Z=-1, Z=1
+        rdb = {}
+        for z in [3, 0, 2, -1, 1]:
+            vnum = 100 + z
+            r = Room(RoomDef(vnum=vnum, name=f"Floor {z}", description=""))
+            r.x, r.y, r.z = 0, 0, z
+            rdb[vnum] = r
+
+        plotter = Plotter(out_svg, rdb, [])
+        plotter.plot()
+
+        tree = ET.parse(out_svg)
+        root = tree.getroot()
+        layers = root.findall(".//*[@class='elevation-layer']")
+        assert len(layers) == 5
+
+        layer_zs = [int(layer.attrib.get("data-z")) for layer in layers]
+        # Must be strictly sorted ascending: -1, 0, 1, 2, 3
+        assert layer_zs == [-1, 0, 1, 2, 3]
+        for i in range(len(layer_zs) - 1):
+            assert layer_zs[i] < layer_zs[i + 1]
+
+    def test_svg_elevation_layer_isometric_screen_depth_sorting(self, tmp_path):
+        out_svg = str(tmp_path / "depth_sort.svg")
+        rA = Room(RoomDef(vnum=10, name="Room A", description=""))
+        rA.x, rA.y, rA.z = 1, 3, 0
+        rB = Room(RoomDef(vnum=20, name="Room B", description=""))
+        rB.x, rB.y, rB.z = 1, 1, 0
+        rC = Room(RoomDef(vnum=30, name="Room C", description=""))
+        rC.x, rC.y, rC.z = 2, 1, 0
+
+        # Insert out of order: B, C, A
+        rdb = {20: rB, 30: rC, 10: rA}
+        plotter = Plotter(out_svg, rdb, [])
+        plotter.plot()
+
+        tree = ET.parse(out_svg)
+        root = tree.getroot()
+        layer0 = root.find(".//*[@id='elevation-0']")
+        assert layer0 is not None
+
+        rects = layer0.findall("{http://www.w3.org/2000/svg}rect")
+        assert len(rects) == 3
+        rect_ys = [float(r.attrib["y"]) for r in rects]
+        # A (y=3, furthest north / top of screen) has smallest screen y in projection
+        # B (y=1) and C (y=1) have larger screen y
+        assert rect_ys[0] < rect_ys[1]
+
+    def test_inter_floor_exit_layering_and_occlusion(self, tmp_path):
+        out_svg = str(tmp_path / "inter_floor.svg")
+        r0 = Room(RoomDef(vnum=1, name="Ground", description="", exits=(ExitDef(direction=Direction.up.value, dst_vnum=2),)))
+        r0.x, r0.y, r0.z = 0, 0, 0
+        r1 = Room(RoomDef(vnum=2, name="Upper", description="", exits=(ExitDef(direction=Direction.down.value, dst_vnum=1),)))
+        r1.x, r1.y, r1.z = 0, 0, 1
+        ex = r0.exits[0]
+
+        plotter = Plotter(out_svg, {1: r0, 2: r1}, [ex])
+        plotter.plot()
+
+        tree = ET.parse(out_svg)
+        root = tree.getroot()
+
+        # Elevation 0 must appear BEFORE Elevation 1
+        layers = root.findall(".//*[@class='elevation-layer']")
+        assert len(layers) == 2
+        assert layers[0].attrib["data-z"] == "0"
+        assert layers[1].attrib["data-z"] == "1"
+
+        # Inter-floor exit connecting 0 and 1 must be in elevation-1 (the higher layer)
+        layer0_lines = layers[0].findall("{http://www.w3.org/2000/svg}line")
+        layer1_lines = layers[1].findall("{http://www.w3.org/2000/svg}line")
+        assert len(layer0_lines) == 0
+        assert len(layer1_lines) == 1
+
+        # In elevation-1, exit line must appear BEFORE room rect, ensuring room geometry overlays the exit
+        children = list(layers[1])
+        line_idx = next(i for i, child in enumerate(children) if child.tag.endswith("line"))
+        rect_idx = next(i for i, child in enumerate(children) if child.tag.endswith("rect"))
+        assert line_idx < rect_idx

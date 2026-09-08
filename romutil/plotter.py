@@ -183,7 +183,7 @@ function toggleElevation(z) {
         if self.target_z is not None:
             plot_zs = [int(self.target_z)]
         else:
-            plot_zs = all_unique_zs
+            plot_zs = sorted(all_unique_zs)
 
         needed_width = 4.5 + len(plot_zs) * 2.0
         svg_width = max(self.x_max + 4 + 11 + z_space, needed_width)
@@ -244,7 +244,10 @@ function toggleElevation(z) {
                 color = 'red' if ex.one_way else 'black'
                 layer.add(dwg.line(start=projection[0], end=projection[1], stroke_width=0.05, stroke=color))
 
+            layer_exits.sort(key=lambda ex: (getattr(ex, 'src', 0), getattr(ex, 'dst', 0)))
+
             layer_rooms = [r for r in valid_rooms if not r.dummy and int(r.z) == z]
+            layer_rooms.sort(key=lambda r: (-r.y, r.x, getattr(r, 'vnum', 0)))
             layer_descs = []
 
             for room in layer_rooms:

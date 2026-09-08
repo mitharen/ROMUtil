@@ -164,7 +164,8 @@ To avoid adding $O(E^2)$ crossing constraints up front:
    $$X' = 2 + x + \text{lift} \cdot z$$
    $$Y' = 2 + \text{lift} \cdot z_{\max} + (y_{\max} - y) - \text{lift} \cdot z$$
 3. **SVG Generation (`svgwrite`) & Multi-Layer Elevation**:
-   - **Elevation Grouping**: Elements are grouped by Z-coordinate into `<g id="elevation-{z}" class="elevation-layer" data-z="{z}">` tags for every unique elevation plane.
+   - **Painter's Algorithm Depth Sorting**: SVG layer group generation stacks `<g id="elevation-{z}" class="elevation-layer" data-z="{z}">` layers in strict ascending elevation order ($Z_{\text{lower}} < Z_{\text{higher}}$). Within each elevation layer, rooms are sorted by isometric screen depth ($Y$ descending, then $X$ ascending) before executing SVG draw commands.
+   - **Inter-Floor Exit Layering & Occlusion**: Vertical transitions (`up`/`down` exits) connecting floors $Z_1$ and $Z_2$ are attributed to the higher elevation layer $\max(Z_1, Z_2)$ and drawn before the upper floor's room geometry, ensuring ascending stairways naturally overlay lower stories while being cleanly occluded by upper-story room rectangles.
    - **Interactive Layer Controls**: Embedded `<style>` and JavaScript within the SVG `<defs>` provide clickable toggle buttons (`<g id="elevation-controls">`) with visual active/inactive states, allowing users to toggle individual floor levels on/off to prevent vertical visual occlusion.
    - **Continuous HSL Color Gradient**: Maps elevation levels across a continuous HSL color gradient (`hsl(hue, 75%, 50%)`), providing distinct visual differentiation across arbitrary vertical depths ($Z \ge 10$).
    - Bidirectional exits are drawn as black lines; one-way exits as red lines.
@@ -202,11 +203,12 @@ Exports complete solved area databases into portable structured formats and inte
 
 2. **Standalone HTML Viewer (`generate_html_viewer`, `export_html`)**:
    - A single, self-contained HTML/JS web application requiring **zero external network requests**, CDNs, or Node.js dependencies.
+   - **Painter's Algorithm Layering**: The client-side rendering pipeline sorts room draw queues and minimap draw lists strictly by elevation ($Z$ ascending), then isometric screen depth ($Y$ descending / $X$ ascending). Independent DOM elevation groups (`<g id="elevation-{z}" class="elevation-layer">`) are constructed in ascending $Z$ order, with vertical transitions assigned to the higher elevation plane. This guarantees that multi-level views cleanly render upper stories and vertical stairways atop lower stories without visual interleaving or occlusion inversion.
    - Features smooth drag-to-pan and cursor-centered wheel zoom.
    - Interactive search bar with instant VNUM / name filtering, result counts, and animated auto-centering.
    - Floating hover tooltips and rich room detail sidebar inspector with jump-to-exit navigation.
    - Embedded shortest-path Breadth-First Search (BFS) pathfinder with visual route highlighting and turn-by-turn navigation instructions.
-   - Elevation floor filter (`Floor Z`) with dynamic color mapping.
+   - Elevation floor filter (`Floor Z`) with dynamic color mapping and interactive multi-floor visibility toggling.
    - Embedded interactive radar minimap canvas for orientation and rapid viewport panning.
 
 ---
@@ -216,6 +218,7 @@ Exports complete solved area databases into portable structured formats and inte
 - Registered console script entry point: `romutil` (via `uv run romutil`).
 - Multi-format output support (`--format` / `-f`): `svg` (default), `json`, and `html`.
 - Elevation plane splitting (`--split-levels`): Generates separate SVG files for each distinct elevation level (`<outbase>_z{z}.svg`).
+- Enforces strict vertical painter's algorithm depth sorting across both vector SVG outputs and standalone HTML viewers.
 - Usage:
   ```bash
   # Generate standard isometric SVG map
@@ -236,9 +239,9 @@ Exports complete solved area databases into portable structured formats and inte
 ### 4.8. Visual Previews & Documentation Assets — [`docs/assets/`](./docs/assets/)
 
 The repository maintains pre-rendered visual assets and functional demonstration artifacts under [`docs/assets/`](./docs/assets/) to support visual documentation and regression benchmarking:
-- **High-Resolution Vector Maps (`.svg`)**: Isometric oblique projections generated for canonical MUD areas ([`docs/assets/school.svg`](./docs/assets/school.svg), [`docs/assets/smurf.svg`](./docs/assets/smurf.svg), [`docs/assets/demo_tower.svg`](./docs/assets/demo_tower.svg)). Maps feature room metadata tooltips, exit directional styling, and dynamic HSL vertical gradient coloring.
+- **High-Resolution Vector Maps (`.svg`)**: Isometric oblique projections generated for canonical MUD areas ([`docs/assets/school.svg`](./docs/assets/school.svg), [`docs/assets/smurf.svg`](./docs/assets/smurf.svg), [`docs/assets/demo_tower.svg`](./docs/assets/demo_tower.svg)). Maps feature room metadata tooltips, exit directional styling, dynamic HSL vertical gradient coloring, and painter's algorithm vertical layer stacking.
 - **Multi-Plane Elevation Slices (`<name>_z{z}.svg`)**: Split-level vector maps ([`docs/assets/school_z0.svg`](./docs/assets/school_z0.svg), [`docs/assets/school_z1.svg`](./docs/assets/school_z1.svg)) showcasing isolated horizontal cross-sections at specific $Z$ coordinates to prevent visual clutter in dense multi-story structures.
-- **Standalone Web Applications (`.html`)**: Complete zero-dependency browser-based map viewers ([`docs/assets/school.html`](./docs/assets/school.html), [`docs/assets/smurf.html`](./docs/assets/smurf.html), [`docs/assets/demo_tower.html`](./docs/assets/demo_tower.html)). These bundles contain self-sufficient JavaScript implementations of real-time search, BFS pathfinding, viewport transform matrices, and HTML5 canvas minimaps.
+- **Standalone Web Applications (`.html`)**: Complete zero-dependency browser-based map viewers ([`docs/assets/school.html`](./docs/assets/school.html), [`docs/assets/smurf.html`](./docs/assets/smurf.html), [`docs/assets/demo_tower.html`](./docs/assets/demo_tower.html)). These bundles contain self-sufficient JavaScript implementations of real-time search, BFS pathfinding, viewport transform matrices, painter's algorithm depth sorting across elevation planes, and HTML5 canvas minimaps.
 - **Pipeline Architecture Diagram (`.svg`)**: Vector visual specification ([`docs/assets/pipeline_diagram.svg`](./docs/assets/pipeline_diagram.svg)) detailing data transformations across lexer tokens, AST dataclasses, condensed graph reduction, Pyomo MILP optimization, and multi-format exporters.
 
 ---

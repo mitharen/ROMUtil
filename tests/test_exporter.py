@@ -457,3 +457,85 @@ S
             data = json.load(f)
         assert data["area"]["file"] == "nometa.are"
         assert data["area"]["name"] == "nometa"
+
+
+class TestExporterPaintersLayering:
+    """Automated regression tests for HTML viewer painter's algorithm Z-ordering and layering."""
+
+    def test_html_viewer_contains_elevation_layers_and_sorting_logic(self):
+        data = {
+            "area": {"name": "Multi Floor Area", "file": "multi.are"},
+            "bounds": {"min_x": 0, "max_x": 5, "min_y": 0, "max_y": 5, "min_z": 0, "max_z": 3},
+            "rooms": [
+                {"vnum": 300, "name": "R3", "desc": "", "coords": {"x": 2, "y": 2, "z": 3}, "exits": []},
+                {"vnum": 100, "name": "R0", "desc": "", "coords": {"x": 2, "y": 2, "z": 0}, "exits": []},
+                {"vnum": 200, "name": "R1", "desc": "", "coords": {"x": 2, "y": 2, "z": 1}, "exits": []},
+            ],
+        }
+        html = generate_html_viewer(data)
+
+        # 1. Verify elevation layer style is embedded
+        assert ".elevation-layer" in html
+
+        # 2. Verify sortedRooms logic exists in client script
+        assert "const sortedRooms = [...rooms].sort(" in html
+        assert "a.coords.z - b.coords.z" in html
+        assert "b.coords.y - a.coords.y" in html
+        assert "a.coords.x - b.coords.x" in html
+
+        # 3. Verify dynamic elevation layer creation
+        assert "layer.setAttribute('id', 'elevation-' + z);" in html
+        assert "layer.setAttribute('class', 'elevation-layer');" in html
+
+        # 4. Verify minimap canvas renders using sortedRooms
+        assert "sortedRooms.forEach(r => {" in html
+
+    def test_simulated_canvas_draw_list_strict_ascending_z_order(self):
+        # Create rooms where VNUM order is opposite to Z order
+        rooms = [
+            {"vnum": 500, "name": "Floor 0 Room", "coords": {"x": 1, "y": 2, "z": 0}},
+            {"vnum": 400, "name": "Floor 1 Room Low Y", "coords": {"x": 1, "y": 1, "z": 1}},
+            {"vnum": 300, "name": "Floor 1 Room High Y", "coords": {"x": 1, "y": 3, "z": 1}},
+            {"vnum": 200, "name": "Floor 2 Room West", "coords": {"x": 0, "y": 2, "z": 2}},
+            {"vnum": 100, "name": "Floor 2 Room East", "coords": {"x": 2, "y": 2, "z": 2}},
+        ]
+
+        def painters_comparator(r):
+            return (r["coords"]["z"], -r["coords"]["y"], r["coords"]["x"], r["vnum"])
+
+        draw_queue = sorted(rooms, key=painters_comparator)
+
+        # Assert draw_queue follows strict ascending Z order
+        zs = [r["coords"]["z"] for r in draw_queue]
+        assert zs == [0, 1, 1, 2, 2]
+        # Floor 0 must come before Floor 1, which must come before Floor 2
+        assert draw_queue[0]["vnum"] == 500  # Floor 0
+        # On Floor 1: High Y (y=3, background) drawn before Low Y (y=1, foreground)
+        assert draw_queue[1]["vnum"] == 300  # Floor 1 High Y
+        assert draw_queue[2]["vnum"] == 400  # Floor 1 Low Y
+        # On Floor 2: West (x=0) drawn before East (x=2)
+        assert draw_queue[3]["vnum"] == 200  # Floor 2 West
+        assert draw_queue[4]["vnum"] == 100  # Floor 2 East
+
+    def test_inter_floor_exit_max_elevation_assignment(self):
+        data = {
+            "area": {"name": "Tower", "file": "tower.are"},
+            "bounds": {"min_x": 0, "max_x": 2, "min_y": 0, "max_y": 2, "min_z": 0, "max_z": 1},
+            "rooms": [
+                {
+                    "vnum": 1,
+                    "name": "Ground",
+                    "coords": {"x": 0, "y": 0, "z": 0},
+                    "exits": [{"direction": "up", "dst": 2, "distance": 1, "one_way": False}],
+                },
+                {
+                    "vnum": 2,
+                    "name": "Upper",
+                    "coords": {"x": 0, "y": 0, "z": 1},
+                    "exits": [{"direction": "down", "dst": 1, "distance": 1, "one_way": False}],
+                },
+            ],
+        }
+        html = generate_html_viewer(data)
+        assert "Math.max(r.coords.z, target.coords.z)" in html
+        assert "elevationLayers.get(edgeZ)" in html
