@@ -20,6 +20,7 @@ MODULE_DESCRIPTIONS = {
     "graph.py": "Corridor collapsing, restoration, and mfas",
     "solver.py": "Pyomo MILP optimization and overlap detection",
     "plotter.py": "Oblique isometric SVG rendering engine",
+    "exporter.py": "Interactive JSON and standalone HTML map export",
     "cli.py": "Modernized CLI (pathlib.Path) & entry point",
 }
 

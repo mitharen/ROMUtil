@@ -55,8 +55,20 @@ def mfas(edges):
     solver.solve(model, tee=False)
     return [(u, v) for u, v in edges if model.b[labels[u], labels[v]].value]
 
-def graph(rdb, name, area, split_levels=False, outbase=None):
-    area_name = area.name if hasattr(area, 'name') else (area[1] if isinstance(area, (list, tuple)) and len(area) > 1 else str(area or ''))
+def solve_layout(rdb, area=None):
+    """
+    Solves 3D coordinates for rooms using Pyomo MILP optimization.
+    Simplifies straight hallways, resolves boundary dummies, restores hallways,
+    normalizes coordinates so minimums are zero, restores original exits on rooms,
+    and calculates one-way exit statuses.
+    Returns (rdb, exits).
+    """
+    import copy
+    area_name = area.name if hasattr(area, 'name') else (area[1] if isinstance(area, (list, tuple)) and len(area) > 1 else str(area or 'Area'))
+
+    # Save original exits for complete export preservation
+    original_exits = {vnum: copy.deepcopy(r.exits) for vnum, r in rdb.items()}
+
     # collapse straight bidirectional hallways
     for vnum, r in list(rdb.items()):
         if len(r.exits) == 2:
@@ -82,17 +94,25 @@ def graph(rdb, name, area, split_levels=False, outbase=None):
             rdb[e.dst].dummy = True
 
     if not len(exits):
-        log.warning(f'Ignoring disconnected room: {rdb.popitem()}')
-        return
+        log.warning(f'Ignoring disconnected room: {list(rdb.keys())}')
+        for r in rdb.values():
+            if r.x is None: r.x = 0
+            if r.y is None: r.y = 0
+            if r.z is None: r.z = 0
+        return rdb, exits
 
     log.info(f'{area_name} Solving for {len(exits)} exits...')
     model, results = solve(rdb, exits)
     if not results.solver.termination_condition == pyomo.opt.TerminationCondition.optimal:
         log.error(f'{area_name} Solver failed!')
         log.debug(f'{str(results.solver)}')
-        return
+        for r in rdb.values():
+            if r.x is None: r.x = 0
+            if r.y is None: r.y = 0
+            if r.z is None: r.z = 0
+        return rdb, exits
     else:
-        log.info(f'{area_name} Solve completed. Plotting...')
+        log.info(f'{area_name} Solve completed.')
 
     for vnum, room in list(rdb.items()):
         room.x = model.x[vnum].value if model.x[vnum].value else 0
@@ -101,13 +121,42 @@ def graph(rdb, name, area, split_levels=False, outbase=None):
         for r in restore_rooms(room):
             rdb[r.vnum] = r
 
-    x_min = min([r.x for r in rdb.values()])
-    y_min = min([r.y for r in rdb.values()])
-    z_min = min([r.z for r in rdb.values()])
+    valid_rooms = [r for r in rdb.values() if r.x is not None and r.y is not None and r.z is not None]
+    if valid_rooms:
+        x_min = min([r.x for r in valid_rooms])
+        y_min = min([r.y for r in valid_rooms])
+        z_min = min([r.z for r in valid_rooms])
+        for r in valid_rooms:
+            r.x -= x_min
+            r.y -= y_min
+            r.z -= z_min
+
+    # Restore original exits for all non-dummy rooms
+    for vnum, orig_ex in original_exits.items():
+        if vnum in rdb:
+            rdb[vnum].exits = orig_ex
+
+    # Compute one_way status on all exits
     for r in rdb.values():
-        r.x -= x_min
-        r.y -= y_min
-        r.z -= z_min
+        if r.dummy:
+            continue
+        for e in r.exits:
+            has_return = False
+            if e.dst in rdb and not rdb[e.dst].dummy:
+                inv = e.direction.invert()
+                for re in rdb[e.dst].exits:
+                    if re.dst == r.vnum and re.direction == inv:
+                        has_return = True
+                        break
+            e.one_way = not has_return
+
+    return rdb, exits
+
+
+def graph(rdb, name, area, split_levels=False, outbase=None):
+    rdb, exits = solve_layout(rdb, area)
+    if not len(exits) and not len(rdb):
+        return
 
     if split_levels:
         unique_zs = sorted(list(set(int(r.z) for r in rdb.values() if not r.dummy and r.z is not None)))

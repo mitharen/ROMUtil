@@ -3,10 +3,12 @@ import pytest
 from romutil.parser import Lexer, Parser, parse_file, main
 
 _CANDIDATE_AREAS_DIRS = [
+    os.environ.get('QUICKMUD_AREA_DIR', ''),
     os.path.abspath(os.path.join(os.path.dirname(__file__), '../../QuickMUD/area')),
     '/home/user/proj/QuickMUD/area',
+    os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../../../../proj/QuickMUD/area')),
 ]
-SAMPLE_AREAS_DIR = next((d for d in _CANDIDATE_AREAS_DIRS if os.path.isdir(d)), _CANDIDATE_AREAS_DIRS[0])
+SAMPLE_AREAS_DIR = next((d for d in _CANDIDATE_AREAS_DIRS if d and os.path.isdir(d)), _CANDIDATE_AREAS_DIRS[1])
 
 MINIMAL_VALID_AREA = """#AREA
 test.are~
