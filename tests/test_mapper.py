@@ -3,10 +3,17 @@ import os
 import pytest
 import xml.etree.ElementTree as ET
 
-from Mapper import Direction, Room, Exit, Plotter, restore_rooms, mfas, non_euler, solve, graph, main
-import AreaParser
+from romutil.models import Direction, Room, Exit
+from romutil.plotter import Plotter
+from romutil.solver import non_euler, solve
+from romutil.graph import restore_rooms, mfas, graph
+from romutil.cli import main, cli
 
-SAMPLE_AREAS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../QuickMUD/area'))
+_CANDIDATE_AREAS_DIRS = [
+    os.path.abspath(os.path.join(os.path.dirname(__file__), '../../QuickMUD/area')),
+    '/home/user/proj/QuickMUD/area',
+]
+SAMPLE_AREAS_DIR = next((d for d in _CANDIDATE_AREAS_DIRS if os.path.isdir(d)), _CANDIDATE_AREAS_DIRS[0])
 
 
 class TestDirection:
@@ -319,8 +326,29 @@ class TestMapperIntegration:
             pytest.skip("QuickMUD area files not found")
 
         outbase = str(tmp_path / "cli_smurf")
-        monkeypatch.setattr("sys.argv", ["Mapper.py", smurf_file, "-outbase", outbase, "-d"])
-        import runpy
+        monkeypatch.setattr("sys.argv", ["romutil", smurf_file, "-outbase", outbase, "-d"])
         with pytest.raises(SystemExit) as exc:
-            runpy.run_module("Mapper", run_name="__main__")
+            cli()
+        assert exc.value.code == 0
+
+    def test_cli_default_outbase(self, tmp_path, monkeypatch):
+        fake_area = tmp_path / "dummy.are"
+        fake_area.write_text("#AREA\ndummy.are~\nDummy~\nBuilder~\n1 10\n#$\n")
+        monkeypatch.setattr("sys.argv", ["romutil", str(fake_area)])
+        with pytest.raises(SystemExit) as exc:
+            cli()
+        assert exc.value.code == 0
+
+    def test_cli_module_run(self, tmp_path, monkeypatch):
+        import sys
+        import runpy
+        smurf_file = os.path.join(SAMPLE_AREAS_DIR, "smurf.are")
+        if not os.path.exists(smurf_file):
+            pytest.skip("QuickMUD area files not found")
+
+        outbase = str(tmp_path / "cli_module_smurf")
+        monkeypatch.setattr("sys.argv", ["romutil", smurf_file, "-outbase", outbase])
+        monkeypatch.delitem(sys.modules, "romutil.cli", raising=False)
+        with pytest.raises(SystemExit) as exc:
+            runpy.run_module("romutil.cli", run_name="__main__")
         assert exc.value.code == 0

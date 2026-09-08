@@ -18,7 +18,7 @@ ROMUtil solves this layout challenge by combining **graph algorithms** with **Mi
 
 ## 2. System Architecture & Pipeline
 
-The project is structured as a modular Python package ([`romutil/`](file:///home/user/proj/ROMUtil/romutil)) with top-level CLI wrappers:
+The project is structured as a modular Python package ([`romutil/`](file:///home/user/proj/ROMUtil/romutil)) with a unified console CLI entry point:
 
 ```mermaid
 flowchart TD
@@ -34,8 +34,6 @@ flowchart TD
 
     subgraph CLI Entry Points
         CLI1["romutil CLI (uv run romutil)"] --> B
-        CLI2["Mapper.py (Backward-Compatible Wrapper)"] --> CLI1
-        CLI3["AreaParser.py (Backward-Compatible Wrapper)"] --> B
     end
 ```
 
@@ -60,11 +58,9 @@ ROMUtil/
 │   ├── parser.py                # PLY Lexer & LALR Parser with resilient encoding
 │   ├── plotter.py               # Oblique isometric SVG rendering engine
 │   └── solver.py                # Pyomo MILP optimization and overlap detection
-├── AreaParser.py                # Backward-compatible wrapper -> romutil.parser
-├── Mapper.py                    # Backward-compatible wrapper -> romutil.cli
 ├── pyproject.toml               # PEP 621 package metadata & script definitions
 ├── uv.lock                      # Pinned dependency lockfile managed by uv
-└── tests/                       # Comprehensive pytest suite (44 tests, 96% coverage)
+└── tests/                       # Comprehensive pytest suite (46 tests, 96% coverage)
 ```
 
 ---
@@ -72,7 +68,6 @@ ROMUtil/
 ## 4. Component Deep Dive
 
 ### 4.1. Parsing Engine — [`romutil/parser.py`](file:///home/user/proj/ROMUtil/romutil/parser.py)
-*(Wrapper: [`AreaParser.py`](file:///home/user/proj/ROMUtil/AreaParser.py))*
 
 Built with Python PLY (`ply.lex` and `ply.yacc`):
 
@@ -170,7 +165,6 @@ To avoid adding $O(E^2)$ crossing constraints up front:
 ---
 
 ### 4.6. CLI & Execution — [`romutil/cli.py`](file:///home/user/proj/ROMUtil/romutil/cli.py)
-*(Wrapper: [`Mapper.py`](file:///home/user/proj/ROMUtil/Mapper.py))*
 
 - Uses modern `pathlib.Path` argument parsing (avoiding Python 3.14 deprecation warnings).
 - Registered as a project console script (`[project.scripts] romutil = "romutil.cli:cli"`).
@@ -204,4 +198,4 @@ make update-deps
 Pre-commit hooks are installed in `.git/hooks/pre-commit`. On every `git commit`, the hook:
 - Strips trailing whitespace and fixes EOF markers.
 - Validates YAML configs and blocks large files.
-- Runs `uv run pytest` to ensure all 44 tests pass before permitting the commit.
+- Runs `uv run pytest` to ensure all 46 tests pass before permitting the commit.

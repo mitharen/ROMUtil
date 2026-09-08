@@ -24,7 +24,7 @@ MODULE_DESCRIPTIONS = {
 }
 
 def generate_package_tree():
-    """Generates a text directory tree for romutil/ and top-level wrappers."""
+    """Generates a text directory tree for romutil/ and package structure."""
     lines = ["ROMUtil/", "├── romutil/                     # Core Python package"]
     files = sorted([f.name for f in PACKAGE_DIR.glob("*.py")])
     for i, fname in enumerate(files):
@@ -33,11 +33,9 @@ def generate_package_tree():
         lines.append(f"{prefix}{fname:<24} # {desc}")
 
     lines.extend([
-        "├── AreaParser.py                # Backward-compatible wrapper -> romutil.parser",
-        "├── Mapper.py                    # Backward-compatible wrapper -> romutil.cli",
         "├── pyproject.toml               # PEP 621 package metadata & script definitions",
         "├── uv.lock                      # Pinned dependency lockfile managed by uv",
-        "└── tests/                       # Comprehensive pytest suite (44 tests, 96% coverage)",
+        "└── tests/                       # Comprehensive pytest suite (46 tests, 96% coverage)",
     ])
     return "\n".join(lines)
 
