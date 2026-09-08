@@ -2,7 +2,8 @@ from romutil.models import Direction, Room, Exit
 from romutil.parser import Parser, parse_file
 from romutil.plotter import Plotter
 from romutil.solver import solve, non_euler
-from romutil.graph import graph, restore_rooms, mfas
+from romutil.graph import graph, solve_layout, restore_rooms, mfas
+from romutil.exporter import build_area_json, export_json, generate_html_viewer, export_html
 from romutil.cli import main, cli
 
 __all__ = [
@@ -15,8 +16,13 @@ __all__ = [
     'solve',
     'non_euler',
     'graph',
+    'solve_layout',
     'restore_rooms',
     'mfas',
+    'build_area_json',
+    'export_json',
+    'generate_html_viewer',
+    'export_html',
     'main',
     'cli',
 ]

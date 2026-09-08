@@ -18,7 +18,7 @@ ROMUtil solves this layout challenge by combining **graph algorithms** with **Mi
 
 ## 2. System Architecture & Pipeline
 
-The project is structured as a modular Python package ([`romutil/`](file:///home/user/proj/ROMUtil/romutil)) with top-level CLI wrappers:
+The project is structured as a modular Python package ([`romutil/`](./romutil)) with top-level CLI wrappers:
 
 ```mermaid
 flowchart TD
@@ -30,7 +30,9 @@ flowchart TD
     F -->|Iterative Collision Resolution| F
     F --> G["romutil/graph.py: restore_rooms() (Corridor Expansion)"]
     G --> H["romutil/plotter.py: Plotter (Isometric SVG Renderer)"]
+    G --> J["romutil/exporter.py: JSON & Standalone HTML Exporter"]
     H --> I[".svg Interactive Map"]
+    J --> K[".json Room Database / .html Web Viewer"]
 
     subgraph CLI Entry Points
         CLI1["romutil CLI (uv run romutil)"] --> B
@@ -55,6 +57,7 @@ ROMUtil/
 ├── romutil/                     # Core Python package
 │   ├── __init__.py              # Package public API exports
 │   ├── cli.py                   # Modernized CLI (pathlib.Path) & entry point
+│   ├── exporter.py              # Interactive JSON and standalone HTML map export
 │   ├── graph.py                 # Corridor collapsing, restoration, and mfas
 │   ├── models.py                # Direction, Room, and Exit domain models
 │   ├── parser.py                # PLY Lexer & LALR Parser with resilient encoding
@@ -71,16 +74,16 @@ ROMUtil/
 
 ## 4. Component Deep Dive
 
-### 4.1. Parsing Engine — [`romutil/parser.py`](file:///home/user/proj/ROMUtil/romutil/parser.py)
-*(Wrapper: [`AreaParser.py`](file:///home/user/proj/ROMUtil/AreaParser.py))*
+### 4.1. Parsing Engine — [`romutil/parser.py`](./romutil/parser.py)
+*(Wrapper: [`AreaParser.py`](./AreaParser.py))*
 
 Built with Python PLY (`ply.lex` and `ply.yacc`):
 
-- **[`Lexer`](file:///home/user/proj/ROMUtil/romutil/parser.py#L9-L191)**:
+- **[`Lexer`](./romutil/parser.py#L9-L191)**:
   - Uses exclusive lexer states (`INITIAL`, `string`, `line`, `optional`) to handle the idiosyncratic ROM format.
   - Switches to `string` mode to extract multiline text terminated by tildes (`~`).
   - Recognizes keywords (`#AREA`, `#ROOMS`, `#MOBILES`, `#OBJECTS`, `#RESETS`, `#SHOPS`, `#SPECIALS`, `#HELPS`, `#SOCIALS`).
-- **[`Parser`](file:///home/user/proj/ROMUtil/romutil/parser.py#L194-L442)**:
+- **[`Parser`](./romutil/parser.py#L194-L442)**:
   - An LALR(1) grammar extracting rooms (`VNUM`, title, description) and doors/exits (`direction_number`, `dst_vnum`).
   - Implements grammar tolerance for non-room sections (`#SOCIALS`, `#HELPS`, etc.) so arbitrary MUD files parse without syntax errors.
   - Opens files using `encoding="latin-1", errors="replace"` to support vintage MUD files containing non-UTF-8 bytes.
@@ -88,20 +91,20 @@ Built with Python PLY (`ply.lex` and `ply.yacc`):
 
 ---
 
-### 4.2. Domain Models — [`romutil/models.py`](file:///home/user/proj/ROMUtil/romutil/models.py)
+### 4.2. Domain Models — [`romutil/models.py`](./romutil/models.py)
 
-- **[`Direction`](file:///home/user/proj/ROMUtil/romutil/models.py#L3-L15)**:
+- **[`Direction`](./romutil/models.py#L3-L15)**:
   An `IntEnum` representing 6 degrees of movement:
   - `0`: North, `1`: East, `2`: Up, `3`: South, `4`: West, `5`: Down.
   - `Direction.invert()` computes opposing direction via `(dir + 3) % 6`.
-- **[`Room`](file:///home/user/proj/ROMUtil/romutil/models.py#L48-L68)**:
+- **[`Room`](./romutil/models.py#L48-L68)**:
   Represents a room node holding `vnum`, `name`, `desc`, `exits`, integer coordinates `(x, y, z)`, and a `fixups` list for collapsed corridors.
-- **[`Exit`](file:///home/user/proj/ROMUtil/romutil/models.py#L26-L46)**:
+- **[`Exit`](./romutil/models.py#L26-L46)**:
   Represents a directional edge between `src` and `dst`. Defines bidirectional equality (`__eq__`) and hash symmetry so opposite exits (`A -> B East` and `B -> A West`) map to the same logical edge.
 
 ---
 
-### 4.3. Graph Simplification — [`romutil/graph.py`](file:///home/user/proj/ROMUtil/romutil/graph.py)
+### 4.3. Graph Simplification — [`romutil/graph.py`](./romutil/graph.py)
 
 Before invoking the mathematical solver, the graph is simplified to minimize variables:
 
@@ -115,7 +118,7 @@ Before invoking the mathematical solver, the graph is simplified to minimize var
 
 ---
 
-### 4.4. Mathematical Layout Optimization — [`romutil/solver.py`](file:///home/user/proj/ROMUtil/romutil/solver.py)
+### 4.4. Mathematical Layout Optimization — [`romutil/solver.py`](./romutil/solver.py)
 
 The layout is formulated as a Mixed-Integer Linear Program (MILP) using **Pyomo** and solved with the **Coin-OR CBC** solver:
 
@@ -153,9 +156,9 @@ To avoid adding $O(E^2)$ crossing constraints up front:
 
 ---
 
-### 4.5. Reconstruction & Rendering — [`romutil/plotter.py`](file:///home/user/proj/ROMUtil/romutil/plotter.py)
+### 4.5. Reconstruction & Rendering — [`romutil/plotter.py`](./romutil/plotter.py)
 
-1. **[`restore_rooms()`](file:///home/user/proj/ROMUtil/romutil/graph.py#L12-L29)**:
+1. **[`restore_rooms()`](./romutil/graph.py#L12-L29)**:
    Traverses `fixups` on surviving rooms and calculates exact coordinates for previously collapsed corridor rooms.
 2. **Isometric Projection**:
    Converts 3D coordinates $(x, y, z)$ into 2D SVG canvas points using an oblique lift factor ($\text{lift} = 0.15$):
@@ -169,14 +172,60 @@ To avoid adding $O(E^2)$ crossing constraints up front:
 
 ---
 
-### 4.6. CLI & Execution — [`romutil/cli.py`](file:///home/user/proj/ROMUtil/romutil/cli.py)
-*(Wrapper: [`Mapper.py`](file:///home/user/proj/ROMUtil/Mapper.py))*
+### 4.6. Web & JSON Export Engine — [`romutil/exporter.py`](./romutil/exporter.py)
+
+Exports complete solved area databases into portable structured formats and interactive standalone web viewers:
+
+1. **Structured JSON Map (`build_area_json`, `export_json`)**:
+   - Exports the entire room graph with solved integer 3D coordinates `(x, y, z)` and normalized area bounds.
+   - Preserves 100% of room definitions, descriptions, and directional connections.
+   - Computes directed `one_way` exit properties and directional step distances.
+   - Conforms to the standard schema:
+     ```json
+     {
+       "area": { "name": "mud school", "file": "school.are" },
+       "bounds": { "min_x": 0, "max_x": 5, "min_y": 0, "max_y": 7, "min_z": 0, "max_z": 4 },
+       "rooms": [
+         {
+           "vnum": 3700,
+           "name": "Entrance to Mud School",
+           "desc": "...",
+           "coords": { "x": 3, "y": 3, "z": 4 },
+           "exits": [
+             { "direction": "north", "dst": 3757, "distance": 1, "one_way": false }
+           ]
+         }
+       ]
+     }
+     ```
+
+2. **Standalone HTML Viewer (`generate_html_viewer`, `export_html`)**:
+   - A single, self-contained HTML/JS web application requiring **zero external network requests**, CDNs, or Node.js dependencies.
+   - Features smooth drag-to-pan and cursor-centered wheel zoom.
+   - Interactive search bar with instant VNUM / name filtering, result counts, and animated auto-centering.
+   - Floating hover tooltips and rich room detail sidebar inspector with jump-to-exit navigation.
+   - Embedded shortest-path Breadth-First Search (BFS) pathfinder with visual route highlighting and turn-by-turn navigation instructions.
+   - Elevation floor filter (`Floor Z`) with dynamic color mapping.
+   - Embedded interactive radar minimap canvas for orientation and rapid viewport panning.
+
+---
+
+### 4.7. CLI & Execution — [`romutil/cli.py`](./romutil/cli.py)
+*(Wrapper: [`Mapper.py`](./Mapper.py))*
 
 - Uses modern `pathlib.Path` argument parsing (avoiding Python 3.14 deprecation warnings).
 - Registered as a project console script (`[project.scripts] romutil = "romutil.cli:cli"`).
+- Multi-format output support (`--format` / `-f`): `svg` (default), `json`, and `html`.
 - Usage:
   ```bash
+  # Generate isometric SVG map(s)
   uv run romutil <area.are> [-outbase <name>] [-d]
+
+  # Export complete room database as JSON
+  uv run romutil <area.are> --format json
+
+  # Export self-contained interactive web viewer
+  uv run romutil <area.are> --format html
   ```
 
 ---
