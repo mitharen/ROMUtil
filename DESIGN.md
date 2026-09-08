@@ -258,3 +258,40 @@ The automated GitHub Actions pipeline ([`.github/workflows/ci.yml`](./.github/wo
 - Validating repository formatting, linting, and pre-commit checks.
 - Validating design documentation synchronization and link integrity via [`scripts/sync_design_doc.py`](./scripts/sync_design_doc.py).
 - Executing the test suite with strict coverage enforcement thresholds.
+
+---
+
+## 6. Container & Development Environment
+
+ROMUtil provides reproducible, zero-setup containerized execution and IDE development configurations using Docker and the VS Code Dev Containers specification.
+
+### 6.1. Multi-Stage Container Architecture — [`Dockerfile`](./Dockerfile)
+
+The container runtime is structured as a multi-stage Docker build rooted on `python:3.14-slim`:
+
+1. **Build Stage (`builder`)**:
+   - Copies the official `uv` binary from `ghcr.io/astral-sh/uv:latest`.
+   - Utilizes `uv sync --frozen --no-dev --no-editable` with bytecode pre-compilation (`UV_COMPILE_BYTECODE=1`) and copy linking (`UV_LINK_MODE=copy`) to construct an isolated standalone virtual environment in `/app/.venv`.
+   - Leverages Docker layer caching by separating dependency resolution (`pyproject.toml`, `uv.lock`) from source application installation.
+2. **Runtime Stage (`runtime`)**:
+   - Minimal `python:3.14-slim` base image.
+   - Installs the Coin-OR CBC solver binary (`coinor-cbc`) via `apt-get` with `--no-install-recommends` and immediate package cache removal.
+   - Bundles the `uv` binary to support dynamic container workflow commands.
+   - Copies the prepared application and pre-compiled virtual environment from the builder stage, adding `/app/.venv/bin` to `PATH`.
+   - Declares `/data` as an explicit `VOLUME` and `WORKDIR`, enabling host filesystem binding.
+   - Defines `ENTRYPOINT ["romutil"]` with default `CMD ["--help"]`, allowing direct execution of all CLI flags and subcommands.
+
+#### Container Execution Model
+Users process local MUD areas by mounting their host directories into `/data`:
+
+```bash
+docker run -v $(pwd)/area:/data romutil /data/midgaard.are -outbase /data/midgaard
+```
+
+### 6.2. IDE Containerized Development — [`.devcontainer/devcontainer.json`](./.devcontainer/devcontainer.json)
+
+For VS Code and Dev Container-compliant IDEs, [`.devcontainer/devcontainer.json`](./.devcontainer/devcontainer.json) provisions a standardized developer workspace:
+- References the project [`Dockerfile`](./Dockerfile) with workspace root build context.
+- Integrates the official Git devcontainer feature (`ghcr.io/devcontainers/features/git:1`).
+- Configures default workspace settings, including Python virtual environment interpreter resolution (`/app/.venv/bin/python`) and automated `pytest` test discovery.
+- Executes `uv sync` during `postCreateCommand` initialization to prepare development dependencies, linters, and pre-commit hooks.

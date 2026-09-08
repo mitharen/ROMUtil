@@ -49,6 +49,18 @@ cd ROMUtil
 uv sync
 ```
 
+### Docker Execution
+
+Run ROMUtil with pre-configured Python 3.14 and Coin-OR CBC solvers without local environment setup:
+
+```bash
+# Build the container image:
+docker build -t romutil .
+
+# Run map generation mounting local area files:
+docker run -v $(pwd)/area:/data romutil /data/midgaard.are -outbase /data/midgaard
+```
+
 ### Basic Usage
 
 Run the CLI on any ROM area file (`.are`):
