@@ -5,3 +5,12 @@ all: $(SVG_FILES)
 
 %.svg: $(AREAS)/%.are
 	./Mapper.py $<
+
+test:
+	uv run pytest
+
+update-deps:
+	uv lock --upgrade
+	uv sync
+	uv run pytest
+

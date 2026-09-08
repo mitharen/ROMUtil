@@ -1,0 +1,24 @@
+[project]
+name = "romutil"
+version = "0.1.0"
+description = "ROM MUD area parser and isometric map generator"
+requires-python = ">=3.9"
+dependencies = [
+    "graphviz>=0.20",
+    "networkx>=3.0",
+    "ply>=3.11",
+    "pydot>=3.0",
+    "pyomo>=6.0",
+    "svgwrite>=1.4.0",
+    "tqdm>=4.60.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
