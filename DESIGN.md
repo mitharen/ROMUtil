@@ -54,12 +54,12 @@ The pipeline executes in five distinct phases:
 ROMUtil/
 ├── romutil/                     # Core Python package
 │   ├── __init__.py              # Package public API exports
+│   ├── cli.py                   # Modernized CLI (pathlib.Path) & entry point
+│   ├── graph.py                 # Corridor collapsing, restoration, and mfas
 │   ├── models.py                # Direction, Room, and Exit domain models
 │   ├── parser.py                # PLY Lexer & LALR Parser with resilient encoding
-│   ├── graph.py                 # Corridor collapsing, restoration, and mfas
-│   ├── solver.py                # Pyomo MILP optimization and overlap detection
 │   ├── plotter.py               # Oblique isometric SVG rendering engine
-│   └── cli.py                   # Modernized CLI (pathlib.Path) & entry point
+│   └── solver.py                # Pyomo MILP optimization and overlap detection
 ├── AreaParser.py                # Backward-compatible wrapper -> romutil.parser
 ├── Mapper.py                    # Backward-compatible wrapper -> romutil.cli
 ├── pyproject.toml               # PEP 621 package metadata & script definitions
