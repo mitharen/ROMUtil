@@ -36,9 +36,6 @@ class AreaHeader:
     vnum_min: int
     vnum_max: int
 
-    def __getitem__(self, index: int) -> Any:
-        return (self.filename, self.name, self.builder, (self.vnum_min, self.vnum_max))[index]
-
 
 @dataclass(frozen=True)
 class ExitDef:
@@ -49,34 +46,11 @@ class ExitDef:
     key_vnum: int = 0
     flags: int = 0
 
-    def __getitem__(self, index: int) -> Any:
-        return (self.direction, self.dst_vnum, self.description, self.keyword, self.key_vnum, self.flags)[index]
-
-    def __eq__(self, other: Any) -> bool:
-        if isinstance(other, tuple) and len(other) == 2:
-            return (self.direction, self.dst_vnum) == other
-        if isinstance(other, ExitDef):
-            return (
-                self.direction == other.direction
-                and self.dst_vnum == other.dst_vnum
-                and self.description == other.description
-                and self.keyword == other.keyword
-                and self.key_vnum == other.key_vnum
-                and self.flags == other.flags
-            )
-        return False
-
-    def __hash__(self) -> int:
-        return hash((self.direction, self.dst_vnum, self.description, self.keyword, self.key_vnum, self.flags))
-
 
 @dataclass(frozen=True)
 class ExtraDescr:
     keyword: str
     description: str
-
-    def __getitem__(self, index: int) -> Any:
-        return (self.keyword, self.description)[index]
 
 
 @dataclass(frozen=True)
@@ -94,9 +68,6 @@ class RoomDef:
             object.__setattr__(self, "exits", tuple(self.exits) if self.exits is not None else ())
         if not isinstance(self.extras, tuple):
             object.__setattr__(self, "extras", tuple(self.extras) if self.extras is not None else ())
-
-    def __getitem__(self, index: int) -> Any:
-        return (self.vnum, self.name, self.description, self.exits, self.room_flags, self.sector, self.extras)[index]
 
 
 @dataclass(frozen=True)
@@ -139,9 +110,6 @@ class MobileDef:
         if not isinstance(self.optionals, tuple):
             object.__setattr__(self, "optionals", tuple(self.optionals) if self.optionals is not None else ())
 
-    def __getitem__(self, index: int) -> Any:
-        return (self.vnum, self.player_name, self.short_desc, self.long_desc, self.desc, self.race)[index]
-
 
 @dataclass(frozen=True)
 class ObjectDef:
@@ -166,18 +134,12 @@ class ObjectDef:
         if not isinstance(self.optionals, tuple):
             object.__setattr__(self, "optionals", tuple(self.optionals) if self.optionals is not None else ())
 
-    def __getitem__(self, index: int) -> Any:
-        return (self.vnum, self.name, self.short_desc, self.desc, self.item_type)[index]
-
 
 @dataclass(frozen=True)
 class ResetDef:
     command: str
     args: tuple[Any, ...] = ()
     comment: str | None = None
-
-    def __getitem__(self, index: int) -> Any:
-        return (self.command, *self.args)[index]
 
 
 @dataclass(frozen=True)
@@ -190,9 +152,6 @@ class ShopDef:
     close_hour: int = 24
     comment: str | None = None
 
-    def __getitem__(self, index: int) -> Any:
-        return (self.keeper, self.buy_types, self.profit_buy, self.profit_sell, self.open_hour, self.close_hour)[index]
-
 
 @dataclass(frozen=True)
 class SpecialDef:
@@ -200,9 +159,6 @@ class SpecialDef:
     vnum: int
     spec_fun: str
     comment: str | None = None
-
-    def __getitem__(self, index: int) -> Any:
-        return (self.command, self.vnum, self.spec_fun)[index]
 
 
 @dataclass(frozen=True)
@@ -215,9 +171,6 @@ class HelpDef:
         if not isinstance(self.keywords, tuple):
             object.__setattr__(self, "keywords", tuple(self.keywords) if self.keywords is not None else ())
 
-    def __getitem__(self, index: int) -> Any:
-        return (self.keywords, self.text, self.level)[index]
-
 
 @dataclass(frozen=True)
 class SocialDef:
@@ -227,9 +180,6 @@ class SocialDef:
     def __post_init__(self) -> None:
         if not isinstance(self.stages, tuple):
             object.__setattr__(self, "stages", tuple(self.stages) if self.stages is not None else ())
-
-    def __getitem__(self, index: int) -> Any:
-        return (self.name, self.stages)[index]
 
 
 @dataclass(frozen=True)
@@ -285,23 +235,42 @@ class AreaData:
 
 
 class Exit:
-    def __init__(self, e: ExitDef | tuple[Any, ...] | list[Any], source: int, distance: int = 1):
-        self.src = source
-        if isinstance(e, ExitDef):
-            self.dst = e.dst_vnum
-            self.direction = Direction(direction_matrix[e.direction])
-        elif isinstance(e, (tuple, list)):
-            self.dst = e[1]
-            self.direction = Direction(direction_matrix[e[0]])
-        elif isinstance(e, Exit):
-            self.dst = e.dst
-            self.direction = e.direction
-        else:
-            self.dst = getattr(e, "dst_vnum", getattr(e, "dst", -1))
-            dir_val = getattr(e, "direction", 0)
-            self.direction = Direction(direction_matrix[dir_val]) if isinstance(dir_val, int) else dir_val
+    def __init__(
+        self,
+        e: ExitDef | Exit | None = None,
+        source: int | None = None,
+        distance: int = 1,
+        *,
+        src: int | None = None,
+        dst: int | None = None,
+        direction: Direction | int | None = None,
+    ) -> None:
+        effective_source = source if source is not None else src
+        if effective_source is None:
+            raise ValueError("Exit requires a source vnum")
+        self.src = effective_source
         self.distance = distance
         self.one_way = False
+
+        if e is not None:
+            if isinstance(e, ExitDef):
+                self.dst = e.dst_vnum
+                self.direction = Direction(direction_matrix[e.direction])
+            elif isinstance(e, Exit):
+                self.dst = e.dst
+                self.direction = e.direction
+                if distance == 1 and e.distance != 1:
+                    self.distance = e.distance
+            else:
+                raise TypeError(f"Expected ExitDef or Exit, got {type(e).__name__}")
+        elif dst is not None and direction is not None:
+            self.dst = dst
+            if isinstance(direction, Direction):
+                self.direction = direction
+            else:
+                self.direction = Direction(direction_matrix[direction])
+        else:
+            raise TypeError("Exit requires an ExitDef, Exit, or explicit keyword arguments (dst, direction, source)")
 
     def __eq__(self, other: Any) -> bool:
         if not isinstance(other, Exit):
@@ -325,34 +294,55 @@ class Exit:
 
 
 class Room:
-    def __init__(self, r: RoomDef | tuple[Any, ...] | list[Any] | Room):
-        if isinstance(r, RoomDef):
-            self.vnum = r.vnum
-            self.name = r.name
-            self.desc = r.description
-            self.exits = [Exit(e, self.vnum) for e in r.exits if e is not None]
-        elif isinstance(r, (tuple, list)):
-            self.vnum = r[0]
-            self.name = r[1]
-            self.desc = r[2]
-            self.exits = [] if len(r) <= 3 or not r[3] else [Exit(e, self.vnum) for e in r[3] if e is not None]
-        elif isinstance(r, Room):
-            self.vnum = r.vnum
-            self.name = r.name
-            self.desc = r.desc
-            self.exits = list(r.exits)
-        else:
-            self.vnum = getattr(r, "vnum", 0)
-            self.name = getattr(r, "name", "")
-            self.desc = getattr(r, "desc", getattr(r, "description", ""))
-            exits_attr = getattr(r, "exits", [])
-            self.exits = [Exit(e, self.vnum) for e in exits_attr if e is not None]
-
+    def __init__(
+        self,
+        r: RoomDef | Room | None = None,
+        *,
+        vnum: int | None = None,
+        name: str = "",
+        desc: str = "",
+        description: str | None = None,
+        exits: list[Exit] | tuple[ExitDef, ...] | list[ExitDef] | None = None,
+    ) -> None:
         self.fixups: list[Any] = []
         self.dummy = False
         self.x: int | None = None
         self.y: int | None = None
         self.z: int | None = None
+
+        if r is not None:
+            if isinstance(r, RoomDef):
+                self.vnum = r.vnum
+                self.name = r.name
+                self.desc = r.description
+                self.exits = [Exit(e, source=self.vnum) for e in r.exits if e is not None]
+            elif isinstance(r, Room):
+                self.vnum = r.vnum
+                self.name = r.name
+                self.desc = r.desc
+                self.exits = list(r.exits)
+                self.dummy = r.dummy
+                self.fixups = list(r.fixups)
+                self.x = r.x
+                self.y = r.y
+                self.z = r.z
+            else:
+                raise TypeError(f"Expected RoomDef or Room, got {type(r).__name__}")
+        elif vnum is not None:
+            self.vnum = vnum
+            self.name = name
+            self.desc = description if description is not None else desc
+            self.exits = []
+            if exits is not None:
+                for e in exits:
+                    if isinstance(e, Exit):
+                        self.exits.append(e)
+                    elif isinstance(e, ExitDef):
+                        self.exits.append(Exit(e, source=self.vnum))
+                    else:
+                        raise TypeError(f"Expected Exit or ExitDef in exits, got {type(e).__name__}")
+        else:
+            raise TypeError("Room requires a RoomDef, Room, or keyword arguments (vnum=...)")
 
     def replace_exit(self, orig: int, replacement: int, distance: int) -> None:
         for e in self.exits:

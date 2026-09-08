@@ -173,7 +173,7 @@ S
         assert result is not None
         sections = {s[0]: s[1] for s in result if s}
         assert '#ROOMS' in sections
-        assert sections['#ROOMS'][0][0] == 100
+        assert sections['#ROOMS'][0].vnum == 100
 
     def test_lexer_illegal_character(self, caplog):
         lexer_obj = Lexer()
@@ -204,22 +204,22 @@ class TestParserPositive:
         assert '#ROOMS' in sections
 
         area_meta = sections['#AREA']
-        assert area_meta[0] == 'test.are'
-        assert area_meta[1] == 'Test Area'
-        assert area_meta[3] == (100, 199)
+        assert area_meta.filename == 'test.are'
+        assert area_meta.name == 'Test Area'
+        assert (area_meta.vnum_min, area_meta.vnum_max) == (100, 199)
 
         rooms = sections['#ROOMS']
         assert len(rooms) == 2
         # Room 100
-        assert rooms[0][0] == 100
-        assert rooms[0][1] == 'Room One'
+        assert rooms[0].vnum == 100
+        assert rooms[0].name == 'Room One'
         # Check exits: door 0 (north) pointing to 101
-        assert (0, 101) in rooms[0][3]
+        assert any(e.direction == 0 and e.dst_vnum == 101 for e in rooms[0].exits)
         # Room 101
-        assert rooms[1][0] == 101
-        assert rooms[1][1] == 'Room Two'
+        assert rooms[1].vnum == 101
+        assert rooms[1].name == 'Room Two'
         # Door 2 (south) pointing to 100
-        assert (2, 100) in rooms[1][3]
+        assert any(e.direction == 2 and e.dst_vnum == 100 for e in rooms[1].exits)
 
     def test_parse_helps_section(self):
         parser = Parser()
@@ -229,7 +229,7 @@ class TestParserPositive:
         assert '#HELPS' in sections
         helps = sections['#HELPS']
         assert len(helps) >= 1
-        assert 'TEST KEYWORD' in helps[0][0]
+        assert 'TEST KEYWORD' in helps[0].keywords
 
     def test_parse_socials_section(self):
         parser = Parser()
@@ -239,7 +239,7 @@ class TestParserPositive:
         assert '#SOCIALS' in sections
         socials = sections['#SOCIALS']
         assert len(socials) >= 1
-        assert socials[0][0] == 'wave'
+        assert socials[0].name == 'wave'
 
     @pytest.mark.skipif(not os.path.isdir(SAMPLE_AREAS_DIR), reason="QuickMUD area files not available")
     @pytest.mark.parametrize("filename", ["school.are", "smurf.are", "social.are", "help.are"])

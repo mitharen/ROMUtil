@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 import pyomo.opt
 
-from romutil.models import Direction, Room, Exit
+from romutil.models import Direction, Room, Exit, RoomDef, ExitDef, AreaHeader, AreaData
 from romutil.plotter import Plotter, _DynamicPalette
 from romutil.parser import Parser
 from romutil.graph import graph
@@ -66,9 +66,9 @@ class TestSvgElevationGrouping:
         out_svg = str(tmp_path / "tower.svg")
         parsed = Parser().parse(SAMPLE_TOWER_ARE)
         rooms = [s[1] for s in parsed if s and s[0] == "#ROOMS"][0]
-        rdb = {r[0]: Room(r) for r in rooms}
+        rdb = {r.vnum: Room(r) for r in rooms}
 
-        graph(rdb, out_svg, ("tower.are", "Tower", "", (100, 102)), split_levels=False)
+        graph(rdb, out_svg, AreaHeader(filename="tower.are", name="Tower", builder="", vnum_min=100, vnum_max=102), split_levels=False)
 
         assert os.path.exists(out_svg)
         tree = ET.parse(out_svg)
@@ -91,9 +91,9 @@ class TestSvgElevationGrouping:
 
     def test_interactive_elevation_controls_embedded(self, tmp_path):
         out_svg = str(tmp_path / "controls.svg")
-        r0 = Room((1, "R0", "Desc 0", []))
+        r0 = Room(RoomDef(vnum=1, name="R0", description="Desc 0"))
         r0.x, r0.y, r0.z = 0, 0, 0
-        r1 = Room((2, "R1", "Desc 1", []))
+        r1 = Room(RoomDef(vnum=2, name="R1", description="Desc 1"))
         r1.x, r1.y, r1.z = 1, 0, 1
         rdb = {1: r0, 2: r1}
 
@@ -124,7 +124,7 @@ class TestSvgElevationGrouping:
 
     def test_single_elevation_controls_and_group(self, tmp_path):
         out_svg = str(tmp_path / "single.svg")
-        r0 = Room((1, "Single Room", "Alone", []))
+        r0 = Room(RoomDef(vnum=1, name="Single Room", description="Alone"))
         r0.x, r0.y, r0.z = 0, 0, 0
         plotter = Plotter(out_svg, {1: r0}, [])
         plotter.plot()
@@ -184,13 +184,13 @@ class TestMultiPlaneExport:
 
     def test_split_levels_multi_components(self, tmp_path):
         # Two disconnected components with exits
-        r1 = Room((10, "C1 R1", "", [(Direction.east.value, 11)]))
-        r2 = Room((11, "C1 R2", "", [(Direction.west.value, 10)]))
-        r3 = Room((20, "C2 R1", "", [(Direction.north.value, 21)]))
-        r4 = Room((21, "C2 R2", "", [(Direction.south.value, 20)]))
+        r1 = Room(RoomDef(vnum=10, name="C1 R1", description="", exits=(ExitDef(direction=Direction.east.value, dst_vnum=11),)))
+        r2 = Room(RoomDef(vnum=11, name="C1 R2", description="", exits=(ExitDef(direction=Direction.west.value, dst_vnum=10),)))
+        r3 = Room(RoomDef(vnum=20, name="C2 R1", description="", exits=(ExitDef(direction=Direction.north.value, dst_vnum=21),)))
+        r4 = Room(RoomDef(vnum=21, name="C2 R2", description="", exits=(ExitDef(direction=Direction.south.value, dst_vnum=20),)))
 
         outbase = str(tmp_path / "multi_comp")
-        are_meta = ("test.are", "MultiComp", "", (10, 21))
+        are_meta = AreaHeader(filename="test.are", name="MultiComp", builder="", vnum_min=10, vnum_max=21)
 
         graph({10: r1, 11: r2}, f"{outbase}0.svg", are_meta, split_levels=True, outbase=f"{outbase}0")
         graph({20: r3, 21: r4}, f"{outbase}1.svg", are_meta, split_levels=True, outbase=f"{outbase}1")
@@ -210,11 +210,11 @@ class TestDynamicColorPalette:
         exits = []
         for z in range(12):
             vnum = 100 + z
-            r = Room((vnum, f"Floor {z}", f"Room description {z}", []))
+            r = Room(RoomDef(vnum=vnum, name=f"Floor {z}", description=f"Room description {z}"))
             r.x, r.y, r.z = 0, 0, z
             rdb[vnum] = r
             if z > 0:
-                ex = Exit((Direction.up.value, vnum), vnum - 1)
+                ex = Exit(ExitDef(direction=Direction.up.value, dst_vnum=vnum), source=vnum - 1)
                 exits.append(ex)
 
         plotter = Plotter(out_svg, rdb, exits)
@@ -242,7 +242,7 @@ class TestDynamicColorPalette:
     def test_dynamic_palette_protocol_and_len(self):
         rdb = {}
         for z in range(10):
-            r = Room((100 + z, f"R{z}", "", []))
+            r = Room(RoomDef(vnum=100 + z, name=f"R{z}", description=""))
             r.x, r.y, r.z = 0, 0, z
             rdb[100 + z] = r
 
@@ -263,7 +263,7 @@ class TestDynamicColorPalette:
         assert plotter_empty.get_unique_elevations() == [0]
 
         # Single elevation
-        r0 = Room((1, "R", "", []))
+        r0 = Room(RoomDef(vnum=1, name="R", description=""))
         r0.x, r0.y, r0.z = 0, 0, 0
         plotter_single = Plotter("dummy.svg", {1: r0}, [])
         assert plotter_single.get_color(0) == "hsl(0, 75%, 50%)"
@@ -273,32 +273,32 @@ class TestPlotterEdgeCases:
     """Coverage and regression tests for Plotter projection edge cases."""
 
     def test_proj_exit_missing_src_or_none_coords(self):
-        r1 = Room((1, "R1", "", []))
+        r1 = Room(RoomDef(vnum=1, name="R1", description=""))
         r1.x, r1.y, r1.z = 0, 0, 0
         plotter = Plotter("dummy.svg", {1: r1}, [])
 
         # ex.src not in rdb
-        ex_unknown = Exit((0, 1), 999)
+        ex_unknown = Exit(ExitDef(direction=0, dst_vnum=1), source=999)
         assert plotter.proj_exit(ex_unknown) is None
 
         # ex.src has None coords
-        r_none = Room((2, "R2", "", []))
+        r_none = Room(RoomDef(vnum=2, name="R2", description=""))
         r_none.x = None
         plotter.rdb[2] = r_none
-        ex_none_src = Exit((0, 1), 2)
+        ex_none_src = Exit(ExitDef(direction=0, dst_vnum=1), source=2)
         assert plotter.proj_exit(ex_none_src) is None
 
         # ex.dst in rdb has None coords
-        ex_none_dst = Exit((0, 2), 1)
+        ex_none_dst = Exit(ExitDef(direction=0, dst_vnum=2), source=1)
         assert plotter.proj_exit(ex_none_dst) is None
 
     def test_proj_exit_unhandled_direction(self):
-        r1 = Room((1, "R1", "", []))
+        r1 = Room(RoomDef(vnum=1, name="R1", description=""))
         r1.x, r1.y, r1.z = 0, 0, 0
         plotter = Plotter("dummy.svg", {1: r1}, [])
 
         # Direction that is not N, E, S, W, U, D
-        ex_fake_dir = Exit((0, 999), 1)
+        ex_fake_dir = Exit(ExitDef(direction=0, dst_vnum=999), source=1)
         ex_fake_dir.direction = "custom"
         proj = plotter.proj_exit(ex_fake_dir)
         assert proj is not None
@@ -307,7 +307,7 @@ class TestPlotterEdgeCases:
 
     def test_plot_with_empty_or_all_none_rooms(self, tmp_path):
         out_svg = str(tmp_path / "empty.svg")
-        r_none = Room((1, "Void", "", []))
+        r_none = Room(RoomDef(vnum=1, name="Void", description=""))
         r_none.x, r_none.y, r_none.z = None, None, None
         plotter = Plotter(out_svg, {1: r_none}, [])
         plotter.plot()
@@ -315,9 +315,9 @@ class TestPlotterEdgeCases:
 
     def test_plot_with_target_z_and_exits(self, tmp_path):
         out_svg = str(tmp_path / "target_z.svg")
-        r1 = Room((1, "Level 0", "", [(Direction.up.value, 2)]))
+        r1 = Room(RoomDef(vnum=1, name="Level 0", description="", exits=(ExitDef(direction=Direction.up.value, dst_vnum=2),)))
         r1.x, r1.y, r1.z = 0, 0, 0
-        r2 = Room((2, "Level 1", "", [(Direction.down.value, 1)]))
+        r2 = Room(RoomDef(vnum=2, name="Level 1", description="", exits=(ExitDef(direction=Direction.down.value, dst_vnum=1),)))
         r2.x, r2.y, r2.z = 0, 0, 1
         ex = r1.exits[0]
 
@@ -336,8 +336,8 @@ class TestGraphAndCliEdgeCases:
     """Coverage and regression tests for graph and CLI edge cases."""
 
     def test_graph_solver_failure_branch(self, monkeypatch, caplog):
-        r1 = Room((1, "R1", "", [(Direction.east.value, 2)]))
-        r2 = Room((2, "R2", "", [(Direction.west.value, 1)]))
+        r1 = Room(RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=Direction.east.value, dst_vnum=2),)))
+        r2 = Room(RoomDef(vnum=2, name="R2", description="", exits=(ExitDef(direction=Direction.west.value, dst_vnum=1),)))
         rdb = {1: r1, 2: r2}
         exits = [r1.exits[0]]
 
@@ -346,7 +346,7 @@ class TestGraphAndCliEdgeCases:
         graph_module = sys.modules["romutil.graph"]
         monkeypatch.setattr(graph_module, "solve", lambda r, e: (None, fake_results))
 
-        graph(rdb, "dummy.svg", ("test.are", "Fail", "", (1, 2)))
+        graph(rdb, "dummy.svg", AreaHeader(filename="test.are", name="Fail", builder="", vnum_min=1, vnum_max=2))
         assert "Solver failed!" in caplog.text
 
     def test_cli_debug_flag(self, tmp_path, monkeypatch):
@@ -363,9 +363,9 @@ class TestGraphAndCliEdgeCases:
 
     def test_plotter_none_projections_during_plot(self, tmp_path):
         out_svg = str(tmp_path / "none_proj.svg")
-        r1 = Room((1, "R1", "", [(Direction.east.value, 2)]))
+        r1 = Room(RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=Direction.east.value, dst_vnum=2),)))
         r1.x, r1.y, r1.z = 0, 0, 0
-        r2 = Room((2, "R2", "", [(Direction.west.value, 1)]))
+        r2 = Room(RoomDef(vnum=2, name="R2", description="", exits=(ExitDef(direction=Direction.west.value, dst_vnum=1),)))
         # Set r2 coordinates to None to trigger projection is None during plot
         r2.x, r2.y, r2.z = None, None, None
         ex = r1.exits[0]
@@ -376,17 +376,17 @@ class TestGraphAndCliEdgeCases:
 
     def test_graph_hallway_asymmetric_exit(self, tmp_path):
         # Room 2 has 2 exits, but destination doesn't have reciprocal exit
-        r1 = Room((1, "R1", "", []))
-        r2 = Room((2, "R2", "", [(Direction.east.value, 3), (Direction.west.value, 1)]))
-        r3 = Room((3, "R3", "", []))
+        r1 = Room(RoomDef(vnum=1, name="R1", description=""))
+        r2 = Room(RoomDef(vnum=2, name="R2", description="", exits=(ExitDef(direction=Direction.east.value, dst_vnum=3), ExitDef(direction=Direction.west.value, dst_vnum=1))))
+        r3 = Room(RoomDef(vnum=3, name="R3", description=""))
         rdb = {1: r1, 2: r2, 3: r3}
         out_svg = str(tmp_path / "asym.svg")
         # Should not crash on hallway collapse check
-        graph(rdb, out_svg, ("test.are", "Asym", "", (1, 3)))
+        graph(rdb, out_svg, AreaHeader(filename="test.are", name="Asym", builder="", vnum_min=1, vnum_max=3))
 
     def test_cli_empty_sections_handled(self, tmp_path, monkeypatch):
         fake_parser = MagicMock()
-        fake_parser.parse.return_value = [(), ("#ROOMS", [(1, "R", "D", [])])]
+        fake_parser.parse.return_value = AreaData(rooms=())
         cli_module = sys.modules["romutil.cli"]
         monkeypatch.setattr(cli_module, "Parser", lambda: fake_parser)
 

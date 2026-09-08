@@ -7,7 +7,7 @@ import sys
 import networkx as nx
 import pyomo.common.config
 
-from romutil.models import Room, AreaData
+from romutil.models import Room, AreaData, AreaHeader
 from romutil.parser import Parser
 from romutil.graph import graph, solve_layout
 from romutil.exporter import build_area_json, export_json, export_html
@@ -37,21 +37,12 @@ def main(area_files, outbase, split_levels=False, fmt="svg"):
             log.error(e)
             continue
 
-        if isinstance(area, AreaData):
-            area_meta = area.header
-            rooms = list(area.rooms)
-            rdb.update({r.vnum: Room(r) for r in rooms})
-        else:
-            rooms = []
-            for section in area:
-                if not section:
-                    continue
-                if section[0] == '#ROOMS':
-                    rooms = section[1]
-                elif section[0] == '#AREA':
-                    area_meta = section[1]
+        if not isinstance(area, AreaData):
+            raise TypeError(f"Expected AreaData from parser, got {type(area).__name__}")
 
-            rdb.update({(r.vnum if hasattr(r, 'vnum') else r[0]): Room(r) for r in rooms})
+        area_meta = area.header
+        rooms = list(area.rooms)
+        rdb.update({r.vnum: Room(r) for r in rooms})
 
     if not rdb:
         log.error('No rooms to plot.')
@@ -95,7 +86,13 @@ def main(area_files, outbase, split_levels=False, fmt="svg"):
 
         # Provide fallback area metadata if none was in the file
         if area_meta is None:
-            area_meta = (Path(first_file_name).name, Path(first_file_name).stem)
+            area_meta = AreaHeader(
+                filename=Path(first_file_name).name,
+                name=Path(first_file_name).stem,
+                builder="",
+                vnum_min=0,
+                vnum_max=0,
+            )
 
         data = build_area_json(all_solved_rooms, area_meta)
 
