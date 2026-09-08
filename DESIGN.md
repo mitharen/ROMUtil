@@ -156,8 +156,10 @@ To avoid adding $O(E^2)$ crossing constraints up front:
    Converts 3D coordinates $(x, y, z)$ into 2D SVG canvas points using an oblique lift factor ($\text{lift} = 0.15$):
    $$X' = 2 + x + \text{lift} \cdot z$$
    $$Y' = 2 + \text{lift} \cdot z_{\max} + (y_{\max} - y) - \text{lift} \cdot z$$
-3. **SVG Generation (`svgwrite`)**:
-   - Rooms are drawn as boxes color-coded by elevation (Z-axis).
+3. **SVG Generation (`svgwrite`) & Multi-Layer Elevation**:
+   - **Elevation Grouping**: Elements are grouped by Z-coordinate into `<g id="elevation-{z}" class="elevation-layer" data-z="{z}">` tags for every unique elevation plane.
+   - **Interactive Layer Controls**: Embedded `<style>` and JavaScript within the SVG `<defs>` provide clickable toggle buttons (`<g id="elevation-controls">`) with visual active/inactive states allowing users to toggle individual floor levels on/off to prevent vertical visual occlusion.
+   - **Dynamic HSL Color Palette**: Replaced static 7-color array with dynamic HSL color gradient (`hsl(hue, 75%, 50%)`) supporting arbitrary elevation depths ($Z \ge 10$) without clamping or `IndexError`.
    - Bidirectional exits are drawn as black lines; one-way exits as red lines.
    - External exits are rendered as stub arrows pointing off-map.
    - Interactive `<set>` triggers display floating tooltips on mouseover showing room names, full descriptions, and exit directions.
@@ -168,9 +170,10 @@ To avoid adding $O(E^2)$ crossing constraints up front:
 
 - Uses modern `pathlib.Path` argument parsing (avoiding Python 3.14 deprecation warnings).
 - Registered as a project console script (`[project.scripts] romutil = "romutil.cli:cli"`).
+- Supports `--split-levels` to export separate SVGs for each distinct elevation plane (e.g. `<outbase>_z{z}.svg`).
 - Usage:
   ```bash
-  uv run romutil <area.are> [-outbase <name>] [-d]
+  uv run romutil <area.are> [-outbase <name>] [--split-levels] [-d]
   ```
 
 ---
