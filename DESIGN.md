@@ -63,51 +63,43 @@ ROMUtil/
 │   └── solver.py                # Pyomo MILP optimization and overlap detection
 ├── pyproject.toml               # PEP 621 package metadata & script definitions
 ├── uv.lock                      # Pinned dependency lockfile managed by uv
-└── tests/                       # Comprehensive pytest suite (46 tests, 96% coverage)
+└── tests/                       # Comprehensive unit and integration test suite
 ```
 
 ---
 
-## 4. Component Deep Dive
+## 4. Component Architecture
 
 ### 4.1. Parsing Engine — [`romutil/parser.py`](./romutil/parser.py)
 
-Built with Python PLY (`ply.lex` and `ply.yacc`):
+The parsing engine ingests text-based ROM area files and constructs structured in-memory area representations using Python PLY (`ply.lex` and `ply.yacc`).
 
 - **[`Lexer`](./romutil/parser.py)**:
-  - Uses exclusive lexer states (`INITIAL`, `string`, `line`, `optional`) to handle the idiosyncratic ROM format.
-  - Switches to `string` mode to extract multiline text terminated by tildes (`~`).
-  - Recognizes keywords (`#AREA`, `#ROOMS`, `#MOBILES`, `#OBJECTS`, `#RESETS`, `#SHOPS`, `#SPECIALS`, `#HELPS`, `#SOCIALS`).
+  - Employs dedicated lexer states (`INITIAL`, `string`, `line`, `optional`) to parse mixed-format data.
+  - Recognizes tilde-terminated multiline text strings (`~`), cardinal door tokens (`D0` through `D5`), and section headers (`#AREA`, `#ROOMS`, etc.).
 - **[`Parser`](./romutil/parser.py)**:
-  - An LALR(1) grammar producing strongly-typed AST dataclasses (`AreaData`, `RoomDef`, `ExitDef`, etc.) instead of raw nested tuples.
-  - Implements grammar tolerance for non-room sections (`#SOCIALS`, `#HELPS`, etc.) so arbitrary MUD files parse without syntax errors.
-  - Opens files using `encoding="latin-1", errors="replace"` to support vintage MUD files containing non-UTF-8 bytes.
-  - Disables disk table writing (`write_tables=False`) by default to run safely in read-only environments.
+  - An LALR(1) grammar that extracts room topology (VNUMs, titles, descriptions, flags, sector types) and directional exits (destination VNUMs, door keywords, lock flags).
+  - Tolerates non-spatial sections (`#SHOPS`, `#RESETS`, `#MOBILES`, `#SPECIALS`) to ensure grammar compatibility across diverse MUD codebases.
+  - Reads files using `latin-1` decoding with replacement fallback to handle vintage MUD files containing non-UTF-8 character data.
 
 ---
 
-### 4.2. Domain Models & AST Dataclasses — [`romutil/models.py`](./romutil/models.py)
+### 4.2. Domain Models & Graph Representation — [`romutil/models.py`](./romutil/models.py)
 
-#### 4.2.1. Strongly-Typed AST Dataclasses
-Modern immutable `@dataclass(frozen=True)` definitions replacing raw tuple returns from the parser:
-- **`AreaHeader`**: Stores area metadata (`filename`, `name`, `builder`, `vnum_min`, `vnum_max`).
-- **`ExitDef`**: Defines parsed doors/exits (`direction`, `dst_vnum`, `description`, `keyword`, `key_vnum`, `flags`).
-- **`ExtraDescr`**: Holds extra descriptions (`keyword`, `description`).
-- **`RoomDef`**: Defines room structures (`vnum`, `name`, `description`, `room_flags`, `sector`, `exits`, `extras`).
-- **`MobileDef`**: Defines mobile entities (`vnum`, `player_name`, `short_desc`, `long_desc`, `desc`, `race`, attributes, combat parameters).
-- **`ObjectDef`**: Defines items and equipment (`vnum`, `name`, `short_desc`, `desc`, `material`, `item_type`, `extra_flags`, `wear_flags`, `values`, `level`, `weight`, `cost`, `condition`).
-- **`ResetDef`**, **`ShopDef`**, **`SpecialDef`**, **`HelpDef`**, **`SocialDef`**: Typed representations for resets, merchant shops, mob special functions, help entries, and social commands.
-- **`AreaData`**: Top-level container aggregating all parsed sections (`header`, `rooms`, `mobiles`, `objects`, `resets`, `shops`, `specials`, `helps`, `socials`), with section dictionary and index backward-compatibility.
+The domain models define the spatial and topological primitives used throughout the graph layout and rendering pipeline:
 
-#### 4.2.2. Graph & Solver Domain Models
 - **[`Direction`](./romutil/models.py)**:
-  An `IntEnum` representing 6 degrees of movement:
-  - `0`: North, `1`: East, `2`: Up, `3`: South, `4`: West, `5`: Down.
-  - `Direction.invert()` computes opposing direction via `(dir + 3) % 6`.
-- **[`Room`](./romutil/models.py)**:
-  Represents a mutable room node holding `vnum`, `name`, `desc`, `exits`, integer coordinates `(x, y, z)`, and a `fixups` list for collapsed corridors. Accepts either typed `RoomDef` instances or legacy tuples.
+  An enumeration representing the 6 degrees of spatial movement (`North`, `East`, `Up`, `South`, `West`, `Down`).
+  - Defines opposing directional symmetry via `invert() = (dir + 3) % 6`.
 - **[`Exit`](./romutil/models.py)**:
-  Represents a directional edge between `src` and `dst`. Defines bidirectional equality (`__eq__`) and hash symmetry so opposite exits (`A -> B East` and `B -> A West`) map to the same logical edge. Accepts either typed `ExitDef` instances or legacy tuples.
+  Represents a directed spatial edge between `src` and `dst` with an associated direction and distance span.
+  - Implements symmetrical equality (`__eq__`) and hash invariance so opposing exits (`A -> B East` and `B -> A West`) map to the same logical edge.
+  - Tracks whether an exit is strictly `one_way` (lacking a reciprocal return path).
+- **[`Room`](./romutil/models.py)**:
+  The mutable room node in the spatial graph. Stores integer coordinates `(x, y, z)`, connected exits, and a `fixups` queue of collapsed hallway nodes.
+  - Flags synthetic boundary rooms (`room.dummy = True`) created for unresolved or out-of-area destinations.
+- **`AreaData`**:
+  Top-level container holding the parsed area header, room index, and section definitions.
 
 ---
 
@@ -173,8 +165,8 @@ To avoid adding $O(E^2)$ crossing constraints up front:
    $$Y' = 2 + \text{lift} \cdot z_{\max} + (y_{\max} - y) - \text{lift} \cdot z$$
 3. **SVG Generation (`svgwrite`) & Multi-Layer Elevation**:
    - **Elevation Grouping**: Elements are grouped by Z-coordinate into `<g id="elevation-{z}" class="elevation-layer" data-z="{z}">` tags for every unique elevation plane.
-   - **Interactive Layer Controls**: Embedded `<style>` and JavaScript within the SVG `<defs>` provide clickable toggle buttons (`<g id="elevation-controls">`) with visual active/inactive states allowing users to toggle individual floor levels on/off to prevent vertical visual occlusion.
-   - **Dynamic HSL Color Palette**: Replaced static 7-color array with dynamic HSL color gradient (`hsl(hue, 75%, 50%)`) supporting arbitrary elevation depths ($Z \ge 10$) without clamping or `IndexError`.
+   - **Interactive Layer Controls**: Embedded `<style>` and JavaScript within the SVG `<defs>` provide clickable toggle buttons (`<g id="elevation-controls">`) with visual active/inactive states, allowing users to toggle individual floor levels on/off to prevent vertical visual occlusion.
+   - **Continuous HSL Color Gradient**: Maps elevation levels across a continuous HSL color gradient (`hsl(hue, 75%, 50%)`), providing distinct visual differentiation across arbitrary vertical depths ($Z \ge 10$).
    - Bidirectional exits are drawn as black lines; one-way exits as red lines.
    - External exits are rendered as stub arrows pointing off-map.
    - Interactive `<set>` triggers display floating tooltips on mouseover showing room names, full descriptions, and exit directions.
@@ -219,16 +211,18 @@ Exports complete solved area databases into portable structured formats and inte
 
 ---
 
-### 4.7. CLI & Execution — [`romutil/cli.py`](./romutil/cli.py)
+### 4.7. Execution Contract & CLI — [`romutil/cli.py`](./romutil/cli.py)
 
-- Uses modern `pathlib.Path` argument parsing (avoiding Python 3.14 deprecation warnings).
-- Registered as a project console script (`[project.scripts] romutil = "romutil.cli:cli"`).
-- Supports `--split-levels` to export separate SVGs for each distinct elevation plane (e.g. `<outbase>_z{z}.svg`).
+- Registered console script entry point: `romutil` (via `uv run romutil`).
 - Multi-format output support (`--format` / `-f`): `svg` (default), `json`, and `html`.
+- Elevation plane splitting (`--split-levels`): Generates separate SVG files for each distinct elevation level (`<outbase>_z{z}.svg`).
 - Usage:
   ```bash
-  # Generate isometric SVG map(s)
-  uv run romutil <area.are> [-outbase <name>] [--split-levels] [-d]
+  # Generate standard isometric SVG map
+  uv run romutil <area.are> [-outbase <name>] [-d]
+
+  # Export split-elevation SVGs
+  uv run romutil <area.are> --split-levels
 
   # Export complete room database as JSON
   uv run romutil <area.are> --format json
@@ -239,27 +233,19 @@ Exports complete solved area databases into portable structured formats and inte
 
 ---
 
-## 5. Testing & Development Workflow
+## 5. Testing & Verification Workflow
 
-The codebase uses **`uv`**, **`pytest`**, and **`pre-commit`**:
+The development workflow is standardized using **`uv`**, **`pytest`**, and **`pre-commit`**:
 
 ### Running Tests
 ```bash
-uv run pytest -v
+uv run pytest
 ```
-To run tests with a full terminal coverage report:
-```bash
-uv run pytest --cov=romutil --cov-report=term-missing
-```
-
-### Updating Dependencies
-To upgrade all direct and indirect dependencies in `uv.lock` and run verification:
-```bash
-make update-deps
-```
+Total test coverage across `romutil/` is enforced automatically at or above **95%** on every test execution (`--cov-fail-under=95`).
 
 ### Pre-commit Hooks
-Pre-commit hooks are installed in `.git/hooks/pre-commit`. On every `git commit`, the hook:
-- Strips trailing whitespace and fixes EOF markers.
-- Validates YAML configs and blocks large files.
-- Runs `uv run pytest` to ensure all 46 tests pass before permitting the commit.
+Automated pre-commit hooks verify code quality before permitting commits:
+- Strips trailing whitespace and fixes end-of-file formatting.
+- Validates YAML configuration files and blocks large file additions.
+- Runs [`scripts/sync_design_doc.py`](./scripts/sync_design_doc.py) to guarantee `DESIGN.md` remains synchronized with repository structure and valid links.
+- Executes `uv run pytest` to ensure all tests pass and coverage remains $\ge 95\%$.

@@ -36,7 +36,7 @@ def generate_package_tree():
     lines.extend([
         "├── pyproject.toml               # PEP 621 package metadata & script definitions",
         "├── uv.lock                      # Pinned dependency lockfile managed by uv",
-        "└── tests/                       # Comprehensive pytest suite (46 tests, 96% coverage)",
+        "└── tests/                       # Comprehensive unit and integration test suite",
     ])
     return "\n".join(lines)
 
