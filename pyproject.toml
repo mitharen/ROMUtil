@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "romutil"
 version = "0.1.0"
@@ -12,6 +16,9 @@ dependencies = [
     "svgwrite>=1.4.0",
     "tqdm>=4.60.0",
 ]
+
+[project.scripts]
+romutil = "romutil.cli:cli"
 
 [dependency-groups]
 dev = [

@@ -8,6 +8,11 @@ parsetab.py
 parser.out
 lextab.py
 
+# Packaging and distribution
+*.egg-info/
+dist/
+build/
+
 # Generated map and visualization outputs
 *.svg
 
