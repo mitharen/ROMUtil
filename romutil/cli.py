@@ -14,7 +14,7 @@ from romutil.graph import graph
 logging.basicConfig()
 log = logging.getLogger('Mapper')
 
-def main(area_files, outbase):
+def main(area_files, outbase, split_levels=False):
     rdb = {}
     area_meta = None
 
@@ -56,8 +56,14 @@ def main(area_files, outbase):
     ]
     g = nx.DiGraph(edges)
 
-    for i, sub_graph in enumerate(nx.connected_components(g.to_undirected())):
-        graph({node: rdb[node] for node in sub_graph}, f'{outbase}{i}.svg', area_meta)
+    components = list(nx.connected_components(g.to_undirected()))
+    for i, sub_graph in enumerate(components):
+        sub_rdb = {node: rdb[node] for node in sub_graph}
+        if not split_levels:
+            graph(sub_rdb, f'{outbase}{i}.svg', area_meta, split_levels=False)
+        else:
+            base_name = outbase if len(components) == 1 else f'{outbase}{i}'
+            graph(sub_rdb, f'{base_name}.svg', area_meta, split_levels=True, outbase=base_name)
 
     sys.exit(0)
 
@@ -65,6 +71,7 @@ def cli():
     parser = argparse.ArgumentParser(description='ROM MUD Area Mapper and 3D Visualizer')
     parser.add_argument('areas', nargs='+', type=Path, help='.ARE files for parsing')
     parser.add_argument('-outbase', help='output base name')
+    parser.add_argument('--split-levels', action='store_true', help='Output separate SVGs for each distinct elevation plane')
     parser.add_argument('-d', '--debug', action='store_true', help='Show debug info')
     args = parser.parse_args()
 
@@ -76,7 +83,7 @@ def cli():
     if not outbase:
         outbase = str(args.areas[0].with_suffix(''))
 
-    main(args.areas, outbase)
+    main(args.areas, outbase, split_levels=args.split_levels)
 
 if __name__ == '__main__':
     cli()

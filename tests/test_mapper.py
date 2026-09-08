@@ -6,7 +6,11 @@ import xml.etree.ElementTree as ET
 from Mapper import Direction, Room, Exit, Plotter, restore_rooms, mfas, non_euler, solve, graph, main
 import AreaParser
 
-SAMPLE_AREAS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../QuickMUD/area'))
+_sample_candidates = [
+    os.path.abspath(os.path.join(os.path.dirname(__file__), '../../QuickMUD/area')),
+    '/home/user/proj/QuickMUD/area',
+]
+SAMPLE_AREAS_DIR = next((p for p in _sample_candidates if os.path.isdir(p)), _sample_candidates[0])
 
 
 class TestDirection:

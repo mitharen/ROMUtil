@@ -55,7 +55,7 @@ def mfas(edges):
     solver.solve(model, tee=False)
     return [(u, v) for u, v in edges if model.b[labels[u], labels[v]].value]
 
-def graph(rdb, name, area):
+def graph(rdb, name, area, split_levels=False, outbase=None):
     # collapse straight bidirectional hallways
     for vnum, r in list(rdb.items()):
         if len(r.exits) == 2:
@@ -108,5 +108,15 @@ def graph(rdb, name, area):
         r.y -= y_min
         r.z -= z_min
 
-    dwg = Plotter(name, rdb, exits)
-    dwg.plot()
+    if split_levels:
+        unique_zs = sorted(list(set(int(r.z) for r in rdb.values() if not r.dummy and r.z is not None)))
+        if not unique_zs:
+            unique_zs = [0]
+        base = outbase if outbase else (name[:-4] if name.endswith('.svg') else name)
+        for z in unique_zs:
+            level_name = f"{base}_z{z}.svg"
+            dwg = Plotter(level_name, rdb, exits, target_z=z)
+            dwg.plot()
+    else:
+        dwg = Plotter(name, rdb, exits)
+        dwg.plot()
