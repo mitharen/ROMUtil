@@ -1,8 +1,64 @@
 # ROMUtil
 
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg" alt="Python 3.10+" />
+  <img src="https://img.shields.io/badge/coverage-98%25-brightgreen.svg" alt="Coverage" />
+  <img src="https://img.shields.io/badge/docker-ready-blue.svg" alt="Docker Ready" />
+  <img src="https://img.shields.io/badge/web%20viewer-zero%20dependencies-success.svg" alt="Zero External Dependencies" />
+  <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License" />
+</p>
+
 **ROMUtil** is an automated spatial layout engine and multi-target visualization pipeline for text-based area files (`.are`) from **ROM (Rivers of MUD / DikuMUD)** codebases.
 
 MUD areas were authored by world-builders over decades using directional room exits rather than Cartesian coordinates. Consequently, they contain non-Euclidean loops, straight hallway corridors, cyclic mazes, multi-floor elevation changes, and unlinked boundary exits. ROMUtil transforms these arbitrary directed graphs into consistent 3D geometric coordinates `(x, y, z)` using graph reduction algorithms and **Mixed-Integer Linear Programming (MILP)**, rendering both vector-graphic maps and standalone interactive web applications.
+
+<p align="center">
+  <img src="docs/assets/pipeline_diagram.svg" alt="ROMUtil Architecture & Spatial Pipeline" width="100%" />
+</p>
+
+---
+
+## Visual Gallery & Interactive Previews
+
+ROMUtil produces publication-quality 3D vector graphics and standalone interactive web applications directly from vintage MUD area files.
+
+### Interactive Web Viewers
+
+Exported via `--format html`, each viewer is a standalone, single-file HTML/JS application with **zero external CDN dependencies or network requests**:
+
+| Area Map | Description | Interactive Web Viewer | Vector Map Source |
+| :--- | :--- | :--- | :--- |
+| **MUD School** (`school.are`) | Multi-level training academy featuring arenas, cages, and vertical stairways. | [**Launch Interactive Viewer**](./docs/assets/school.html) | [`school.svg`](./docs/assets/school.svg) |
+| **Smurf Village** (`smurf.are`) | Sprawling forest village with winding paths, river crossings, and cottages. | [**Launch Interactive Viewer**](./docs/assets/smurf.html) | [`smurf.svg`](./docs/assets/smurf.svg) |
+| **Wizard's Spire** (`demo_tower.are`) | Multi-floor vertical tower demonstrating Z-axis layout and elevation transitions. | [**Launch Interactive Viewer**](./docs/assets/demo_tower.html) | [`demo_tower.svg`](./docs/assets/demo_tower.svg) |
+
+### 3D Isometric Vector Maps
+
+#### MUD School (`school.are`)
+Full oblique isometric projection (59 rooms, 178 exits) with continuous HSL elevation coloring and interactive room inspection:
+
+<p align="center">
+  <img src="docs/assets/school.svg" alt="MUD School 3D Isometric Map" width="85%" />
+</p>
+
+#### Multi-Plane Elevation Slices (`--split-levels`)
+Individual elevation planes exported independently to eliminate vertical occlusion across stacked floors:
+
+<p align="center">
+  <img src="docs/assets/school_z0.svg" alt="MUD School Elevation Plane Z=0" width="45%" />
+  &nbsp;&nbsp;
+  <img src="docs/assets/school_z1.svg" alt="MUD School Elevation Plane Z=1" width="45%" />
+</p>
+
+- Ground Floor Level ($Z=0$): [`docs/assets/school_z0.svg`](./docs/assets/school_z0.svg)
+- Upper Academy Level ($Z=1$): [`docs/assets/school_z1.svg`](./docs/assets/school_z1.svg)
+
+#### Smurf Village (`smurf.are`)
+Horizontal landscape layout showcasing corridor condensation and planar layout optimization:
+
+<p align="center">
+  <img src="docs/assets/smurf.svg" alt="Smurf Village 3D Isometric Map" width="85%" />
+</p>
 
 ---
 

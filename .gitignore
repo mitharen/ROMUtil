@@ -18,6 +18,9 @@ build/
 *.html
 *.json
 !.devcontainer/*.json
+!docs/assets/*.svg
+!docs/assets/*.html
+!docs/assets/*.json
 
 # Virtual environments
 .env

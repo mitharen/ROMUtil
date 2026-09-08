@@ -233,6 +233,16 @@ Exports complete solved area databases into portable structured formats and inte
 
 ---
 
+### 4.8. Visual Previews & Documentation Assets — [`docs/assets/`](./docs/assets/)
+
+The repository maintains pre-rendered visual assets and functional demonstration artifacts under [`docs/assets/`](./docs/assets/) to support visual documentation and regression benchmarking:
+- **High-Resolution Vector Maps (`.svg`)**: Isometric oblique projections generated for canonical MUD areas ([`docs/assets/school.svg`](./docs/assets/school.svg), [`docs/assets/smurf.svg`](./docs/assets/smurf.svg), [`docs/assets/demo_tower.svg`](./docs/assets/demo_tower.svg)). Maps feature room metadata tooltips, exit directional styling, and dynamic HSL vertical gradient coloring.
+- **Multi-Plane Elevation Slices (`<name>_z{z}.svg`)**: Split-level vector maps ([`docs/assets/school_z0.svg`](./docs/assets/school_z0.svg), [`docs/assets/school_z1.svg`](./docs/assets/school_z1.svg)) showcasing isolated horizontal cross-sections at specific $Z$ coordinates to prevent visual clutter in dense multi-story structures.
+- **Standalone Web Applications (`.html`)**: Complete zero-dependency browser-based map viewers ([`docs/assets/school.html`](./docs/assets/school.html), [`docs/assets/smurf.html`](./docs/assets/smurf.html), [`docs/assets/demo_tower.html`](./docs/assets/demo_tower.html)). These bundles contain self-sufficient JavaScript implementations of real-time search, BFS pathfinding, viewport transform matrices, and HTML5 canvas minimaps.
+- **Pipeline Architecture Diagram (`.svg`)**: Vector visual specification ([`docs/assets/pipeline_diagram.svg`](./docs/assets/pipeline_diagram.svg)) detailing data transformations across lexer tokens, AST dataclasses, condensed graph reduction, Pyomo MILP optimization, and multi-format exporters.
+
+---
+
 ## 5. Testing & Verification Workflow
 
 The development workflow is standardized using **`uv`**, **`pytest`**, and **`pre-commit`**:
