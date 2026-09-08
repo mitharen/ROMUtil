@@ -257,7 +257,7 @@ class Parser():
         '''help_keywords : help_keyword help_keywords
                          | EOL help_keywords
                          | '''
-        p[0] = [p[1]] + p[2] if len(p) > 1 else [] 
+        p[0] = [p[1]] + p[2] if len(p) > 1 else []
     def p_help_keyword(self, p):
         '''help_keyword : WORD
                         | SYMBOL
@@ -271,7 +271,7 @@ class Parser():
         log.debug(f'Social: {p[0]}')
     def p_social_descs(self, p):
         '''social_descs : TOEOL line EOL social_descs
-                        | EMPTY line EOL social_descs 
+                        | EMPTY line EOL social_descs
                         | LEND
                         |'''
         p[0] = [p[1]] + p[len(p)-1] if len(p) > 3 else []

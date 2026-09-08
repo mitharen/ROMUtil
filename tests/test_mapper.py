@@ -324,4 +324,3 @@ class TestMapperIntegration:
         with pytest.raises(SystemExit) as exc:
             runpy.run_module("Mapper", run_name="__main__")
         assert exc.value.code == 0
-

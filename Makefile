@@ -13,4 +13,3 @@ update-deps:
 	uv lock --upgrade
 	uv sync
 	uv run pytest
-

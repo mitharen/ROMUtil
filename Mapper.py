@@ -56,7 +56,7 @@ class Room():
 
     def __repr__(self):
         return f'[{self.vnum}: {self.name}] {{{self.exits}}}'
-            
+
 class Exit():
     def __init__(self, e, source, distance=1):
         self.src = source
@@ -139,7 +139,7 @@ class Plotter():
         while len(exits) or len(rooms):
             e = self.rdb[exits[0].src].z if len(exits) else None
             r = rooms[0].z if len(rooms) else None
-            # 
+            #
             if e is not None and (r is None or r >= e):
                 ex = exits.pop(0)
                 projection = self.proj_exit(ex)
@@ -246,7 +246,7 @@ def non_euler(rdb, exits):
 
     # add constraints for relative position excepting cut exits - O(e)
     for i, e in enumerate(exits):
-        # ignore one-ways 
+        # ignore one-ways
         if e in one_way_exits:
             continue
 
@@ -514,7 +514,7 @@ def graph(rdb, name, area):
         for r in restore_rooms(room):
             rdb[r.vnum] = r
 
-    # shift room base to (0,0,0) 
+    # shift room base to (0,0,0)
     x_min = min([r.x for r in rdb.values()])
     y_min = min([r.y for r in rdb.values()])
     z_min = min([r.z for r in rdb.values()])
@@ -579,6 +579,6 @@ if __name__=='__main__':
 
     outbase = args.outbase
     if not outbase:
-        outbase, _ = os.path.splitext(args.areas[0].name) 
+        outbase, _ = os.path.splitext(args.areas[0].name)
 
     main(args.areas, outbase)
