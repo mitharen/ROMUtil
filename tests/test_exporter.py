@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 import pytest
 
-from romutil.models import Direction, Room, Exit
+from romutil.models import Direction, Room, Exit, RoomDef, ExitDef, AreaHeader
 from romutil.graph import solve_layout
 from romutil.exporter import (
     build_area_json,
@@ -28,15 +28,15 @@ class TestExporterUnit:
     """Unit tests for exporter serialization and viewer generation."""
 
     def test_build_area_json_schema(self):
-        r1 = Room((100, "Hallway", "Long hallway.", [(0, 101), (1, 102)]))
+        r1 = Room(RoomDef(vnum=100, name="Hallway", description="Long hallway.", exits=(ExitDef(direction=0, dst_vnum=101), ExitDef(direction=1, dst_vnum=102))))
         r1.x, r1.y, r1.z = 0, 1, 0
-        r2 = Room((101, "North Room", "North room.", [(3, 100)]))
+        r2 = Room(RoomDef(vnum=101, name="North Room", description="North room.", exits=(ExitDef(direction=3, dst_vnum=100),)))
         r2.x, r2.y, r2.z = 0, 2, 0
-        r3 = Room((102, "East Room", "East room.", [(4, 100)]))
+        r3 = Room(RoomDef(vnum=102, name="East Room", description="East room.", exits=(ExitDef(direction=4, dst_vnum=100),)))
         r3.x, r3.y, r3.z = 1, 1, 0
 
         rdb = {100: r1, 101: r2, 102: r3}
-        area_meta = ("test.are", "Test Area", "Builder", (100, 102))
+        area_meta = AreaHeader(filename="test.are", name="Test Area", builder="Builder", vnum_min=100, vnum_max=102)
 
         data = build_area_json(rdb, area_meta)
 
@@ -83,9 +83,9 @@ class TestExporterUnit:
         assert data["area"] == {"name": "", "file": ""}
 
     def test_build_area_json_list_input_and_dummy_filtering(self):
-        r1 = Room((10, "Room 10", "Desc", []))
+        r1 = Room(RoomDef(vnum=10, name="Room 10", description="Desc"))
         r1.x, r1.y, r1.z = 2, 3, 1
-        dummy = Room((99, "Dummy", "", []))
+        dummy = Room(RoomDef(vnum=99, name="Dummy", description=""))
         dummy.dummy = True
 
         data = build_area_json([r1, dummy], bounds={"min_x": 0, "max_x": 5, "min_y": 0, "max_y": 5, "min_z": 0, "max_z": 2})
@@ -98,7 +98,7 @@ class TestExporterUnit:
             name = "Object Area"
             filename = "obj.are"
 
-        r = Room((1, "Start", "Desc", []))
+        r = Room(RoomDef(vnum=1, name="Start", description="Desc"))
         r.x, r.y, r.z = 0, 0, 0
         data = build_area_json({1: r}, area_meta=MockMeta())
         assert data["area"]["name"] == "Object Area"
@@ -327,7 +327,7 @@ class TestExporterNegative:
 
     def test_solve_layout_disconnected_single_room(self):
         # Room with no exits
-        r1 = Room((500, "Isolated", "Lonely room.", []))
+        r1 = Room(RoomDef(vnum=500, name="Isolated", description="Lonely room."))
         rdb = {500: r1}
         solved_rdb, exits = solve_layout(rdb)
         assert 500 in solved_rdb
@@ -337,8 +337,8 @@ class TestExporterNegative:
         assert len(exits) == 0
 
     def test_solve_layout_solver_failure_fallback(self, monkeypatch):
-        r1 = Room((1, "R1", "Desc", [(0, 2)]))
-        r2 = Room((2, "R2", "Desc", [(3, 1)]))
+        r1 = Room(RoomDef(vnum=1, name="R1", description="Desc", exits=(ExitDef(direction=0, dst_vnum=2),)))
+        r2 = Room(RoomDef(vnum=2, name="R2", description="Desc", exits=(ExitDef(direction=3, dst_vnum=1),)))
         rdb = {1: r1, 2: r2}
 
         # Mock solver to return infeasible/failed status

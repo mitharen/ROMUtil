@@ -9,7 +9,7 @@ from pyomo.environ import (
 )
 import tqdm
 
-from romutil.models import Direction, Exit
+from romutil.models import Direction, Exit, ExitDef
 from romutil.plotter import Plotter
 
 log = logging.getLogger('Mapper.solver')
@@ -76,7 +76,7 @@ def solve(rdb, area_exits):
 
     for room in rdb.values():
         if not len(room.exits):
-            e = Exit((0, room.vnum), room.vnum)
+            e = Exit(ExitDef(direction=0, dst_vnum=room.vnum), source=room.vnum)
             exits.append(e)
 
     m = ConcreteModel()

@@ -98,8 +98,8 @@ The domain models define the spatial and topological primitives used throughout 
 - **[`Room`](./romutil/models.py)**:
   The mutable room node in the spatial graph. Stores integer coordinates `(x, y, z)`, connected exits, and a `fixups` queue of collapsed hallway nodes.
   - Flags synthetic boundary rooms (`room.dummy = True`) created for unresolved or out-of-area destinations.
-- **`AreaData`**:
-  Top-level container holding the parsed area header, room index, and section definitions.
+- **[`AreaData`](./romutil/models.py)**:
+  Top-level container holding strongly-typed AST definitions (`AreaHeader`, `RoomDef`, `ExitDef`, `ObjectDef`, `MobileDef`, `ResetDef`, `ShopDef`, `SpecialDef`, `HelpDef`, `SocialDef`, `ExtraDescr`), guaranteeing type safety across pipeline stages.
 
 ---
 

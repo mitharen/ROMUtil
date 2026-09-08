@@ -3,7 +3,7 @@ import os
 import pytest
 import xml.etree.ElementTree as ET
 
-from romutil.models import Direction, Room, Exit
+from romutil.models import Direction, Room, Exit, RoomDef, ExitDef, AreaHeader
 from romutil.plotter import Plotter
 from romutil.solver import non_euler, solve
 from romutil.graph import restore_rooms, mfas, graph
@@ -42,9 +42,16 @@ class TestRoomAndExitModels:
     """Tests for Room and Exit domain models."""
 
     def test_room_initialization_with_exits(self):
-        # Raw room format: (vnum, name, desc, [(dir_num, dst_vnum), ...])
-        raw_room = (100, "Temple", "A grand temple.", [(0, 101), (1, 102)])
-        room = Room(raw_room)
+        r_def = RoomDef(
+            vnum=100,
+            name="Temple",
+            description="A grand temple.",
+            exits=(
+                ExitDef(direction=0, dst_vnum=101),
+                ExitDef(direction=1, dst_vnum=102),
+            ),
+        )
+        room = Room(r_def)
         assert room.vnum == 100
         assert room.name == "Temple"
         assert room.desc == "A grand temple."
@@ -58,15 +65,40 @@ class TestRoomAndExitModels:
         assert not room.dummy
         assert f"100: Temple" in repr(room)
 
+        # Keyword argument initialization
+        room_kw = Room(
+            vnum=100,
+            name="Temple",
+            desc="A grand temple.",
+            exits=[
+                ExitDef(direction=0, dst_vnum=101),
+                ExitDef(direction=1, dst_vnum=102),
+            ],
+        )
+        assert room_kw.vnum == 100
+        assert len(room_kw.exits) == 2
+
+        # Raw tuple/list must raise TypeError
+        with pytest.raises(TypeError):
+            Room((100, "Temple", "A grand temple.", [(0, 101), (1, 102)]))  # type: ignore
+
     def test_room_initialization_no_exits(self):
-        raw_room = (200, "Void", "Nothing here.", None)
-        room = Room(raw_room)
+        r_def = RoomDef(vnum=200, name="Void", description="Nothing here.", exits=())
+        room = Room(r_def)
         assert room.vnum == 200
         assert room.exits == []
 
     def test_room_replace_exit(self):
-        raw_room = (100, "Hall", "A hall.", [(0, 101), (1, 102)])
-        room = Room(raw_room)
+        r_def = RoomDef(
+            vnum=100,
+            name="Hall",
+            description="A hall.",
+            exits=(
+                ExitDef(direction=0, dst_vnum=101),
+                ExitDef(direction=1, dst_vnum=102),
+            ),
+        )
+        room = Room(r_def)
         room.replace_exit(101, 105, distance=3)
         assert room.exits[0].dst == 105
         assert room.exits[0].distance == 4  # 1 + 3
@@ -76,13 +108,13 @@ class TestRoomAndExitModels:
 
     def test_exit_bidirectional_equality_and_hash(self):
         # Exit from 100 to 101 heading North
-        e1 = Exit((0, 101), 100)
+        e1 = Exit(ExitDef(direction=0, dst_vnum=101), source=100)
         # Symmetrical exit from 101 to 100 heading South
-        e2 = Exit((2, 100), 101)
+        e2 = Exit(ExitDef(direction=2, dst_vnum=100), source=101)
         # Exit in different direction
-        e3 = Exit((1, 101), 100)
+        e3 = Exit(ExitDef(direction=1, dst_vnum=101), source=100)
         # Exit to different destination
-        e4 = Exit((0, 102), 100)
+        e4 = Exit(ExitDef(direction=0, dst_vnum=102), source=100)
 
         assert e1 == e2
         assert hash(e1) == hash(e2)
@@ -90,8 +122,12 @@ class TestRoomAndExitModels:
         assert e1 != e4
         assert repr(e1) == "100 -> 101 (1 north)"
 
+        # Raw tuple must raise TypeError
+        with pytest.raises(TypeError):
+            Exit((0, 101), source=100)  # type: ignore
+
     def test_exit_contains_room(self):
-        ex = Exit((0, 101), 100)
+        ex = Exit(ExitDef(direction=0, dst_vnum=101), source=100)
         assert 100 in ex
         assert 101 in ex
         assert 999 not in ex
@@ -101,15 +137,15 @@ class TestRestoreRooms:
     """Tests for reconstructing collapsed hallway rooms."""
 
     def test_restore_rooms_all_directions(self):
-        parent = Room((100, "Parent", "Parent room", []))
+        parent = Room(RoomDef(vnum=100, name="Parent", description="Parent room", exits=()))
         parent.x, parent.y, parent.z = 10, 10, 10
 
-        r_n = Room((101, "North Room", "", []))
-        r_e = Room((102, "East Room", "", []))
-        r_s = Room((103, "South Room", "", []))
-        r_w = Room((104, "West Room", "", []))
-        r_u = Room((105, "Up Room", "", []))
-        r_d = Room((106, "Down Room", "", []))
+        r_n = Room(RoomDef(vnum=101, name="North Room", description="", exits=()))
+        r_e = Room(RoomDef(vnum=102, name="East Room", description="", exits=()))
+        r_s = Room(RoomDef(vnum=103, name="South Room", description="", exits=()))
+        r_w = Room(RoomDef(vnum=104, name="West Room", description="", exits=()))
+        r_u = Room(RoomDef(vnum=105, name="Up Room", description="", exits=()))
+        r_d = Room(RoomDef(vnum=106, name="Down Room", description="", exits=()))
 
         parent.fixups = [
             (r_n, Direction.north, 2),
@@ -134,9 +170,9 @@ class TestPlotter:
     """Tests for SVG map generation and coordinate projections."""
 
     def test_plotter_projections(self):
-        r1 = Room((1, "Room 1", "Desc 1", [(1, 2)]))
+        r1 = Room(RoomDef(vnum=1, name="Room 1", description="Desc 1", exits=(ExitDef(direction=1, dst_vnum=2),)))
         r1.x, r1.y, r1.z = 0, 0, 0
-        r2 = Room((2, "Room 2", "Desc 2", [(3, 1)]))
+        r2 = Room(RoomDef(vnum=2, name="Room 2", description="Desc 2", exits=(ExitDef(direction=3, dst_vnum=1),)))
         r2.x, r2.y, r2.z = 1, 0, 0
         ex = r1.exits[0]
 
@@ -157,7 +193,7 @@ class TestPlotter:
         assert len(pe) == 2
 
     def test_plotter_proj_exit_external_directions(self):
-        r1 = Room((1, "Room 1", "Desc 1", []))
+        r1 = Room(RoomDef(vnum=1, name="Room 1", description="Desc 1", exits=()))
         r1.x, r1.y, r1.z = 0, 0, 0
         plotter = Plotter("dummy.svg", {1: r1}, [])
         plotter.x_max = 0
@@ -165,22 +201,22 @@ class TestPlotter:
         plotter.z_max = 0
 
         for d in [Direction.north, Direction.east, Direction.south, Direction.west, Direction.up, Direction.down]:
-            ex = Exit((d.value, 999), 1)
+            ex = Exit(ExitDef(direction=d.value, dst_vnum=999), source=1)
             pe = plotter.proj_exit(ex)
             assert pe is not None
             assert len(pe) == 2
 
     def test_plotter_projection_with_none_coords(self):
-        r1 = Room((1, "Room 1", "Desc", []))
+        r1 = Room(RoomDef(vnum=1, name="Room 1", description="Desc", exits=()))
         r1.x, r1.y, r1.z = None, 0, 0
         plotter = Plotter("dummy.svg", {1: r1}, [])
         assert plotter.proj_room(r1) is None
 
     def test_plotter_plot_generates_valid_svg(self, tmp_path):
         out_svg = str(tmp_path / "map.svg")
-        r1 = Room((1, "Start", "Starting Room\nSecond Line", [(1, 2)]))
+        r1 = Room(RoomDef(vnum=1, name="Start", description="Starting Room\nSecond Line", exits=(ExitDef(direction=1, dst_vnum=2),)))
         r1.x, r1.y, r1.z = 0, 0, 0
-        r2 = Room((2, "End", "Ending Room", [(3, 1)]))
+        r2 = Room(RoomDef(vnum=2, name="End", description="Ending Room", exits=(ExitDef(direction=3, dst_vnum=1),)))
         r2.x, r2.y, r2.z = 2, 0, 0
         ex = r1.exits[0]
 
@@ -202,13 +238,13 @@ class TestGraphAndCorridorCollapse:
     def test_corridor_collapsing(self, tmp_path):
         # 3 rooms in a straight line: 1 <-> 2 <-> 3
         # Room 2 has exactly 2 opposite exits (west to 1, east to 3)
-        r1 = Room((1, "West Room", "", [(1, 2)]))       # east to 2
-        r2 = Room((2, "Corridor Room", "", [(3, 1), (1, 3)])) # west to 1, east to 3
-        r3 = Room((3, "East Room", "", [(3, 2)]))       # west to 2
+        r1 = Room(RoomDef(vnum=1, name="West Room", description="", exits=(ExitDef(direction=1, dst_vnum=2),)))       # east to 2
+        r2 = Room(RoomDef(vnum=2, name="Corridor Room", description="", exits=(ExitDef(direction=3, dst_vnum=1), ExitDef(direction=1, dst_vnum=3)))) # west to 1, east to 3
+        r3 = Room(RoomDef(vnum=3, name="East Room", description="", exits=(ExitDef(direction=3, dst_vnum=2),)))       # west to 2
         rdb = {1: r1, 2: r2, 3: r3}
 
         out_svg = str(tmp_path / "corridor.svg")
-        graph(rdb, out_svg, ("test.are", "Test Corridor", "", (1, 3)))
+        graph(rdb, out_svg, AreaHeader(filename="test.are", name="Test Corridor", builder="", vnum_min=1, vnum_max=3))
 
         # After graph() solve, room 2 was collapsed and restored, all 3 rooms exist with coordinates
         assert 1 in rdb
@@ -219,8 +255,8 @@ class TestGraphAndCorridorCollapse:
 
     def test_disconnected_room_handled(self, caplog):
         # Room with no exits
-        r1 = Room((1, "Isolated", "No exits", []))
-        graph({1: r1}, "dummy.svg", ("test.are", "Test", "", (1, 1)))
+        r1 = Room(RoomDef(vnum=1, name="Isolated", description="No exits", exits=()))
+        graph({1: r1}, "dummy.svg", AreaHeader(filename="test.are", name="Test", builder="", vnum_min=1, vnum_max=1))
         assert "Ignoring disconnected room" in caplog.text
 
 
@@ -237,8 +273,8 @@ class TestSolver:
 
     def test_solve_simple_layout(self):
         # 2 rooms connected bidirectionally
-        r1 = Room((1, "R1", "Desc 1", [(1, 2)]))  # East to 2
-        r2 = Room((2, "R2", "Desc 2", [(3, 1)]))  # West to 1
+        r1 = Room(RoomDef(vnum=1, name="R1", description="Desc 1", exits=(ExitDef(direction=1, dst_vnum=2),)))  # East to 2
+        r2 = Room(RoomDef(vnum=2, name="R2", description="Desc 2", exits=(ExitDef(direction=3, dst_vnum=1),)))  # West to 1
         rdb = {1: r1, 2: r2}
         exits = [r1.exits[0], r2.exits[0]]
 
@@ -251,8 +287,8 @@ class TestSolver:
 
     def test_solve_vertical_levels(self):
         # 2 rooms connected Up / Down
-        r1 = Room((10, "Ground", "Floor 1", [(4, 20)]))  # Up to 20
-        r2 = Room((20, "Tower", "Floor 2", [(5, 10)]))   # Down to 10
+        r1 = Room(RoomDef(vnum=10, name="Ground", description="Floor 1", exits=(ExitDef(direction=4, dst_vnum=20),)))  # Up to 20
+        r2 = Room(RoomDef(vnum=20, name="Tower", description="Floor 2", exits=(ExitDef(direction=5, dst_vnum=10),)))   # Down to 10
         rdb = {10: r1, 20: r2}
         exits = [r1.exits[0], r2.exits[0]]
 
@@ -262,9 +298,9 @@ class TestSolver:
         # Room 1 has a one-way exit east to Room 2
         # Room 2 has no exits
         # Room 3 is isolated (no exits)
-        r1 = Room((1, "R1", "Desc 1", [(1, 2)]))
-        r2 = Room((2, "R2", "Desc 2", []))
-        r3 = Room((3, "Isolated", "Desc 3", []))
+        r1 = Room(RoomDef(vnum=1, name="R1", description="Desc 1", exits=(ExitDef(direction=1, dst_vnum=2),)))
+        r2 = Room(RoomDef(vnum=2, name="R2", description="Desc 2", exits=()))
+        r3 = Room(RoomDef(vnum=3, name="Isolated", description="Desc 3", exits=()))
         rdb = {1: r1, 2: r2, 3: r3}
         exits = [r1.exits[0]]
 
@@ -279,10 +315,10 @@ class TestMapperIntegration:
 
     def test_graph_undefined_destination_minus_one(self, tmp_path):
         # Room has exit pointing to -1 (incomplete area)
-        r1 = Room((10, "Incomplete", "Desc", [(0, -1)]))
+        r1 = Room(RoomDef(vnum=10, name="Incomplete", description="Desc", exits=(ExitDef(direction=0, dst_vnum=-1),)))
         rdb = {10: r1}
         out_svg = str(tmp_path / "minus_one.svg")
-        graph(rdb, out_svg, ("test.are", "Test Incomplete", "", (10, 10)))
+        graph(rdb, out_svg, AreaHeader(filename="test.are", name="Test Incomplete", builder="", vnum_min=10, vnum_max=10))
         assert os.path.exists(out_svg)
 
     def test_mapper_main_single_area(self, tmp_path):
