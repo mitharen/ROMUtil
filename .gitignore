@@ -1,0 +1,37 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PLY parser generator output
+parsetab.py
+parser.out
+lextab.py
+
+# Generated map and visualization outputs
+*.svg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Scratch files
+socials
+
+# Editor and OS metadata
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+

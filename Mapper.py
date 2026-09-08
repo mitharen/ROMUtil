@@ -9,16 +9,17 @@ import sys
 
 import networkx as nx
 from networkx.algorithms.dag import is_directed_acyclic_graph
-import svgwrite
-from svgwrite import cm
 import pyomo.opt
 import pyomo.util.infeasible
 from pyomo.environ import *
+import svgwrite
+from svgwrite import cm
+import tqdm
 
 import AreaParser
 
 logging.basicConfig()
-log = logging.getLogger()
+log = logging.getLogger('Mapper')
 
 class Direction(enum.IntEnum):
     north=0
@@ -57,7 +58,7 @@ class Room():
         return f'[{self.vnum}: {self.name}] {{{self.exits}}}'
             
 class Exit():
-    def __init__(self, e, source, fake=False, distance=1):
+    def __init__(self, e, source, distance=1):
         self.src = source
         self.dst = e[1]
         self.direction = Direction(direction_matrix[e[0]])
@@ -138,6 +139,7 @@ class Plotter():
         while len(exits) or len(rooms):
             e = self.rdb[exits[0].src].z if len(exits) else None
             r = rooms[0].z if len(rooms) else None
+            # 
             if e is not None and (r is None or r >= e):
                 ex = exits.pop(0)
                 projection = self.proj_exit(ex)
@@ -177,18 +179,12 @@ def restore_rooms(room):
     rooms = []
     for r, d, dist in room.fixups:
         r.x, r.y, r.z = room.x, room.y, room.z
-        if d == Direction.north:
-            r.y += dist
-        elif d == Direction.east:
-            r.x += dist
-        elif d == Direction.south:
-            r.y -= dist
-        elif d == Direction.west:
-            r.x -= dist
-        elif d == Direction.up:
-            r.z += dist
-        elif d == Direction.down:
-            r.z -= dist
+        if d == Direction.north: r.y += dist
+        elif d == Direction.east: r.x += dist
+        elif d == Direction.south: r.y -= dist
+        elif d == Direction.west: r.x -= dist
+        elif d == Direction.up: r.z += dist
+        elif d == Direction.down: r.z -= dist
         rooms.append(r)
         rooms += restore_rooms(r)
     return rooms
@@ -220,10 +216,86 @@ def mfas(edges):
 
     solver = SolverFactory('cbc')
     #solver.options['ratio'] = .05
+    solver.options['threads'] = 8
     result = solver.solve(model, tee=False)
     return [(u,v) for u,v in edges if model.b[labels[u],labels[v]].value]
 
-def solve(rdb, exits):
+def non_euler(rdb, exits):
+    # construct model
+    m = ConcreteModel()
+
+    # statics
+    m.Rooms = Set(initialize=rdb.keys())
+    m.Exits = RangeSet(0, len(exits)-1)
+    m.Directions = RangeSet(0, Direction.mod.value-1)
+
+    # maximum value (infinity)
+    m.M = Param(initialize=sum([e.distance for e in exits]))
+
+    # room position (constraints will determine these)
+    m.x = Var(m.Rooms, within=Integers, bounds=(0,m.M))
+    m.y = Var(m.Rooms, within=Integers, bounds=(0,m.M))
+    m.z = Var(m.Rooms, within=Integers, bounds=(0,m.M))
+    # allow cutting exits to handle mazes (objective will minimize this)
+    m.cut = Var(m.Exits, within=Binary)
+    # constraints for relative position of rooms
+    m.relative_pos = ConstraintList()
+
+    # one-ways are often non-euclidean should be cut
+    one_way_exits = [e for e in exits if not e in rdb[e.dst].exits]
+
+    # add constraints for relative position excepting cut exits - O(e)
+    for i, e in enumerate(exits):
+        # ignore one-ways 
+        if e in one_way_exits:
+            continue
+
+        if e.dst != e.src:
+            if e.direction not in (Direction.east, Direction.west):
+                m.relative_pos.add(m.x[e.src] - m.x[e.dst] + m.M * m.cut[i] >= 0)
+                m.relative_pos.add(m.x[e.dst] - m.x[e.src] + m.M * m.cut[i] >= 0)
+            if e.direction not in (Direction.north, Direction.south):
+                m.relative_pos.add(m.y[e.src] - m.y[e.dst] + m.M * m.cut[i] >= 0)
+                m.relative_pos.add(m.y[e.dst] - m.y[e.src] + m.M * m.cut[i] >= 0)
+            if e.direction not in (Direction.up, Direction.down):
+                m.relative_pos.add(m.z[e.src] - m.z[e.dst] + m.M * m.cut[i] >= 0)
+                m.relative_pos.add(m.z[e.dst] - m.z[e.src] + m.M * m.cut[i] >= 0)
+
+            if e.direction == Direction.east:
+                m.relative_pos.add(m.x[e.dst] - m.x[e.src] + m.M * m.cut[i] >= 1)
+            elif e.direction == Direction.north:
+                m.relative_pos.add(m.y[e.dst] - m.y[e.src] + m.M * m.cut[i] >= 1)
+            elif e.direction == Direction.up:
+                m.relative_pos.add(m.z[e.dst] - m.z[e.src] + m.M * m.cut[i] >= 1)
+            elif e.direction == Direction.west:
+                m.relative_pos.add(m.x[e.src] - m.x[e.dst] + m.M * m.cut[i] >= 1)
+            elif e.direction == Direction.south:
+                m.relative_pos.add(m.y[e.src] - m.y[e.dst] + m.M * m.cut[i] >= 1)
+            elif e.direction == Direction.down:
+                m.relative_pos.add(m.z[e.src] - m.z[e.dst] + m.M * m.cut[i] >= 1)
+
+    # objective to minimize number of cut exits
+    m.obj = Objective(expr=sum(m.cut[i] for i in range(len(exits))))
+
+    solver = SolverFactory('cbc')
+    solver.options['sec'] = 20
+    result = solver.solve(m, tee=False)
+    return m
+
+def solve(rdb, area_exits):
+    # remove loop exits since they're unhelpful in placement
+    exits = [e for e in area_exits if e.src != e.dst]
+
+    m = non_euler(rdb, exits)
+    for i in range(len(exits)):
+        if m.cut[i].value: exits[i].one_way = True
+
+    # add a fake looped exit for no-exit rooms to prevent overlap
+    for room in rdb.values():
+        if not len(room.exits):
+            e = Exit((0, room.vnum), room.vnum)
+            exits.append(e)
+
     # construct model
     m = ConcreteModel()
 
@@ -247,100 +319,111 @@ def solve(rdb, exits):
     m.cut = Var(m.Exits, within=Binary)
     # l_max is the maximum length of each exit (objective will minimize this)
     m.l_max = Var(m.Exits, within=PositiveIntegers)
+    # variables to account for one-way exit length
+    m.one_ways = VarList(within=NonNegativeIntegers, bounds=(0,m.M))
 
     # constraints for relative position of rooms
     m.relative_pos = ConstraintList()
-    m.one_ways = VarList(within=NonNegativeIntegers, bounds=(0,m.M))
+    # constraints for one-way positioning
     m.one_way_pos = ConstraintList()
+    # constraints for exit crossings
+    m.crossings = ConstraintList()
+
+    # bin for objective
     one_ways = []
 
     # one-ways are often non-euclidean and would be cut, but we want to keep the rooms close together
-    one_way_exits = [e for e in exits if not e in rdb[e.dst].exits]
+    for e in exits:
+        if not e in rdb[e.dst].exits: e.one_way = True
 
-    # add constraints
-    for i, ex in enumerate(exits):
+    # add constraints for relative position excepting cut exits - O(e)
+    for i, x in enumerate(exits):
         # we add one-ways to the objective to try to keep the ends close
-        if ex in one_way_exits:
-            ex.one_way = True
-            x_off = m.d_min if ex.direction == Direction.east else -m.d_min if ex.direction == Direction.west else 0
-            y_off = m.d_min if ex.direction == Direction.north else -m.d_min if ex.direction == Direction.south else 0
-            z_off = m.d_min if ex.direction == Direction.up else -m.d_min if ex.direction == Direction.down else 0
+        if x.one_way:
+            x_off = m.d_min if x.direction == Direction.east else -m.d_min if x.direction == Direction.west else 0
+            y_off = m.d_min if x.direction == Direction.north else -m.d_min if x.direction == Direction.south else 0
+            z_off = m.d_min if x.direction == Direction.up else -m.d_min if x.direction == Direction.down else 0
             X = m.one_ways.add()
             Y = m.one_ways.add()
             Z = m.one_ways.add()
-            x_diff = m.x[ex.dst] - m.x[ex.src] - x_off
+            x_diff = m.x[x.dst] - m.x[x.src] - x_off
             m.one_way_pos.add(x_diff <= X)
             m.one_way_pos.add(-x_diff <= X)
-            y_diff = m.y[ex.dst] - m.y[ex.src] - y_off
+            y_diff = m.y[x.dst] - m.y[x.src] - y_off
             m.one_way_pos.add(y_diff <= Y)
             m.one_way_pos.add(-y_diff <= Y)
-            z_diff = m.z[ex.dst] - m.z[ex.src] - z_off
+            z_diff = m.z[x.dst] - m.z[x.src] - z_off
             m.one_way_pos.add(z_diff <= Z)
             m.one_way_pos.add(-z_diff <= Z)
             one_ways.append(X+Y+Z)
             continue
 
-        # relative position O(e)
-        if ex.dst != ex.src:
-            if ex.direction not in (Direction.east, Direction.west):
-                m.relative_pos.add(m.x[ex.src] == m.x[ex.dst])
-            if ex.direction not in (Direction.north, Direction.south):
-                m.relative_pos.add(m.y[ex.src] == m.y[ex.dst])
-            if ex.direction not in (Direction.up, Direction.down):
-                m.relative_pos.add(m.z[ex.src] == m.z[ex.dst])
+        if x.dst != x.src:
+            if x.direction not in (Direction.east, Direction.west):
+                m.relative_pos.add(m.x[x.src] + m.M * m.cut[i] >= m.x[x.dst])
+                m.relative_pos.add(m.x[x.dst] + m.M * m.cut[i] >= m.x[x.src])
+            if x.direction not in (Direction.north, Direction.south):
+                m.relative_pos.add(m.y[x.src] + m.M * m.cut[i] >= m.y[x.dst])
+                m.relative_pos.add(m.y[x.dst] + m.M * m.cut[i] >= m.y[x.src])
+            if x.direction not in (Direction.up, Direction.down):
+                m.relative_pos.add(m.z[x.src] + m.M * m.cut[i] >= m.z[x.dst])
+                m.relative_pos.add(m.z[x.dst] + m.M * m.cut[i] >= m.z[x.src])
 
-            if ex.direction == Direction.north:
-                m.relative_pos.add(m.y[ex.src] + m.l_min[i] <= m.y[ex.dst])
-                m.relative_pos.add(m.y[ex.src] + m.l_max[i] >= m.y[ex.dst])
-            elif ex.direction == Direction.east:
-                m.relative_pos.add(m.x[ex.src] + m.l_min[i] <= m.x[ex.dst])
-                m.relative_pos.add(m.x[ex.src] + m.l_max[i] >= m.x[ex.dst])
-            elif ex.direction == Direction.south:
-                m.relative_pos.add(m.y[ex.src] >= m.y[ex.dst] + m.l_min[i])
-                m.relative_pos.add(m.y[ex.src] <= m.y[ex.dst] + m.l_max[i])
-            elif ex.direction == Direction.west:
-                m.relative_pos.add(m.x[ex.src] >= m.x[ex.dst] + m.l_min[i])
-                m.relative_pos.add(m.x[ex.src] <= m.x[ex.dst] + m.l_max[i])
-            elif ex.direction == Direction.up:
-                m.relative_pos.add(m.z[ex.src] + m.l_min[i] <= m.z[ex.dst])
-                m.relative_pos.add(m.z[ex.src] + m.l_max[i] >= m.z[ex.dst])
-            elif ex.direction == Direction.down:
-                m.relative_pos.add(m.z[ex.src] >= m.z[ex.dst] + m.l_min[i])
-                m.relative_pos.add(m.z[ex.src] <= m.z[ex.dst] + m.l_max[i])
+            if x.direction == Direction.east:
+                m.relative_pos.add(m.x[x.dst] - m.x[x.src] + m.M * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.x[x.dst] - m.x[x.src] - m.M * m.cut[i] <= m.l_max[i])
+            elif x.direction == Direction.north:
+                m.relative_pos.add(m.y[x.dst] - m.y[x.src] + m.M * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.y[x.dst] - m.y[x.src] - m.M * m.cut[i] <= m.l_max[i])
+            elif x.direction == Direction.up:
+                m.relative_pos.add(m.z[x.dst] - m.z[x.src] + m.M * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.z[x.dst] - m.z[x.src] - m.M * m.cut[i] <= m.l_max[i])
+            elif x.direction == Direction.west:
+                m.relative_pos.add(m.x[x.src] - m.x[x.dst] + m.M * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.x[x.src] - m.x[x.dst] - m.M * m.cut[i] <= m.l_max[i])
+            elif x.direction == Direction.south:
+                m.relative_pos.add(m.y[x.src] - m.y[x.dst] + m.M * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.y[x.src] - m.y[x.dst] - m.M * m.cut[i] <= m.l_max[i])
+            elif x.direction == Direction.down:
+                m.relative_pos.add(m.z[x.src] - m.z[x.dst] + m.M * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.z[x.src] - m.z[x.dst] - m.M * m.cut[i] <= m.l_max[i])
 
-    # objective to minimize max exit lengths and distance of one-ways
-    m.obj = Objective(expr=sum([m.l_max[e] for e in m.Exits]) + sum([way for way in one_ways]))
+    # objective to minimize number of cut exits (first), exit lengths, and one-way lengths
+    m.obj = Objective(expr=m.M*m.M*(sum(m.cut[i] for i in range(len(exits))))
+                      + sum([m.l_max[e] for e in m.Exits])
+                      + sum([way for way in one_ways]))
 
-    # constraints for exit crossings
-    # add fake looped exits for no-exit rooms to prevent overlapping placement
-    for room in rdb.values():
-        if not len(room.exits):
-            exit = Exit((0, room.vnum), room.vnum)
-            room.exits.append(exit)
-            exits.append(exit)
-    # loops don't help for crossings unless they're the only exit in a room
-    considered = [ex for ex in exits if ex.dst != ex.src or len(rdb[ex.dst].exits) > 1]
-    non_incidents = list(filter(lambda ex: ex[0].src not in ex[1] and ex[0].dst not in ex[1],
-                                itertools.combinations(considered, 2)))
-    log.info(f'{len(non_incidents)} possible overlaps.')
-    m.crossings = ConstraintList()
+    non_incidents = itertools.combinations(range(len(exits)), 2)
+    # filter exit pairs that share a room
+    non_incidents = filter(lambda pair: exits[pair[0]].src not in exits[pair[1]] and exits[pair[0]].dst not in exits[pair[1]], non_incidents)
+    # filter one-ways since they're likely make the problem significantly more complex
+    non_incidents = list(filter(lambda pair: not exits[pair[0]].one_way and not exits[pair[1]].one_way, non_incidents))
     relations=0
+    log.info(f'{len(non_incidents)} possible overlaps.')
 
-    solver = SolverFactory('cbc')
-    solver.options['ratio'] = .05
+    solver = SolverFactory('cbc', tee=False)
+    solver.options['sec'] = 300
 
-    # iteratively solve and progressively add more constraints
+    # iteratively solve by progressively adding more constraints (O(e^2))
     while True:
         result = solver.solve(m, tee=False)
         if result.solver.termination_condition == pyomo.opt.TerminationCondition.infeasible:
 #            pyomo.util.infeasible.log_infeasible_constraints(m, log_expression=True)
             return m, result
+        # plot intermediate solve
+        for vnum, room in list(rdb.items()):
+            room.x = m.x[vnum].value if m.x[vnum].value else 0
+            room.y = m.y[vnum].value if m.y[vnum].value else 0
+            room.z = m.z[vnum].value if m.z[vnum].value else 0
+        Plotter('progress.svg', rdb, exits).plot()
         # add number of constraints equal to the square root of the possible overlaps
-        need_constraints = int(sqrt(len(non_incidents)))
+        added_constraints = 0
         # examine exit pairs and add constraints if intersecting
-        for pair in non_incidents:
-            # connection a and b
-            ex, nx = pair
+        for left, right in tqdm.tqdm(non_incidents, desc='Finding Overlaps'):
+            ex, nx = (exits[left], exits[right])
+
+            # ignore if either exit has been cut
+            if m.cut[left].value or m.cut[right].value: continue
             # ignore if either room doesn't have a concrete position
             if None in [m.x[ex.src].value, m.x[ex.dst].value, m.x[nx.src].value, m.x[nx.dst].value,
                         m.y[ex.src].value, m.y[ex.dst].value, m.y[nx.src].value, m.y[nx.dst].value,
@@ -353,9 +436,9 @@ def solve(rdb, exits):
                max(m.z[ex.src].value, m.z[ex.dst].value) < min(m.z[nx.src].value, m.z[nx.dst].value) or \
                min(m.z[ex.src].value, m.z[ex.dst].value) > max(m.z[nx.src].value, m.z[nx.dst].value): continue
 
-            log.debug(f'Found intersection between [({m.x[ex.src].value}, {m.y[ex.src].value}, {m.z[ex.src].value}) to ({m.x[ex.dst].value}, {m.y[ex.dst].value}, {m.z[ex.dst].value})] and [({m.x[nx.src].value}, {m.y[nx.src].value}, {m.z[nx.src].value}) to ({m.x[nx.dst].value}, {m.y[nx.dst].value}, {m.z[nx.dst].value})]')
+            log.debug(f'Found intersection:\n\t\t{rdb[ex.src]}\n\t\tto\n\t\t{rdb[ex.dst]}\n\tand\n\t\t{rdb[nx.src]}\n\t\tto\n\t\t{rdb[nx.dst]}\ncoordinates: [({m.x[ex.src].value}, {m.y[ex.src].value}, {m.z[ex.src].value}) to ({m.x[ex.dst].value}, {m.y[ex.dst].value}, {m.z[ex.dst].value})] and [({m.x[nx.src].value}, {m.y[nx.src].value}, {m.z[nx.src].value}) to ({m.x[nx.dst].value}, {m.y[nx.dst].value}, {m.z[nx.dst].value})]')
 
-            # pick at least one direction to enforce a non-intersection inequality
+            # pick at least one direction to enforce a set of non-intersection inequalities
             relation = Var(m.Directions, within=Boolean)
             m.add_component(f'relation{relations}', relation)
             relations += 1
@@ -363,24 +446,26 @@ def solve(rdb, exits):
 
             # each set of inequalities is enough to guarantee that the first exit line falls outside the second
             prod = list(itertools.product((ex.src, ex.dst), (nx.src, nx.dst)))
-            for p,q in prod: m.crossings.add(m.x[p] - m.x[q] >= m.d_min - m.M*(1 - relation[Direction.east]))
-            for p,q in prod: m.crossings.add(m.y[p] - m.y[q] >= m.d_min - m.M*(1 - relation[Direction.north]))
-            for p,q in prod: m.crossings.add(m.z[p] - m.z[q] >= m.d_min - m.M*(1 - relation[Direction.up]))
-            for p,q in prod: m.crossings.add(m.x[p] - m.x[q] <= m.M*(1 - relation[Direction.west]) - m.d_min)
-            for p,q in prod: m.crossings.add(m.y[p] - m.y[q] <= m.M*(1 - relation[Direction.south]) - m.d_min)
-            for p,q in prod: m.crossings.add(m.z[p] - m.z[q] <= m.M*(1 - relation[Direction.down]) - m.d_min)
+            for p,q in prod: m.crossings.add(m.x[p] - m.x[q] + m.M*((1 - relation[Direction.east]) + m.cut[left] + m.cut[right]) >= m.d_min)
+            for p,q in prod: m.crossings.add(m.y[p] - m.y[q] + m.M*((1 - relation[Direction.north]) + m.cut[left] + m.cut[right]) >= m.d_min)
+            for p,q in prod: m.crossings.add(m.z[p] - m.z[q] + m.M*((1 - relation[Direction.up]) + m.cut[left] + m.cut[right]) >= m.d_min)
+            for p,q in prod: m.crossings.add(m.x[q] - m.x[p] + m.M*((1 - relation[Direction.west]) + m.cut[left] + m.cut[right]) >= m.d_min)
+            for p,q in prod: m.crossings.add(m.y[q] - m.y[p] + m.M*((1 - relation[Direction.south]) + m.cut[left] + m.cut[right]) >= m.d_min)
+            for p,q in prod: m.crossings.add(m.z[q] - m.z[p] + m.M*((1 - relation[Direction.down]) + m.cut[left] + m.cut[right]) >= m.d_min)
 
-            non_incidents.remove(pair)
-            need_constraints -= 1
-            if need_constraints == 0: break
+            non_incidents.remove((left,right))
+            added_constraints += 1
+            log.debug(f'found {added_constraints}/{int(sqrt(len(non_incidents)))} new constraints')
+            if added_constraints == int(sqrt(len(non_incidents))): break
         else:
-            break
-            
+            if not added_constraints: break
+
+    log.debug(f'cut {sum([m.cut[i].value for i in range(len(exits))])} exits')
     log.debug(f'{relations}/{len(non_incidents)} overlaps converted into constraints.')
     return m, result
 
 def graph(rdb, name, area):
-    # clean up hallways (improves performance)
+    # collapse hallways (improves performance)
     for vnum, r in list(rdb.items()):
         if len(r.exits) == 2:
             # if real, bidirectional and straight
@@ -396,10 +481,15 @@ def graph(rdb, name, area):
     # collect normal exits for solve/plotting
     exits = list(set([e for r in rdb.values() for e in r.exits]))
 
-    # insert dummy rooms for zone exits
+    # fix undefined exits
     for e in exits:
+        # incomplete areas should just make new dummy rooms and fall through
+        if e.dst == -1:
+            e.dst = max(rdb.keys()) + 1
+        # insert dummy rooms for zone exits
         if e.dst not in rdb:
-            rdb[e.dst] = Room((e.src, '', '', None))
+            rdb[e.dst] = Room((e.dst, '', '', []))
+            rdb[e.dst].exits.append(e)
             rdb[e.dst].dummy = True
 
     if not len(exits):
@@ -470,7 +560,7 @@ def main(area_files, outbase):
              if e.src in rdb.keys() and e.dst in rdb.keys()]
     g = nx.DiGraph(edges)
 
-    # graph each sub graph separately
+    # graph each connected graph separately
     for i, sub_graph in enumerate(nx.connected_components(g.to_undirected())):
         graph({node: rdb[node] for node in sub_graph}, f'{outbase}{i}.svg', area)
 
@@ -483,6 +573,7 @@ if __name__=='__main__':
     parser.add_argument('-d', '--debug', action='store_true', help="Show debug info")
     args = parser.parse_args()
 
+    pyomo.common.config.logger.setLevel(logging.ERROR)
     if args.debug:
         log.setLevel(logging.DEBUG)
 
