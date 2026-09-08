@@ -15,6 +15,6 @@
 
 ## Git Workspace & Subagent Concurrency Policy
 - **Workspace Isolation Mode**: Always invoke concurrent subagents with `Workspace: 'share'`. This utilizes `git worktree`, sharing the underlying `.git` object store while providing independent working trees and indices.
-- **Dedicated Feature Branches**: Every subagent MUST operate on its own unique feature branch (e.g., `feature/<task-name>`). Never commit directly to `master`.
+- **Dedicated Feature Branches**: Every subagent MUST operate on its own unique feature branch (e.g., `feature/<task-name>`). Never commit directly to `main`.
 - **Pre-Completion Checks**: Before completing a task, subagents must run `uv run pytest` (enforcing >= 95% coverage) and verify [`scripts/sync_design_doc.py`](./scripts/sync_design_doc.py) passes.
-- **No Direct Merges**: Subagents must not merge their own feature branch into `master`. Subagents report their branch name and diff summary back to the parent coordinator for review and integration.
+- **No Direct Merges**: Subagents must not merge their own feature branch into `main`. Subagents report their branch name and diff summary back to the parent coordinator for review and integration.

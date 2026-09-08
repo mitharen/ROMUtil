@@ -25,20 +25,20 @@ class TestCIWorkflowPositive:
         assert "name" in data
         assert data["name"] == "CI"
 
-    def test_triggers_master_branch(self):
+    def test_triggers_main_branch(self):
         data = load_workflow_data()
         triggers = data.get("on") or data.get(True)
         assert triggers is not None, "Workflow must define 'on' triggers"
 
-        # Check push trigger on master
+        # Check push trigger on main
         assert "push" in triggers, "'push' trigger must be defined"
         push_branches = triggers["push"].get("branches", [])
-        assert "master" in push_branches, "'push' trigger must include 'master' branch"
+        assert "main" in push_branches, "'push' trigger must include 'main' branch"
 
-        # Check pull_request trigger on master
+        # Check pull_request trigger on main
         assert "pull_request" in triggers, "'pull_request' trigger must be defined"
         pr_branches = triggers["pull_request"].get("branches", [])
-        assert "master" in pr_branches, "'pull_request' trigger must include 'master' branch"
+        assert "main" in pr_branches, "'pull_request' trigger must include 'main' branch"
 
     def test_python_matrix_versions(self):
         data = load_workflow_data()

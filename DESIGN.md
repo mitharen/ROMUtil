@@ -261,7 +261,7 @@ Automated pre-commit hooks verify code quality before permitting commits:
 - Executes `uv run pytest` to ensure all tests pass and coverage remains $\ge 95\%$.
 
 ### Continuous Integration (CI)
-The automated GitHub Actions pipeline ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) executes on all pushes and pull requests targeting the `master` branch. The CI workflow guarantees system invariants across target Python environments (3.12, 3.13, and 3.14):
+The automated GitHub Actions pipeline ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) executes on all pushes and pull requests targeting the `main` branch. The CI workflow guarantees system invariants across target Python environments (3.12, 3.13, and 3.14):
 - Provisioning Ubuntu runners with the Coin-OR CBC solver binary (`coinor-cbc`).
 - Installing pinned dependencies through `astral-sh/setup-uv@v5` with runner-level caching.
 - Enforcing static type safety using `mypy`.
