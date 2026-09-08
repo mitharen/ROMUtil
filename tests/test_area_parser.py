@@ -1,8 +1,12 @@
 import os
 import pytest
-import AreaParser
+from romutil.parser import Lexer, Parser, parse_file, main
 
-SAMPLE_AREAS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../QuickMUD/area'))
+_CANDIDATE_AREAS_DIRS = [
+    os.path.abspath(os.path.join(os.path.dirname(__file__), '../../QuickMUD/area')),
+    '/home/user/proj/QuickMUD/area',
+]
+SAMPLE_AREAS_DIR = next((d for d in _CANDIDATE_AREAS_DIRS if os.path.isdir(d)), _CANDIDATE_AREAS_DIRS[0])
 
 MINIMAL_VALID_AREA = """#AREA
 test.are~
@@ -71,15 +75,15 @@ $n waves goodbye to you.
 
 
 class TestLexer:
-    """Unit tests for AreaParser Lexer tokenization and state transitions."""
+    """Unit tests for romutil.parser Lexer tokenization and state transitions."""
 
     def test_lexer_build(self):
-        lexer_obj = AreaParser.Lexer()
+        lexer_obj = Lexer()
         lexer_obj.build()
         assert lexer_obj.lexer is not None
 
     def test_lexer_section_tokens(self):
-        lexer_obj = AreaParser.Lexer()
+        lexer_obj = Lexer()
         lexer_obj.build()
         data = "#AREA #HELPS #SOCIALS #MOBILES #OBJECTS #ROOMS #RESETS #SHOPS #SPECIALS #$ #0 $~"
         lexer_obj.lexer.input(data)
@@ -96,7 +100,7 @@ class TestLexer:
         assert tokens == expected
 
     def test_lexer_numbers_and_vnums(self):
-        lexer_obj = AreaParser.Lexer()
+        lexer_obj = Lexer()
         lexer_obj.build()
         data = "#1234 56 -78 +90"
         lexer_obj.lexer.input(data)
@@ -114,7 +118,7 @@ class TestLexer:
         ]
 
     def test_lexer_quoted_and_word(self):
-        lexer_obj = AreaParser.Lexer()
+        lexer_obj = Lexer()
         lexer_obj.build()
         data = "'sample quoted' keyword"
         lexer_obj.lexer.input(data)
@@ -132,7 +136,7 @@ class TestLexer:
     def test_lexer_lex_file(self, tmp_path, capsys):
         test_file = tmp_path / "test.are"
         test_file.write_text("#AREA\ntest.are~\nTest~\nBuilder~\n1 10\n#$\n")
-        lexer_obj = AreaParser.Lexer()
+        lexer_obj = Lexer()
         lexer_obj.lex_file(str(test_file))
         captured = capsys.readouterr().out
         assert "LexToken(AREA" in captured
@@ -140,8 +144,8 @@ class TestLexer:
     def test_parser_main(self, tmp_path, monkeypatch):
         test_file = tmp_path / "test_main.are"
         test_file.write_text(MINIMAL_VALID_AREA)
-        monkeypatch.setattr("sys.argv", ["AreaParser.py", str(test_file)])
-        AreaParser.main()
+        monkeypatch.setattr("sys.argv", ["romutil.parser", str(test_file)])
+        main()
 
     def test_parser_room_with_regen_and_owner(self):
         area_text = """#AREA
@@ -162,7 +166,7 @@ S
 
 #$
 """
-        parser = AreaParser.Parser()
+        parser = Parser()
         result = parser.parse(area_text)
         assert result is not None
         sections = {s[0]: s[1] for s in result if s}
@@ -170,14 +174,14 @@ S
         assert sections['#ROOMS'][0][0] == 100
 
     def test_lexer_illegal_character(self, caplog):
-        lexer_obj = AreaParser.Lexer()
+        lexer_obj = Lexer()
         lexer_obj.build()
         lexer_obj.lexer.input("\r")
         tok = lexer_obj.lexer.token()
         assert "Illegal character" in caplog.text
 
     def test_lexer_line_illegal_character(self, caplog):
-        lexer_obj = AreaParser.Lexer()
+        lexer_obj = Lexer()
         lexer_obj.build()
         lexer_obj.lexer.input("\t\n")
         lexer_obj.lexer.begin('line')
@@ -189,7 +193,7 @@ class TestParserPositive:
     """Positive test cases for parsing area files."""
 
     def test_parse_minimal_valid_area(self):
-        parser = AreaParser.Parser()
+        parser = Parser()
         result = parser.parse(MINIMAL_VALID_AREA)
         assert result is not None
 
@@ -216,7 +220,7 @@ class TestParserPositive:
         assert (2, 100) in rooms[1][3]
 
     def test_parse_helps_section(self):
-        parser = AreaParser.Parser()
+        parser = Parser()
         result = parser.parse(HELPS_VALID_AREA)
         assert result is not None
         sections = {s[0]: s[1] for s in result if s}
@@ -226,7 +230,7 @@ class TestParserPositive:
         assert 'TEST KEYWORD' in helps[0][0]
 
     def test_parse_socials_section(self):
-        parser = AreaParser.Parser()
+        parser = Parser()
         result = parser.parse(SOCIALS_VALID_AREA)
         assert result is not None
         sections = {s[0]: s[1] for s in result if s}
@@ -239,7 +243,7 @@ class TestParserPositive:
     @pytest.mark.parametrize("filename", ["school.are", "smurf.are", "social.are", "help.are"])
     def test_parse_real_area_files(self, filename):
         filepath = os.path.join(SAMPLE_AREAS_DIR, filename)
-        parser = AreaParser.Parser()
+        parser = Parser()
         with open(filepath, 'r', encoding='latin-1') as f:
             content = f.read()
         result = parser.parse(content)
@@ -251,24 +255,24 @@ class TestParserNegative:
     """Negative test cases verifying robust error reporting on malformed inputs."""
 
     def test_parse_empty_input(self):
-        parser = AreaParser.Parser()
+        parser = Parser()
         with pytest.raises(Exception, match=r"Syntax error at EOF"):
             parser.parse("")
 
     def test_parse_truncated_input(self):
-        parser = AreaParser.Parser()
+        parser = Parser()
         truncated = "#AREA\ntest.are~\n"
         with pytest.raises(Exception):
             parser.parse(truncated)
 
     def test_parse_missing_end_marker(self):
-        parser = AreaParser.Parser()
+        parser = Parser()
         missing_end = MINIMAL_VALID_AREA.replace("#$", "")
         with pytest.raises(Exception):
             parser.parse(missing_end)
 
     def test_parse_corrupt_room_syntax(self):
-        parser = AreaParser.Parser()
+        parser = Parser()
         corrupt_room = """#AREA
 test.are~
 Test~
@@ -289,7 +293,7 @@ S
             parser.parse(corrupt_room)
 
     def test_parse_invalid_section_header(self):
-        parser = AreaParser.Parser()
+        parser = Parser()
         bad_section = """#INVALID_HEADER
 content
 #$
