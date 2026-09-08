@@ -7,7 +7,7 @@ import sys
 import networkx as nx
 import pyomo.common.config
 
-from romutil.models import Room
+from romutil.models import Room, AreaData
 from romutil.parser import Parser
 from romutil.graph import graph
 
@@ -33,16 +33,21 @@ def main(area_files, outbase, split_levels=False):
             log.error(e)
             continue
 
-        rooms = []
-        for section in area:
-            if not section:
-                continue
-            if section[0] == '#ROOMS':
-                rooms = section[1]
-            elif section[0] == '#AREA':
-                area_meta = section[1]
+        if isinstance(area, AreaData):
+            area_meta = area.header
+            rooms = list(area.rooms)
+            rdb.update({r.vnum: Room(r) for r in rooms})
+        else:
+            rooms = []
+            for section in area:
+                if not section:
+                    continue
+                if section[0] == '#ROOMS':
+                    rooms = section[1]
+                elif section[0] == '#AREA':
+                    area_meta = section[1]
 
-        rdb.update({r[0]: Room(r) for r in rooms})
+            rdb.update({(r.vnum if hasattr(r, 'vnum') else r[0]): Room(r) for r in rooms})
 
     if not rdb:
         log.error('No rooms to plot.')
