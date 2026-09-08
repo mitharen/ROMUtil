@@ -377,6 +377,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       opacity: 0.12;
     }
 
+    .elevation-layer {
+      transition: opacity 0.2s ease, visibility 0.2s ease;
+    }
+
+    .elevation-layer.dimmed {
+      opacity: 0.15;
+    }
+
     /* Sidebar Drawer */
     aside.sidebar {
       width: 340px;
@@ -558,8 +566,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </marker>
           </defs>
           <g id="canvas-root">
-            <g id="exits-layer"></g>
-            <g id="rooms-layer"></g>
+            <g id="exits-layer" style="display:none;"></g>
+            <g id="rooms-layer" style="display:none;"></g>
           </g>
         </svg>
 
@@ -685,11 +693,46 @@ __JSON_DATA__
         renderMinimap();
       }
 
-      // Render exits
+      // Painter's algorithm depth sorting: elevation (Z ascending), isometric screen depth (Y descending / X ascending)
+      const sortedRooms = [...rooms].sort((a, b) => {
+        if (a.coords.z !== b.coords.z) {
+          return a.coords.z - b.coords.z;
+        }
+        if (a.coords.y !== b.coords.y) {
+          return b.coords.y - a.coords.y;
+        }
+        if (a.coords.x !== b.coords.x) {
+          return a.coords.x - b.coords.x;
+        }
+        return a.vnum - b.vnum;
+      });
+
+      // Create DOM elevation layer groups in strict ascending Z order (Z_lower < Z_higher)
+      const elevationLayers = new Map();
+      zValues.forEach(z => {
+        const layer = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        layer.setAttribute('id', 'elevation-' + z);
+        layer.setAttribute('class', 'elevation-layer');
+        layer.setAttribute('data-z', z);
+
+        const exitsGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        exitsGroup.setAttribute('class', 'elevation-exits');
+
+        const roomsGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        roomsGroup.setAttribute('class', 'elevation-rooms');
+
+        layer.appendChild(exitsGroup);
+        layer.appendChild(roomsGroup);
+        canvasRoot.appendChild(layer);
+
+        elevationLayers.set(z, { layer, exitsGroup, roomsGroup });
+      });
+
+      // Render exits into elevation layers according to painter's order
       const exitElements = new Map();
       const drawnBidirectional = new Set();
 
-      rooms.forEach(r => {
+      sortedRooms.forEach(r => {
         const p1 = project(r.coords.x, r.coords.y, r.coords.z);
         (r.exits || []).forEach(e => {
           const isInternal = roomMap.has(e.dst);
@@ -706,6 +749,9 @@ __JSON_DATA__
             }
             if (!e.one_way) drawnBidirectional.add(edgeKey);
 
+            const edgeZ = Math.max(r.coords.z, target.coords.z);
+            const targetLayer = elevationLayers.get(edgeZ) || elevationLayers.get(r.coords.z);
+
             const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
             line.setAttribute('x1', p1.px);
             line.setAttribute('y1', p1.py);
@@ -714,11 +760,15 @@ __JSON_DATA__
             line.setAttribute('class', 'exit-line ' + (e.one_way ? 'one-way' : 'two-way'));
             line.setAttribute('data-src', r.vnum);
             line.setAttribute('data-dst', e.dst);
-            line.setAttribute('data-z', Math.max(r.coords.z, target.coords.z));
+            line.setAttribute('data-z', edgeZ);
             if (e.one_way) {
               line.setAttribute('marker-end', 'url(#arrow-one-way)');
             }
-            exitsLayer.appendChild(line);
+            if (targetLayer) {
+              targetLayer.exitsGroup.appendChild(line);
+            } else if (exitsLayer) {
+              exitsLayer.appendChild(line);
+            }
             exitElements.set(r.vnum + '->' + e.dst, line);
           } else {
             // External stub exit
@@ -731,6 +781,7 @@ __JSON_DATA__
             else if (e.direction === 'up') { dx = stubLen * lift; dy = -stubLen * lift; }
             else if (e.direction === 'down') { dx = -stubLen * lift; dy = stubLen * lift; }
 
+            const targetLayer = elevationLayers.get(r.coords.z);
             const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
             line.setAttribute('x1', p1.px);
             line.setAttribute('y1', p1.py);
@@ -740,14 +791,18 @@ __JSON_DATA__
             line.setAttribute('data-src', r.vnum);
             line.setAttribute('data-z', r.coords.z);
             line.setAttribute('marker-end', 'url(#arrow-one-way)');
-            exitsLayer.appendChild(line);
+            if (targetLayer) {
+              targetLayer.exitsGroup.appendChild(line);
+            } else if (exitsLayer) {
+              exitsLayer.appendChild(line);
+            }
           }
         });
       });
 
-      // Render rooms
+      // Render rooms strictly in depth-sorted order
       const roomGroups = new Map();
-      rooms.forEach(r => {
+      sortedRooms.forEach(r => {
         const pt = project(r.coords.x, r.coords.y, r.coords.z);
         const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
         g.setAttribute('class', 'room-group');
@@ -769,7 +824,13 @@ __JSON_DATA__
 
         g.appendChild(rect);
         g.appendChild(label);
-        roomsLayer.appendChild(g);
+
+        const targetLayer = elevationLayers.get(r.coords.z);
+        if (targetLayer) {
+          targetLayer.roomsGroup.appendChild(g);
+        } else if (roomsLayer) {
+          roomsLayer.appendChild(g);
+        }
         roomGroups.set(r.vnum, g);
 
         // Hover & click listeners
@@ -890,13 +951,18 @@ __JSON_DATA__
         const val = floorFilter.value;
         const targetZ = val === 'all' ? null : parseInt(val, 10);
 
+        elevationLayers.forEach(({ layer }, z) => {
+          const visible = (targetZ === null || z === targetZ);
+          layer.classList.toggle('dimmed', !visible);
+        });
+
         roomGroups.forEach((g, vnum) => {
           const z = parseInt(g.getAttribute('data-z'), 10);
           const visible = (targetZ === null || z === targetZ);
           g.classList.toggle('dimmed', !visible);
         });
 
-        exitsLayer.querySelectorAll('.exit-line').forEach(line => {
+        canvasRoot.querySelectorAll('.exit-line').forEach(line => {
           const z = parseInt(line.getAttribute('data-z'), 10);
           const visible = (targetZ === null || z === targetZ);
           line.classList.toggle('dimmed', !visible);
@@ -1029,7 +1095,7 @@ __JSON_DATA__
 
       function clearPathHighlight() {
         roomGroups.forEach(g => g.classList.remove('path-node'));
-        exitsLayer.querySelectorAll('.exit-line').forEach(l => l.classList.remove('path-edge'));
+        canvasRoot.querySelectorAll('.exit-line').forEach(l => l.classList.remove('path-edge'));
         document.getElementById('path-steps').innerHTML = '';
       }
 
@@ -1049,8 +1115,8 @@ __JSON_DATA__
         const sy = (h - padding * 2) / totalHeight;
         const scale = Math.min(sx, sy);
 
-        // Draw dots for rooms
-        rooms.forEach(r => {
+        // Draw dots for rooms sorted by elevation (Z ascending) and isometric screen depth
+        sortedRooms.forEach(r => {
           const pt = project(r.coords.x, r.coords.y, r.coords.z);
           const mx = padding + pt.px * scale;
           const my = padding + pt.py * scale;
