@@ -2,7 +2,11 @@ import os
 import pytest
 import AreaParser
 
-SAMPLE_AREAS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../QuickMUD/area'))
+_candidates = [
+    os.path.abspath(os.path.join(os.path.dirname(__file__), '../../QuickMUD/area')),
+    os.path.abspath('/home/user/proj/QuickMUD/area'),
+]
+SAMPLE_AREAS_DIR = next((p for p in _candidates if os.path.isdir(p)), _candidates[0])
 
 MINIMAL_VALID_AREA = """#AREA
 test.are~

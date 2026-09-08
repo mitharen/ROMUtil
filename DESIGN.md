@@ -76,28 +76,40 @@ ROMUtil/
 
 Built with Python PLY (`ply.lex` and `ply.yacc`):
 
-- **[`Lexer`](file:///home/user/proj/ROMUtil/romutil/parser.py#L9-L191)**:
+- **[`Lexer`](file:///home/user/proj/ROMUtil/romutil/parser.py#L9-L217)**:
   - Uses exclusive lexer states (`INITIAL`, `string`, `line`, `optional`) to handle the idiosyncratic ROM format.
   - Switches to `string` mode to extract multiline text terminated by tildes (`~`).
   - Recognizes keywords (`#AREA`, `#ROOMS`, `#MOBILES`, `#OBJECTS`, `#RESETS`, `#SHOPS`, `#SPECIALS`, `#HELPS`, `#SOCIALS`).
-- **[`Parser`](file:///home/user/proj/ROMUtil/romutil/parser.py#L194-L442)**:
-  - An LALR(1) grammar extracting rooms (`VNUM`, title, description) and doors/exits (`direction_number`, `dst_vnum`).
+- **[`Parser`](file:///home/user/proj/ROMUtil/romutil/parser.py#L230-L464)**:
+  - An LALR(1) grammar producing strongly-typed AST dataclasses (`AreaData`, `RoomDef`, `ExitDef`, etc.) instead of raw nested tuples.
   - Implements grammar tolerance for non-room sections (`#SOCIALS`, `#HELPS`, etc.) so arbitrary MUD files parse without syntax errors.
   - Opens files using `encoding="latin-1", errors="replace"` to support vintage MUD files containing non-UTF-8 bytes.
   - Disables disk table writing (`write_tables=False`) by default to run safely in read-only environments.
 
 ---
 
-### 4.2. Domain Models — [`romutil/models.py`](file:///home/user/proj/ROMUtil/romutil/models.py)
+### 4.2. Domain Models & AST Dataclasses — [`romutil/models.py`](file:///home/user/proj/ROMUtil/romutil/models.py)
 
-- **[`Direction`](file:///home/user/proj/ROMUtil/romutil/models.py#L3-L15)**:
+#### 4.2.1. Strongly-Typed AST Dataclasses
+Modern immutable `@dataclass(frozen=True)` definitions replacing raw tuple returns from the parser:
+- **`AreaHeader`**: Stores area metadata (`filename`, `name`, `builder`, `vnum_min`, `vnum_max`).
+- **`ExitDef`**: Defines parsed doors/exits (`direction`, `dst_vnum`, `description`, `keyword`, `key_vnum`, `flags`).
+- **`ExtraDescr`**: Holds extra descriptions (`keyword`, `description`).
+- **`RoomDef`**: Defines room structures (`vnum`, `name`, `description`, `room_flags`, `sector`, `exits`, `extras`).
+- **`MobileDef`**: Defines mobile entities (`vnum`, `player_name`, `short_desc`, `long_desc`, `desc`, `race`, attributes, combat parameters).
+- **`ObjectDef`**: Defines items and equipment (`vnum`, `name`, `short_desc`, `desc`, `material`, `item_type`, `extra_flags`, `wear_flags`, `values`, `level`, `weight`, `cost`, `condition`).
+- **`ResetDef`**, **`ShopDef`**, **`SpecialDef`**, **`HelpDef`**, **`SocialDef`**: Typed representations for resets, merchant shops, mob special functions, help entries, and social commands.
+- **`AreaData`**: Top-level container aggregating all parsed sections (`header`, `rooms`, `mobiles`, `objects`, `resets`, `shops`, `specials`, `helps`, `socials`), with section dictionary and index backward-compatibility.
+
+#### 4.2.2. Graph & Solver Domain Models
+- **[`Direction`](file:///home/user/proj/ROMUtil/romutil/models.py#L10-L21)**:
   An `IntEnum` representing 6 degrees of movement:
   - `0`: North, `1`: East, `2`: Up, `3`: South, `4`: West, `5`: Down.
   - `Direction.invert()` computes opposing direction via `(dir + 3) % 6`.
-- **[`Room`](file:///home/user/proj/ROMUtil/romutil/models.py#L48-L68)**:
-  Represents a room node holding `vnum`, `name`, `desc`, `exits`, integer coordinates `(x, y, z)`, and a `fixups` list for collapsed corridors.
-- **[`Exit`](file:///home/user/proj/ROMUtil/romutil/models.py#L26-L46)**:
-  Represents a directional edge between `src` and `dst`. Defines bidirectional equality (`__eq__`) and hash symmetry so opposite exits (`A -> B East` and `B -> A West`) map to the same logical edge.
+- **[`Room`](file:///home/user/proj/ROMUtil/romutil/models.py#L328-L365)**:
+  Represents a mutable room node holding `vnum`, `name`, `desc`, `exits`, integer coordinates `(x, y, z)`, and a `fixups` list for collapsed corridors. Accepts either typed `RoomDef` instances or legacy tuples.
+- **[`Exit`](file:///home/user/proj/ROMUtil/romutil/models.py#L288-L326)**:
+  Represents a directional edge between `src` and `dst`. Defines bidirectional equality (`__eq__`) and hash symmetry so opposite exits (`A -> B East` and `B -> A West`) map to the same logical edge. Accepts either typed `ExitDef` instances or legacy tuples.
 
 ---
 

@@ -2,6 +2,20 @@ import logging
 import sys
 import ply.lex as lex
 import ply.yacc as yacc
+from romutil.models import (
+    AreaData,
+    AreaHeader,
+    ExitDef,
+    ExtraDescr,
+    HelpDef,
+    MobileDef,
+    ObjectDef,
+    ResetDef,
+    RoomDef,
+    ShopDef,
+    SocialDef,
+    SpecialDef,
+)
 
 log = logging.getLogger('AreaParser')
 
@@ -229,7 +243,59 @@ class Lexer:
 class Parser:
     def p_file(self, p):
         'file : sections END EOL'
-        p[0] = p[1]
+        header = None
+        rooms = []
+        mobiles = []
+        objects = []
+        resets = []
+        shops = []
+        specials = []
+        helps = []
+        socials = []
+
+        if p[1]:
+            for sec in p[1]:
+                if not sec or not isinstance(sec, tuple) or len(sec) < 2:
+                    continue
+                tag, data = sec[0], sec[1]
+                if tag == '#AREA':
+                    header = data
+                elif tag == '#ROOMS':
+                    if data:
+                        rooms.extend(data)
+                elif tag == '#MOBILES':
+                    if data:
+                        mobiles.extend(data)
+                elif tag == '#OBJECTS':
+                    if data:
+                        objects.extend(data)
+                elif tag == '#RESETS':
+                    if data:
+                        resets.extend(data)
+                elif tag == '#SHOPS':
+                    if data:
+                        shops.extend(data)
+                elif tag == '#SPECIALS':
+                    if data:
+                        specials.extend(data)
+                elif tag == '#HELPS':
+                    if data:
+                        helps.extend([h for h in data if isinstance(h, (HelpDef, tuple))])
+                elif tag == '#SOCIALS':
+                    if data:
+                        socials.extend([s for s in data if isinstance(s, (SocialDef, tuple))])
+
+        p[0] = AreaData(
+            header=header,
+            rooms=tuple(rooms),
+            mobiles=tuple(mobiles),
+            objects=tuple(objects),
+            resets=tuple(resets),
+            shops=tuple(shops),
+            specials=tuple(specials),
+            helps=tuple(helps),
+            socials=tuple(socials),
+        )
 
     def p_sections(self, p):
         '''sections : section sections
@@ -282,11 +348,17 @@ class Parser:
 
     def p_area(self, p):
         '''area : str STRING EOL str STRING EOL str STRING EOL NUMBER NUMBER EOL'''
-        p[0] = (p[2], p[5], p[8], (p[10], p[11]))
+        p[0] = AreaHeader(
+            filename=p[2],
+            name=p[5],
+            builder=p[8],
+            vnum_min=p[10],
+            vnum_max=p[11],
+        )
 
     def p_help(self, p):
         '''help : NUMBER help_keywords TILDE EOL str STRING EOL'''
-        p[0] = (p[2], p[6])
+        p[0] = HelpDef(level=p[1], keywords=tuple(p[2]), text=p[6])
         log.debug(f'Help: {p[0]}')
 
     def p_help_keywords(self, p):
@@ -304,7 +376,8 @@ class Parser:
     def p_social(self, p):
         '''social : WORD line EOL social_descs endl EOL
                   | WORD NUMBER NUMBER line EOL social_descs endl EOL'''
-        p[0] = (p[1], p[4]) if len(p) == 7 else (p[1], p[6])
+        descs = p[4] if len(p) == 7 else p[6]
+        p[0] = SocialDef(name=p[1], stages=tuple(descs) if descs else ())
         log.debug(f'Social: {p[0]}')
 
     def p_social_descs(self, p):
@@ -325,7 +398,41 @@ class Parser:
                     WORD WORD WORD NUMBER EOL \
                     flags flags WORD flags optional EOL \
                     mob_optionals'''
-        p[0] = ()
+        p[0] = MobileDef(
+            vnum=p[1],
+            player_name=p[4],
+            short_desc=p[7],
+            long_desc=p[10],
+            desc=p[13],
+            race=p[16],
+            act_flags=p[18],
+            affected_by=p[19],
+            alignment=p[20],
+            group=p[21],
+            level=p[23],
+            hitroll=p[24],
+            hit=p[25],
+            mana=p[26],
+            damage=p[27],
+            dam_type=p[28],
+            ac_pierce=p[30],
+            ac_bash=p[31],
+            ac_slash=p[32],
+            ac_exotic=p[33],
+            off_flags=p[35],
+            imm_flags=p[36],
+            res_flags=p[37],
+            vuln_flags=p[38],
+            start_pos=p[40],
+            default_pos=p[41],
+            sex=p[42],
+            wealth=p[43],
+            form=p[45],
+            parts=p[46],
+            size=p[47],
+            material=p[48],
+            optionals=tuple(p[51]) if p[51] else (),
+        )
         log.debug(f'Mob: "{p[4]}" "{p[7]}" "{p[10]}"')
 
     def p_mob_optional(self, p):
@@ -338,7 +445,22 @@ class Parser:
                     param param param param param EOL \
                     NUMBER NUMBER NUMBER flags optional EOL \
                     object_optionals'''
-        p[0] = ()
+        p[0] = ObjectDef(
+            vnum=p[1],
+            name=p[4],
+            short_desc=p[7],
+            desc=p[10],
+            material=p[13],
+            item_type=p[15],
+            extra_flags=p[16],
+            wear_flags=p[17],
+            values=(p[19], p[20], p[21], p[22], p[23]),
+            level=p[25],
+            weight=p[26],
+            cost=p[27],
+            condition=p[28],
+            optionals=tuple(p[31]) if p[31] else (),
+        )
         log.debug(f'Obj: "{p[4]}" "{p[7]}" "{p[10]}"')
 
     def p_object_optional(self, p):
@@ -351,7 +473,28 @@ class Parser:
         '''room : VNUM EOL str STRING EOL str STRING EOL \
                   NUMBER flags NUMBER optional EOL \
                   room_optionals S EOL'''
-        p[0] = (p[1], p[4], p[7], p[14])
+        exits = []
+        extras = []
+        if p[14]:
+            for opt in p[14]:
+                if isinstance(opt, ExitDef):
+                    exits.append(opt)
+                elif isinstance(opt, (tuple, list)) and len(opt) == 2 and isinstance(opt[0], int) and isinstance(opt[1], int):
+                    exits.append(ExitDef(direction=opt[0], dst_vnum=opt[1]))
+                elif isinstance(opt, ExtraDescr):
+                    extras.append(opt)
+                elif opt is not None:
+                    extras.append(opt)
+
+        p[0] = RoomDef(
+            vnum=p[1],
+            name=p[4],
+            description=p[7],
+            room_flags=p[10],
+            sector=p[11],
+            exits=tuple(exits),
+            extras=tuple(extras),
+        )
         log.debug(f'Room: {p[4]}')
 
     def p_room_optional(self, p):
@@ -364,7 +507,14 @@ class Parser:
     def p_door(self, p):
         '''door : DOOR NUMBER EOL str STRING EOL str STRING EOL \
                   NUMBER NUMBER NUMBER optional EOL'''
-        p[0] = (p[2], p[12])
+        p[0] = ExitDef(
+            direction=p[2],
+            dst_vnum=p[12],
+            description=p[5] if p[5] else "",
+            keyword=p[8] if p[8] else "",
+            key_vnum=p[11],
+            flags=p[10],
+        )
 
     def p_regen(self, p):
         '''regen : REGEN NUMBER WORD NUMBER optional EOL'''
@@ -378,16 +528,33 @@ class Parser:
         '''reset : WORD NUMBER NUMBER NUMBER NUMBER NUMBER comment
                  | WORD NUMBER NUMBER NUMBER NUMBER comment
                  | WORD NUMBER NUMBER NUMBER comment'''
-        p[0] = list(v for v in p[1:])
+        p[0] = ResetDef(
+            command=p[1],
+            args=tuple(v for v in p[2:-1] if v is not None),
+            comment=p[len(p)-1] if isinstance(p[len(p)-1], str) else None,
+        )
 
     def p_shop(self, p):
         '''shop : NUMBER NUMBER NUMBER NUMBER NUMBER NUMBER \
                   NUMBER NUMBER NUMBER NUMBER comment'''
-        p[0] = list(v for v in p[1:])
+        p[0] = ShopDef(
+            keeper=p[1],
+            buy_types=(p[2], p[3], p[4], p[5], p[6]),
+            profit_buy=p[7],
+            profit_sell=p[8],
+            open_hour=p[9],
+            close_hour=p[10],
+            comment=p[11] if isinstance(p[11], str) else None,
+        )
 
     def p_special(self, p):
         '''special : WORD NUMBER WORD comment'''
-        p[0] = ()
+        p[0] = SpecialDef(
+            command=p[1],
+            vnum=p[2],
+            spec_fun=p[3],
+            comment=p[4] if isinstance(p[4], str) else None,
+        )
 
     def p_param(self, p):
         '''param : WORD
@@ -418,7 +585,7 @@ class Parser:
 
     def p_ext(self, p):
         '''ext : EXT EOL str STRING EOL str STRING optional EOL'''
-        pass
+        p[0] = ExtraDescr(keyword=p[4], description=p[7])
 
     def p_str(self, p):
         '''str :'''

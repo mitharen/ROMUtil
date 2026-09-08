@@ -3,7 +3,7 @@ import networkx as nx
 import pyomo.opt
 from pyomo.environ import ConcreteModel, RangeSet, Param, Var, Objective, ConstraintList, Binary, NonNegativeIntegers, SolverFactory
 
-from romutil.models import Direction, Room, Exit
+from romutil.models import Direction, Room, Exit, RoomDef
 from romutil.plotter import Plotter
 from romutil.solver import solve
 
@@ -56,6 +56,7 @@ def mfas(edges):
     return [(u, v) for u, v in edges if model.b[labels[u], labels[v]].value]
 
 def graph(rdb, name, area):
+    area_name = area.name if hasattr(area, 'name') else (area[1] if isinstance(area, (list, tuple)) and len(area) > 1 else str(area or ''))
     # collapse straight bidirectional hallways
     for vnum, r in list(rdb.items()):
         if len(r.exits) == 2:
@@ -68,7 +69,7 @@ def graph(rdb, name, area):
                 rdb[r.exits[1].dst].replace_exit(vnum, r.exits[0].dst, r.exits[0].distance)
                 rdb[r.exits[0].dst].fixups.append((r, r.exits[0].direction.invert(), r.exits[0].distance))
                 del rdb[vnum]
-                log.debug(f'{area[1]} Trimmed hallway {vnum}.')
+                log.debug(f'{area_name} Trimmed hallway {vnum}.')
 
     exits = list(set([e for r in rdb.values() for e in r.exits]))
 
@@ -76,7 +77,7 @@ def graph(rdb, name, area):
         if e.dst == -1:
             e.dst = max(rdb.keys()) + 1
         if e.dst not in rdb:
-            rdb[e.dst] = Room((e.dst, '', '', []))
+            rdb[e.dst] = Room(RoomDef(vnum=e.dst, name='', description='', exits=()))
             rdb[e.dst].exits.append(e)
             rdb[e.dst].dummy = True
 
@@ -84,14 +85,14 @@ def graph(rdb, name, area):
         log.warning(f'Ignoring disconnected room: {rdb.popitem()}')
         return
 
-    log.info(f'{area[1]} Solving for {len(exits)} exits...')
+    log.info(f'{area_name} Solving for {len(exits)} exits...')
     model, results = solve(rdb, exits)
     if not results.solver.termination_condition == pyomo.opt.TerminationCondition.optimal:
-        log.error(f'{area[1]} Solver failed!')
+        log.error(f'{area_name} Solver failed!')
         log.debug(f'{str(results.solver)}')
         return
     else:
-        log.info(f'{area[1]} Solve completed. Plotting...')
+        log.info(f'{area_name} Solve completed. Plotting...')
 
     for vnum, room in list(rdb.items()):
         room.x = model.x[vnum].value if model.x[vnum].value else 0
