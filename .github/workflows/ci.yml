@@ -74,4 +74,11 @@ jobs:
         run: python scripts/sync_design_doc.py
 
       - name: Run test suite with coverage enforcement
-        run: uv run --python ${{ matrix.python-version }} pytest --cov=romutil --cov-fail-under=95
+        run: |
+          uv run --python ${{ matrix.python-version }} pytest -v --cov=romutil --cov-fail-under=95 --tb=short 2>&1 | tee test_output.log || {
+            echo "### Pytest Failures (Python ${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -n 150 test_output.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          }
