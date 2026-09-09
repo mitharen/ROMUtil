@@ -177,8 +177,6 @@ class TestMudRepositoriesCatalogPositive:
             "## 3. Verified Public MUD Repository Registry",
             "## 4. Codebase Dialect Breakdown & Format Specifications",
             "## 5. Comparative Syntax Matrix",
-            "## 6. Licensing & Distribution Permissions Matrix",
-            "## 7. Downstream Compatibility Roadmap",
         ]
         for heading in required_headings:
             assert heading in content, f"Missing required heading: '{heading}'"
@@ -264,28 +262,21 @@ class TestMudRepositoriesCatalogPositive:
         """Validates that mermaid diagrams have valid structure."""
         content = CATALOG_PATH.read_text(encoding="utf-8")
         diagrams = re.findall(r"```mermaid\n(.*?)\n```", content, re.DOTALL)
-        assert len(diagrams) >= 2, "Expected at least 2 mermaid diagrams"
+        assert len(diagrams) >= 1, "Expected at least 1 mermaid diagram"
         for d in diagrams:
             lines = [l.strip() for l in d.strip().splitlines() if l.strip()]
             assert any(lines[0].startswith(prefix) for prefix in ("flowchart", "graph")), (
                 f"Diagram missing graph/flowchart declaration: {lines[0]}"
             )
 
-    def test_decomposed_backlog_tasks_documented(self):
-        """Verifies that downstream roadmap defines decomposed child tasks (8a-8g)."""
+    def test_no_backlog_tasks_or_legal_essays_in_public_catalog(self):
+        """Verifies that public catalog documentation does not contain internal coordinator task descriptions or legal essays."""
         content = CATALOG_PATH.read_text(encoding="utf-8")
-        expected_tasks = [
-            "Task 8a",
-            "Task 8b",
-            "Task 8c",
-            "Task 8d",
-            "Task 8e",
-            "Task 8f",
-            "Task 8g",
-            "Task 8h",
-        ]
-        for task in expected_tasks:
-            assert task in content, f"Missing decomposed backlog task: {task}"
+        assert "## 6. Licensing & Distribution Permissions Matrix" not in content
+        assert "## 7. Downstream Compatibility Roadmap" not in content
+        assert "Decomposed Backlog Tasks" not in content
+        assert "Task 8a" not in content
+        assert "Task 8h" not in content
 
 
 # ---------------------------------------------------------------------------

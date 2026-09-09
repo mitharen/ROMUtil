@@ -1,6 +1,6 @@
 # Public MUD Area Repository Catalog & Dialect Research
 
-This document establishes an authoritative, verified catalog of public open-source GitHub repositories hosting authentic area files across the **ROM (Rivers of MUD)**, **Merc**, **Envy**, **DikuMUD**, and derivative codebase families. It details format specifications, directory layouts, sample iconic zones, syntax idiosyncrasies, and licensing restrictions to guide ROMUtil's multi-dialect expansion.
+This document establishes an authoritative, verified catalog of public open-source GitHub repositories hosting authentic area files across the **ROM (Rivers of MUD)**, **Merc**, **Envy**, **DikuMUD**, and derivative codebase families. It details format specifications, directory layouts, sample iconic zones, syntax idiosyncrasies, and comparative grammar structures.
 
 ---
 
@@ -230,73 +230,3 @@ The following table catalogs verified, publicly accessible open-source GitHub re
 | **Door Format** | `D{0..5}\ndesc~\nkey~\nflags key dst` | `D{0..5}\ndesc~\nkey~\nflags key dst` | `D{0..5}\ndesc~\nkey~\nflags key dst` | `D{0..5}\ndesc~\nkey~\nflags key dst` | `Door <dir>` or `#EXIT` block | `D{0..5}` or `#DOOR` block |
 | **Bitvector Format** | Mixed numeric / `A-Z a-z` | Strict Integer bitmask | Numeric bitmask | Alphabetic (`cdeh`) or numeric | String flags (`dark`, `nomob`) | Tagged letter codes |
 | **Colour Markup** | None or `{r`, `{x` (ROM/OLC) | None | None | None | `&r`, `&w` | `@@r`, `@@N` |
-
----
-
-## 6. Licensing & Distribution Permissions Matrix
-
-All analyzed codebases trace their legal heritage to the original 1990/1991 DikuMUD license, creating a cascading stack of attribution requirements:
-
-| License Tier | Originators | Core Terms & Distribution Restrictions |
-| :--- | :--- | :--- |
-| **DikuMUD License** | Hans Henrik Stærfeldt, Katja Nyboe, Tom Madsen, Michael Seifert, Sebastian Hammer (1990–1991) | - **Strictly Non-Commercial**: No financial profit or revenue may be derived from the software or derived works.<br/>- **Mandatory Login Attribution**: DIKU copyright notice must appear on user connect/login screen.<br/>- **Source Preservation**: Original copyright notices must remain intact in all source files. |
-| **Merc License** | Michael O'Keene, Michael Quan, Erwin Andreasen (1992–1994) | - Inherits all DikuMUD restrictions.<br/>- **Help Screen Credit**: Must provide a `help merc` command documenting authors.<br/>- **Login Banner**: Must display Merc credits during connection sequence. |
-| **ROM License** | Russ Taylor, Brian Moore, Gabrielle Taylor (1993–1998) | - Inherits all DikuMUD and Merc restrictions.<br/>- **ROM Credit Display**: Must display ROM copyright on connect and in `help rom`.<br/>- Prohibits charging fees for access, hosting, or derived services. |
-| **CircleMUD License** | Jeremy Elson (1993–2002) | - Inherits DikuMUD non-commercial terms.<br/>- Retains Jeremy Elson copyright; requires CircleMUD credits in login screen and documentation.<br/>- Free for non-commercial educational and hobbyist use. |
-| **SMAUG License** | Derek Snider, Realms of Despair (1994–1996) | - Inherits DikuMUD and Merc restrictions.<br/>- Requires SMAUG credit screen and retaining all author comments. |
-| **Envy / ACK! Licenses** | Kahn, Hatchet, Quan / Stephen McCarthy | - Inherits DikuMUD and Merc restrictions.<br/>- Requires author recognition in credit/help displays. |
-
-### Legal Compliance for ROMUtil
-ROMUtil functions as an **offline analysis, spatial layout, and visualization tool**. It parses area files stored on local filesystems to compute geometric coordinate embeddings and SVG visualizations:
-1. **Zero Proprietary Code Linking**: ROMUtil is an independent Python clean-room implementation; it does not link against, compile, or distribute any vintage C server binaries.
-2. **Non-Commercial Invariance**: ROMUtil is free and open-source under the MIT License, adhering to the non-commercial requirements of upstream MUD licenses.
-3. **Data File Decoupling**: Area files remain in their respective external repositories or local directories; ROMUtil ingests them via path references without re-licensing upstream creative writing.
-
----
-
-## 7. Downstream Compatibility Roadmap
-
-To expand ROMUtil from a ROM 2.4 engine into a universal MUD spatial layout system, dialect compatibility is broken down into modular child tasks:
-
-```mermaid
-flowchart LR
-    Catalog["Task 12: Repository Catalog<br/>(docs/MUD_REPOSITORIES.md)"]
-    Catalog --> T8A["Task 8a: Merc 2.1/2.2 Support<br/>Single-line #AREA & numeric bitmasks"]
-    Catalog --> T8B["Task 8b: Envy 1.0/2.0/2.2 Support<br/>#AREADATA & extended door locks"]
-    Catalog --> T8C["Task 8c: CircleMUD / tbaMUD Support<br/>Split .wld directory loader & index"]
-    Catalog --> T8D["Task 8d: DikuMUD Alfa Support<br/>Monolithic tinyworld.wld parser"]
-    Catalog --> T8E["Task 8e: SMAUG Support<br/>10-direction model & #ROOMDATA"]
-    Catalog --> T8F["Task 8f: ACK!MUD Support<br/>Tagged headers & colour stripping"]
-    Catalog --> T8G["Task 8g: ANATOLIA 3.0 Support<br/>#RESETMESSAGE & #FLAG sections"]
-    Catalog --> T8H["Task 8h: Bulk Corpus Validation Harness<br/>scripts/validate_corpus.py & workflow_dispatch"]
-```
-
-### Decomposed Backlog Tasks:
-1. **Task 8a: Merc 2.1 & 2.2 Grammar & Ingestion**:
-   - Update `romutil/parser.py` to accept single-line `#AREA\t{ level_range } Author Name~`.
-   - Support areas omitting trailing VNUM ranges by dynamically deriving bounds from parsed rooms.
-   - Map numeric integer room flags directly to domain models.
-2. **Task 8b: Envy 1.0, 2.0 & Ultra-Envy 2.2 Grammar**:
-   - Add `#AREADATA ... End` token stream reduction in PLY parser.
-   - Parse extended door state bitmasks (`EX_PASSPROOF=16`, `EX_SECRET=32`).
-   - Tolerate room sound descriptors and custom resets.
-3. **Task 8c: CircleMUD 3.1 & tbaMUD Split World Database Ingestion**:
-   - Implement `WorldDirectoryLoader` to read `lib/world/wld/index` and parse individual zone `.wld` files.
-   - Support `S` room terminators and lowercase bitvector strings (`cdeh`).
-   - Support 6-parameter tbaMUD room header lines.
-4. **Task 8d: DikuMUD Alfa / Gamma Ingestion**:
-   - Support multi-zone single-file `tinyworld.wld` formats.
-   - Handle legacy VNUM 0 (The Void) as a valid room node.
-5. **Task 8e: SMAUG & SmaugFUSS 10-Direction Spatial Modeling**:
-   - Extend `Direction` enum in `romutil/models.py` with diagonal intercardinal vectors: `Northeast` (+1, +1, 0), `Northwest` (-1, +1, 0), `Southeast` (+1, -1, 0), `Southwest` (-1, -1, 0).
-   - Add `#FUSSAREA` and key-value `#ROOM` block parsing.
-6. **Task 8f: ACK!MUD / AckFUSS Ingestion & Colour Sanitization**:
-   - Add pre-lexer sanitization pipeline to strip `@@<color>` markup tokens from room names and descriptions.
-   - Parse single-character tagged `#AREA` lines (`Q`, `K`, `V`, etc.).
-7. **Task 8g: ANATOLIA 3.0 Section Tolerance**:
-   - Add grammar reductions for `#RESETMESSAGE` and `#FLAG` top-level blocks.
-   - Retain backward compatibility with standard ROM 2.4b6.
-8. **Task 8h: Bulk Corpus Ingestion & Validation Harness (`scripts/validate_corpus.py`)**:
-   - Implement an on-demand verification tool (`scripts/validate_corpus.py`) that shallow-clones cataloged MUD repositories at their pinned target commit SHAs into an ephemeral scratch directory.
-   - Execute bulk parsing across all discovered `.are` and `.wld` files per dialect to verify syntax coverage, report keyword anomalies, and output parse success/failure metrics.
-   - Add a manual or scheduled GitHub Actions workflow (`workflow_dispatch` / nightly) to run whole-library stress testing without adding overhead to fast commit CI.

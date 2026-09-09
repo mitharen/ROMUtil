@@ -106,13 +106,13 @@ ROMUtil parses and normalizes area formats across major DikuMUD derivations:
 | **Envy 1.0 / 2.0** | Full | Key-value `#AREADATA ... End`, `#ROOMDATA`, non-modeled section stripping |
 | **CircleMUD 3.x / tbaMUD** | Full | Split-file directory parsing (`*.wld` rooms + `*.zon` headers), 6-field room lines |
 
-Detailed format specifications, repository links, and the dialect compatibility roadmap are cataloged in [`docs/MUD_REPOSITORIES.md`](./docs/MUD_REPOSITORIES.md).
+Detailed format specifications and verified repository references are cataloged in [`docs/MUD_REPOSITORIES.md`](./docs/MUD_REPOSITORIES.md).
 
 ## Documentation
 
 - [`DESIGN.md`](./DESIGN.md): System architecture, mathematical layout formulation, graph reduction, and projection geometry.
 - [`docs/SOLVER_PROFILING.md`](./docs/SOLVER_PROFILING.md): MILP solver benchmarks, computational bottlenecks, and optimization analysis.
-- [`docs/MUD_REPOSITORIES.md`](./docs/MUD_REPOSITORIES.md): Public MUD area repositories, grammar comparison, and licensing analysis.
+- [`docs/MUD_REPOSITORIES.md`](./docs/MUD_REPOSITORIES.md): Public MUD area repository catalog and dialect grammar comparison.
 - [`AGENTS.md`](./AGENTS.md): Development policies, branching model, and documentation invariants.
 
 ## Testing
