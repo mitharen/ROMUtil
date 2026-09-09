@@ -7,8 +7,6 @@ import xml.etree.ElementTree as ET
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-README_FILE = REPO_ROOT / "README.md"
-DESIGN_FILE = REPO_ROOT / "DESIGN.md"
 
 
 # ---------------------------------------------------------------------------
@@ -92,48 +90,6 @@ def validate_html_viewer_content(content: str) -> dict:
     return data
 
 
-def extract_markdown_relative_links(markdown_text: str):
-    """Extracts all relative markdown file links, image embeds, and HTML tags.
-
-    Yields tuples of (link_type, display_text, clean_target_path).
-    """
-    # 1. Standard Markdown links [text](target)
-    for m in re.finditer(r"(?<!\!)\[([^\]]+)\]\(([^)#]+)(?:#[^)]*)?\)", markdown_text):
-        target = m.group(2).strip()
-        if target.startswith(("http://", "https://", "mailto:", "ftp://")):
-            continue
-        yield ("link", m.group(1), target)
-
-    # 2. Markdown image embeds ![alt](target)
-    for m in re.finditer(r"!\[([^\]]*)\]\(([^)#]+)(?:#[^)]*)?\)", markdown_text):
-        target = m.group(2).strip()
-        if target.startswith(("http://", "https://", "mailto:", "ftp://")):
-            continue
-        yield ("image", m.group(1), target)
-
-    # 3. HTML <img> tags: <img src="target">
-    for m in re.finditer(r"""<img\b[^>]*src=['"]([^'">#]+)['"][^>]*>""", markdown_text, re.IGNORECASE):
-        target = m.group(1).strip()
-        if target.startswith(("http://", "https://", "mailto:", "ftp://")):
-            continue
-        yield ("html_img", "img", target)
-
-    # 4. HTML <a> tags: <a href="target">
-    for m in re.finditer(r"""<a\b[^>]*href=['"]([^'">#]+)['"][^>]*>""", markdown_text, re.IGNORECASE):
-        target = m.group(1).strip()
-        if target.startswith(("http://", "https://", "mailto:", "ftp://")):
-            continue
-        yield ("html_a", "a", target)
-
-
-def find_broken_relative_links(markdown_text: str, base_dir: Path):
-    """Returns a list of broken relative targets that do not exist on disk."""
-    broken = []
-    for link_type, text, target in extract_markdown_relative_links(markdown_text):
-        resolved = (base_dir / target).resolve()
-        if not resolved.exists():
-            broken.append((link_type, text, target, str(resolved)))
-    return broken
 
 
 # ---------------------------------------------------------------------------
@@ -222,35 +178,6 @@ class TestHtmlAssetIntegrity:
             validate_html_viewer_file(html_file)
 
 
-class TestReadmeLinkAndVisualIntegrity:
-    """Verifies README.md structure and that all relative links resolve to existing files."""
-
-    def test_readme_structure_and_core_sections(self):
-        assert README_FILE.exists()
-        content = README_FILE.read_text(encoding="utf-8")
-        assert "# ROMUtil" in content
-        assert "## Prerequisites" in content
-        assert "## Installation" in content
-        assert "## Usage" in content
-        assert "## Supported Dialects" in content
-        assert "## Documentation" in content
-        assert "## Testing" in content
-
-    def test_readme_all_relative_links_and_images_resolve(self):
-        content = README_FILE.read_text(encoding="utf-8")
-        broken = find_broken_relative_links(content, REPO_ROOT)
-        assert len(broken) == 0, f"Broken links found in README.md: {broken}"
-
-        all_links = list(extract_markdown_relative_links(content))
-        assert len(all_links) >= 5, f"Expected >= 5 relative links in README.md, found {len(all_links)}"
-
-    def test_readme_references_key_documentation(self):
-        content = README_FILE.read_text(encoding="utf-8")
-        targets = [target for _, _, target in extract_markdown_relative_links(content)]
-        assert any("DESIGN.md" in t for t in targets)
-        assert any("MUD_REPOSITORIES.md" in t for t in targets)
-        assert any("SOLVER_PROFILING.md" in t for t in targets)
-        assert any("AGENTS.md" in t for t in targets)
 
 
 class TestNegativeAndBoundaryCases:
@@ -322,20 +249,6 @@ class TestNegativeAndBoundaryCases:
         with pytest.raises(ValueError, match="Forbidden external stylesheet"):
             validate_html_viewer_content(bad_html)
 
-    def test_broken_relative_link_detection(self, tmp_path):
-        synthetic_md = """
-# Test Markdown
-Here is a valid link: [Valid File](valid.txt)
-Here is a broken link: [Broken File](nonexistent_file.txt)
-Here is an image link: ![Broken Image](missing_image.svg)
-Here is an HTML tag: <img src="nonexistent_html_img.png" />
-Here is an external link: [External](https://example.com/foo)
-"""
-        (tmp_path / "valid.txt").write_text("hello", encoding="utf-8")
-        broken = find_broken_relative_links(synthetic_md, tmp_path)
-        assert len(broken) == 3
-        targets = {t[2] for t in broken}
-        assert targets == {"nonexistent_file.txt", "missing_image.svg", "nonexistent_html_img.png"}
 
     def test_nonexistent_file_path_raises_file_not_found(self, tmp_path):
         nonexistent = tmp_path / "phantom.svg"

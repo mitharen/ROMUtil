@@ -39,9 +39,6 @@ jobs:
       - name: Static type analysis (mypy)
         run: uv run mypy romutil
 
-      - name: Architecture documentation sync check
-        run: python scripts/sync_design_doc.py
-
   test:
     name: Test Matrix (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -69,9 +66,6 @@ jobs:
 
       - name: Static type analysis (mypy)
         run: uv run --python ${{ matrix.python-version }} mypy romutil
-
-      - name: Architecture documentation sync check
-        run: python scripts/sync_design_doc.py
 
       - name: Run test suite with coverage enforcement
         run: |

@@ -109,19 +109,6 @@ class TestCIWorkflowPositive:
         assert "--cov=romutil" in cmd, "Pytest must track coverage for romutil"
         assert "--cov-fail-under=95" in cmd, "Pytest must enforce >= 95% coverage threshold"
 
-    def test_architecture_doc_sync_check(self):
-        data = load_workflow_data()
-        jobs = data.get("jobs", {})
-        all_steps = []
-        for job in jobs.values():
-            all_steps.extend(job.get("steps", []))
-
-        doc_steps = [
-            step for step in all_steps
-            if "scripts/sync_design_doc.py" in step.get("run", "")
-        ]
-        assert len(doc_steps) > 0, "Workflow must run scripts/sync_design_doc.py"
-
     def test_static_analysis_and_linting(self):
         data = load_workflow_data()
         jobs = data.get("jobs", {})

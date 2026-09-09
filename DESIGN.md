@@ -313,8 +313,6 @@ When external area files are unavailable, integration test suites requiring exte
 Automated pre-commit hooks verify code quality before permitting commits:
 - Strips trailing whitespace and fixes end-of-file formatting.
 - Validates YAML configuration files and blocks large file additions.
-- Runs [`scripts/sync_design_doc.py`](./scripts/sync_design_doc.py) to guarantee `DESIGN.md` remains synchronized with repository structure and valid links.
-- Executes `uv run pytest` to ensure all tests pass and coverage remains $\ge 95\%$.
 
 ### Continuous Integration (CI)
 The automated GitHub Actions pipeline ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) executes on all pushes and pull requests targeting the `main` branch. The CI workflow guarantees system invariants across target Python environments (3.12, 3.13, and 3.14):
@@ -322,7 +320,6 @@ The automated GitHub Actions pipeline ([`.github/workflows/ci.yml`](./.github/wo
 - Installing pinned dependencies through `astral-sh/setup-uv@v5` with runner-level caching.
 - Enforcing static type safety using `mypy`.
 - Validating repository formatting, linting, and pre-commit checks.
-- Validating design documentation synchronization and link integrity via [`scripts/sync_design_doc.py`](./scripts/sync_design_doc.py).
 - Executing the test suite with strict coverage enforcement thresholds.
 
 ---
