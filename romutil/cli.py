@@ -8,19 +8,40 @@ import networkx as nx
 import pyomo.common.config
 
 from romutil.models import Room, AreaData, AreaHeader
-from romutil.parser import Parser
+from romutil.parser import Parser, parse_circlemud_directory
 from romutil.graph import graph, solve_layout
 from romutil.exporter import build_area_json, export_json, export_html
 
 logging.basicConfig()
 log = logging.getLogger('Mapper')
 
-def main(area_files, outbase, split_levels=False, fmt="svg"):
+def main(area_files, outbase, split_levels=False, fmt="svg", circle_dir=None):
     rdb = {}
     area_meta = None
     first_file_name = "area.are"
 
+    if circle_dir is not None:
+        first_file_name = str(circle_dir)
+        area = parse_circlemud_directory(circle_dir)
+        if not isinstance(area, AreaData):
+            raise TypeError(f"Expected AreaData from parser, got {type(area).__name__}")
+        if area.header:
+            area_meta = area.header
+        rooms = list(area.rooms)
+        rdb.update({r.vnum: Room(r) for r in rooms})
+
     for area_file in area_files:
+        if isinstance(area_file, (str, Path)) and Path(area_file).is_dir():
+            first_file_name = str(area_file)
+            area = parse_circlemud_directory(area_file)
+            if not isinstance(area, AreaData):
+                raise TypeError(f"Expected AreaData from parser, got {type(area).__name__}")
+            if area.header:
+                area_meta = area.header
+            rooms = list(area.rooms)
+            rdb.update({r.vnum: Room(r) for r in rooms})
+            continue
+
         # Support both open file objects and Path / string paths
         if hasattr(area_file, 'read'):
             content = area_file.read()
@@ -109,7 +130,13 @@ def main(area_files, outbase, split_levels=False, fmt="svg"):
 
 def cli():
     parser = argparse.ArgumentParser(description='ROM MUD Area Mapper and 3D Visualizer')
-    parser.add_argument('areas', nargs='+', type=Path, help='.ARE files for parsing')
+    parser.add_argument('areas', nargs='*', type=Path, help='.ARE files or directories for parsing')
+    parser.add_argument(
+        '--circle-dir',
+        type=Path,
+        default=None,
+        help='CircleMUD split world directory containing .wld and .zon files'
+    )
     parser.add_argument('-outbase', help='output base name')
     parser.add_argument('--split-levels', action='store_true', help='Output separate SVGs for each distinct elevation plane')
     parser.add_argument('-d', '--debug', action='store_true', help='Show debug info')
@@ -121,15 +148,21 @@ def cli():
     )
     args = parser.parse_args()
 
+    if not args.areas and not args.circle_dir:
+        parser.error('At least one area file or --circle-dir must be provided.')
+
     pyomo.common.config.logger.setLevel(logging.ERROR)
     if args.debug:
         log.setLevel(logging.DEBUG)
 
     outbase = args.outbase
     if not outbase:
-        outbase = str(args.areas[0].with_suffix(''))
+        if args.areas:
+            outbase = str(args.areas[0].with_suffix(''))
+        elif args.circle_dir:
+            outbase = str(args.circle_dir / args.circle_dir.name)
 
-    main(args.areas, outbase, split_levels=args.split_levels, fmt=args.format)
+    main(args.areas, outbase, split_levels=args.split_levels, fmt=args.format, circle_dir=args.circle_dir)
 
 if __name__ == '__main__':
     cli()

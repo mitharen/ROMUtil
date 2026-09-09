@@ -15,7 +15,7 @@ from romutil.models import (
     SocialDef,
     SpecialDef,
 )
-from romutil.parser import Parser, parse_file
+from romutil.parser import Parser, parse_file, parse_circlemud_directory, parse_circlemud_zone_file
 from romutil.plotter import Plotter
 from romutil.solver import solve, non_euler, find_overlap_candidates
 from romutil.graph import graph, solve_layout, restore_rooms, mfas
@@ -40,6 +40,8 @@ __all__ = [
     'SpecialDef',
     'Parser',
     'parse_file',
+    'parse_circlemud_directory',
+    'parse_circlemud_zone_file',
     'Plotter',
     'solve',
     'non_euler',

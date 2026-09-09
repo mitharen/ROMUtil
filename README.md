@@ -94,7 +94,7 @@ ROMUtil provides built-in compatibility for vintage and modern DikuMUD derivativ
 | **ROM 2.4 / QuickMUD** | Standard 4-line format (`filename~`, `name~`, `{ min max } builder~`, `vnum_min vnum_max`) | `NUMBER flags NUMBER` (e.g. `0 0 1`), standard sectors 0–9 | Standard 3-number doors (`locks key to_room`) | Canonical baseline; `#ROOMS` section; `#$` EOF delimiter |
 | **Merc 2.1 / 2.2** | Single-line header (e.g. `#AREA { 1 15 } Builder Name~`) | Piped bitmask flags (e.g. `30 4\|8\|1024 0` evaluated to composite integer `1036`) | Legacy 5-number doors (`locks key to_room rev_dir rev_room`) | Comments (`*`) tolerated across `#RESETS` and `#SPECIALS` |
 | **Envy 1.0 / 2.0** | Key-value `#AREADATA ... End` block | `#ROOMDATA` section header; extended sectors (e.g. 9 underwater, 10 air) | Standard doors; extended extra descriptions | Unmodeled dialect sections (`#GAMES`, `#CLANS`, `#ECONOMY`) gracefully ignored |
-| **CircleMUD 3.x / DikuMUD III** | Optional / absent header in `.wld` files (derives fallback metadata) | Standalone direct room declarations without `#ROOMS`; 6 room parameters (`zone flags sector extra1 extra2 extra3`) | Standard doors; negative key vnums (`-1`) for unkeyed doors | CircleMUD EOF delimiters (`$~` and `$`) automatically normalized |
+| **CircleMUD 3.x / DikuMUD III** | Optional / absent header in `.wld`; full split-world directory support (`*.wld` rooms + `*.zon` headers + `index` manifest) | Standalone direct room declarations without `#ROOMS`; 6 room parameters (`zone flags sector extra1 extra2 extra3`) | Standard doors; negative key vnums (`-1`) for unkeyed doors | CircleMUD EOF delimiters (`$~` and `$`) automatically normalized; zone reset commands parsed |
 
 ---
 
@@ -148,6 +148,10 @@ uv run romutil path/to/area.are --split-levels
 
 # 4. Export structured JSON room database:
 uv run romutil path/to/area.are --format json -outbase area_data
+
+# 5. Ingest CircleMUD / tbaMUD split world directories:
+uv run romutil path/to/world_dir -outbase circlemud_map
+uv run romutil --circle-dir path/to/world_dir -outbase circlemud_map
 ```
 
 ### Batch Map Generation
