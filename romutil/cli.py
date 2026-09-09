@@ -69,6 +69,19 @@ def main(area_files, outbase, split_levels=False, fmt="svg", circle_dir=None, so
         log.error('No rooms to plot.')
         sys.exit(0)
 
+    # Provide fallback area metadata if none was in the file
+    if area_meta is None and rdb:
+        room_vnums = list(rdb.keys())
+        v_min = min(room_vnums)
+        v_max = max(room_vnums)
+        area_meta = AreaHeader(
+            filename=Path(first_file_name).name,
+            name=Path(first_file_name).stem,
+            builder="",
+            vnum_min=v_min,
+            vnum_max=v_max,
+        )
+
     edges = [
         (e.src, e.dst)
         for r in rdb.values()
@@ -104,16 +117,6 @@ def main(area_files, outbase, split_levels=False, fmt="svg", circle_dir=None, so
                 max_x = max(r.x for r in non_dummy if r.x is not None)
                 offset_x = max_x + 3
             all_solved_rooms.update({r.vnum: r for r in non_dummy})
-
-        # Provide fallback area metadata if none was in the file
-        if area_meta is None:
-            area_meta = AreaHeader(
-                filename=Path(first_file_name).name,
-                name=Path(first_file_name).stem,
-                builder="",
-                vnum_min=0,
-                vnum_max=0,
-            )
 
         data = build_area_json(all_solved_rooms, area_meta)
 
@@ -153,6 +156,9 @@ def cli():
         help='CBC solver timeout limit in seconds',
     )
     args = parser.parse_args()
+
+    if args.areas and str(args.areas[0]).lower() == "map" and not args.areas[0].exists():
+        args.areas = args.areas[1:]
 
     if not args.areas and not args.circle_dir:
         parser.error('At least one area file or --circle-dir must be provided.')
