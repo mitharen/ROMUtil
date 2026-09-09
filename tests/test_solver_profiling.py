@@ -28,7 +28,7 @@ class TestSolverProfilingUnit:
     """Unit tests for the solver profiling instrumentation and metrics collection."""
 
     def test_find_area_file_success(self):
-        if not SAMPLE_AREAS_DIR:
+        if not SAMPLE_AREAS_DIR or not os.path.isdir(SAMPLE_AREAS_DIR):
             pytest.skip("QuickMUD area directory not found")
         path = find_area_file("smurf.are", search_dir=SAMPLE_AREAS_DIR)
         assert path.is_file()
@@ -203,7 +203,7 @@ class TestSolverProfilingCliAndNegative:
 
     def test_cli_execution_with_output(self, tmp_path, monkeypatch):
         """Positive test for CLI execution creating json and markdown outputs."""
-        if not SAMPLE_AREAS_DIR:
+        if not SAMPLE_AREAS_DIR or not os.path.isdir(SAMPLE_AREAS_DIR):
             pytest.skip("QuickMUD area directory not found")
 
         json_out = tmp_path / "out.json"
