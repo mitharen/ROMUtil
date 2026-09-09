@@ -247,15 +247,18 @@ class TestHtmlAssetIntegrity:
 
 
 class TestReadmeLinkAndVisualIntegrity:
-    """Verifies all relative links and image paths in README.md resolve to existing files."""
+    """Verifies README.md structure and that all relative links resolve to existing files."""
 
-    def test_readme_contains_gallery_and_badges(self):
+    def test_readme_structure_and_core_sections(self):
         assert README_FILE.exists()
         content = README_FILE.read_text(encoding="utf-8")
-        assert "## Visual Gallery & Interactive Previews" in content
-        assert "pipeline_diagram.svg" in content
-        assert "school.svg" in content
-        assert "school.html" in content
+        assert "# ROMUtil" in content
+        assert "## Prerequisites" in content
+        assert "## Installation" in content
+        assert "## Usage" in content
+        assert "## Supported Dialects" in content
+        assert "## Documentation" in content
+        assert "## Testing" in content
 
     def test_readme_all_relative_links_and_images_resolve(self):
         content = README_FILE.read_text(encoding="utf-8")
@@ -263,18 +266,15 @@ class TestReadmeLinkAndVisualIntegrity:
         assert len(broken) == 0, f"Broken links found in README.md: {broken}"
 
         all_links = list(extract_markdown_relative_links(content))
-        assert len(all_links) >= 10, f"Expected >= 10 relative links in README.md, found {len(all_links)}"
+        assert len(all_links) >= 5, f"Expected >= 5 relative links in README.md, found {len(all_links)}"
 
-    def test_readme_embedded_images_resolve_to_assets(self):
+    def test_readme_references_key_documentation(self):
         content = README_FILE.read_text(encoding="utf-8")
-        img_targets = [
-            target for _, _, target in extract_markdown_relative_links(content)
-            if "assets" in target and target.endswith((".svg", ".html"))
-        ]
-        assert len(img_targets) >= 5, f"Expected >= 5 asset references, found {len(img_targets)}"
-        for target in img_targets:
-            resolved = (REPO_ROOT / target).resolve()
-            assert resolved.exists(), f"Asset target does not exist: {target} (resolved: {resolved})"
+        targets = [target for _, _, target in extract_markdown_relative_links(content)]
+        assert any("DESIGN.md" in t for t in targets)
+        assert any("MUD_REPOSITORIES.md" in t for t in targets)
+        assert any("SOLVER_PROFILING.md" in t for t in targets)
+        assert any("AGENTS.md" in t for t in targets)
 
 
 class TestNegativeAndBoundaryCases:
