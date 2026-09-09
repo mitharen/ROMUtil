@@ -1,0 +1,12 @@
+#30
+Northern Midgaard~
+3099 15 2
+* CircleMUD 3.x Zone Reset Configuration
+* M <if_flag> <mob_vnum> <max_existing> <room_vnum>
+M 0 3010 1 3001
+* O <if_flag> <obj_vnum> <max_existing> <room_vnum>
+O 0 3001 1 3004
+* D <if_flag> <room_vnum> <direction> <state>
+D 0 3001 0 1
+S
+$

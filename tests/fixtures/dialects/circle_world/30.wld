@@ -1,0 +1,68 @@
+#3001
+The Temple of Midgaard~
+You are inside the Temple of Midgaard, a majestic sanctuary of white marble.
+Pillars of polished stone reach high up towards the vaulted ceiling.
+~
+30 156 0 0 0 0
+D0
+A carved cedar doorway opens north into the inner sanctum.~
+door cedar~
+1 -1 3002
+D1
+A marble corridor leads east towards the grand altar.~
+~
+0 -1 3004
+D2
+The south gates open towards the temple square.~
+gates south~
+1 -1 3003
+S
+#3002
+The Inner Sanctum~
+Incense burns in brass braziers, filling the air with fragrant smoke.
+Golden relics rest upon velvet cushions in this private sanctuary.
+~
+30 148 0 0 0 0
+D2
+The cedar door leads south to the temple nave.~
+door cedar~
+1 -1 3001
+S
+#3003
+Temple Square~
+The bustling square outside the temple is paved with smooth cobblestones.
+Fountains bubble cheerily in the sunlight as citizens gather here.
+~
+30 0 1 0 0 0
+D0
+The temple gates lead north into the grand sanctuary.~
+gates north~
+1 -1 3001
+D2
+The wide avenue continues south toward the Market Square.~
+~
+0 -1 3005
+S
+#3004
+The Grand Altar~
+A massive slab of white marble is carved with ancient protective runes.
+Priests offer silent prayers before the eternal golden flame.
+~
+30 148 0 0 0 0
+D3
+The marble corridor leads west back to the temple.~
+~
+0 -1 3001
+S
+#3005
+Market Square~
+Crowds of merchants and travelers mingle in the lively central marketplace.
+Stalls of exotic goods and provisions line the cobblestone plaza.
+~
+30 0 1 0 0 0
+D0
+The avenue leads north back to the Temple Square.~
+~
+0 -1 3003
+S
+$~

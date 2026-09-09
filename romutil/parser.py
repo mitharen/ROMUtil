@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 import re
 import sys
 from typing import Any
@@ -806,6 +807,299 @@ class Parser:
     def parse(self, buffer):
         buffer = normalize_dialect_buffer(buffer)
         return self.parser.parse(buffer, lexer=self.lexer, debug=False)
+
+
+def parse_circlemud_zone_file(file_path_or_content: str | Path) -> tuple[AreaHeader, tuple[ResetDef, ...]]:
+    """Parse a CircleMUD 3.x / tbaMUD zone (.zon) configuration file.
+
+    Extracts zone identification, builder/author, room VNUM boundaries,
+    lifespan/reset configurations, and reset commands into domain models.
+    """
+    if isinstance(file_path_or_content, Path) or (
+        isinstance(file_path_or_content, str)
+        and "\n" not in file_path_or_content
+        and Path(file_path_or_content).is_file()
+    ):
+        p = Path(file_path_or_content)
+        filename = p.name
+        with open(p, "r", encoding="latin-1", errors="replace") as f:
+            content = f.read()
+    else:
+        filename = "zone.zon"
+        content = str(file_path_or_content)
+
+    lines = content.splitlines()
+    idx = 0
+    zone_num = None
+    header_line = ""
+    while idx < len(lines):
+        line = lines[idx].strip()
+        idx += 1
+        if not line or line.startswith(("*", ";")):
+            continue
+        if line.startswith("#"):
+            m = re.match(r"^#(\d+)\s*(.*)", line)
+            if m:
+                zone_num = int(m.group(1))
+                header_line = m.group(2).strip()
+                break
+        raise ValueError(f"Invalid CircleMUD zone header: expected '#<zone_num>', got {line!r}")
+
+    if zone_num is None:
+        raise ValueError("Invalid CircleMUD zone file: no '#<zone_num>' found")
+
+    current_str_parts: list[str] = []
+    if header_line:
+        current_str_parts.append(header_line)
+
+    numeric_tokens: list[str] = []
+    while idx < len(lines):
+        raw_line = lines[idx]
+        idx += 1
+        line = raw_line.strip()
+        if not line or line.startswith(("*", ";")):
+            continue
+
+        parts = line.split()
+        if parts and parts[0].isdigit() and "~" not in line:
+            if not current_str_parts or all("~" in s for s in current_str_parts):
+                numeric_tokens = parts
+                break
+
+        current_str_parts.append(line)
+
+    combined_str_text = " ".join(current_str_parts)
+    raw_strings = re.findall(r"([^~]+)~", combined_str_text)
+    tilde_strings = [s.strip() for s in raw_strings if s.strip()]
+
+    if not numeric_tokens:
+        raise ValueError("Invalid CircleMUD zone file: missing numeric zone parameters line")
+
+    if len(tilde_strings) >= 2:
+        builder = tilde_strings[0]
+        name = tilde_strings[1]
+    elif len(tilde_strings) == 1:
+        builder = "Unknown"
+        name = tilde_strings[0]
+    else:
+        builder = "Unknown"
+        name = f"Zone {zone_num}"
+
+    nums = [int(t) for t in numeric_tokens if t.lstrip("-+").isdigit()]
+    if len(nums) >= 4 and nums[0] <= nums[1]:
+        vnum_min = nums[0]
+        vnum_max = nums[1]
+    elif len(nums) >= 3:
+        vnum_max = nums[0]
+        vnum_min = zone_num * 100 if vnum_max >= zone_num * 100 else max(0, vnum_max - 99)
+    elif len(nums) >= 1:
+        vnum_max = nums[0]
+        vnum_min = zone_num * 100 if vnum_max >= zone_num * 100 else 0
+    else:
+        vnum_min = zone_num * 100
+        vnum_max = zone_num * 100 + 99
+
+    resets: list[ResetDef] = []
+    while idx < len(lines):
+        line = lines[idx].strip()
+        idx += 1
+        if not line or line.startswith(("*", ";")):
+            continue
+        if line.startswith(("S", "$")):
+            break
+
+        comment = None
+        cmd_part = line
+        for marker in ("*", ";"):
+            if marker in line:
+                cmd_part, comment_part = line.split(marker, 1)
+                comment = comment_part.strip()
+                break
+        if comment is None and "(" in line and line.rstrip().endswith(")"):
+            c_start = line.index("(")
+            cmd_part = line[:c_start].strip()
+            comment = line[c_start + 1:].rstrip(")").strip()
+
+        tokens = cmd_part.strip().split()
+        if not tokens:
+            continue
+
+        cmd = tokens[0].upper()
+        args: list[Any] = []
+        for t in tokens[1:]:
+            if t.lstrip("-+").isdigit():
+                args.append(int(t))
+            else:
+                args.append(t)
+
+        resets.append(ResetDef(command=cmd, args=tuple(args), comment=comment))
+
+    header = AreaHeader(
+        filename=filename,
+        name=name,
+        builder=builder,
+        vnum_min=vnum_min,
+        vnum_max=vnum_max,
+    )
+    return header, tuple(resets)
+
+
+def parse_circlemud_directory(directory_path: str | Path) -> AreaData:
+    """Parse a split-file CircleMUD 3.x or tbaMUD world directory.
+
+    Discovers room definitions (*.wld) and zone metadata (*.zon) across
+    flat directories or hierarchical lib/world/ trees, matching zones by
+    filename prefix or VNUM range, and merges them into a cohesive AreaData model.
+    """
+    dir_path = Path(directory_path)
+    if not dir_path.exists():
+        raise FileNotFoundError(f"Directory not found: {directory_path}")
+    if not dir_path.is_dir():
+        raise NotADirectoryError(f"Path is not a directory: {directory_path}")
+
+    # Determine wld and zon directories
+    wld_dir = dir_path / "wld" if (dir_path / "wld").is_dir() else dir_path
+    if (dir_path / "zon").is_dir():
+        zon_dir = dir_path / "zon"
+    elif dir_path.name == "wld" and (dir_path.parent / "zon").is_dir():
+        zon_dir = dir_path.parent / "zon"
+    else:
+        zon_dir = dir_path
+
+    # Discover .wld files via index or file glob
+    wld_files: list[Path] = []
+    for index_candidate in (wld_dir / "index", dir_path / "index"):
+        if index_candidate.is_file():
+            with open(index_candidate, "r", encoding="latin-1", errors="replace") as f:
+                for raw_line in f:
+                    line = raw_line.strip()
+                    if not line or line.startswith("*"):
+                        continue
+                    if line == "$":
+                        break
+                    fname = line if line.endswith(".wld") else f"{line}.wld"
+                    candidate = wld_dir / fname
+                    if not candidate.is_file():
+                        candidate = dir_path / fname
+                    if candidate.is_file():
+                        wld_files.append(candidate)
+            if wld_files:
+                break
+
+    if not wld_files:
+        found = list(wld_dir.glob("*.wld"))
+        if not found and wld_dir != dir_path:
+            found = list(dir_path.glob("*.wld"))
+        if not found:
+            found = list(dir_path.rglob("*.wld"))
+
+        def sort_key(p: Path):
+            stem = p.stem
+            return (0, int(stem)) if stem.isdigit() else (1, stem)
+
+        wld_files = sorted(found, key=sort_key)
+
+    if not wld_files:
+        raise FileNotFoundError(f"No CircleMUD .wld room files found in directory: {directory_path}")
+
+    # Discover and parse .zon files
+    zon_files = list(zon_dir.glob("*.zon"))
+    if not zon_files and zon_dir != dir_path:
+        zon_files = list(dir_path.glob("*.zon"))
+    if not zon_files:
+        zon_files = list(dir_path.rglob("*.zon"))
+
+    zones_by_stem: dict[str, tuple[AreaHeader, tuple[ResetDef, ...]]] = {}
+    zones_by_range: list[tuple[AreaHeader, tuple[ResetDef, ...]]] = []
+    for zf in zon_files:
+        h, r = parse_circlemud_zone_file(zf)
+        zones_by_stem[zf.stem] = (h, r)
+        zones_by_range.append((h, r))
+
+    # Parse each .wld file and match with zone metadata
+    all_rooms: list[RoomDef] = []
+    all_resets: list[ResetDef] = []
+    matched_headers: list[AreaHeader] = []
+
+    parser = Parser()
+    for wf in wld_files:
+        with open(wf, "r", encoding="latin-1", errors="replace") as f:
+            wld_content = f.read()
+
+        parsed_area = parser.parse(wld_content)
+        rooms = list(parsed_area.rooms)
+        if not rooms:
+            continue
+
+        all_rooms.extend(rooms)
+        room_vnums = [r.vnum for r in rooms]
+        min_vnum = min(room_vnums)
+        max_vnum = max(room_vnums)
+
+        header: AreaHeader | None = None
+        resets: tuple[ResetDef, ...] = ()
+        if wf.stem in zones_by_stem:
+            header, resets = zones_by_stem[wf.stem]
+        else:
+            for zh, zr in zones_by_range:
+                if not (max_vnum < zh.vnum_min or min_vnum > zh.vnum_max):
+                    header, resets = zh, zr
+                    break
+
+        if header is None:
+            header = AreaHeader(
+                filename=f"{wf.stem}.zon",
+                name=f"Zone {wf.stem}",
+                builder="Unknown",
+                vnum_min=min_vnum,
+                vnum_max=max_vnum,
+            )
+            resets = ()
+
+        matched_headers.append(header)
+        all_resets.extend(resets)
+
+    if not all_rooms:
+        raise ValueError(f"No valid room definitions found in CircleMUD .wld files in {directory_path}")
+
+    all_rooms.sort(key=lambda r: r.vnum)
+
+    if len(matched_headers) == 1:
+        single = matched_headers[0]
+        combined_header = AreaHeader(
+            filename=single.filename,
+            name=single.name,
+            builder=single.builder,
+            vnum_min=min(single.vnum_min, all_rooms[0].vnum),
+            vnum_max=max(single.vnum_max, all_rooms[-1].vnum),
+        )
+    elif matched_headers:
+        min_v = min(h.vnum_min for h in matched_headers)
+        max_v = max(h.vnum_max for h in matched_headers)
+        names = [h.name for h in matched_headers if h.name]
+        combined_name = " / ".join(names) if len(names) <= 3 else f"{names[0]} (+{len(names)-1} zones)"
+        combined_builder = matched_headers[0].builder
+        combined_header = AreaHeader(
+            filename=f"{dir_path.name}.are",
+            name=combined_name,
+            builder=combined_builder,
+            vnum_min=min(min_v, all_rooms[0].vnum),
+            vnum_max=max(max_v, all_rooms[-1].vnum),
+        )
+    else:
+        combined_header = AreaHeader(
+            filename=f"{dir_path.name}.are",
+            name=dir_path.name.capitalize(),
+            builder="Unknown",
+            vnum_min=all_rooms[0].vnum,
+            vnum_max=all_rooms[-1].vnum,
+        )
+
+    return AreaData(
+        header=combined_header,
+        rooms=tuple(all_rooms),
+        resets=tuple(all_resets),
+    )
 
 def parse_file(filepath):
     with open(filepath, 'r', encoding='latin-1', errors='replace') as f:
