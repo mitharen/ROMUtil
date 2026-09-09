@@ -189,8 +189,6 @@ The CBC optimization execution is bounded by an optional per-subgraph time limit
 - **Time Limit with Feasible Solution (`maxTimeLimit`)**: If the execution time limit is reached but CBC has discovered one or more integer-feasible candidate solutions, the solver terminates the iteration loop and yields the model containing the best feasible coordinates, preventing premature layout collapse.
 - **Infeasible Status**: If the problem is mathematically unsatisfiable, the solver terminates immediately to enable fallback handling.
 
-Detailed performance characterization, computational scaling bottlenecks across area scales, and discrete optimization tasks are documented in [`docs/SOLVER_PROFILING.md`](./docs/SOLVER_PROFILING.md).
-
 ---
 
 ### 4.5. Reconstruction & Rendering — [`romutil/plotter.py`](./romutil/plotter.py)

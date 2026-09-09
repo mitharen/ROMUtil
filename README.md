@@ -111,7 +111,6 @@ Detailed format specifications and verified repository references are cataloged 
 ## Documentation
 
 - [`DESIGN.md`](./DESIGN.md): System architecture, mathematical layout formulation, graph reduction, and projection geometry.
-- [`docs/SOLVER_PROFILING.md`](./docs/SOLVER_PROFILING.md): MILP solver benchmarks, computational bottlenecks, and optimization analysis.
 - [`docs/MUD_REPOSITORIES.md`](./docs/MUD_REPOSITORIES.md): Public MUD area repository catalog and dialect grammar comparison.
 - [`AGENTS.md`](./AGENTS.md): Development policies, branching model, and documentation invariants.
 
