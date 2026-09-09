@@ -256,6 +256,14 @@ uv run pytest
 ```
 Total test coverage across `romutil/` is enforced automatically at or above **95%** on every test execution (`--cov-fail-under=95`).
 
+### Test Fixture & Area Path Resolution
+Integration test suites and the project [`Makefile`](./Makefile) decouple from machine-specific developer paths using portable discovery:
+- **`QUICKMUD_AREA_DIR` Environment Variable**: An explicit environment variable pointing to an external MUD area directory.
+- **Relative Sibling Repository**: Sibling directory lookup (`../QuickMUD/area`) supporting standard adjacent checkout structures.
+- **Repository-Local Fixtures**: Local area test fixtures (`tests/fixtures/areas`, `tests/fixtures`, or `areas`) for self-contained execution.
+
+When external area files are unavailable, integration test suites requiring external data skip gracefully while unit tests validate synthetic area specifications, preserving code coverage invariants across isolated environments.
+
 ### Pre-commit Hooks
 Automated pre-commit hooks verify code quality before permitting commits:
 - Strips trailing whitespace and fixes end-of-file formatting.
