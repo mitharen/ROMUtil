@@ -51,6 +51,7 @@ from pyomo.environ import (
 )
 
 from romutil.models import AreaData, AreaHeader, Direction, Exit, ExitDef, Room, RoomDef
+from romutil.solver import find_overlap_candidates
 from romutil.parser import Parser, parse_file
 
 log = logging.getLogger("SolverProfiler")
@@ -399,6 +400,7 @@ def profile_area(
         if not clean_exits[pair[0]].one_way and not clean_exits[pair[1]].one_way
     ]
     initial_candidate_pairs_count = len(non_incidents)
+    non_incidents_set = set(non_incidents)
 
     solver = SolverFactory("cbc", tee=False)
     solver.options["sec"] = cbc_sec_limit
@@ -443,31 +445,24 @@ def profile_area(
         binary_vars_added = 0
         to_remove = []
 
-        batch_target = int(sqrt(len(non_incidents))) if len(non_incidents) > 0 else 0
+        batch_target = int(sqrt(len(non_incidents_set))) if len(non_incidents_set) > 0 else 0
 
-        for left, right in non_incidents:
+        coords = {
+            vnum: (m.x[vnum].value, m.y[vnum].value, m.z[vnum].value)
+            for vnum in rdb
+        }
+        cut_values = [bool(m.cut[i].value) for i in range(len(clean_exits))]
+
+        candidate_overlaps = find_overlap_candidates(
+            clean_exits,
+            coords,
+            cuts=cut_values,
+            candidate_pairs=non_incidents_set,
+        )
+
+        for left, right in candidate_overlaps:
             ex = clean_exits[left]
             nx = clean_exits[right]
-
-            if m.cut[left].value or m.cut[right].value:
-                continue
-            if None in [
-                m.x[ex.src].value, m.x[ex.dst].value, m.x[nx.src].value, m.x[nx.dst].value,
-                m.y[ex.src].value, m.y[ex.dst].value, m.y[nx.src].value, m.y[nx.dst].value,
-                m.z[ex.src].value, m.z[ex.dst].value, m.z[nx.src].value, m.z[nx.dst].value,
-            ]:
-                continue
-
-            # 3D AABB overlap check
-            if (
-                max(m.x[ex.src].value, m.x[ex.dst].value) < min(m.x[nx.src].value, m.x[nx.dst].value)
-                or min(m.x[ex.src].value, m.x[ex.dst].value) > max(m.x[nx.src].value, m.x[nx.dst].value)
-                or max(m.y[ex.src].value, m.y[ex.dst].value) < min(m.y[nx.src].value, m.y[nx.dst].value)
-                or min(m.y[ex.src].value, m.y[ex.dst].value) > max(m.y[nx.src].value, m.y[nx.dst].value)
-                or max(m.z[ex.src].value, m.z[ex.dst].value) < min(m.z[nx.src].value, m.z[nx.dst].value)
-                or min(m.z[ex.src].value, m.z[ex.dst].value) > max(m.z[nx.src].value, m.z[nx.dst].value)
-            ):
-                continue
 
             # Overlap detected!
             overlaps_found += 1
@@ -494,7 +489,7 @@ def profile_area(
                 break
 
         for rem in to_remove:
-            non_incidents.remove(rem)
+            non_incidents_set.discard(rem)
 
         detect_duration = time.perf_counter() - detect_t0
         timings.overlap_detection_total_sec += detect_duration
@@ -502,7 +497,7 @@ def profile_area(
         iter_metric = IterationMetrics(
             iteration=iteration_count,
             overlap_detection_time_sec=detect_duration,
-            candidates_checked=len(non_incidents) + len(to_remove),
+            candidates_checked=len(non_incidents_set) + len(to_remove),
             overlaps_found=overlaps_found,
             constraints_added=added_constraints * 25,  # 1 + 24
             binary_vars_added=binary_vars_added,

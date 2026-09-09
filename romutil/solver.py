@@ -1,6 +1,10 @@
+from __future__ import annotations
+
 import itertools
 import logging
 from math import sqrt
+from typing import Any, Mapping, Optional, Sequence, Set as TypingSet, Tuple
+
 import pyomo.opt
 from pyomo.environ import (
     ConcreteModel, Set, RangeSet, Param, Var, Objective,
@@ -13,6 +17,138 @@ from romutil.models import Direction, Exit, ExitDef
 from romutil.plotter import Plotter
 
 log = logging.getLogger('Mapper.solver')
+
+
+def _get_coords(coords: Any, vnum: int) -> Optional[Tuple[float, float, float]]:
+    """Helper to resolve (x, y, z) coordinates for a given room vnum."""
+    if coords is None:
+        return None
+    if hasattr(coords, 'x') and hasattr(coords, 'y') and hasattr(coords, 'z'):
+        try:
+            xv = coords.x[vnum].value
+            yv = coords.y[vnum].value
+            zv = coords.z[vnum].value
+            if xv is None or yv is None or zv is None:
+                return None
+            return (float(xv), float(yv), float(zv))
+        except (KeyError, TypeError, AttributeError):
+            return None
+
+    try:
+        val = coords.get(vnum) if hasattr(coords, 'get') else coords[vnum]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+    if val is None:
+        return None
+    if hasattr(val, 'x') and hasattr(val, 'y') and hasattr(val, 'z'):
+        if val.x is None or val.y is None or val.z is None:
+            return None
+        return (float(val.x), float(val.y), float(val.z))
+    if isinstance(val, (tuple, list)) and len(val) >= 3:
+        if val[0] is None or val[1] is None or val[2] is None:
+            return None
+        return (float(val[0]), float(val[1]), float(val[2]))
+    return None
+
+
+def find_overlap_candidates(
+    exits: Sequence[Exit],
+    coords: Any,
+    cuts: Optional[Sequence[Any]] = None,
+    candidate_pairs: Optional[TypingSet[Tuple[int, int]]] = None,
+    aabb_3d: bool = True,
+) -> list[tuple[int, int]]:
+    """
+    1D sweep-line spatial indexing along the X-axis for overlap candidate detection.
+
+    Projects each exit segment into an interval [x_min, x_max] on the X-axis, sorts
+    event points in O(E log E) time, and maintains an active interval set during the sweep.
+    Segments overlapping along the X-axis are evaluated against 3D AABB bounding boxes
+    and candidate filters in O(1) set lookups, avoiding O(E^2) pair evaluations.
+
+    Args:
+        exits: Sequence of Exit objects.
+        coords: Mapping of room vnum to (x, y, z) coordinates, or room dict, or Pyomo model.
+        cuts: Optional sequence of cut statuses (booleans or Pyomo binary variables).
+        candidate_pairs: Optional set of allowed/unresolved (left, right) index pairs with left < right.
+        aabb_3d: If True (default), verifies full 3D AABB overlap (Y and Z axes).
+
+    Returns:
+        List of (left, right) index pairs (left < right) that overlap in space.
+    """
+    if not exits or coords is None:
+        return []
+
+    boxes: dict[int, tuple[float, float, float, float, float, float]] = {}
+    endpoints: dict[int, tuple[int, int]] = {}
+    events: list[tuple[float, int, int]] = []
+    START_EVENT = 0
+    END_EVENT = 1
+
+    for i, ex in enumerate(exits):
+        if getattr(ex, 'one_way', False):
+            continue
+        if cuts is not None and i < len(cuts):
+            c_val = cuts[i]
+            if hasattr(c_val, 'value'):
+                c_val = c_val.value
+            if c_val:
+                continue
+
+        p1 = _get_coords(coords, ex.src)
+        p2 = _get_coords(coords, ex.dst)
+        if p1 is None or p2 is None:
+            continue
+
+        x1, y1, z1 = p1
+        x2, y2, z2 = p2
+        x_min, x_max = (x1, x2) if x1 <= x2 else (x2, x1)
+        y_min, y_max = (y1, y2) if y1 <= y2 else (y2, y1)
+        z_min, z_max = (z1, z2) if z1 <= z2 else (z2, z1)
+
+        boxes[i] = (x_min, x_max, y_min, y_max, z_min, z_max)
+        endpoints[i] = (ex.src, ex.dst)
+        events.append((x_min, START_EVENT, i))
+        events.append((x_max, END_EVENT, i))
+
+    if not events:
+        return []
+
+    # Sort events: primary x asc, secondary START (0) before END (1), tertiary index asc
+    events.sort(key=lambda ev: (ev[0], ev[1], ev[2]))
+
+    active_set: set[int] = set()
+    overlaps: list[tuple[int, int]] = []
+
+    for _, ev_type, idx in events:
+        if ev_type == START_EVENT:
+            b_idx = boxes[idx]
+            s1, d1 = endpoints[idx]
+            b_min_y, b_max_y, b_min_z, b_max_z = b_idx[2], b_idx[3], b_idx[4], b_idx[5]
+            for active_idx in active_set:
+                left, right = (active_idx, idx) if active_idx < idx else (idx, active_idx)
+                if candidate_pairs is not None and (left, right) not in candidate_pairs:
+                    continue
+                s2, d2 = endpoints[active_idx]
+                # Skip incident exits sharing any room endpoint
+                if s1 == s2 or s1 == d2 or d1 == s2 or d1 == d2:
+                    continue
+                if aabb_3d:
+                    b_act = boxes[active_idx]
+                    # Y-axis overlap: max(y_min1, y_min2) <= min(y_max1, y_max2)
+                    if b_min_y > b_act[3] or b_act[2] > b_max_y:
+                        continue
+                    # Z-axis overlap: max(z_min1, z_min2) <= min(z_max1, z_max2)
+                    if b_min_z > b_act[5] or b_act[4] > b_max_z:
+                        continue
+                overlaps.append((left, right))
+            active_set.add(idx)
+        else:
+            active_set.remove(idx)
+
+    return overlaps
+
 
 def non_euler(rdb, exits):
     m = ConcreteModel()
@@ -162,15 +298,11 @@ def solve(rdb, area_exits):
         + sum([way for way in one_ways])
     )
 
-    non_incidents = list(itertools.combinations(range(len(exits)), 2))
-    non_incidents = [
-        pair for pair in non_incidents
+    non_incidents: set[tuple[int, int]] = {
+        pair for pair in itertools.combinations(range(len(exits)), 2)
         if exits[pair[0]].src not in exits[pair[1]] and exits[pair[0]].dst not in exits[pair[1]]
-    ]
-    non_incidents = [
-        pair for pair in non_incidents
-        if not exits[pair[0]].one_way and not exits[pair[1]].one_way
-    ]
+        and not exits[pair[0]].one_way and not exits[pair[1]].one_way
+    }
 
     relations = 0
     log.info(f'{len(non_incidents)} possible overlaps.')
@@ -190,27 +322,23 @@ def solve(rdb, area_exits):
         Plotter('progress.svg', rdb, exits).plot()
 
         added_constraints = 0
-        for left, right in tqdm.tqdm(list(non_incidents), desc='Finding Overlaps'):
+        batch_target = max(1, int(sqrt(len(non_incidents)))) if non_incidents else 0
+
+        coords = {
+            vnum: (m.x[vnum].value, m.y[vnum].value, m.z[vnum].value)
+            for vnum in rdb
+        }
+        cut_values = [bool(m.cut[i].value) for i in range(len(exits))]
+
+        overlapping_pairs = find_overlap_candidates(
+            exits,
+            coords,
+            cuts=cut_values,
+            candidate_pairs=non_incidents,
+        )
+
+        for left, right in tqdm.tqdm(overlapping_pairs, desc='Finding Overlaps'):
             ex, nx = (exits[left], exits[right])
-
-            if m.cut[left].value or m.cut[right].value:
-                continue
-            if None in [
-                m.x[ex.src].value, m.x[ex.dst].value, m.x[nx.src].value, m.x[nx.dst].value,
-                m.y[ex.src].value, m.y[ex.dst].value, m.y[nx.src].value, m.y[nx.dst].value,
-                m.z[ex.src].value, m.z[ex.dst].value, m.z[nx.src].value, m.z[nx.dst].value
-            ]:
-                continue
-
-            if (
-                max(m.x[ex.src].value, m.x[ex.dst].value) < min(m.x[nx.src].value, m.x[nx.dst].value) or
-                min(m.x[ex.src].value, m.x[ex.dst].value) > max(m.x[nx.src].value, m.x[nx.dst].value) or
-                max(m.y[ex.src].value, m.y[ex.dst].value) < min(m.y[nx.src].value, m.y[nx.dst].value) or
-                min(m.y[ex.src].value, m.y[ex.dst].value) > max(m.y[nx.src].value, m.y[nx.dst].value) or
-                max(m.z[ex.src].value, m.z[ex.dst].value) < min(m.z[nx.src].value, m.z[nx.dst].value) or
-                min(m.z[ex.src].value, m.z[ex.dst].value) > max(m.z[nx.src].value, m.z[nx.dst].value)
-            ):
-                continue
 
             relation = Var(m.Directions, within=Boolean)
             m.add_component(f'relation{relations}', relation)
@@ -231,9 +359,9 @@ def solve(rdb, area_exits):
             for p, q in prod:
                 m.crossings.add(m.z[q] - m.z[p] + m.M * ((1 - relation[Direction.down]) + m.cut[left] + m.cut[right]) >= m.d_min)
 
-            non_incidents.remove((left, right))
+            non_incidents.discard((left, right))
             added_constraints += 1
-            if added_constraints == int(sqrt(len(non_incidents))):
+            if added_constraints == batch_target:
                 break
         else:
             if not added_constraints:
