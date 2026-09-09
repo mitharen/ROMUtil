@@ -23,11 +23,7 @@ from romutil.parser import Parser
 import importlib
 cli_module = importlib.import_module("romutil.cli")
 
-_candidates = [
-    os.path.abspath(os.path.join(os.path.dirname(__file__), '../../QuickMUD/area')),
-    os.path.abspath('/home/user/proj/QuickMUD/area'),
-]
-SAMPLE_AREAS_DIR = next((p for p in _candidates if os.path.isdir(p)), _candidates[0])
+from tests.conftest import SAMPLE_AREAS_DIR
 
 
 class TestTypedDataClasses:

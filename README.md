@@ -145,6 +145,14 @@ make all AREAS=/path/to/QuickMUD/area
 make school.svg AREAS=/path/to/QuickMUD/area
 ```
 
+The area directory is resolved using standard precedence:
+1. Explicit CLI override: `make all AREAS=/path/to/area`
+2. Environment variable: `QUICKMUD_AREA_DIR` (e.g. `export QUICKMUD_AREA_DIR=/path/to/QuickMUD/area`)
+3. Sibling repository fallback: `../QuickMUD/area`
+4. Default local directory: `areas`
+
+Integration test suites similarly resolve sample area files using the `QUICKMUD_AREA_DIR` environment variable, relative paths, or local fixtures.
+
 ---
 
 ## Command-Line Options
