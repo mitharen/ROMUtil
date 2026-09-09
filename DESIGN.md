@@ -81,6 +81,8 @@ The parsing engine ingests text-based ROM area files and constructs structured i
   - An LALR(1) grammar that extracts room topology (VNUMs, titles, descriptions, flags, sector types) and directional exits (destination VNUMs, door keywords, lock flags).
   - Tolerates non-spatial sections (`#SHOPS`, `#RESETS`, `#MOBILES`, `#SPECIALS`) to ensure grammar compatibility across diverse MUD codebases.
   - Reads files using `latin-1` decoding with replacement fallback to handle vintage MUD files containing non-UTF-8 character data.
+- **Dialect Specifications & Repository Catalog**:
+  - Comprehensive format specifications, grammar variants across MUD lineages (ROM, Merc, Envy, DikuMUD, CircleMUD, SMAUG, ANATOLIA, ACK!MUD), and verified upstream GitHub repositories are cataloged in [`docs/MUD_REPOSITORIES.md`](./docs/MUD_REPOSITORIES.md).
 
 ---
 

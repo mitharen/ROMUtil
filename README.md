@@ -78,8 +78,9 @@ Horizontal landscape layout showcasing corridor condensation and planar layout o
   - Radar minimap and floor-level filtering.
 - **Structured Data Export (`--format json`)**:
   - Complete room database export with normalized bounding boxes, solved coordinates, and directed exit metadata for downstream tools.
-- **Resilient Parsing**:
+- **Resilient Parsing & Dialect Compatibility**:
   - Python PLY (`ply.lex` and `ply.yacc`) lexer/parser with Latin-1 fallback for vintage 8-bit text encodings and tolerance for non-spatial sections (`#SHOPS`, `#RESETS`, `#MOBILES`).
+  - Documented format specifications and verified public repository catalog across ROM, Merc, Envy, DikuMUD, CircleMUD, SMAUG, ANATOLIA, and ACK!MUD in [`docs/MUD_REPOSITORIES.md`](./docs/MUD_REPOSITORIES.md).
 
 ---
 
@@ -184,6 +185,17 @@ For a comprehensive explanation of the mathematical optimization, graph algorith
 - **Mathematical Layout Formulation (`romutil/solver.py`)**: Pyomo MILP formulation with big-$M$ cut relaxations and lazy constraint generation for line crossing prevention.
 - **Isometric Projection Geometry (`romutil/plotter.py`)**: The $(x, y, z) \to (X', Y')$ oblique projection formula and elevation layer grouping.
 - **Web Export Engine (`romutil/exporter.py`)**: JSON schema specification and self-contained viewer application architecture.
+
+---
+
+## MUD Dialects & Repository Catalog
+
+ROMUtil's multi-dialect expansion roadmap, format specifications (ROM 2.4, Merc 2.1/2.2, Envy, DikuMUD, CircleMUD, SMAUG, ANATOLIA, ACK!MUD), and verified open-source public GitHub repositories are documented in [`docs/MUD_REPOSITORIES.md`](./docs/MUD_REPOSITORIES.md):
+- **Baseline Distribution**: QuickMUD (ROM 2.4b6) area inventory and format specifications.
+- **Repository Registry**: Catalog of verified public GitHub repositories across major MUD families with target commit SHAs and folder paths.
+- **Syntax Matrix**: Comparison of monolithic `.are` vs split `.wld` formats, door structures, and bitvector encodings.
+- **Licensing Matrix**: Cascading attribution requirements across DikuMUD, Merc, ROM, and derivative licenses.
+- **Downstream Roadmap**: Decomposed backlog tasks (Tasks 8a–8g) for dialect compatibility.
 
 ---
 
