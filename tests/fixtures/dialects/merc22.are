@@ -1,0 +1,74 @@
+#AREA { 1 15 } Kahn Merc Outpost~
+
+#ROOMS
+#200
+Outpost Entrance~
+You stand before the heavily fortified wooden palisade of the Merc Outpost.
+Torchlight flickers along the timber walls.
+~
+30 4|8|1024 0
+D0
+A reinforced oak gate leads north into the outpost.~
+gate oak~
+1 3005 201 0 0
+D1
+A muddy path runs east along the ditch.~
+~
+0 0 202 0 0
+S
+#201
+Outpost Commander's Tent~
+A heavy canvas pavilion smells of woodsmoke and oil. Maps of the
+surrounding wilderness are strewn across a central table.
+~
+30 1024 0
+D2
+The oak gate leads south back to the entrance.~
+gate oak~
+1 3005 200 0 0
+D1
+A side flap leads east to the scout post.~
+~
+0 0 203 0 0
+S
+#202
+East Ditch~
+You trudge through a defensive trench dug along the outer palisade wall.
+~
+30 0 2
+D3
+The trench leads west to the outpost entrance.~
+~
+0 0 200 0 0
+D0
+A narrow wooden ladder climbs north to the scout post.~
+~
+0 0 203 0 0
+S
+#203
+Scout Post~
+An elevated wooden platform gives a clear view of any approaching forces.
+~
+30 0 1
+D2
+A ladder leads south down into the trench.~
+~
+0 0 202 0 0
+D3
+A walkway leads west into the commander's pavilion.~
+~
+0 0 201 0 0
+S
+#0
+
+#RESETS
+* Door resets for Merc outpost
+D 0 200 0 1
+D 0 201 2 1
+S
+
+#SPECIALS
+* Merc specials procedures
+S
+
+#$

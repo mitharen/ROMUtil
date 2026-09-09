@@ -56,6 +56,8 @@ def resolve_sample_areas_dir(
     ]
     for cand in fixture_candidates:
         if cand.is_dir():
+            if cand.name == "fixtures" and not any(cand.glob("*.are")):
+                continue
             return cand.resolve()
 
     # 5. Git common directory sibling (supports git worktrees when custom_root is not overridden)

@@ -72,14 +72,21 @@ ROMUtil/
 
 ### 4.1. Parsing Engine — [`romutil/parser.py`](./romutil/parser.py)
 
-The parsing engine ingests text-based ROM area files and constructs structured in-memory area representations using Python PLY (`ply.lex` and `ply.yacc`).
+The parsing engine ingests text-based MUD area files across historical and modern DikuMUD derivative dialects (ROM 2.4, Merc 2.1/2.2, Envy 1.0/2.0, and CircleMUD / DikuMUD III) and constructs structured in-memory area representations using Python PLY (`ply.lex` and `ply.yacc`).
 
+- **Dialect Normalization Layer (`normalize_dialect_buffer`)**:
+  - Preprocesses input text buffers prior to lexical analysis to ensure deterministic state transitions in PLY's LALR(1) state machine without lookahead ambiguity.
+  - Converts Envy `#AREADATA ... End` key-value blocks and Merc single-line `#AREA { ... } ...~` headers into canonical 4-line `#AREA` metadata.
+  - Evaluates piped bitmask expressions (e.g. `4|8|1024` evaluates to composite integer `1036`) while preserving alpha string flags.
+  - Strips unsupported dialect-specific sections (`#GAMES`, `#CLANS`, `#ECONOMY`, `#OLC`).
+  - Standardizes CircleMUD / DikuMUD EOF delimiters (`$~` and `$`) into standard `#$` markers.
 - **[`Lexer`](./romutil/parser.py)**:
   - Employs dedicated lexer states (`INITIAL`, `string`, `line`, `optional`) to parse mixed-format data.
-  - Recognizes tilde-terminated multiline text strings (`~`), cardinal door tokens (`D0` through `D5`), and section headers (`#AREA`, `#ROOMS`, etc.).
+  - Recognizes tilde-terminated multiline text strings (`~`), cardinal door tokens (`D0` through `D5`), and canonical or dialect section aliases (`#ROOMDATA`, `#MOBDATA`, `#NEWOBJECTS`, `#OBJECTDATA`).
 - **[`Parser`](./romutil/parser.py)**:
   - An LALR(1) grammar that extracts room topology (VNUMs, titles, descriptions, flags, sector types) and directional exits (destination VNUMs, door keywords, lock flags).
-  - Tolerates non-spatial sections (`#SHOPS`, `#RESETS`, `#MOBILES`, `#SPECIALS`) to ensure grammar compatibility across diverse MUD codebases.
+  - Accommodates variable room parameters (including CircleMUD's 6-field room lines) and variable door parameter definitions (handling 1 to 5 numeric values for legacy Merc reverse pointers).
+  - Intersperses comment handling (`*`) across `#RESETS` and `#SPECIALS` blocks and tolerates non-spatial sections (`#SHOPS`, `#MOBILES`, `#HELPS`, `#SOCIALS`).
   - Reads files using `latin-1` decoding with replacement fallback to handle vintage MUD files containing non-UTF-8 character data.
 - **Dialect Specifications & Repository Catalog**:
   - Comprehensive format specifications, grammar variants across MUD lineages (ROM, Merc, Envy, DikuMUD, CircleMUD, SMAUG, ANATOLIA, ACK!MUD), and verified upstream GitHub repositories are cataloged in [`docs/MUD_REPOSITORIES.md`](./docs/MUD_REPOSITORIES.md).

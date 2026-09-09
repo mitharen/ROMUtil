@@ -1,5 +1,7 @@
 import logging
+import re
 import sys
+from typing import Any
 import ply.lex as lex
 import ply.yacc as yacc
 from romutil.models import (
@@ -18,6 +20,145 @@ from romutil.models import (
 )
 
 log = logging.getLogger('AreaParser')
+
+
+def eval_flags(val: Any) -> Any:
+    """Evaluate raw flag values into integer bitmasks or normalized strings.
+
+    Supports piped bitmasks (e.g. '4|8|1024' -> 1036), integer literals,
+    and letter/alphanumeric flag strings.
+    """
+    if isinstance(val, int):
+        return val
+    if not isinstance(val, str):
+        return val
+    s = val.strip()
+    if not s:
+        return 0
+    if '|' in s:
+        parts = s.split('|')
+        all_numeric = True
+        acc = 0
+        for part in parts:
+            part_s = part.strip()
+            if part_s.isdigit() or (part_s.startswith(('-', '+')) and part_s[1:].isdigit()):
+                acc |= int(part_s)
+            else:
+                all_numeric = False
+                break
+        if all_numeric:
+            return acc
+        return s
+    if s.isdigit() or (s.startswith(('-', '+')) and s[1:].isdigit()):
+        return int(s)
+    return s
+
+
+def normalize_dialect_buffer(buffer: str) -> str:
+    """Normalize dialect variations across Merc, Envy, Diku, and CircleMUD.
+
+    Handles:
+    - Envy #AREADATA ... End header converted into standard #AREA format.
+    - Merc inline or single-line #AREA headers converted to 4-line standard format.
+    - Missing #AREA header synthesized with default area metadata.
+    - Piped bitmask flags evaluated (4|8|1024 -> 1036, A|B -> AB).
+    - Strips unsupported dialect-specific sections (#GAMES, #CLANS, #ECONOMY, #OLC).
+    - Ensures CircleMUD / headerless room definitions have #ROOMS section marker.
+    - Normalizes CircleMUD / Diku EOF delimiters ($~, $) to standard #$.
+    - Ensures room sections terminate with #0 before EOF.
+    """
+    if not buffer or not buffer.strip():
+        return buffer
+
+    # 1. Normalize piped bitmask flags
+    def replace_pipe_flags(match):
+        parts = match.group(0).split('|')
+        val = 0
+        for p in parts:
+            val |= int(p)
+        return str(val)
+
+    buffer = re.sub(r'\b\d+(?:\|\d+)+\b', replace_pipe_flags, buffer)
+    buffer = re.sub(r'(?<=[A-Za-z])\|(?=[A-Za-z])', '', buffer)
+
+    # 2. Normalize Envy #AREADATA ... End
+    def replace_areadata(match):
+        body = match.group(1)
+        data = {}
+        for line in body.splitlines():
+            line = line.strip()
+            if not line or line == 'End':
+                continue
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                k = parts[0]
+                v = parts[1].rstrip('~').strip()
+                data[k] = v
+                if k == 'VNUMs':
+                    nums = [int(n) for n in v.split() if n.lstrip('-+').isdigit()]
+                    if len(nums) >= 2:
+                        data['vnum_min'] = nums[0]
+                        data['vnum_max'] = nums[1]
+        name = data.get('Name', 'Area')
+        author = data.get('Author', data.get('Builders', 'Unknown'))
+        v_min = data.get('vnum_min', 0)
+        v_max = data.get('vnum_max', 0)
+        file_name = data.get('FileName', name.lower().replace(' ', '_') + ".are")
+        return f"#AREA\n{file_name}~\n{name}~\n{author}~\n{v_min} {v_max}\n"
+
+    buffer = re.sub(r'#AREADATA\s*\n(.*?)\nEnd\b', replace_areadata, buffer, flags=re.DOTALL)
+
+    # 3. Normalize Merc single-line or inline #AREA headers
+    def replace_merc_area_inline(match):
+        raw = match.group(1).strip().rstrip('~').strip()
+        m = re.match(r'\{[^}]*\}\s*(?:(\w+)\s+)?(.*)', raw)
+        if m:
+            builder = m.group(1) or "Unknown"
+            name = m.group(2).strip() or raw
+        else:
+            builder = "Unknown"
+            name = raw
+        file_name = name.lower().replace(' ', '_') + ".are"
+        return f"#AREA\n{file_name}~\n{name}~\n{builder}~\n0 0\n"
+
+    buffer = re.sub(r'#AREA[ \t]+([^\n~]*~)', replace_merc_area_inline, buffer)
+
+    def replace_merc_area_single_line(match):
+        raw = match.group(1).strip().rstrip('~').strip()
+        m = re.match(r'\{[^}]*\}\s*(?:(\w+)\s+)?(.*)', raw)
+        if m:
+            builder = m.group(1) or "Unknown"
+            name = m.group(2).strip() or raw
+        else:
+            builder = "Unknown"
+            name = raw
+        file_name = name.lower().replace(' ', '_') + ".are"
+        return f"#AREA\n{file_name}~\n{name}~\n{builder}~\n0 0\n"
+
+    buffer = re.sub(r'#AREA\s*\n([^\n~]+~)\s*\n(?=#)', replace_merc_area_single_line, buffer)
+
+    # 4. Strip dialect-specific non-standard sections
+    buffer = re.sub(r'#(?:GAMES|CLANS|ECONOMY|OLC|PRACTICERS|RESETCONT)\b.*?(?=\n#|\Z)', '', buffer, flags=re.DOTALL)
+
+    # 5. If no #ROOMS or #ROOMDATA header but room VNUMs exist in standalone room files, prepend #ROOMS
+    if not re.search(r'#(?:ROOMS|ROOMDATA)\b', buffer) and not re.search(r'#(?:HELPS|SOCIALS|MOBILES|OBJECTS)\b', buffer):
+        if re.search(r'^\#[1-9]\d*', buffer, re.MULTILINE):
+            buffer = re.sub(r'(^\#[1-9]\d*)', r'#ROOMS\n\1', buffer, count=1, flags=re.MULTILINE)
+
+    # 7. Normalize CircleMUD / Diku EOF delimiters ($~ or trailing $)
+    buffer = re.sub(r'\n\$\~[ \t]*\n?$', '\n#$\n', buffer)
+    buffer = re.sub(r'\n\$[ \t]*\n?$', '\n#$\n', buffer)
+
+    # 8. Ensure #ROOMS has a terminating #0
+    def fix_rooms_terminator(match):
+        content = match.group(0)
+        if not re.search(r'\n#0\b', content):
+            content = content.rstrip() + '\n#0\n'
+        return content
+
+    buffer = re.sub(r'#(?:ROOMS|ROOMDATA)\s*\n.*?(?=\n#[A-Z$]|\Z)', fix_rooms_terminator, buffer, flags=re.DOTALL)
+
+    return buffer
 
 class Lexer:
     states = (
@@ -62,7 +203,8 @@ class Lexer:
     t_ignore = ' \t'
 
     def t_AREA(self, t):
-        r'\#AREA'
+        r'\#(?:AREA|AREADATA)'
+        t.value = '#AREA'
         return t
 
     def t_HELPS(self, t):
@@ -74,15 +216,18 @@ class Lexer:
         return t
 
     def t_MOBILES(self, t):
-        r'\#MOBILES'
+        r'\#(?:MOBILES|MOBDATA)'
+        t.value = '#MOBILES'
         return t
 
     def t_OBJECTS(self, t):
-        r'\#OBJECTS'
+        r'\#(?:OBJECTS|NEWOBJECTS|OBJECTDATA)'
+        t.value = '#OBJECTS'
         return t
 
     def t_ROOMS(self, t):
-        r'\#ROOMS'
+        r'\#(?:ROOMS|ROOMDATA)'
+        t.value = '#ROOMS'
         return t
 
     def t_RESETS(self, t):
@@ -258,26 +403,26 @@ class Parser:
                 if not sec or not isinstance(sec, tuple) or len(sec) < 2:
                     continue
                 tag, data = sec[0], sec[1]
-                if tag == '#AREA':
+                if tag in ('#AREA', '#AREADATA'):
                     header = data
-                elif tag == '#ROOMS':
+                elif tag in ('#ROOMS', '#ROOMDATA'):
                     if data:
                         rooms.extend(data)
-                elif tag == '#MOBILES':
+                elif tag in ('#MOBILES', '#MOBDATA'):
                     if data:
                         mobiles.extend(data)
-                elif tag == '#OBJECTS':
+                elif tag in ('#OBJECTS', '#NEWOBJECTS', '#OBJECTDATA'):
                     if data:
                         objects.extend(data)
                 elif tag == '#RESETS':
                     if data:
-                        resets.extend(data)
+                        resets.extend([r for r in data if isinstance(r, (ResetDef, tuple))])
                 elif tag == '#SHOPS':
                     if data:
                         shops.extend(data)
                 elif tag == '#SPECIALS':
                     if data:
-                        specials.extend(data)
+                        specials.extend([s for s in data if isinstance(s, (SpecialDef, tuple))])
                 elif tag == '#HELPS':
                     if data:
                         helps.extend([h for h in data if isinstance(h, (HelpDef, tuple))])
@@ -471,12 +616,12 @@ class Parser:
 
     def p_room(self, p):
         '''room : VNUM EOL str STRING EOL str STRING EOL \
-                  NUMBER flags NUMBER optional EOL \
+                  NUMBER flags NUMBER room_extra_params optional EOL \
                   room_optionals S EOL'''
         exits = []
         extras = []
-        if p[14]:
-            for opt in p[14]:
+        if p[15]:
+            for opt in p[15]:
                 if isinstance(opt, ExitDef):
                     exits.append(opt)
                 elif isinstance(opt, (tuple, list)) and len(opt) == 2 and isinstance(opt[0], int) and isinstance(opt[1], int):
@@ -497,6 +642,17 @@ class Parser:
         )
         log.debug(f'Room: {p[4]}')
 
+    def p_room_extra_params(self, p):
+        '''room_extra_params : room_extra_param room_extra_params
+                             | '''
+        pass
+
+    def p_room_extra_param(self, p):
+        '''room_extra_param : NUMBER
+                            | WORD
+                            | SYMBOL'''
+        p[0] = p[1]
+
     def p_room_optional(self, p):
         '''room_optional : door
                          | ext
@@ -505,16 +661,30 @@ class Parser:
         p[0] = p[1]
 
     def p_door(self, p):
-        '''door : DOOR NUMBER EOL str STRING EOL str STRING EOL \
-                  NUMBER NUMBER NUMBER optional EOL'''
+        '''door : DOOR NUMBER EOL str STRING EOL str STRING EOL door_params optional EOL'''
+        flags, key, dst = p[10]
         p[0] = ExitDef(
             direction=p[2],
-            dst_vnum=p[12],
+            dst_vnum=dst,
             description=p[5] if p[5] else "",
             keyword=p[8] if p[8] else "",
-            key_vnum=p[11],
-            flags=p[10],
+            key_vnum=key,
+            flags=flags,
         )
+
+    def p_door_params(self, p):
+        '''door_params : NUMBER NUMBER NUMBER NUMBER NUMBER
+                       | NUMBER NUMBER NUMBER NUMBER
+                       | NUMBER NUMBER NUMBER
+                       | NUMBER NUMBER
+                       | NUMBER'''
+        nums = p[1:]
+        if len(nums) == 1:
+            p[0] = (0, 0, nums[0])
+        elif len(nums) == 2:
+            p[0] = (nums[0], 0, nums[1])
+        else:
+            p[0] = (nums[0], nums[1], nums[2])
 
     def p_regen(self, p):
         '''regen : REGEN NUMBER WORD NUMBER optional EOL'''
@@ -527,7 +697,11 @@ class Parser:
     def p_reset(self, p):
         '''reset : WORD NUMBER NUMBER NUMBER NUMBER NUMBER comment
                  | WORD NUMBER NUMBER NUMBER NUMBER comment
-                 | WORD NUMBER NUMBER NUMBER comment'''
+                 | WORD NUMBER NUMBER NUMBER comment
+                 | COMMENT EOL'''
+        if p[1] and isinstance(p[1], str) and p[1].startswith('*'):
+            p[0] = None
+            return
         p[0] = ResetDef(
             command=p[1],
             args=tuple(v for v in p[2:-1] if v is not None),
@@ -548,7 +722,11 @@ class Parser:
         )
 
     def p_special(self, p):
-        '''special : WORD NUMBER WORD comment'''
+        '''special : WORD NUMBER WORD comment
+                   | COMMENT EOL'''
+        if p[1] and isinstance(p[1], str) and p[1].startswith('*'):
+            p[0] = None
+            return
         p[0] = SpecialDef(
             command=p[1],
             vnum=p[2],
@@ -565,7 +743,7 @@ class Parser:
     def p_flags(self, p):
         '''flags : WORD
                  | NUMBER '''
-        p[0] = p[1] if p[1] else None
+        p[0] = eval_flags(p[1]) if p[1] is not None else None
 
     def p_hitndam(self, p):
         '''hitndam : NUMBER WORD NUMBER'''
@@ -609,7 +787,7 @@ class Parser:
         p[0] = p[1] if len(p) == 3 else None
 
     def p_comments(self, p):
-        '''comments : COMMENT comments
+        '''comments : comment comments
                     | '''
         p[0] = [p[1]] + p[2] if len(p) == 3 else []
 
@@ -626,6 +804,7 @@ class Parser:
         self.parser = yacc.yacc(module=self, write_tables=write_tables, debug=False)
 
     def parse(self, buffer):
+        buffer = normalize_dialect_buffer(buffer)
         return self.parser.parse(buffer, lexer=self.lexer, debug=False)
 
 def parse_file(filepath):

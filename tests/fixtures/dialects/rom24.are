@@ -1,0 +1,85 @@
+#AREA
+rom24.are~
+ROM 2.4 Bastion~
+{ 5 20 } Alander ROM Bastion~
+100 199
+
+#ROOMS
+#100
+Bastion Courtyard~
+You are standing in the wide central courtyard of the ROM Bastion.
+A grand archway leads north into the keep, while training grounds
+extend east and west.
+~
+0 0 1
+D0
+The sturdy iron gates of the keep.~
+iron gate~
+1 0 101
+D1
+A gravel path leading east towards the barracks.~
+~
+0 0 102
+D2
+The south gates open out towards the wilderness.~
+~
+0 0 103
+D3
+A covered walkway leading west towards the armory.~
+~
+0 0 104
+S
+#101
+Bastion Keep Hall~
+Vaulted stone arches rise high above the polished granite floor.
+Banners bearing the crest of the realm hang from the pillars.
+~
+0 8 0
+D2
+The iron gates lead south to the courtyard.~
+iron gate~
+1 0 100
+S
+#102
+East Barracks~
+Rows of neat wooden bunks line the walls. Footlockers sit at
+the base of each bed.
+~
+0 0 0
+D3
+The gravel path leads west back to the courtyard.~
+~
+0 0 100
+S
+#103
+South Gatehouse~
+The fortress watchtower overlooks the surrounding plains.
+~
+0 0 1
+D0
+The archway leads north into the courtyard.~
+~
+0 0 100
+S
+#104
+West Armory~
+Racks of swords, shields, and polished chainmail line the walls.
+An anvil rests near a forge in the corner.
+~
+0 0 0
+D1
+The walkway leads east into the courtyard.~
+~
+0 0 100
+S
+#0
+
+#RESETS
+D 0 100 0 1
+D 0 101 2 1
+S
+
+#SPECIALS
+S
+
+#$

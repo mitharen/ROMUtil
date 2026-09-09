@@ -79,8 +79,22 @@ Horizontal landscape layout showcasing corridor condensation and planar layout o
 - **Structured Data Export (`--format json`)**:
   - Complete room database export with normalized bounding boxes, solved coordinates, and directed exit metadata for downstream tools.
 - **Resilient Parsing & Dialect Compatibility**:
+  - Multi-dialect support for ROM 2.4, Merc 2.1/2.2, Envy 1.0/2.0, and CircleMUD / DikuMUD III area formats.
   - Python PLY (`ply.lex` and `ply.yacc`) lexer/parser with Latin-1 fallback for vintage 8-bit text encodings and tolerance for non-spatial sections (`#SHOPS`, `#RESETS`, `#MOBILES`).
   - Documented format specifications and verified public repository catalog across ROM, Merc, Envy, DikuMUD, CircleMUD, SMAUG, ANATOLIA, and ACK!MUD in [`docs/MUD_REPOSITORIES.md`](./docs/MUD_REPOSITORIES.md).
+
+---
+
+## MUD Dialect Compatibility Matrix
+
+ROMUtil provides built-in compatibility for vintage and modern DikuMUD derivative area formats, automatically normalizing dialect-specific quirks into consistent spatial models:
+
+| Dialect Family | Area Header Syntax | Room Definition & Sector Syntax | Exit / Door Parameterization | Special Handling & Delimiters |
+| :--- | :--- | :--- | :--- | :--- |
+| **ROM 2.4 / QuickMUD** | Standard 4-line format (`filename~`, `name~`, `{ min max } builder~`, `vnum_min vnum_max`) | `NUMBER flags NUMBER` (e.g. `0 0 1`), standard sectors 0–9 | Standard 3-number doors (`locks key to_room`) | Canonical baseline; `#ROOMS` section; `#$` EOF delimiter |
+| **Merc 2.1 / 2.2** | Single-line header (e.g. `#AREA { 1 15 } Builder Name~`) | Piped bitmask flags (e.g. `30 4\|8\|1024 0` evaluated to composite integer `1036`) | Legacy 5-number doors (`locks key to_room rev_dir rev_room`) | Comments (`*`) tolerated across `#RESETS` and `#SPECIALS` |
+| **Envy 1.0 / 2.0** | Key-value `#AREADATA ... End` block | `#ROOMDATA` section header; extended sectors (e.g. 9 underwater, 10 air) | Standard doors; extended extra descriptions | Unmodeled dialect sections (`#GAMES`, `#CLANS`, `#ECONOMY`) gracefully ignored |
+| **CircleMUD 3.x / DikuMUD III** | Optional / absent header in `.wld` files (derives fallback metadata) | Standalone direct room declarations without `#ROOMS`; 6 room parameters (`zone flags sector extra1 extra2 extra3`) | Standard doors; negative key vnums (`-1`) for unkeyed doors | CircleMUD EOF delimiters (`$~` and `$`) automatically normalized |
 
 ---
 
