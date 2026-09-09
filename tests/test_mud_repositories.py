@@ -282,6 +282,7 @@ class TestMudRepositoriesCatalogPositive:
             "Task 8e",
             "Task 8f",
             "Task 8g",
+            "Task 8h",
         ]
         for task in expected_tasks:
             assert task in content, f"Missing decomposed backlog task: {task}"

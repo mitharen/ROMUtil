@@ -268,6 +268,7 @@ flowchart LR
     Catalog --> T8E["Task 8e: SMAUG Support<br/>10-direction model & #ROOMDATA"]
     Catalog --> T8F["Task 8f: ACK!MUD Support<br/>Tagged headers & colour stripping"]
     Catalog --> T8G["Task 8g: ANATOLIA 3.0 Support<br/>#RESETMESSAGE & #FLAG sections"]
+    Catalog --> T8H["Task 8h: Bulk Corpus Validation Harness<br/>scripts/validate_corpus.py & workflow_dispatch"]
 ```
 
 ### Decomposed Backlog Tasks:
@@ -295,3 +296,7 @@ flowchart LR
 7. **Task 8g: ANATOLIA 3.0 Section Tolerance**:
    - Add grammar reductions for `#RESETMESSAGE` and `#FLAG` top-level blocks.
    - Retain backward compatibility with standard ROM 2.4b6.
+8. **Task 8h: Bulk Corpus Ingestion & Validation Harness (`scripts/validate_corpus.py`)**:
+   - Implement an on-demand verification tool (`scripts/validate_corpus.py`) that shallow-clones cataloged MUD repositories at their pinned target commit SHAs into an ephemeral scratch directory.
+   - Execute bulk parsing across all discovered `.are` and `.wld` files per dialect to verify syntax coverage, report keyword anomalies, and output parse success/failure metrics.
+   - Add a manual or scheduled GitHub Actions workflow (`workflow_dispatch` / nightly) to run whole-library stress testing without adding overhead to fast commit CI.
