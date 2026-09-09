@@ -1,11 +1,12 @@
 import json
-import re
-import xml.etree.ElementTree as ET
 from pathlib import Path
+import re
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DOCS_ASSETS_DIR = REPO_ROOT / "docs" / "assets"
 README_FILE = REPO_ROOT / "README.md"
 DESIGN_FILE = REPO_ROOT / "DESIGN.md"
 
@@ -139,110 +140,85 @@ def find_broken_relative_links(markdown_text: str, base_dir: Path):
 # Test Suites
 # ---------------------------------------------------------------------------
 
-class TestGalleryAssetsExist:
-    """Verifies that all pre-rendered gallery assets are present on disk."""
+@pytest.fixture(scope="module")
+def sample_gallery_artifacts(tmp_path_factory):
+    """Dynamically generates sample SVG maps and HTML viewer into an ephemeral directory."""
+    out_dir = tmp_path_factory.mktemp("gallery")
+    fixture_area = REPO_ROOT / "tests" / "fixtures" / "dialects" / "rom24.are"
+    outbase = out_dir / "rom24"
 
-    def test_docs_assets_directory_present(self):
-        assert DOCS_ASSETS_DIR.exists(), f"Missing directory: {DOCS_ASSETS_DIR}"
-        assert DOCS_ASSETS_DIR.is_dir()
-
-    @pytest.mark.parametrize(
-        "expected_file",
-        [
-            "school.svg",
-            "school_z0.svg",
-            "school_z1.svg",
-            "smurf.svg",
-            "demo_tower.svg",
-            "pipeline_diagram.svg",
-        ],
+    # Generate split-level SVGs
+    subprocess.run(
+        [sys.executable, "-m", "romutil.cli", str(fixture_area), "-outbase", str(outbase), "--split-levels"],
+        check=True,
+        capture_output=True,
+        cwd=str(REPO_ROOT),
     )
-    def test_canonical_svg_assets_exist(self, expected_file):
-        asset_path = DOCS_ASSETS_DIR / expected_file
-        assert asset_path.exists(), f"Expected SVG asset missing: {asset_path}"
-        assert asset_path.is_file()
-        assert asset_path.stat().st_size > 200, f"Asset file too small: {asset_path}"
-
-    @pytest.mark.parametrize(
-        "expected_html",
-        [
-            "school.html",
-            "smurf.html",
-            "demo_tower.html",
-        ],
+    # Generate standalone HTML viewer
+    subprocess.run(
+        [sys.executable, "-m", "romutil.cli", str(fixture_area), "-outbase", str(outbase), "--format", "html"],
+        check=True,
+        capture_output=True,
+        cwd=str(REPO_ROOT),
     )
-    def test_canonical_html_viewers_exist(self, expected_html):
-        viewer_path = DOCS_ASSETS_DIR / expected_html
-        assert viewer_path.exists(), f"Expected HTML viewer missing: {viewer_path}"
-        assert viewer_path.is_file()
-        assert viewer_path.stat().st_size > 1000, f"HTML viewer file too small: {viewer_path}"
+    return out_dir
+
+
+class TestGalleryAssetsGeneration:
+    """Verifies that map and viewer artifacts are dynamically generated with correct outputs."""
+
+    def test_dynamic_generation_creates_expected_files(self, sample_gallery_artifacts):
+        assert (sample_gallery_artifacts / "rom24_z0.svg").exists()
+        assert (sample_gallery_artifacts / "rom24.html").exists()
+
+    def test_pages_builder_discovery_and_index_generation(self, tmp_path):
+        from scripts.build_pages import resolve_candidate_areas, generate_index_html
+        candidates = resolve_candidate_areas()
+        assert len(candidates) >= 1
+        dummy_rendered = [("fixture", "rom24")]
+        generate_index_html(dummy_rendered, tmp_path)
+        index_file = tmp_path / "index.html"
+        assert index_file.exists()
+        content = index_file.read_text(encoding="utf-8")
+        assert "ROMUtil Map Directory" in content
+        assert "rom24" in content
 
 
 class TestSvgAssetIntegrity:
-    """Verifies XML well-formedness, root elements, and visual shapes in SVG assets."""
+    """Verifies XML well-formedness, root elements, and visual shapes in SVG outputs."""
 
-    def test_all_gallery_svgs_parseable_xml(self):
-        svg_files = list(DOCS_ASSETS_DIR.glob("*.svg"))
-        assert len(svg_files) >= 6, f"Expected at least 6 SVG files, found {len(svg_files)}"
+    def test_generated_svgs_parseable_xml(self, sample_gallery_artifacts):
+        svg_files = list(sample_gallery_artifacts.glob("*.svg"))
+        assert len(svg_files) >= 1
         for svg_file in svg_files:
             root = validate_svg_file(svg_file)
             tag_clean = root.tag.split("}")[-1] if "}" in root.tag else root.tag
             assert tag_clean == "svg", f"Root tag of {svg_file.name} is {root.tag}"
 
-    def test_map_svg_contains_visual_elements(self):
-        for map_name in ("school.svg", "smurf.svg", "demo_tower.svg"):
-            root = validate_svg_file(DOCS_ASSETS_DIR / map_name)
+    def test_map_svg_contains_visual_elements(self, sample_gallery_artifacts):
+        for svg_file in sample_gallery_artifacts.glob("*.svg"):
+            root = validate_svg_file(svg_file)
             elements = list(root.iter())
             tag_names = {el.tag.split("}")[-1] for el in elements}
             assert any(t in tag_names for t in ("polygon", "rect", "path", "g", "line")), (
-                f"{map_name} contains no graphical layout elements"
+                f"{svg_file.name} contains no graphical layout elements"
             )
-
-    def test_split_level_svg_integrity(self):
-        for z_name in ("school_z0.svg", "school_z1.svg"):
-            root = validate_svg_file(DOCS_ASSETS_DIR / z_name)
-            assert root is not None
-            text_content = (DOCS_ASSETS_DIR / z_name).read_text(encoding="utf-8")
-            assert "<svg" in text_content
-
-    def test_pipeline_diagram_svg_content(self):
-        diagram_path = DOCS_ASSETS_DIR / "pipeline_diagram.svg"
-        root = validate_svg_file(diagram_path)
-        content = diagram_path.read_text(encoding="utf-8")
-        assert "ROMUtil" in content
-        assert "MILP" in content
-        assert "parser.py" in content
-        assert "solver.py" in content
-        assert "plotter.py" in content
 
 
 class TestHtmlAssetIntegrity:
     """Verifies standalone HTML application requirements and zero external dependencies."""
 
-    @pytest.mark.parametrize("html_name", ["school.html", "smurf.html", "demo_tower.html"])
-    def test_gallery_html_viewers_valid_structure(self, html_name):
-        html_path = DOCS_ASSETS_DIR / html_name
-        data = validate_html_viewer_file(html_path)
-        assert "rooms" in data
-        assert isinstance(data["rooms"], list)
-        assert len(data["rooms"]) > 0
+    def test_generated_html_viewers_valid_structure(self, sample_gallery_artifacts):
+        html_files = list(sample_gallery_artifacts.glob("*.html"))
+        assert len(html_files) >= 1
+        for html_path in html_files:
+            data = validate_html_viewer_file(html_path)
+            assert "rooms" in data
+            assert isinstance(data["rooms"], list)
+            assert len(data["rooms"]) > 0
 
-    def test_school_html_data_fidelity(self):
-        data = validate_html_viewer_file(DOCS_ASSETS_DIR / "school.html")
-        assert len(data["rooms"]) == 59
-        assert data["area"]["name"].lower() == "mud school"
-        assert data["bounds"]["min_x"] == 0
-        assert data["bounds"]["max_x"] > 0
-
-    def test_demo_tower_html_data_fidelity(self):
-        data = validate_html_viewer_file(DOCS_ASSETS_DIR / "demo_tower.html")
-        assert len(data["rooms"]) == 4
-        room_names = [r["name"] for r in data["rooms"]]
-        assert "Tower Entrance" in room_names
-        assert "Wizard Study" in room_names
-
-    def test_gallery_html_zero_external_dependencies(self):
-        for html_file in DOCS_ASSETS_DIR.glob("*.html"):
+    def test_html_zero_external_dependencies(self, sample_gallery_artifacts):
+        for html_file in sample_gallery_artifacts.glob("*.html"):
             validate_html_viewer_file(html_file)
 
 

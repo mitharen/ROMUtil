@@ -282,13 +282,12 @@ Exports complete solved area databases into portable structured formats and inte
 
 ---
 
-### 4.8. Visual Previews & Documentation Assets — [`docs/assets/`](./docs/assets/)
+### 4.8. Dynamic Map Generation & GitHub Pages Deployment
 
-The repository maintains pre-rendered visual assets and functional demonstration artifacts under [`docs/assets/`](./docs/assets/) to support visual documentation and regression benchmarking:
-- **High-Resolution Vector Maps (`.svg`)**: Isometric oblique projections generated for canonical MUD areas ([`docs/assets/school.svg`](./docs/assets/school.svg), [`docs/assets/smurf.svg`](./docs/assets/smurf.svg), [`docs/assets/demo_tower.svg`](./docs/assets/demo_tower.svg)). Maps feature room metadata tooltips, exit directional styling, dynamic HSL vertical gradient coloring, and painter's algorithm vertical layer stacking.
-- **Multi-Plane Elevation Slices (`<name>_z{z}.svg`)**: Split-level vector maps ([`docs/assets/school_z0.svg`](./docs/assets/school_z0.svg), [`docs/assets/school_z1.svg`](./docs/assets/school_z1.svg)) showcasing isolated horizontal cross-sections at specific $Z$ coordinates to prevent visual clutter in dense multi-story structures.
-- **Standalone Web Applications (`.html`)**: Complete zero-dependency browser-based map viewers ([`docs/assets/school.html`](./docs/assets/school.html), [`docs/assets/smurf.html`](./docs/assets/smurf.html), [`docs/assets/demo_tower.html`](./docs/assets/demo_tower.html)). These bundles contain self-sufficient JavaScript implementations of real-time search, BFS pathfinding, viewport transform matrices, painter's algorithm depth sorting across elevation planes, and HTML5 canvas minimaps.
-- **Pipeline Architecture Diagram (`.svg`)**: Vector visual specification ([`docs/assets/pipeline_diagram.svg`](./docs/assets/pipeline_diagram.svg)) detailing data transformations across lexer tokens, AST dataclasses, condensed graph reduction, Pyomo MILP optimization, and multi-format exporters.
+Map visualization assets are generated on demand rather than committed as static binary files in the repository:
+- **Build Automation (`scripts/build_pages.py`)**: Traverses discovered area files and test fixtures to compile standalone interactive HTML viewers and isometric SVG maps into an ephemeral `_site/` bundle.
+- **GitHub Pages Deployment Workflow (`.github/workflows/pages.yml`)**: Deploys the compiled site artifact directly to GitHub Pages via Actions without committing binary assets to the Git tree.
+- **Zero In-Repo Asset Bloat**: Static vector maps and web applications are generated dynamically during CI and local testing, ensuring Git clone operations remain focused entirely on source code.
 
 ---
 
