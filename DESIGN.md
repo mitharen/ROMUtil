@@ -125,6 +125,8 @@ Before invoking the mathematical solver, the graph is simplified to minimize var
    Uses `networkx.connected_components()` to split disconnected areas into independent subgraphs, solving and plotting each component separately.
 4. **Spatial Candidate Tracking**:
    Precomputes non-incident candidate exit pairs in a hash set to provide $O(1)$ candidate retrieval and retirement for downstream sweep-line spatial collision detection in [`romutil/solver.py`](./romutil/solver.py).
+5. **Solver Termination Handling & Feasible Solution Recovery**:
+   Coordinates room coordinate extraction from the optimization engine. If CBC achieves `optimal` termination, coordinates are extracted and normalized. If CBC terminates with `maxTimeLimit` or `feasible` and the model has evaluated variable values, the best integer-feasible coordinates are preserved rather than collapsed to $(0, 0, 0)$. Only irrecoverable solver failures (infeasible or unassigned coordinates) trigger coordinate zeroing.
 
 ---
 
@@ -174,6 +176,12 @@ To avoid instantiating $O(E^2)$ crossing constraints up front, collision avoidan
    $$\sum_{d} \text{relation}_d \ge 1$$
 7. Generates an intermediate `progress.svg` snapshot after each solver iteration.
 8. The solver iterates until no crossings remain or constraints converge.
+
+#### Solver Termination & Timeout Control:
+The CBC optimization execution is bounded by an optional per-subgraph time limit (`sec`, defaulting to 300 seconds). During branch-and-cut:
+- **Optimal Completion**: When branch-and-cut proves optimality, coordinates are stored and collision constraints are iteratively generated until spatial crossings converge.
+- **Time Limit with Feasible Solution (`maxTimeLimit`)**: If the execution time limit is reached but CBC has discovered one or more integer-feasible candidate solutions, the solver terminates the iteration loop and yields the model containing the best feasible coordinates, preventing premature layout collapse.
+- **Infeasible Status**: If the problem is mathematically unsatisfiable, the solver terminates immediately to enable fallback handling.
 
 Detailed performance characterization, computational scaling bottlenecks across area scales, and discrete optimization tasks are documented in [`docs/SOLVER_PROFILING.md`](./docs/SOLVER_PROFILING.md).
 
@@ -242,6 +250,7 @@ Exports complete solved area databases into portable structured formats and inte
 - Registered console script entry point: `romutil` (via `uv run romutil`).
 - Multi-format output support (`--format` / `-f`): `svg` (default), `json`, and `html`.
 - Elevation plane splitting (`--split-levels`): Generates separate SVG files for each distinct elevation level (`<outbase>_z{z}.svg`).
+- Configurable solver timeout (`--solver-timeout`): Configures the CBC branch-and-cut execution time limit in seconds (default: 300s), bounding runtime on complex topological layouts while recovering the best feasible solution.
 - Enforces strict vertical painter's algorithm depth sorting across both vector SVG outputs and standalone HTML viewers.
 - Usage:
   ```bash
@@ -256,6 +265,9 @@ Exports complete solved area databases into portable structured formats and inte
 
   # Export self-contained interactive web viewer
   uv run romutil <area.are> --format html
+
+  # Configure solver timeout limit in seconds
+  uv run romutil <area.are> --solver-timeout 60
   ```
 
 ---

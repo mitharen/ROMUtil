@@ -165,7 +165,7 @@ def non_euler(rdb, exits):
     m.cut = Var(m.Exits, within=Binary)
     m.relative_pos = ConstraintList()
 
-    one_way_exits = [e for e in exits if e not in rdb[e.dst].exits]
+    one_way_exits = [e for e in exits if e.dst not in rdb or e not in rdb[e.dst].exits]
 
     for i, e in enumerate(exits):
         if e in one_way_exits:
@@ -202,7 +202,7 @@ def non_euler(rdb, exits):
     solver.solve(m, tee=False)
     return m
 
-def solve(rdb, area_exits):
+def solve(rdb, area_exits, timeout=None):
     exits = [e for e in area_exits if e.src != e.dst]
 
     m = non_euler(rdb, exits)
@@ -239,7 +239,7 @@ def solve(rdb, area_exits):
     one_ways = []
 
     for e in exits:
-        if e not in rdb[e.dst].exits:
+        if e.dst not in rdb or e not in rdb[e.dst].exits:
             e.one_way = True
 
     for i, x in enumerate(exits):
@@ -308,11 +308,33 @@ def solve(rdb, area_exits):
     log.info(f'{len(non_incidents)} possible overlaps.')
 
     solver = SolverFactory('cbc', tee=False)
-    solver.options['sec'] = 300
+    timeout_sec = 300 if timeout is None else int(timeout)
+    solver.options['sec'] = timeout_sec
 
     while True:
         result = solver.solve(m, tee=False)
         if result.solver.termination_condition == pyomo.opt.TerminationCondition.infeasible:
+            return m, result
+
+        if result.solver.termination_condition in (
+            pyomo.opt.TerminationCondition.maxTimeLimit,
+            pyomo.opt.TerminationCondition.feasible,
+        ):
+            if result.solver.termination_condition == pyomo.opt.TerminationCondition.maxTimeLimit:
+                log.warning('Solver reached time limit.')
+            has_feasible = bool(rdb) and all(
+                hasattr(m, 'x') and hasattr(m, 'y') and hasattr(m, 'z')
+                and vnum in m.x and m.x[vnum].value is not None
+                and vnum in m.y and m.y[vnum].value is not None
+                and vnum in m.z and m.z[vnum].value is not None
+                for vnum in rdb
+            )
+            if has_feasible:
+                for vnum, room in list(rdb.items()):
+                    room.x = m.x[vnum].value if m.x[vnum].value is not None else 0
+                    room.y = m.y[vnum].value if m.y[vnum].value is not None else 0
+                    room.z = m.z[vnum].value if m.z[vnum].value is not None else 0
+                Plotter('progress.svg', rdb, exits).plot()
             return m, result
 
         for vnum, room in list(rdb.items()):
@@ -367,6 +389,7 @@ def solve(rdb, area_exits):
             if not added_constraints:
                 break
 
-    log.debug(f'cut {sum([m.cut[i].value for i in range(len(exits))])} exits')
+    cut_sum = sum(m.cut[i].value for i in range(len(exits)) if m.cut[i].value is not None)
+    log.debug(f'cut {cut_sum} exits')
     log.debug(f'{relations}/{len(non_incidents)} overlaps converted into constraints.')
     return m, result

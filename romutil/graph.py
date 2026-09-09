@@ -55,7 +55,23 @@ def mfas(edges):
     solver.solve(model, tee=False)
     return [(u, v) for u, v in edges if model.b[labels[u], labels[v]].value]
 
-def solve_layout(rdb, area=None):
+def _has_feasible_coordinates(model, rdb) -> bool:
+    """Check if model has valid coordinates populated for all rooms in rdb."""
+    if model is None:
+        return False
+    if not hasattr(model, 'x') or not hasattr(model, 'y') or not hasattr(model, 'z'):
+        return False
+    try:
+        return bool(rdb) and all(
+            v in model.x and model.x[v].value is not None
+            and v in model.y and model.y[v].value is not None
+            and v in model.z and model.z[v].value is not None
+            for v in rdb
+        )
+    except (KeyError, AttributeError, TypeError):
+        return False
+
+def solve_layout(rdb, area=None, solver_timeout=None):
     """
     Solves 3D coordinates for rooms using Pyomo MILP optimization.
     Simplifies straight hallways, resolves boundary dummies, restores hallways,
@@ -102,22 +118,40 @@ def solve_layout(rdb, area=None):
         return rdb, exits
 
     log.info(f'{area_name} Solving for {len(exits)} exits...')
-    model, results = solve(rdb, exits)
-    if not results.solver.termination_condition == pyomo.opt.TerminationCondition.optimal:
+    if solver_timeout is not None:
+        model, results = solve(rdb, exits, timeout=solver_timeout)
+    else:
+        model, results = solve(rdb, exits)
+
+    tc = getattr(getattr(results, 'solver', None), 'termination_condition', None)
+    has_valid_coords = _has_feasible_coordinates(model, rdb)
+
+    is_optimal = (tc == pyomo.opt.TerminationCondition.optimal)
+    is_time_limit_or_feasible = (
+        tc in (
+            pyomo.opt.TerminationCondition.maxTimeLimit,
+            pyomo.opt.TerminationCondition.feasible,
+        )
+    )
+
+    if is_optimal and has_valid_coords:
+        log.info(f'{area_name} Solve completed.')
+    elif is_time_limit_or_feasible and has_valid_coords:
+        log.warning(f'{area_name} Solver reached time limit; using best feasible layout.')
+    else:
         log.error(f'{area_name} Solver failed!')
-        log.debug(f'{str(results.solver)}')
+        if results and hasattr(results, 'solver'):
+            log.debug(f'{str(results.solver)}')
         for r in rdb.values():
             if r.x is None: r.x = 0
             if r.y is None: r.y = 0
             if r.z is None: r.z = 0
         return rdb, exits
-    else:
-        log.info(f'{area_name} Solve completed.')
 
     for vnum, room in list(rdb.items()):
-        room.x = model.x[vnum].value if model.x[vnum].value else 0
-        room.y = model.y[vnum].value if model.y[vnum].value else 0
-        room.z = model.z[vnum].value if model.z[vnum].value else 0
+        room.x = model.x[vnum].value if model.x[vnum].value is not None else 0
+        room.y = model.y[vnum].value if model.y[vnum].value is not None else 0
+        room.z = model.z[vnum].value if model.z[vnum].value is not None else 0
         for r in restore_rooms(room):
             rdb[r.vnum] = r
 
@@ -153,8 +187,8 @@ def solve_layout(rdb, area=None):
     return rdb, exits
 
 
-def graph(rdb, name, area, split_levels=False, outbase=None):
-    rdb, exits = solve_layout(rdb, area)
+def graph(rdb, name, area, split_levels=False, outbase=None, solver_timeout=None):
+    rdb, exits = solve_layout(rdb, area, solver_timeout=solver_timeout)
     if not len(exits) and not len(rdb):
         return
 

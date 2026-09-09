@@ -15,7 +15,7 @@ from romutil.exporter import build_area_json, export_json, export_html
 logging.basicConfig()
 log = logging.getLogger('Mapper')
 
-def main(area_files, outbase, split_levels=False, fmt="svg"):
+def main(area_files, outbase, split_levels=False, fmt="svg", solver_timeout=None):
     rdb = {}
     area_meta = None
     first_file_name = "area.are"
@@ -64,16 +64,16 @@ def main(area_files, outbase, split_levels=False, fmt="svg"):
         for i, sub_graph in enumerate(connected_comps):
             sub_rdb = {node: rdb[node] for node in sub_graph}
             if not split_levels:
-                graph(sub_rdb, f'{outbase}{i}.svg', area_meta, split_levels=False)
+                graph(sub_rdb, f'{outbase}{i}.svg', area_meta, split_levels=False, solver_timeout=solver_timeout)
             else:
                 base_name = outbase if len(connected_comps) == 1 else f'{outbase}{i}'
-                graph(sub_rdb, f'{base_name}.svg', area_meta, split_levels=True, outbase=base_name)
+                graph(sub_rdb, f'{base_name}.svg', area_meta, split_levels=True, outbase=base_name, solver_timeout=solver_timeout)
     elif fmt in ('json', 'html'):
         all_solved_rooms = {}
         offset_x = 0
         for i, sub_graph in enumerate(connected_comps):
             sub_rdb = {node: rdb[node] for node in sub_graph}
-            solved_sub, _ = solve_layout(sub_rdb, area_meta)
+            solved_sub, _ = solve_layout(sub_rdb, area_meta, solver_timeout=solver_timeout)
             non_dummy = [r for r in solved_sub.values() if not r.dummy]
             if non_dummy:
                 if offset_x > 0:
@@ -119,6 +119,12 @@ def cli():
         default='svg',
         help='Output format: svg (default), json, or html'
     )
+    parser.add_argument(
+        '--solver-timeout',
+        type=int,
+        default=None,
+        help='CBC solver timeout limit in seconds',
+    )
     args = parser.parse_args()
 
     pyomo.common.config.logger.setLevel(logging.ERROR)
@@ -129,7 +135,7 @@ def cli():
     if not outbase:
         outbase = str(args.areas[0].with_suffix(''))
 
-    main(args.areas, outbase, split_levels=args.split_levels, fmt=args.format)
+    main(args.areas, outbase, split_levels=args.split_levels, fmt=args.format, solver_timeout=args.solver_timeout)
 
 if __name__ == '__main__':
     cli()
