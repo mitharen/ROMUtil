@@ -153,6 +153,8 @@ To avoid adding $O(E^2)$ crossing constraints up front:
 4. Generates an intermediate `progress.svg` snapshot after each solver iteration.
 5. The solver iterates until no crossings remain or constraints converge.
 
+Detailed performance characterization, computational scaling bottlenecks across area scales, and discrete optimization tasks are documented in [`docs/SOLVER_PROFILING.md`](./docs/SOLVER_PROFILING.md).
+
 ---
 
 ### 4.5. Reconstruction & Rendering — [`romutil/plotter.py`](./romutil/plotter.py)
