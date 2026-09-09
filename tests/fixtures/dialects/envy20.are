@@ -1,0 +1,73 @@
+#AREADATA
+Name Envy Citadel~
+Builders Kahn~
+VNUMs 300 399
+Security 9
+End
+
+#ROOMDATA
+#300
+Citadel Water Chamber~
+Clear emerald water fills this submerged hall up to your waist.
+Ancient elven carvings line the damp walls.
+~
+0 2048 9
+D0
+A submerged corridor leads north deeper into the citadel.~
+~
+0 0 301
+D1
+A shallow canal flows east towards the cistern.~
+~
+0 0 302
+S
+#301
+Citadel Air Spire~
+Wind rushes through massive arched openings in the stone tower.
+Clouds drift by just outside the balcony.
+~
+0 4096 10
+D2
+A spiral staircase leads south down to the water chamber.~
+~
+0 0 300
+D1
+A precarious stone bridge spans east to the observatory.~
+~
+0 0 303
+S
+#302
+Subterranean Cistern~
+Deep mountain water collects in this massive cistern basin.
+~
+0 2048 9
+D3
+The canal leads west to the water chamber.~
+~
+0 0 300
+D0
+A maintenance sluice leads north to the observatory undercroft.~
+~
+0 0 303
+S
+#303
+High Observatory~
+Brass astrolabes and telescopes point upward toward celestial spheres.
+~
+0 0 10
+D2
+The sluice leads south to the cistern.~
+~
+0 0 302
+D3
+The stone bridge leads west to the air spire.~
+~
+0 0 301
+S
+#0
+
+#GAMES
+* Envy-specific gambling and game data
+End
+
+#$
