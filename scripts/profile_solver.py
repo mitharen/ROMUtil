@@ -57,9 +57,9 @@ log = logging.getLogger("SolverProfiler")
 
 DEFAULT_CANDIDATE_DIRS = [
     os.environ.get("QUICKMUD_AREA_DIR", ""),
-    "/home/user/proj/QuickMUD/area",
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../QuickMUD/area")),
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../QuickMUD/area")),
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "../QuickMUD/area")),
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "../../QuickMUD/area")),
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "../areas")),
 ]
 
 

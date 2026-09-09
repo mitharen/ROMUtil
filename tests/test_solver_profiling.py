@@ -21,13 +21,7 @@ from profile_solver import (
     main as profile_main,
 )
 
-_CANDIDATES = [
-    os.environ.get("QUICKMUD_AREA_DIR", ""),
-    "/home/user/proj/QuickMUD/area",
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "../../QuickMUD/area")),
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../QuickMUD/area")),
-]
-SAMPLE_AREAS_DIR = next((d for d in _CANDIDATES if d and os.path.isdir(d)), "")
+from tests.conftest import SAMPLE_AREAS_DIR
 
 
 class TestSolverProfilingUnit:
