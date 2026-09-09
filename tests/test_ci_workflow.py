@@ -141,6 +141,26 @@ class TestCIWorkflowPositive:
         ]
         assert len(pre_commit_steps) > 0, "Workflow must run pre-commit checks"
 
+    def test_docker_build_and_smoke_job(self):
+        data = load_workflow_data()
+        jobs = data.get("jobs", {})
+        assert "docker" in jobs, "Workflow must include a 'docker' job"
+        docker_job = jobs["docker"]
+        assert docker_job.get("runs-on") == "ubuntu-latest"
+
+        steps = docker_job.get("steps", [])
+        buildx_steps = [s for s in steps if "docker/setup-buildx-action" in s.get("uses", "")]
+        assert len(buildx_steps) > 0, "Docker job must configure Buildx"
+
+        build_steps = [s for s in steps if "docker/build-push-action" in s.get("uses", "")]
+        assert len(build_steps) > 0, "Docker job must invoke docker/build-push-action"
+
+        smoke_steps = [s for s in steps if "docker run" in s.get("run", "")]
+        assert len(smoke_steps) > 0, "Docker job must execute container smoke tests"
+        run_cmds = smoke_steps[0]["run"]
+        assert "--help" in run_cmds
+        assert "romutil:test" in run_cmds
+
 
 class TestCIWorkflowNegative:
     """Negative test cases verifying rejection of malformed or non-conforming workflow configs."""
