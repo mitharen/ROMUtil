@@ -1,0 +1,68 @@
+#0
+The Void~
+  You are floating in formless void, hovering in an endless expanse of swirling
+mist. Reality twists unpredictably, dissolving borders and time.
+~
+0 0 1
+D4
+You see the floor of the Temple of Midgaard high above you.~
+~
+0 -1 3001
+S
+#1
+Limbo~
+  You are floating in Limbo, a serene waiting expanse between worlds.
+Faint shimmering paths drift upward into the unknown.
+~
+0 0 1
+D4
+You see the swirling mist of the Void.~
+~
+0 -1 0
+S
+#3001
+The Temple of Midgaard~
+  You are inside the grand southern sanctuary of the Temple of Midgaard.
+Massive white marble pillars ascend toward the arched ceiling. To the north,
+the grand hall continues, while heavy wooden doors lead south to the bustling square.
+Directly beneath your feet, a mystical vortex reveals the infinite Void.
+~
+30 12 0
+D0
+The temple continues north into the Grand Hall.~
+~
+0 -1 3002
+D2
+The entrance hall leads south towards the Temple Square.~
+~
+0 -1 3005
+D5
+A shimmering planar vortex plunges down into the Void.~
+~
+0 -1 0
+S
+#3002
+Grand Hall of the Temple~
+  You stand in the expansive Grand Hall of the Temple of Midgaard.
+Alabaster pillars line the sanctuary walls where eternal flames dance in braziers.
+~
+30 8 0
+D2
+The southern nave and entrance hall are south.~
+~
+0 -1 3001
+S
+#3005
+The Temple Square~
+  The bustling Temple Square forms the heartbeat of Midgaard.
+Cobblestones stretch across the plaza, with a stone fountain splashing merrily.
+The sanctuary doors open north into the Temple of Midgaard.
+~
+30 0 1
+D0
+The marble stairs lead north into the Temple.~
+~
+0 -1 3001
+S
+#99999
+$~

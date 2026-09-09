@@ -105,6 +105,7 @@ ROMUtil parses and normalizes area formats across major DikuMUD derivations:
 | **Merc 2.1 / 2.2** | Full | Single-line `#AREA`, piped bitmasks (`4\|8\|1024`), legacy 5-field doors |
 | **Envy 1.0 / 2.0** | Full | Key-value `#AREADATA ... End`, `#ROOMDATA`, non-modeled section stripping |
 | **CircleMUD 3.x / tbaMUD** | Full | Split-file directory parsing (`*.wld` rooms + `*.zon` headers), 6-field room lines |
+| **DikuMUD Alfa / Gamma** | Full | Monolithic `.wld` ingestion, `#0` ("The Void") node support, 3-field room lines, EOF sentinels (`#99999\n$~`, `$~`, `$`) |
 
 Detailed format specifications and verified repository references are cataloged in [`docs/MUD_REPOSITORIES.md`](./docs/MUD_REPOSITORIES.md).
 

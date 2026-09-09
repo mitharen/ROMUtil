@@ -143,17 +143,21 @@ def normalize_dialect_buffer(buffer: str) -> str:
 
     # 5. If no #ROOMS or #ROOMDATA header but room VNUMs exist in standalone room files, prepend #ROOMS
     if not re.search(r'#(?:ROOMS|ROOMDATA)\b', buffer) and not re.search(r'#(?:HELPS|SOCIALS|MOBILES|OBJECTS)\b', buffer):
-        if re.search(r'^\#[1-9]\d*', buffer, re.MULTILINE):
-            buffer = re.sub(r'(^\#[1-9]\d*)', r'#ROOMS\n\1', buffer, count=1, flags=re.MULTILINE)
+        if re.search(r'^\#\d+\b', buffer, re.MULTILINE):
+            buffer = re.sub(r'\A(?:[ \t\r\n]|(?:\*[^\n]*\n))+', '', buffer)
+            buffer = re.sub(r'(?m)^\*[^\n]*\n(?=\s*#\d+)', '', buffer)
+            buffer = re.sub(r'(^\#\d+\b)', r'#ROOMS\n\1', buffer, count=1, flags=re.MULTILINE)
 
-    # 7. Normalize CircleMUD / Diku EOF delimiters ($~ or trailing $)
+    # 7. Normalize CircleMUD / Diku EOF delimiters ($~, trailing $) and strip sentinels (#99999\n$~, #0\n$~)
+    buffer = re.sub(r'\n\#\d+\s*\n?\$~?\s*$', '\n#$\n', buffer)
+    buffer = re.sub(r'\n\#(?:99999)\s*$', '\n#$\n', buffer)
     buffer = re.sub(r'\n\$\~[ \t]*\n?$', '\n#$\n', buffer)
     buffer = re.sub(r'\n\$[ \t]*\n?$', '\n#$\n', buffer)
 
     # 8. Ensure #ROOMS has a terminating #0
-    def fix_rooms_terminator(match):
+    def fix_rooms_terminator(match: re.Match[str]) -> str:
         content = match.group(0)
-        if not re.search(r'\n#0\b', content):
+        if not re.search(r'\n#0\s*$', content.rstrip()):
             content = content.rstrip() + '\n#0\n'
         return content
 
@@ -248,7 +252,18 @@ class Lexer:
         return t
 
     def t_NULL(self, t):
-        r'\#0'
+        r'\#0(?!\d)'
+        # If #0 is followed by a room title (a string ending with ~), it is Room VNUM 0!
+        rest = t.lexer.lexdata[t.lexer.lexpos:]
+        stripped = rest.lstrip(' \t\r\n')
+        while stripped.startswith('*'):
+            stripped = stripped.split('\n', 1)[1].lstrip(' \t\r\n') if '\n' in stripped else ''
+        first_line = stripped.split('\n', 1)[0].strip() if stripped else ''
+        if first_line.rstrip().endswith('~') and not first_line.lstrip().startswith(('#', '$')):
+            t.type = 'VNUM'
+            t.value = 0
+            t.lexer.begin('INITIAL')
+            return t
         t.lexer.begin('INITIAL')
         return t
 
