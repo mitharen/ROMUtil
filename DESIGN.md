@@ -116,6 +116,8 @@ Before invoking the mathematical solver, the graph is simplified to minimize var
    - Exits leading outside the area file create lightweight `dummy` rooms (`room.dummy = True`) so boundaries can still be routed without crashing.
 3. **Connected Components**:
    Uses `networkx.connected_components()` to split disconnected areas into independent subgraphs, solving and plotting each component separately.
+4. **Spatial Candidate Tracking**:
+   Precomputes non-incident candidate exit pairs in a hash set to provide $O(1)$ candidate retrieval and retirement for downstream sweep-line spatial collision detection in [`romutil/solver.py`](./romutil/solver.py).
 
 ---
 
@@ -146,14 +148,25 @@ $$\min \left( M^2 \sum \text{cut}_e + \sum l_{\max}(e) + \sum \text{dist}_{\text
 - Minimizes overall exit lengths to keep rooms compact.
 - Keeps one-way endpoints clustered near each other.
 
-#### Lazy Collision Avoidance:
-To avoid adding $O(E^2)$ crossing constraints up front:
-1. The solver finds an initial coordinate assignment.
-2. An overlap detector scans pairs of non-incident exits using bounding-box checks with `tqdm` progress tracking.
-3. When two exit lines intersect, disjunctive spatial separation constraints are added using binary relation variables (`relation[Direction]`):
+#### Lazy Collision Avoidance & Sweep-Line Spatial Indexing:
+To avoid instantiating $O(E^2)$ crossing constraints up front, collision avoidance is resolved lazily:
+1. The solver computes an initial coordinate assignment without non-overlapping constraints.
+2. **1D Interval Projection along the $X$-Axis**:
+   Each active exit line segment $e = (u, v)$ is mapped to an interval $[x_{\min}(e), x_{\max}(e)]$ on the $X$ axis based on current room coordinates:
+   $$x_{\min}(e) = \min(x_u, x_v), \quad x_{\max}(e) = \max(x_u, x_v)$$
+3. **Event-Driven Sweep-Line ($O(E \log E)$)**:
+   Interval endpoints generate `START` and `END` events. Events are sorted lexicographically by coordinate ascending, with `START` events ordered before `END` events for coincident coordinates. This guarantees that touching or zero-length vertical segments are evaluated for overlap.
+4. **Dynamic Active Set & 3D Bounding-Box Filtering**:
+   As the sweep-line advances, an active segment set is maintained. When a segment enters the active set, it is tested exclusively against other currently active segments, reducing candidate evaluations from $O(E^2)$ to $O(E \log E + K)$ (where $K$ is the number of active interval intersections).
+   Pairs with active $X$-intervals are evaluated against 3D Axis-Aligned Bounding Box (AABB) conditions along $Y$ and $Z$:
+   $$\max(y_{\min}^1, y_{\min}^2) \le \min(y_{\max}^1, y_{\max}^2) \quad \land \quad \max(z_{\min}^1, z_{\min}^2) \le \min(z_{\max}^1, z_{\max}^2)$$
+5. **Set-Based Unresolved Candidate Tracking**:
+   Non-incident candidate pairs are tracked in a hash set, enabling $O(1)$ membership queries and constant-time constraint retirement.
+6. **Disjunctive Separation Constraints**:
+   When two exit lines intersect in 3D, disjunctive spatial separation constraints are added using binary relation variables (`relation[Direction]`):
    $$\sum_{d} \text{relation}_d \ge 1$$
-4. Generates an intermediate `progress.svg` snapshot after each solver iteration.
-5. The solver iterates until no crossings remain or constraints converge.
+7. Generates an intermediate `progress.svg` snapshot after each solver iteration.
+8. The solver iterates until no crossings remain or constraints converge.
 
 Detailed performance characterization, computational scaling bottlenecks across area scales, and discrete optimization tasks are documented in [`docs/SOLVER_PROFILING.md`](./docs/SOLVER_PROFILING.md).
 
