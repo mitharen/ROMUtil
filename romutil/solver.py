@@ -668,7 +668,7 @@ def solve(rdb, area_exits, timeout=None):
     relations = 0
     log.info(f'{len(non_incidents)} possible overlaps.')
 
-    timeout_sec = 300 if timeout is None else int(timeout)
+    timeout_sec = 30 if timeout is None else int(timeout)
     solver = get_cbc_solver(timeout=timeout_sec)
 
     while True:

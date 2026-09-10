@@ -182,7 +182,7 @@ class TestExporterIntegration:
         outbase = str(tmp_path / "school_test")
         with open(school_file, 'r', encoding='latin-1') as f:
             with pytest.raises(SystemExit) as exc_info:
-                main([f], outbase, fmt="json")
+                main([f], outbase, fmt="json", solver_timeout=15)
             assert exc_info.value.code == 0
 
         json_path = tmp_path / "school_test.json"
@@ -234,7 +234,7 @@ class TestExporterIntegration:
         outbase = str(tmp_path / "school_test")
         with open(school_file, 'r', encoding='latin-1') as f:
             with pytest.raises(SystemExit) as exc_info:
-                main([f], outbase, fmt="html")
+                main([f], outbase, fmt="html", solver_timeout=15)
             assert exc_info.value.code == 0
 
         html_path = tmp_path / "school_test.html"

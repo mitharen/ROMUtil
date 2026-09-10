@@ -67,16 +67,18 @@ def compute_bounding_box(rooms: Iterable[Room]) -> tuple[int, int, int, int, int
     for an iterable of rooms with valid integer coordinates.
     Returns (0, 0, 0, 0, 0, 0) if no valid coordinates exist.
     """
-    valid = [r for r in rooms if r.x is not None and r.y is not None and r.z is not None]
-    if not valid:
+    xs = [r.x for r in rooms if r.x is not None]
+    ys = [r.y for r in rooms if r.y is not None]
+    zs = [r.z for r in rooms if r.z is not None]
+    if not xs or not ys or not zs:
         return (0, 0, 0, 0, 0, 0)
     return (
-        min(r.x for r in valid),
-        max(r.x for r in valid),
-        min(r.y for r in valid),
-        max(r.y for r in valid),
-        min(r.z for r in valid),
-        max(r.z for r in valid),
+        min(xs),
+        max(xs),
+        min(ys),
+        max(ys),
+        min(zs),
+        max(zs),
     )
 
 def decompose_components(rdb: Mapping[int, Room], exits: Sequence[Exit]) -> list[set[int]]:
@@ -279,7 +281,7 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
 
             restored_rooms_i = []
 
-            if (is_optimal_i or is_time_limit_or_feasible_i) and has_valid_coords_i:
+            if (is_optimal_i or is_time_limit_or_feasible_i) and has_valid_coords_i and model_i is not None:
                 if hasattr(model_i, 'cut'):
                     for j, ex in enumerate(exits_i):
                         try:

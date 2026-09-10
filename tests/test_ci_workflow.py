@@ -24,8 +24,9 @@ def get_workflow_triggers(data: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
     """Retrieves triggers mapping and the key under which it is stored ('on' or True)."""
     if "on" in data and isinstance(data["on"], dict):
         return "on", data["on"]
-    if True in data and isinstance(data[True], dict):
-        return True, data[True]
+    raw_dict: dict[Any, Any] = data
+    if True in raw_dict and isinstance(raw_dict[True], dict):
+        return True, raw_dict[True]
     return "on", {}
 
 
