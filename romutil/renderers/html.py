@@ -33,8 +33,9 @@ HTML_TEMPLATE: str = _load_html_template()
 def generate_html_viewer(data: Dict[str, Any], title: Optional[str] = None) -> str:
     """
     Generates a single, self-contained HTML/JS map viewer that renders the map
-    data with pan/zoom, room search by name/VNUM, and hover tooltips without
-    requiring external network access, CDNs, or Node.js.
+    data with viewport auto-centering, dual-end elevation gradients for inter-floor
+    transitions, inclusive floor filtering, contextual warning tooltips, and an
+    incoming exits inspector without requiring external network access, CDNs, or Node.js.
     """
     area_name = data.get('area', {}).get('name') or 'ROM MUD Area'
     area_file = data.get('area', {}).get('file') or 'area.are'
