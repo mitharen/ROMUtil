@@ -81,7 +81,7 @@ class Plotter:
             2.0 + self.lift * self.z_max + (self.y_max - src_room.y) + 0.25 - self.lift * src_room.z,
         )
 
-        if ex.dst in self.rdb:
+        if ex.dst in self.rdb and not getattr(self.rdb[ex.dst], 'dummy', False):
             dst_room = self.rdb[ex.dst]
             if dst_room.x is None or dst_room.y is None or dst_room.z is None:
                 return None
