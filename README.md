@@ -4,6 +4,8 @@ ROMUtil generates spatial coordinate layouts and map visualizations from text-ba
 
 Supported output formats include 3D isometric vector graphics (SVG), standalone interactive web viewers (HTML/JS), and structured room database exports (JSON).
 
+Interactive example maps and visual area outputs can be explored live on the **[ROMUtil Visual Gallery](https://mitharen.github.io/ROMUtil/)** (hosted via GitHub Pages).
+
 ## Prerequisites
 
 - **Python 3.10+**
@@ -111,7 +113,7 @@ Detailed format specifications and verified repository references are cataloged 
 
 ## Documentation
 
-- [`DESIGN.md`](./DESIGN.md): System architecture, mathematical layout formulation, graph reduction, and projection geometry.
+- [`docs/DESIGN.md`](./docs/DESIGN.md): System architecture, mathematical layout formulation, graph reduction, and projection geometry.
 - [`docs/MUD_REPOSITORIES.md`](./docs/MUD_REPOSITORIES.md): Public MUD area repository catalog and dialect grammar comparison.
 - [`AGENTS.md`](./AGENTS.md): Development policies, branching model, and documentation invariants.
 

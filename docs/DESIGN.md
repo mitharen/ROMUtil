@@ -18,14 +18,14 @@ ROMUtil solves this layout challenge by combining **graph algorithms** with **Mi
 
 ## 2. System Architecture & Pipeline
 
-The project is structured as a modular Python package ([`romutil/`](./romutil)) with a unified console CLI entry point:
+The project is structured as a modular Python package ([`romutil/`](../romutil)) with a unified console CLI entry point:
 
 ```mermaid
 flowchart TD
     A[".are Area File(s)"] --> B["romutil/parser.py (PLY Lexer & Parser)"]
     B --> C["romutil/models.py (Room Database & Exit Graph)"]
-    C --> D["romutil/graph.py: graph() (Corridor Collapse & Boundary Prep)"]
     D --> E["romutil/solver.py: non_euler() (Cycle Cut Minimization)"]
+    C --> D["romutil/graph.py: graph() (Corridor Collapse & Boundary Prep)"]
     E --> F1["romutil/graph.py: decompose_components() (Component Partitioning)"]
     F1 --> F2["romutil/solver.py: solve() (MILP Subproblem Coordinate Solver)"]
     F2 -->|Sweep-Line Collision Resolution| F2
@@ -59,6 +59,9 @@ The pipeline executes in six distinct phases:
 
 ```text
 ROMUtil/
+├── docs/                        # Architectural guides & format documentation
+│   ├── DESIGN.md                # Evergreen system architecture and design guide
+│   └── MUD_REPOSITORIES.md      # Public MUD area repository catalog & dialect specs
 ├── romutil/                     # Core Python package
 │   ├── __init__.py              # Package public API exports
 │   ├── cli.py                   # Unified CLI entry point & multi-format options
@@ -86,7 +89,7 @@ ROMUtil/
 
 ## 4. Component Architecture
 
-### 4.1. Parsing Engine — [`romutil/parser.py`](./romutil/parser.py)
+### 4.1. Parsing Engine — [`romutil/parser.py`](../romutil/parser.py)
 
 The parsing engine ingests text-based MUD area files across historical and modern DikuMUD derivative dialects (ROM 2.4, Merc 2.1/2.2, Envy 1.0/2.0, CircleMUD / DikuMUD III, DikuMUD Alfa / Gamma, ACK!MUD / AckFUSS, and ANATOLIA 3.0) and constructs structured in-memory area representations using Python PLY (`ply.lex` and `ply.yacc`).
 
@@ -117,39 +120,39 @@ The parsing engine ingests text-based MUD area files across historical and moder
   - Zone metadata parsing (`parse_circlemud_zone_file`) decodes `.zon` headers (zone virtual number, zone name, author/builder, top and bottom room boundaries, lifespan, and reset modes) as well as reset commands (`M`, `O`, `G`, `E`, `P`, `D`, `R`, `V`).
   - Zone binding matches rooms to zone headers by filename stem correspondence, falling back to dynamic VNUM interval containment ($V_{\min} \le \text{vnum}(r) \le V_{\max}$). When zone files are omitted, fallback headers are synthesized from room bounds.
   - Merges parsed rooms across all `.wld` files and zone resets into a unified `AreaData` domain model for seamless downstream layout solving.
-- **[`Lexer`](./romutil/parser.py)**:
+- **[`Lexer`](../romutil/parser.py)**:
   - Employs dedicated lexer states (`INITIAL`, `string`, `line`, `optional`) to parse mixed-format data.
   - Recognizes tilde-terminated multiline text strings (`~`), cardinal door tokens (`D0` through `D5`), and canonical or dialect section aliases (`#ROOMDATA`, `#MOBDATA`, `#NEWOBJECTS`, `#OBJECTDATA`).
-- **[`Parser`](./romutil/parser.py)**:
+- **[`Parser`](../romutil/parser.py)**:
   - An LALR(1) grammar that extracts room topology (VNUMs, titles, descriptions, flags, sector types) and directional exits (destination VNUMs, door keywords, lock flags).
   - Accommodates variable room parameters (including CircleMUD's 6-field room lines) and variable door parameter definitions (handling 1 to 5 numeric values for legacy Merc reverse pointers).
   - Intersperses comment handling (`*`) across `#RESETS` and `#SPECIALS` blocks and tolerates non-spatial sections (`#SHOPS`, `#MOBILES`, `#HELPS`, `#SOCIALS`).
   - Reads files using `latin-1` decoding with replacement fallback to handle vintage MUD files containing non-UTF-8 character data.
 - **Dialect Specifications & Repository Catalog**:
-  - Comprehensive format specifications, grammar variants across MUD lineages (ROM, Merc, Envy, DikuMUD, CircleMUD, SMAUG, ANATOLIA, ACK!MUD), and verified upstream GitHub repositories are cataloged in [`docs/MUD_REPOSITORIES.md`](./docs/MUD_REPOSITORIES.md).
+  - Comprehensive format specifications, grammar variants across MUD lineages (ROM, Merc, Envy, DikuMUD, CircleMUD, SMAUG, ANATOLIA, ACK!MUD), and verified upstream GitHub repositories are cataloged in [`docs/MUD_REPOSITORIES.md`](./MUD_REPOSITORIES.md).
 
 ---
 
-### 4.2. Domain Models & Graph Representation — [`romutil/models.py`](./romutil/models.py)
+### 4.2. Domain Models & Graph Representation — [`romutil/models.py`](../romutil/models.py)
 
 The domain models define the spatial and topological primitives used throughout the graph layout and rendering pipeline:
 
-- **[`Direction`](./romutil/models.py)**:
+- **[`Direction`](../romutil/models.py)**:
   An enumeration representing the 6 degrees of spatial movement (`North`, `East`, `Up`, `South`, `West`, `Down`).
   - Defines opposing directional symmetry via `invert() = (dir + 3) % 6`.
-- **[`Exit`](./romutil/models.py)**:
+- **[`Exit`](../romutil/models.py)**:
   Represents a directed spatial edge between `src` and `dst` with an associated direction and distance span.
   - Implements symmetrical equality (`__eq__`) and hash invariance so opposing exits (`A -> B East` and `B -> A West`) map to the same logical edge.
   - Tracks whether an exit is strictly `one_way` (lacking a reciprocal return path).
-- **[`Room`](./romutil/models.py)**:
+- **[`Room`](../romutil/models.py)**:
   The mutable room node in the spatial graph. Stores integer coordinates `(x, y, z)`, connected exits, and a `fixups` queue of collapsed hallway nodes.
   - Flags synthetic boundary rooms (`room.dummy = True`) created for unresolved or out-of-area destinations.
-- **[`AreaData`](./romutil/models.py)**:
+- **[`AreaData`](../romutil/models.py)**:
   Top-level container holding strongly-typed AST definitions (`AreaHeader`, `RoomDef`, `ExitDef`, `ObjectDef`, `MobileDef`, `ResetDef`, `ShopDef`, `SpecialDef`, `HelpDef`, `SocialDef`, `ExtraDescr`, and optional ANATOLIA metadata `reset_message`, `flag`), guaranteeing type safety across pipeline stages.
 
 ---
 
-### 4.3. Graph Simplification & Spatial Partitioning — [`romutil/graph.py`](./romutil/graph.py)
+### 4.3. Graph Simplification & Spatial Partitioning — [`romutil/graph.py`](../romutil/graph.py)
 
 Before invoking the mathematical optimization engine, the area graph is simplified and partitioned to minimize combinatorial complexity:
 
@@ -169,7 +172,7 @@ Before invoking the mathematical optimization engine, the area graph is simplifi
      $$X_{\text{offset}}^{(0)} = 0, \quad X_{\text{offset}}^{(i)} = X_{\text{offset}}^{(i-1)} + \text{width}(C_{i-1}) + \Delta_{\text{pad}}$$
    - Guarantees zero spatial overlap across all disconnected components and elevation levels in $O(k)$ time without requiring MILP disjunctive collision constraints.
 5. **Spatial Candidate Exit Pair Precomputation**:
-   Precomputes non-incident candidate exit pairs in a hash set to provide $O(1)$ candidate retrieval and retirement for downstream sweep-line spatial collision detection in [`romutil/solver.py`](./romutil/solver.py).
+   Precomputes non-incident candidate exit pairs in a hash set to provide $O(1)$ candidate retrieval and retirement for downstream sweep-line spatial collision detection in [`romutil/solver.py`](../romutil/solver.py).
 6. **External Dummy Room Positioning (`position_dummy_rooms`)**:
    Post-solve positioning anchors each boundary dummy room exactly 1 unit distance in the nominal exit direction from its primary source room:
    $$\mathbf{x}_{\text{dummy}} = \mathbf{x}_{\text{src}} + \mathbf{d}_{\text{exit}}$$
@@ -181,7 +184,7 @@ Before invoking the mathematical optimization engine, the area graph is simplifi
 
 ---
 
-### 4.4. Mathematical Layout Optimization — [`romutil/solver.py`](./romutil/solver.py)
+### 4.4. Mathematical Layout Optimization — [`romutil/solver.py`](../romutil/solver.py)
 
 The layout is formulated as a Mixed-Integer Linear Program (MILP) using **Pyomo** and solved with the **Coin-OR CBC** solver:
 
@@ -251,7 +254,7 @@ To avoid instantiating $O(E^2)$ crossing constraints up front, collision avoidan
 9. The solver iterates until no crossings remain or constraints converge.
 
 #### CBC Solver Tuning & Multithreaded Execution:
-Solver instantiation via [`get_cbc_solver()`](./romutil/solver.py) standardizes tuned parameters across both `non_euler()` cycle relaxation and iterative `solve()` collision resolution:
+Solver instantiation via [`get_cbc_solver()`](../romutil/solver.py) standardizes tuned parameters across both `non_euler()` cycle relaxation and iterative `solve()` collision resolution:
 - **Multithreading**: Configures parallel branch-and-bound via `threads = min(4, os.cpu_count() or 1)`. Gracefully falls back to single-threaded execution when `os.cpu_count()` reports 1 or `None`.
 - **Relative Optimality Gap (`ratioGap = 0.05`)**: Halts branch-and-bound when the gap between the best integer solution and the lower bound is within 5%. This prevents exponential tailing off on dense topologies while guaranteeing visually indistinguishable optimal layouts.
 - **Presolve & Cuts**: Enables CBC presolve reduction (`presolve = 'on'`) and cutting plane generation (`cuts = 'on'`) to tighten the LP relaxation polytope at the root node.
@@ -266,7 +269,7 @@ The CBC optimization execution is bounded by an optional per-subgraph time limit
 
 ---
 
-### 4.5. Isometric SVG Vector Map Rendering — [`romutil/renderers/svg.py`](./romutil/renderers/svg.py)
+### 4.5. Isometric SVG Vector Map Rendering — [`romutil/renderers/svg.py`](../romutil/renderers/svg.py)
 
 1. **Isometric Projection**:
    Converts 3D coordinates $(x, y, z)$ into 2D SVG canvas points using an oblique lift factor ($\text{lift} = 0.15$):
@@ -280,11 +283,11 @@ The CBC optimization execution is bounded by an optional per-subgraph time limit
    - Bidirectional exits are drawn as black lines; one-way exits as red lines.
    - External exits are rendered as stub arrows pointing off-map.
    - Interactive `<set>` triggers display floating tooltips on mouseover showing room names, full descriptions, and exit directions.
-   - **Backward-Compatibility Facade**: [`romutil/plotter.py`](./romutil/plotter.py) re-exports [`Plotter`](./romutil/renderers/svg.py), `_DynamicPalette`, and `Direction`.
+   - **Backward-Compatibility Facade**: [`romutil/plotter.py`](../romutil/plotter.py) re-exports [`Plotter`](../romutil/renderers/svg.py), `_DynamicPalette`, and `Direction`.
 
 ---
 
-### 4.6. Unified Renderer Architecture & Export Engine — [`romutil/renderers/`](./romutil/renderers/)
+### 4.6. Unified Renderer Architecture & Export Engine — [`romutil/renderers/`](../romutil/renderers/)
 
 The unified renderer architecture provides an extensible, polymorphic pipeline for exporting solved area maps into vector graphics, structured interchange data, and standalone web applications:
 
@@ -292,7 +295,7 @@ The unified renderer architecture provides an extensible, polymorphic pipeline f
   The graph simplification and MILP solver pipeline (`romutil/solver.py`, `romutil/graph.py`) produces a pure spatial domain model: a dictionary of `Room` instances with solved integer coordinates `(x, y, z)` and connected `Exit` edges. The rendering subsystem (`romutil/renderers/`) has zero coupling to Pyomo or MILP formulations, consuming room coordinate models strictly as read-only inputs. This architectural decoupling enables adding new output targets without altering layout mathematics.
 
 1. **Renderer Protocol & Registry (`BaseRenderer`, `RENDERERS`, `render_map`)**:
-   - **Protocol Interface ([`romutil/renderers/base.py`](./romutil/renderers/base.py))**: All renderers conform to the `@runtime_checkable` `BaseRenderer` protocol:
+   - **Protocol Interface ([`romutil/renderers/base.py`](../romutil/renderers/base.py))**: All renderers conform to the `@runtime_checkable` `BaseRenderer` protocol:
      ```python
      class BaseRenderer(Protocol):
          def render(
@@ -306,7 +309,7 @@ The unified renderer architecture provides an extensible, polymorphic pipeline f
    - **Central Registry & Lookup (`RENDERERS`, `get_renderer`)**: Maps format identifiers (`"svg"`, `"json"`, `"html"`) to renderer implementations (`SVGRenderer`, `JSONRenderer`, `HTMLRenderer`), normalizing case and leading extensions while supporting custom third-party renderer registration.
    - **Format Dispatcher (`render_map`)**: Dispatches room database rendering to the appropriate format, inferring format automatically from destination file extensions when omitted.
 
-2. **Structured JSON Map ([`romutil/renderers/json.py`](./romutil/renderers/json.py))**:
+2. **Structured JSON Map ([`romutil/renderers/json.py`](../romutil/renderers/json.py))**:
    - Implemented via `JSONRenderer`, `build_area_json`, and `export_json`.
    - Exports the entire room graph with solved integer 3D coordinates `(x, y, z)` and normalized area bounds.
    - Preserves 100% of room definitions, descriptions, and directional connections.
@@ -330,9 +333,9 @@ The unified renderer architecture provides an extensible, polymorphic pipeline f
      }
      ```
 
-3. **Standalone HTML Viewer ([`romutil/renderers/html.py`](./romutil/renderers/html.py))**:
+3. **Standalone HTML Viewer ([`romutil/renderers/html.py`](../romutil/renderers/html.py))**:
    - Implemented via `HTMLRenderer`, `generate_html_viewer`, and `export_html`.
-   - **Embedded Asset Loading**: Dedicated template asset file ([`romutil/templates/viewer.html`](./romutil/templates/viewer.html)) loaded cleanly via `importlib.resources` with a filesystem fallback, distributed as package data configured in `pyproject.toml`.
+   - **Embedded Asset Loading**: Dedicated template asset file ([`romutil/templates/viewer.html`](../romutil/templates/viewer.html)) loaded cleanly via `importlib.resources` with a filesystem fallback, distributed as package data configured in `pyproject.toml`.
    - A single, self-contained HTML/JS web application requiring **zero external network requests**, CDNs, or Node.js dependencies.
    - **Painter's Algorithm Layering**: The client-side rendering pipeline sorts room draw queues and minimap draw lists strictly by elevation ($Z$ ascending), then isometric screen depth ($Y$ descending / $X$ ascending). Independent DOM elevation groups (`<g id="elevation-{z}" class="elevation-layer">`) are constructed in ascending $Z$ order, with vertical transitions assigned to the higher elevation plane. This guarantees that multi-level views cleanly render upper stories and vertical stairways atop lower stories without visual interleaving or occlusion inversion.
    - Features smooth drag-to-pan and cursor-centered wheel zoom.
@@ -343,12 +346,12 @@ The unified renderer architecture provides an extensible, polymorphic pipeline f
    - Embedded interactive radar minimap canvas for orientation and rapid viewport panning.
 
 4. **Backward-Compatibility Shims**:
-   - [`romutil/plotter.py`](./romutil/plotter.py): Re-exports `Plotter`, `_DynamicPalette`, and `Direction` from `romutil.renderers.svg` and `romutil.models`.
-   - [`romutil/exporter.py`](./romutil/exporter.py): Re-exports `build_area_json`, `export_json`, `generate_html_viewer`, `export_html`, and `HTML_TEMPLATE` from `romutil.renderers`.
+   - [`romutil/plotter.py`](../romutil/plotter.py): Re-exports `Plotter`, `_DynamicPalette`, and `Direction` from `romutil.renderers.svg` and `romutil.models`.
+   - [`romutil/exporter.py`](../romutil/exporter.py): Re-exports `build_area_json`, `export_json`, `generate_html_viewer`, `export_html`, and `HTML_TEMPLATE` from `romutil.renderers`.
 
 ---
 
-### 4.7. Execution Contract & CLI — [`romutil/cli.py`](./romutil/cli.py)
+### 4.7. Execution Contract & CLI — [`romutil/cli.py`](../romutil/cli.py)
 
 - Registered console script entry point: `romutil` (via `uv run romutil`).
 - Multi-format output support (`--format` / `-f`): `svg` (default), `json`, and `html`.
@@ -399,7 +402,7 @@ uv run pytest
 Total test coverage across `romutil/` is enforced automatically at or above **95%** on every test execution (`--cov-fail-under=95`).
 
 ### Test Fixture & Area Path Resolution
-Integration test suites and the project [`Makefile`](./Makefile) decouple from machine-specific developer paths using portable discovery:
+Integration test suites and the project [`Makefile`](../Makefile) decouple from machine-specific developer paths using portable discovery:
 - **`QUICKMUD_AREA_DIR` Environment Variable**: An explicit environment variable pointing to an external MUD area directory.
 - **Relative Sibling Repository**: Sibling directory lookup (`../QuickMUD/area`) supporting standard adjacent checkout structures.
 - **Repository-Local Fixtures**: Local area test fixtures (`tests/fixtures/areas`, `tests/fixtures`, or `areas`) for self-contained execution.
@@ -412,7 +415,7 @@ Automated pre-commit hooks verify code quality before permitting commits:
 - Validates YAML configuration files and blocks large file additions.
 
 ### Continuous Integration (CI)
-The automated GitHub Actions pipeline ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) executes on all pushes and pull requests targeting the `main` branch. The CI workflow guarantees system invariants across target Python environments (3.12, 3.13, and 3.14):
+The automated GitHub Actions pipeline ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) executes on all pushes and pull requests targeting the `main` branch. The CI workflow guarantees system invariants across target Python environments (3.12, 3.13, and 3.14):
 - Provisioning Ubuntu runners with the Coin-OR CBC solver binary (`coinor-cbc`).
 - Installing pinned dependencies through `astral-sh/setup-uv@v5` with runner-level caching.
 - Enforcing static type safety using `mypy`.
@@ -425,7 +428,7 @@ The automated GitHub Actions pipeline ([`.github/workflows/ci.yml`](./.github/wo
 
 ROMUtil provides reproducible, zero-setup containerized execution and IDE development configurations using Docker and the VS Code Dev Containers specification.
 
-### 6.1. Multi-Stage Container Architecture — [`Dockerfile`](./Dockerfile)
+### 6.1. Multi-Stage Container Architecture — [`Dockerfile`](../Dockerfile)
 
 The container runtime is structured as a multi-stage Docker build rooted on `python:3.14-slim`:
 
@@ -448,10 +451,10 @@ Users process local MUD areas by mounting their host directories into `/data`:
 docker run -v $(pwd)/area:/data romutil /data/midgaard.are -outbase /data/midgaard
 ```
 
-### 6.2. IDE Containerized Development — [`.devcontainer/devcontainer.json`](./.devcontainer/devcontainer.json)
+### 6.2. IDE Containerized Development — [`.devcontainer/devcontainer.json`](../.devcontainer/devcontainer.json)
 
-For VS Code and Dev Container-compliant IDEs, [`.devcontainer/devcontainer.json`](./.devcontainer/devcontainer.json) provisions a standardized developer workspace:
-- References the project [`Dockerfile`](./Dockerfile) with workspace root build context.
+For VS Code and Dev Container-compliant IDEs, [`.devcontainer/devcontainer.json`](../.devcontainer/devcontainer.json) provisions a standardized developer workspace:
+- References the project [`Dockerfile`](../Dockerfile) with workspace root build context.
 - Integrates the official Git devcontainer feature (`ghcr.io/devcontainers/features/git:1`).
 - Configures default workspace settings, including Python virtual environment interpreter resolution (`/app/.venv/bin/python`) and automated `pytest` test discovery.
 - Executes `uv sync` during `postCreateCommand` initialization to prepare development dependencies, linters, and pre-commit hooks.
