@@ -55,10 +55,36 @@ def eval_flags(val: Any) -> Any:
     return s
 
 
+def sanitize_ackmud_colour(text: str) -> str:
+    """Sanitize ACK!MUD colour markup tokens (@@<char>, @@@) into clean plain text.
+
+    Strips @@<char> sequences (such as @@y, @@b, @@R, @@N, @@W, @@d) and expands
+    escaped @@@ sequences into literal @ characters, while preserving whitespace
+    and ASCII room layout formatting.
+    """
+    if not text or '@@' not in text:
+        return text
+
+    # Handle escaped @@: @@@ -> literal @ (using placeholder to avoid accidental stripping)
+    escaped_marker = '\x00_ACK_AT_\x00'
+    cleaned = text.replace('@@@', escaped_marker)
+
+    # Cleanly strip @@<char> sequences where char is not newline or tilde
+    cleaned = re.sub(r'@@[^\n~]', '', cleaned)
+
+    # Strip any dangling @@ before newline, tilde, or EOF
+    cleaned = re.sub(r'@@(?=[\n~]|\Z)', '', cleaned)
+
+    # Restore literal @
+    return cleaned.replace(escaped_marker, '@')
+
+
 def normalize_dialect_buffer(buffer: str) -> str:
-    """Normalize dialect variations across Merc, Envy, Diku, and CircleMUD.
+    """Normalize dialect variations across Merc, Envy, Diku, CircleMUD, and ACK!MUD.
 
     Handles:
+    - ACK!MUD colour markup tokens (@@<char>, @@@) sanitized into clean plain text.
+    - ACK!MUD 4.3 tagged #AREA headers (K, V, O, L, Q, etc.) converted into canonical 4-line format.
     - Envy #AREADATA ... End header converted into standard #AREA format.
     - Merc inline or single-line #AREA headers converted to 4-line standard format.
     - Missing #AREA header synthesized with default area metadata.
@@ -71,7 +97,10 @@ def normalize_dialect_buffer(buffer: str) -> str:
     if not buffer or not buffer.strip():
         return buffer
 
-    # 1. Normalize piped bitmask flags
+    # 1. Sanitize ACK!MUD colour codes across the entire buffer
+    buffer = sanitize_ackmud_colour(buffer)
+
+    # 2. Normalize piped bitmask flags
     def replace_pipe_flags(match):
         parts = match.group(0).split('|')
         val = 0
@@ -82,7 +111,7 @@ def normalize_dialect_buffer(buffer: str) -> str:
     buffer = re.sub(r'\b\d+(?:\|\d+)+\b', replace_pipe_flags, buffer)
     buffer = re.sub(r'(?<=[A-Za-z])\|(?=[A-Za-z])', '', buffer)
 
-    # 2. Normalize Envy #AREADATA ... End
+    # 3. Normalize Envy #AREADATA ... End
     def replace_areadata(match):
         body = match.group(1)
         data = {}
@@ -95,13 +124,13 @@ def normalize_dialect_buffer(buffer: str) -> str:
                 k = parts[0]
                 v = parts[1].rstrip('~').strip()
                 data[k] = v
-                if k == 'VNUMs':
+                if k in ('VNUMs', 'V'):
                     nums = [int(n) for n in v.split() if n.lstrip('-+').isdigit()]
                     if len(nums) >= 2:
                         data['vnum_min'] = nums[0]
                         data['vnum_max'] = nums[1]
-        name = data.get('Name', 'Area')
-        author = data.get('Author', data.get('Builders', 'Unknown'))
+        name = data.get('Name', data.get('K', 'Area'))
+        author = data.get('Author', data.get('Builders', data.get('O', data.get('L', 'Unknown'))))
         v_min = data.get('vnum_min', 0)
         v_max = data.get('vnum_max', 0)
         file_name = data.get('FileName', name.lower().replace(' ', '_') + ".are")
@@ -109,7 +138,77 @@ def normalize_dialect_buffer(buffer: str) -> str:
 
     buffer = re.sub(r'#AREADATA\s*\n(.*?)\nEnd\b', replace_areadata, buffer, flags=re.DOTALL)
 
-    # 3. Normalize Merc single-line or inline #AREA headers
+    # 4. Normalize ACK!MUD 4.3 tagged single-character #AREA headers
+    def replace_ackmud_area(match: re.Match[str]) -> str:
+        inline_fn = match.group(1)
+        body = match.group(2)
+        lines = [l.strip() for l in body.splitlines() if l.strip()]
+        tags: dict[str, str] = {}
+        other_lines: list[str] = []
+        for line in lines:
+            if line.startswith('*') or line in ('End', 'E'):
+                continue
+            m = re.match(r'^([A-Za-z])\s+(.*)', line)
+            if m:
+                tag_char = m.group(1).upper()
+                val = m.group(2).strip()
+                if tag_char not in tags:
+                    tags[tag_char] = val
+            else:
+                other_lines.append(line)
+
+        # Require presence of characteristic ACK!MUD tags
+        ack_chars = {'K', 'V', 'Q', 'O', 'L', 'N', 'I', 'X', 'F', 'U', 'R', 'W', 'M', 'S'}
+        matched_ack = ack_chars.intersection(tags.keys())
+        if not matched_ack:
+            return match.group(0)
+        if not ('K' in tags or 'V' in tags or 'Q' in tags or len(matched_ack) >= 2):
+            return match.group(0)
+
+        name = tags.get('K', '').rstrip('~').strip()
+        v_min = 0
+        v_max = 0
+        if 'V' in tags:
+            nums = [int(n) for n in tags['V'].split() if n.lstrip('-+').isdigit()]
+            if len(nums) >= 2:
+                v_min, v_max = nums[0], nums[1]
+            elif len(nums) == 1:
+                v_min = nums[0]
+
+        builder = tags.get('O', '').rstrip('~').strip()
+        if not builder:
+            builder = tags.get('L', '').rstrip('~').strip()
+        if not builder:
+            builder = 'Unknown'
+
+        file_name = ''
+        if inline_fn:
+            file_name = inline_fn.rstrip('~').strip()
+        elif 'A' in tags:
+            file_name = tags['A'].rstrip('~').strip()
+        else:
+            for other in other_lines:
+                cleaned = other.rstrip('~').strip()
+                if cleaned.lower().endswith('.are') or '.' in cleaned:
+                    file_name = cleaned
+                    break
+        if not file_name:
+            base_name = name or 'area'
+            file_name = base_name.lower().replace(' ', '_') + '.are'
+        if not name:
+            file_name_stem = Path(file_name).stem
+            name = file_name_stem.replace('_', ' ').title() if file_name_stem else 'Area'
+
+        return f"#AREA\n{file_name}~\n{name}~\n{builder}~\n{v_min} {v_max}\n"
+
+    buffer = re.sub(
+        r'#AREA(?:[ \t]+([^\n~]*~))?[ \t]*\n(.*?)(?=\n#[A-Z$]|\Z)',
+        replace_ackmud_area,
+        buffer,
+        flags=re.DOTALL,
+    )
+
+    # 5. Normalize Merc single-line or inline #AREA headers
     def replace_merc_area_inline(match):
         raw = match.group(1).strip().rstrip('~').strip()
         m = re.match(r'\{[^}]*\}\s*(?:(\w+)\s+)?(.*)', raw)
@@ -315,7 +414,7 @@ class Lexer:
 
     def t_string_STRING(self, t):
         r'(?:[^~]|\.)*~'
-        t.value = t.value[:-1].strip()
+        t.value = sanitize_ackmud_colour(t.value[:-1].strip())
         t.lexer.begin('INITIAL')
         return t
 
@@ -337,7 +436,7 @@ class Lexer:
 
     def t_line_TOEOL(self, t):
         r'\S[^\n]*'
-        t.value = t.value.strip()
+        t.value = sanitize_ackmud_colour(t.value.strip())
         t.lexer.begin('INITIAL')
         return t
 

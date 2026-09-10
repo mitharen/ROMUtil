@@ -15,7 +15,8 @@ import pytest
 
 import json
 from romutil.models import AreaData, AreaHeader, Room, Exit, RoomDef, ExitDef, Direction
-from romutil.parser import Parser, normalize_dialect_buffer, eval_flags
+from romutil.parser import Parser, normalize_dialect_buffer, eval_flags, sanitize_ackmud_colour
+from romutil.renderers import SVGRenderer, HTMLRenderer, JSONRenderer
 from romutil.graph import graph, solve_layout
 from romutil.cli import cli, main
 
@@ -185,6 +186,61 @@ class TestDialectParserPositive:
         assert 3005 in vnum_map
 
 
+    def test_parse_ackmud_fixture(self):
+        """Validate ACK!MUD 4.3 format: tagged #AREA header lines, @@ colour markup sanitization."""
+        filepath = FIXTURES_DIR / "ackmud.are"
+        area = Parser().parse(filepath.read_text(encoding="utf-8"))
+
+        assert isinstance(area, AreaData)
+        assert isinstance(area.header, AreaHeader)
+        assert area.header.name == "The Citadel of Ack"
+        assert area.header.builder == "Kline"
+        assert area.header.vnum_min == 500
+        assert area.header.vnum_max == 599
+
+        assert len(area.rooms) == 5
+        vnum_map = {r.vnum: r for r in area.rooms}
+        assert 500 in vnum_map
+        assert 501 in vnum_map
+        assert 502 in vnum_map
+        assert 503 in vnum_map
+        assert 504 in vnum_map
+
+        room_500 = vnum_map[500]
+        # Colour tokens @@R and @@y sanitized from title
+        assert room_500.name == "Grand Entrance"
+        # Colour tokens sanitized from description while preserving text
+        assert "towering gates of the Citadel of Ack" in room_500.description
+        assert "shimmering portal flickers faintly" in room_500.description
+        assert "@@" not in room_500.description
+
+        # Exits parsed cleanly
+        assert len(room_500.exits) == 4
+        north_exit = next(e for e in room_500.exits if e.direction == 0)
+        assert north_exit.dst_vnum == 501
+        assert north_exit.keyword == "iron gate"
+        assert north_exit.flags == 1
+
+        east_exit = next(e for e in room_500.exits if e.direction == 1)
+        assert east_exit.dst_vnum == 502
+
+        south_exit = next(e for e in room_500.exits if e.direction == 2)
+        assert south_exit.dst_vnum == 503
+
+        west_exit = next(e for e in room_500.exits if e.direction == 3)
+        assert west_exit.dst_vnum == 504
+
+        # Reciprocal exits verified
+        room_501 = vnum_map[501]
+        assert room_501.name == "Central Courtyard"
+        assert "Flags flutter in the mountain wind" in room_501.description
+        assert "@@" not in room_501.description
+        assert next(e for e in room_501.exits if e.direction == 2).dst_vnum == 500
+
+        # Resets parsed
+        assert len(area.resets) == 1
+
+
 class TestDialectLayoutSolver:
     """Validate that area graphs from all 4 dialects solve cleanly and generate valid maps."""
 
@@ -194,6 +250,7 @@ class TestDialectLayoutSolver:
         ("envy20.are", 4),
         ("circlemud.are", 4),
         ("dikumud_alfa.wld", 5),
+        ("ackmud.are", 5),
     ])
     def test_solve_and_render_all_dialects(self, fixture_name, expected_room_count, tmp_path):
         """Ensure layout solver assigns coordinates and plots SVG for each dialect without errors."""
@@ -529,3 +586,250 @@ $~
 """
         with pytest.raises(Exception):
             Parser().parse(truncated)
+
+
+class TestAckMudCompatibility:
+    """Comprehensive unit and regression tests for ACK!MUD / AckFUSS compatibility (Task 8f)."""
+
+    def test_colour_sanitization_tokens(self):
+        """Verify all standard ACK!MUD @@<char> colour tokens are cleanly stripped."""
+        raw = "@@RRed @@yYellow @@bBlue @@gGreen @@cCyan @@mMagenta @@wWhite @@kBlack @@pPurple @@NReset"
+        assert sanitize_ackmud_colour(raw) == "Red Yellow Blue Green Cyan Magenta White Black Purple Reset"
+
+    def test_colour_sanitization_escaped_at(self):
+        """Verify @@@ expands into a single literal @ and does not strip following text."""
+        raw = "Contact @@Wadmin@@@ackmud.org@@N for support."
+        assert sanitize_ackmud_colour(raw) == "Contact admin@ackmud.org for support."
+
+    def test_colour_sanitization_ascii_layout_preservation(self):
+        """Verify ASCII map grids, indentation, and alignment are preserved after colour stripping."""
+        raw = (
+            "  @@y+-----+@@N      @@b+-----+@@N\n"
+            "  @@y|  N  |@@N ---- @@b|  S  |@@N\n"
+            "  @@y+-----+@@N      @@b+-----+@@N\n"
+        )
+        expected = (
+            "  +-----+      +-----+\n"
+            "  |  N  | ---- |  S  |\n"
+            "  +-----+      +-----+\n"
+        )
+        assert sanitize_ackmud_colour(raw) == expected
+
+    def test_colour_sanitization_edge_cases(self):
+        """Verify edge cases: empty strings, strings without @@, trailing @@, and punctuation."""
+        assert sanitize_ackmud_colour("") == ""
+        assert sanitize_ackmud_colour("No colours here") == "No colours here"
+        assert sanitize_ackmud_colour("@@") == ""
+        assert sanitize_ackmud_colour("Trailing @@\nNext line") == "Trailing \nNext line"
+        assert sanitize_ackmud_colour("@@!Blinking @@2Dim @@iInverse@@N") == "Blinking Dim Inverse"
+        assert sanitize_ackmud_colour("@@@") == "@"
+        assert sanitize_ackmud_colour("@@@@") == "@@"
+        assert sanitize_ackmud_colour(None) is None  # type: ignore
+
+    def test_tagged_area_header_minimal(self):
+        """Verify minimal ACK!MUD header with K and V tags parses into typed AreaHeader."""
+        text = """#AREA
+K Minimal Ack Zone~
+V 1000 1050
+
+#ROOMS
+#1000
+Start~
+Desc~
+0 0 1
+S
+#0
+#$
+"""
+        area = Parser().parse(text)
+        assert isinstance(area.header, AreaHeader)
+        assert area.header.name == "Minimal Ack Zone"
+        assert area.header.vnum_min == 1000
+        assert area.header.vnum_max == 1050
+        assert area.header.builder == "Unknown"
+        assert area.header.filename == "minimal_ack_zone.are"
+
+    def test_tagged_area_header_with_owner(self):
+        """Verify tagged header with O tag extracts builder name."""
+        text = """#AREA
+Q 2
+K Dragon Keep~
+O Stephen~
+V 6000 6099
+
+#ROOMS
+#6000
+Keep Entry~
+Desc~
+0 0 1
+S
+#0
+#$
+"""
+        area = Parser().parse(text)
+        assert area.header.name == "Dragon Keep"
+        assert area.header.builder == "Stephen"
+        assert area.header.vnum_min == 6000
+        assert area.header.vnum_max == 6099
+
+    def test_tagged_area_header_level_fallback(self):
+        """Verify tagged header without O tag falls back to L (levels) tag for builder."""
+        text = """#AREA
+Q 1
+K Goblin Cave~
+L { 5 15 } Caves~
+V 7000 7050
+
+#ROOMS
+#7000
+Cave Mouth~
+Desc~
+0 0 1
+S
+#0
+#$
+"""
+        area = Parser().parse(text)
+        assert area.header.name == "Goblin Cave"
+        assert area.header.builder == "{ 5 15 } Caves"
+        assert area.header.vnum_min == 7000
+        assert area.header.vnum_max == 7050
+
+    def test_tagged_area_header_inline_and_standalone_filename(self):
+        """Verify inline filename and standalone filename under #AREA."""
+        text_inline = """#AREA custom_ack.are~
+Q 1
+K Custom Realm~
+V 8000 8050
+O Kline~
+
+#ROOMS
+#8000
+Start~
+Desc~
+0 0 1
+S
+#0
+#$
+"""
+        area_inline = Parser().parse(text_inline)
+        assert area_inline.header.filename == "custom_ack.are"
+        assert area_inline.header.name == "Custom Realm"
+
+        text_standalone = """#AREA
+standalone_ack.are~
+Q 1
+K Standalone Realm~
+V 8100 8150
+O Kline~
+
+#ROOMS
+#8100
+Start~
+Desc~
+0 0 1
+S
+#0
+#$
+"""
+        area_standalone = Parser().parse(text_standalone)
+        assert area_standalone.header.filename == "standalone_ack.are"
+        assert area_standalone.header.name == "Standalone Realm"
+
+    def test_tagged_area_header_with_end_delimiter_and_comments(self):
+        """Verify tagged header containing End sentinel and comments parses cleanly."""
+        text = """#AREA
+* Authentic ACK!MUD area header comment
+Q 5
+K Dark Forest~
+* Another comment
+O Alander~
+V 9000 9099
+End
+
+#ROOMS
+#9000
+Forest Edge~
+Desc~
+0 0 1
+S
+#0
+#$
+"""
+        area = Parser().parse(text)
+        assert area.header.name == "Dark Forest"
+        assert area.header.builder == "Alander"
+        assert area.header.vnum_min == 9000
+        assert area.header.vnum_max == 9099
+
+    def test_ackmud_render_all_formats(self, tmp_path):
+        """Verify solved ACK!MUD area renders seamlessly to SVG, HTML, and JSON."""
+        filepath = FIXTURES_DIR / "ackmud.are"
+        area = Parser().parse(filepath.read_text(encoding="utf-8"))
+        rdb = {r.vnum: Room(r) for r in area.rooms}
+        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=10)
+
+        # SVG Rendering
+        svg_file = tmp_path / "ackmud.svg"
+        out_svg = SVGRenderer().render(solved_rdb, svg_file, header=area.header, exits=exits)
+        assert out_svg.exists()
+        svg_content = out_svg.read_text(encoding="utf-8")
+        assert "<svg" in svg_content
+        assert "Grand Entrance" in svg_content
+        assert "Central Courtyard" in svg_content
+        # Confirm no raw @@ tokens leaked into SVG
+        assert "@@" not in svg_content
+
+        # HTML Rendering
+        html_file = tmp_path / "ackmud.html"
+        out_html = HTMLRenderer().render(solved_rdb, html_file, header=area.header, exits=exits)
+        assert out_html.exists()
+        html_content = out_html.read_text(encoding="utf-8")
+        assert "The Citadel of Ack" in html_content
+        assert "Grand Entrance" in html_content
+        assert "@@" not in html_content
+
+        # JSON Rendering
+        json_file = tmp_path / "ackmud.json"
+        out_json = JSONRenderer().render(solved_rdb, json_file, header=area.header, exits=exits)
+        assert out_json.exists()
+        json_dict = json.loads(out_json.read_text(encoding="utf-8"))
+        assert json_dict["area"]["name"] == "The Citadel of Ack"
+        # builder not stored under area dict
+        assert len(json_dict["rooms"]) == 5
+        room_names = [r["name"] for r in json_dict["rooms"]]
+        assert "Grand Entrance" in room_names
+        assert all("@@" not in name for name in room_names)
+
+    def test_tagged_area_header_edge_cases(self):
+        """Verify edge cases: A tag, single VNUM, missing name derived from filename, and non-ACK single tag."""
+        # 1. 'A' tag for filename, single VNUM, and missing name (derived from filename stem)
+        text_a = """#AREA
+A lost_valley.are~
+Q 1
+V 500
+O Mystic~
+
+#ROOMS
+#500
+Start~
+Desc~
+0 0 1
+S
+#0
+#$
+"""
+        area_a = Parser().parse(text_a)
+        assert area_a.header.filename == "lost_valley.are"
+        assert area_a.header.name == "Lost Valley"
+        assert area_a.header.vnum_min == 500
+        assert area_a.header.vnum_max == 0
+        assert area_a.header.builder == "Mystic"
+
+        # 2. Header with only a single non-KVQ ACK tag should not match ACK header
+        text_non_ack = """#AREA
+M none~
+#ROOMS
+"""
+        norm = normalize_dialect_buffer(text_non_ack)
+        assert "M none~" in norm
