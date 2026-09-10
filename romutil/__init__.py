@@ -17,7 +17,7 @@ from romutil.models import (
 )
 from romutil.parser import Parser, parse_file, parse_circlemud_directory, parse_circlemud_zone_file
 from romutil.plotter import Plotter
-from romutil.solver import solve, non_euler, find_overlap_candidates
+from romutil.solver import solve, non_euler, find_overlap_candidates, get_cbc_solver
 from romutil.graph import graph, solve_layout, restore_rooms, mfas, compute_bounding_box, decompose_components
 from romutil.exporter import build_area_json, export_json, generate_html_viewer, export_html
 from romutil.cli import main, cli
@@ -56,6 +56,7 @@ __all__ = [
     'solve',
     'non_euler',
     'find_overlap_candidates',
+    'get_cbc_solver',
     'graph',
     'solve_layout',
     'restore_rooms',
