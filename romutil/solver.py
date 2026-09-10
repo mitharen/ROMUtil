@@ -3,6 +3,7 @@ from __future__ import annotations
 import itertools
 import logging
 from math import sqrt
+import os
 from typing import Any, Mapping, Optional, Sequence, Set as TypingSet, Tuple
 
 import pyomo.opt
@@ -370,6 +371,44 @@ def add_overlap_constraint(
     return relations + 1
 
 
+def get_cbc_solver(timeout: Optional[int] = None, **custom_options: Any) -> Any:
+    """
+    Instantiate and configure the Coin-OR CBC MILP solver with tuned options.
+
+    Configures:
+      - threads: min(4, os.cpu_count() or 1) for parallel branch-and-bound.
+      - ratioGap: 0.05 (5% relative MIP gap tolerance) to prevent branch-and-bound
+        tailing off while guaranteeing visually indistinguishable layouts.
+      - presolve: 'on' for aggressive preprocessing and problem reduction.
+      - cuts: 'on' for cutting-plane generation.
+      - heuristics: 'on' for primal integer heuristics.
+      - seconds: execution timeout in seconds if specified (also sets 'sec' for
+        Pyomo backward compatibility).
+      - custom_options: any additional or overridden solver options.
+
+    Args:
+        timeout: Optional time limit in seconds.
+        **custom_options: Additional solver options to set or override.
+
+    Returns:
+        Configured Pyomo solver plugin instance for Coin-OR CBC.
+    """
+    solver = SolverFactory('cbc', tee=False)
+    cpu_count = os.cpu_count() or 1
+    solver.options['threads'] = min(4, cpu_count)
+    solver.options['ratioGap'] = 0.05
+    solver.options['presolve'] = 'on'
+    solver.options['cuts'] = 'on'
+    solver.options['heuristics'] = 'on'
+    if timeout is not None:
+        timeout_sec = int(timeout)
+        solver.options['seconds'] = timeout_sec
+        solver.options['sec'] = timeout_sec
+    for k, v in custom_options.items():
+        solver.options[k] = v
+    return solver
+
+
 def non_euler(rdb, exits):
     m = ConcreteModel()
 
@@ -430,8 +469,7 @@ def non_euler(rdb, exits):
 
     m.obj = Objective(expr=sum(m.cut[i] for i in range(len(exits))))
 
-    solver = SolverFactory('cbc')
-    solver.options['sec'] = 20
+    solver = get_cbc_solver(timeout=20)
     solver.solve(m, tee=False)
     return m
 
@@ -604,9 +642,8 @@ def solve(rdb, area_exits, timeout=None):
     relations = 0
     log.info(f'{len(non_incidents)} possible overlaps.')
 
-    solver = SolverFactory('cbc', tee=False)
     timeout_sec = 300 if timeout is None else int(timeout)
-    solver.options['sec'] = timeout_sec
+    solver = get_cbc_solver(timeout=timeout_sec)
 
     while True:
         result = solver.solve(m, tee=False)
