@@ -1,0 +1,91 @@
+#AREA
+Q 1
+K @@RThe @@yCitadel @@bof @@gAck@@N~
+L @@W{ 10 30 } Kline Citadel of Ack@@N~
+N 1
+I 10 30
+V 500 599
+X 100
+F 0
+U 0
+O @@WKline@@N~
+R none~
+W none~
+M none~
+
+#ROOMS
+#500
+@@RGrand @@yEntrance@@N~
+@@NYou stand before the towering gates of the @@RCitadel of Ack@@N.
+Ancient stone arches reach high above the paved courtyard.
+A shimmering @@bportal@@N flickers faintly against the eastern wall.
+~
+0 0 1
+D0
+The archway leads north into the central courtyard.~
+iron gate~
+1 0 501
+D1
+A narrow corridor leads east into the barracks.~
+~
+0 0 502
+D2
+The south gates open outward to the wilderness.~
+~
+0 0 503
+D3
+A cobblestone path leads west toward the training grounds.~
+~
+0 0 504
+S
+#501
+@@RCentral @@bCourtyard@@N~
+@@WThe open courtyard is framed by high granite battlements.@@N
+@@dFlags flutter in the mountain wind high above.@@N
+~
+0 8 0
+D2
+The iron gates lead south back to the grand entrance.~
+iron gate~
+1 0 500
+S
+#502
+@@yEast @@gBarracks@@N~
+@@NNeat rows of iron-framed cots fill this quiet hall.
+A weapon rack stands near the sturdy door.
+~
+0 0 0
+D3
+The corridor leads west back to the entrance.~
+~
+0 0 500
+S
+#503
+@@gSouth @@wWatchtower@@N~
+@@NThe watchtower commands an expansive view across the valley.
+A sharp wind whistles between the battlements.
+~
+0 0 1
+D0
+The pathway leads north into the entrance.~
+~
+0 0 500
+S
+#504
+@@mWestern @@cTraining Grounds@@N~
+@@NDummy targets and practice quintains are scattered across the sawdust arena.
+Weapon grooves mark the defensive palisade.
+~
+0 0 2
+D1
+The cobblestone path leads east to the grand entrance.~
+~
+0 0 500
+S
+#0
+
+#RESETS
+M 0 500 1 500
+S
+
+#$

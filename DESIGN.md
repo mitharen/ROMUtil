@@ -81,7 +81,7 @@ ROMUtil/
 
 ### 4.1. Parsing Engine — [`romutil/parser.py`](./romutil/parser.py)
 
-The parsing engine ingests text-based MUD area files across historical and modern DikuMUD derivative dialects (ROM 2.4, Merc 2.1/2.2, Envy 1.0/2.0, CircleMUD / DikuMUD III, and DikuMUD Alfa / Gamma) and constructs structured in-memory area representations using Python PLY (`ply.lex` and `ply.yacc`).
+The parsing engine ingests text-based MUD area files across historical and modern DikuMUD derivative dialects (ROM 2.4, Merc 2.1/2.2, Envy 1.0/2.0, CircleMUD / DikuMUD III, DikuMUD Alfa / Gamma, and ACK!MUD / AckFUSS) and constructs structured in-memory area representations using Python PLY (`ply.lex` and `ply.yacc`).
 
 - **DikuMUD Alfa / Gamma Monolithic Ingestion & VNUM 0 ("The Void") Architecture**:
   - Ingests monolithic `.wld` files (such as `tinyworld.wld`) containing unpartitioned room definitions across multiple zones without `#AREA` metadata headers or `#ROOMS` section boundaries.
@@ -89,9 +89,14 @@ The parsing engine ingests text-based MUD area files across historical and moder
   - Resolves semantic overloading of VNUM `0` ("The Void"): in DikuMUD Alfa, room `#0` is a valid, traversable room with cardinal exits, while in ROM/Merc derivations `#0` functions as a section terminator sentinel. The lexer utilizes contextual lookahead in `t_NULL`: when `#0` is immediately followed by a tilde-terminated room title string, it emits `VNUM(0)` to enter `p_room`; when followed by section boundaries or EOF, it emits `NULL` to close `p_sections` without LALR(1) shift/reduce conflicts.
   - Generates synthesized `AreaHeader` metadata when standalone or monolithic `.wld` files are processed by the CLI or plotting pipelines, determining bounding intervals $[V_{\min}, V_{\max}]$ from parsed rooms and deriving human-readable area names from filename stems.
   - Domain abstractions (`RoomDef`, `Room`, `Exit`) and MILP solver formulations treat node `0` and edges to destination `0` symmetrically with non-zero nodes, supporting full vertical layering and reciprocal one-way exit resolution.
+- **ACK!MUD / AckFUSS Tagged Headers & Colour Markup Sanitization**:
+  - Ingests ACK!MUD 4.3 and AckFUSS area definitions featuring single-character tagged line headers (`Q`, `K`, `L`, `N`, `I`, `V`, `X`, `F`, `U`, `O`, `R`, `W`, `M`) under `#AREA` or `#AREADATA`.
+  - Normalizes tagged `#AREA` records into canonical 4-line metadata blocks (`filename`, `name`, `builder`, `vnum_min vnum_max`), extracting area titles (`K <name>~`), VNUM bounding intervals (`V <min> <max>`), and authors/builders (`O <builder>~` with fallback to `L <levels>~`).
+  - Preprocesses text buffers via `sanitize_ackmud_colour` to strip ACK!MUD ANSI colour escape sequences (`@@<char>`, e.g. `@@y`, `@@b`, `@@R`, `@@N`, `@@W`, `@@d`) while expanding escaped `@` sequences (`@@@` $\to$ `@`).
+  - Preserves monospace spacing, line breaks, and ASCII art room layouts across titles and multiline room descriptions, yielding clean plain-text strings for rendering in SVG, HTML, and JSON without visual artifacts or markup leakage.
 - **Dialect Normalization Layer (`normalize_dialect_buffer`)**:
   - Preprocesses input text buffers prior to lexical analysis to ensure deterministic state transitions in PLY's LALR(1) state machine without lookahead ambiguity.
-  - Converts Envy `#AREADATA ... End` key-value blocks and Merc single-line `#AREA { ... } ...~` headers into canonical 4-line `#AREA` metadata.
+  - Converts Envy `#AREADATA ... End` key-value blocks, ACK!MUD tagged `#AREA` blocks, and Merc single-line `#AREA { ... } ...~` headers into canonical 4-line `#AREA` metadata.
   - Evaluates piped bitmask expressions (e.g. `4|8|1024` evaluates to composite integer `1036`) while preserving alpha string flags.
   - Strips unsupported dialect-specific sections (`#GAMES`, `#CLANS`, `#ECONOMY`, `#OLC`).
   - Standardizes CircleMUD / DikuMUD EOF delimiters (`$~` and `$`) into standard `#$` markers.
