@@ -231,6 +231,145 @@ def position_dummy_rooms(rdb: Mapping[int, Any], exits: Sequence[Exit]) -> None:
                 room.z = 0
 
 
+def compute_dimension_bounds(exits: Sequence[Exit]) -> tuple[int, int, int]:
+    """
+    Calculate tight dimension-specific bounds (Mx, My, Mz) based on exit lengths
+    oriented along each respective axis, with safe lower bounds.
+
+    Mx = max(10, sum(|dx|) + 1)
+    My = max(10, sum(|dy|) + 1)
+    Mz = max(5, sum(|dz|) + 1)
+
+    Returns:
+        tuple[int, int, int]: (Mx, My, Mz)
+    """
+    sum_x = sum(e.distance for e in exits if e.direction in (Direction.east, Direction.west))
+    sum_y = sum(e.distance for e in exits if e.direction in (Direction.north, Direction.south))
+    sum_z = sum(e.distance for e in exits if e.direction in (Direction.up, Direction.down))
+
+    mx = max(10, sum_x + 1)
+    my = max(10, sum_y + 1)
+    mz = max(5, sum_z + 1)
+    return mx, my, mz
+
+
+def get_candidate_batch_cap(num_candidates: int) -> int:
+    """
+    Calculate the constraint batch size cap per solver iteration to prevent
+    combinatorial explosion in CBC branch-and-cut:
+    cap = min(15, max(5, int(sqrt(num_candidates)))) if num_candidates > 0 else 0
+    """
+    if num_candidates <= 0:
+        return 0
+    return min(15, max(5, int(sqrt(num_candidates))))
+
+
+def add_overlap_constraint(
+    m: ConcreteModel,
+    ex: Exit,
+    nx: Exit,
+    left: int,
+    right: int,
+    relations: int,
+    coords: Optional[Mapping[int, Any]] = None,
+    has_vertical_exits: bool = True,
+) -> int:
+    """
+    Add disjunctive spatial separation constraints between two overlapping exit segments.
+
+    If vertical separation is inapplicable (e.g. no vertical exits exist in the area/subgraph,
+    or both exits are horizontal and lie on the same horizontal plane), separation directions
+    are reduced from 6 to 4 (North, South, East, West), eliminating 2 binary variables
+    per overlap constraint (33% reduction in binary decision variables).
+
+    Disjunctive Big-M constraints use dimension-specific bounds (2 * Mx, 2 * My, 2 * Mz)
+    rather than monolithic M.
+
+    Returns:
+        int: The next relation index (relations + 1).
+    """
+    z_match = False
+    if coords is not None:
+        p1 = _get_coords(coords, ex.src)
+        p2 = _get_coords(coords, nx.src)
+        if p1 is not None and p2 is not None:
+            z_match = (p1[2] == p2[2])
+
+    is_horizontal_pair = (
+        ex.direction not in (Direction.up, Direction.down)
+        and nx.direction not in (Direction.up, Direction.down)
+    )
+
+    is_planar = (not has_vertical_exits) or (is_horizontal_pair and (coords is None or z_match))
+
+    if is_planar:
+        active_dirs = [Direction.north, Direction.east, Direction.south, Direction.west]
+    else:
+        active_dirs = [
+            Direction.north,
+            Direction.east,
+            Direction.up,
+            Direction.south,
+            Direction.west,
+            Direction.down,
+        ]
+
+    relation = Var(active_dirs, within=Boolean)
+    m.add_component(f'relation{relations}', relation)
+    m.crossings.add(sum(relation[d] for d in active_dirs) >= 1)
+
+    mx = getattr(m, 'Mx', getattr(m, 'M', 100))
+    my = getattr(m, 'My', getattr(m, 'M', 100))
+    mz = getattr(m, 'Mz', getattr(m, 'M', 100))
+    d_min = getattr(m, 'd_min', 1)
+
+    prod = list(itertools.product((ex.src, ex.dst), (nx.src, nx.dst)))
+
+    # East: x[p] - x[q] >= d_min
+    if Direction.east in active_dirs:
+        for p, q in prod:
+            m.crossings.add(
+                m.x[p] - m.x[q] + 2 * mx * ((1 - relation[Direction.east]) + m.cut[left] + m.cut[right]) >= d_min
+            )
+
+    # West: x[q] - x[p] >= d_min
+    if Direction.west in active_dirs:
+        for p, q in prod:
+            m.crossings.add(
+                m.x[q] - m.x[p] + 2 * mx * ((1 - relation[Direction.west]) + m.cut[left] + m.cut[right]) >= d_min
+            )
+
+    # North: y[p] - y[q] >= d_min
+    if Direction.north in active_dirs:
+        for p, q in prod:
+            m.crossings.add(
+                m.y[p] - m.y[q] + 2 * my * ((1 - relation[Direction.north]) + m.cut[left] + m.cut[right]) >= d_min
+            )
+
+    # South: y[q] - y[p] >= d_min
+    if Direction.south in active_dirs:
+        for p, q in prod:
+            m.crossings.add(
+                m.y[q] - m.y[p] + 2 * my * ((1 - relation[Direction.south]) + m.cut[left] + m.cut[right]) >= d_min
+            )
+
+    # Up: z[p] - z[q] >= d_min
+    if Direction.up in active_dirs:
+        for p, q in prod:
+            m.crossings.add(
+                m.z[p] - m.z[q] + 2 * mz * ((1 - relation[Direction.up]) + m.cut[left] + m.cut[right]) >= d_min
+            )
+
+    # Down: z[q] - z[p] >= d_min
+    if Direction.down in active_dirs:
+        for p, q in prod:
+            m.crossings.add(
+                m.z[q] - m.z[p] + 2 * mz * ((1 - relation[Direction.down]) + m.cut[left] + m.cut[right]) >= d_min
+            )
+
+    return relations + 1
+
+
 def non_euler(rdb, exits):
     m = ConcreteModel()
 
@@ -239,11 +378,15 @@ def non_euler(rdb, exits):
     m.Exits = RangeSet(0, len(exits) - 1)
     m.Directions = RangeSet(0, Direction.mod.value - 1)
 
+    mx, my, mz = compute_dimension_bounds(exits)
+    m.Mx = Param(initialize=mx)
+    m.My = Param(initialize=my)
+    m.Mz = Param(initialize=mz)
     m.M = Param(initialize=sum([e.distance for e in exits]))
 
-    m.x = Var(m.Rooms, within=Integers, bounds=(0, m.M))
-    m.y = Var(m.Rooms, within=Integers, bounds=(0, m.M))
-    m.z = Var(m.Rooms, within=Integers, bounds=(0, m.M))
+    m.x = Var(m.Rooms, within=Integers, bounds=(-m.Mx, m.Mx))
+    m.y = Var(m.Rooms, within=Integers, bounds=(-m.My, m.My))
+    m.z = Var(m.Rooms, within=Integers, bounds=(-m.Mz, m.Mz))
     m.cut = Var(m.Exits, within=Binary)
     m.relative_pos = ConstraintList()
 
@@ -263,27 +406,27 @@ def non_euler(rdb, exits):
 
         if e.dst != e.src:
             if e.direction not in (Direction.east, Direction.west):
-                m.relative_pos.add(m.x[e.src] - m.x[e.dst] + m.M * m.cut[i] >= 0)
-                m.relative_pos.add(m.x[e.dst] - m.x[e.src] + m.M * m.cut[i] >= 0)
+                m.relative_pos.add(m.x[e.src] - m.x[e.dst] + 2 * m.Mx * m.cut[i] >= 0)
+                m.relative_pos.add(m.x[e.dst] - m.x[e.src] + 2 * m.Mx * m.cut[i] >= 0)
             if e.direction not in (Direction.north, Direction.south):
-                m.relative_pos.add(m.y[e.src] - m.y[e.dst] + m.M * m.cut[i] >= 0)
-                m.relative_pos.add(m.y[e.dst] - m.y[e.src] + m.M * m.cut[i] >= 0)
+                m.relative_pos.add(m.y[e.src] - m.y[e.dst] + 2 * m.My * m.cut[i] >= 0)
+                m.relative_pos.add(m.y[e.dst] - m.y[e.src] + 2 * m.My * m.cut[i] >= 0)
             if e.direction not in (Direction.up, Direction.down):
-                m.relative_pos.add(m.z[e.src] - m.z[e.dst] + m.M * m.cut[i] >= 0)
-                m.relative_pos.add(m.z[e.dst] - m.z[e.src] + m.M * m.cut[i] >= 0)
+                m.relative_pos.add(m.z[e.src] - m.z[e.dst] + 2 * m.Mz * m.cut[i] >= 0)
+                m.relative_pos.add(m.z[e.dst] - m.z[e.src] + 2 * m.Mz * m.cut[i] >= 0)
 
             if e.direction == Direction.east:
-                m.relative_pos.add(m.x[e.dst] - m.x[e.src] + m.M * m.cut[i] >= 1)
+                m.relative_pos.add(m.x[e.dst] - m.x[e.src] + 2 * m.Mx * m.cut[i] >= 1)
             elif e.direction == Direction.north:
-                m.relative_pos.add(m.y[e.dst] - m.y[e.src] + m.M * m.cut[i] >= 1)
+                m.relative_pos.add(m.y[e.dst] - m.y[e.src] + 2 * m.My * m.cut[i] >= 1)
             elif e.direction == Direction.up:
-                m.relative_pos.add(m.z[e.dst] - m.z[e.src] + m.M * m.cut[i] >= 1)
+                m.relative_pos.add(m.z[e.dst] - m.z[e.src] + 2 * m.Mz * m.cut[i] >= 1)
             elif e.direction == Direction.west:
-                m.relative_pos.add(m.x[e.src] - m.x[e.dst] + m.M * m.cut[i] >= 1)
+                m.relative_pos.add(m.x[e.src] - m.x[e.dst] + 2 * m.Mx * m.cut[i] >= 1)
             elif e.direction == Direction.south:
-                m.relative_pos.add(m.y[e.src] - m.y[e.dst] + m.M * m.cut[i] >= 1)
+                m.relative_pos.add(m.y[e.src] - m.y[e.dst] + 2 * m.My * m.cut[i] >= 1)
             elif e.direction == Direction.down:
-                m.relative_pos.add(m.z[e.src] - m.z[e.dst] + m.M * m.cut[i] >= 1)
+                m.relative_pos.add(m.z[e.src] - m.z[e.dst] + 2 * m.Mz * m.cut[i] >= 1)
 
     m.obj = Objective(expr=sum(m.cut[i] for i in range(len(exits))))
 
@@ -332,16 +475,20 @@ def solve(rdb, area_exits, timeout=None):
     m.Exits = RangeSet(0, len(exits) - 1)
     m.Directions = RangeSet(0, Direction.mod.value - 1)
 
+    mx, my, mz = compute_dimension_bounds(exits)
+    m.Mx = Param(initialize=mx)
+    m.My = Param(initialize=my)
+    m.Mz = Param(initialize=mz)
     m.M = Param(initialize=sum([e.distance for e in exits]))
     m.d_min = Param(initialize=1)
     m.l_min = Param(m.Exits, initialize=lambda m, x: exits[x].distance)
 
-    m.x = Var(m.Rooms, within=Integers, bounds=(0, m.M))
-    m.y = Var(m.Rooms, within=Integers, bounds=(0, m.M))
-    m.z = Var(m.Rooms, within=Integers, bounds=(0, m.M))
+    m.x = Var(m.Rooms, within=Integers, bounds=(-m.Mx, m.Mx))
+    m.y = Var(m.Rooms, within=Integers, bounds=(-m.My, m.My))
+    m.z = Var(m.Rooms, within=Integers, bounds=(-m.Mz, m.Mz))
     m.cut = Var(m.Exits, within=Binary)
     m.l_max = Var(m.Exits, within=PositiveIntegers)
-    m.one_ways = VarList(within=NonNegativeIntegers, bounds=(0, m.M))
+    m.one_ways = VarList(within=NonNegativeIntegers, bounds=(0, 2 * m.M))
 
     m.relative_pos = ConstraintList()
     m.one_way_pos = ConstraintList()
@@ -414,33 +561,33 @@ def solve(rdb, area_exits, timeout=None):
 
         if x.dst != x.src and x.src in m.Rooms and x.dst in m.Rooms:
             if x.direction not in (Direction.east, Direction.west):
-                m.relative_pos.add(m.x[x.src] + m.M * m.cut[i] >= m.x[x.dst])
-                m.relative_pos.add(m.x[x.dst] + m.M * m.cut[i] >= m.x[x.src])
+                m.relative_pos.add(m.x[x.src] + 2 * m.Mx * m.cut[i] >= m.x[x.dst])
+                m.relative_pos.add(m.x[x.dst] + 2 * m.Mx * m.cut[i] >= m.x[x.src])
             if x.direction not in (Direction.north, Direction.south):
-                m.relative_pos.add(m.y[x.src] + m.M * m.cut[i] >= m.y[x.dst])
-                m.relative_pos.add(m.y[x.dst] + m.M * m.cut[i] >= m.y[x.src])
+                m.relative_pos.add(m.y[x.src] + 2 * m.My * m.cut[i] >= m.y[x.dst])
+                m.relative_pos.add(m.y[x.dst] + 2 * m.My * m.cut[i] >= m.y[x.src])
             if x.direction not in (Direction.up, Direction.down):
-                m.relative_pos.add(m.z[x.src] + m.M * m.cut[i] >= m.z[x.dst])
-                m.relative_pos.add(m.z[x.dst] + m.M * m.cut[i] >= m.z[x.src])
+                m.relative_pos.add(m.z[x.src] + 2 * m.Mz * m.cut[i] >= m.z[x.dst])
+                m.relative_pos.add(m.z[x.dst] + 2 * m.Mz * m.cut[i] >= m.z[x.src])
 
             if x.direction == Direction.east:
-                m.relative_pos.add(m.x[x.dst] - m.x[x.src] + m.M * m.cut[i] >= m.l_min[i])
-                m.relative_pos.add(m.x[x.dst] - m.x[x.src] - m.M * m.cut[i] <= m.l_max[i])
+                m.relative_pos.add(m.x[x.dst] - m.x[x.src] + 2 * m.Mx * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.x[x.dst] - m.x[x.src] - 2 * m.Mx * m.cut[i] <= m.l_max[i])
             elif x.direction == Direction.north:
-                m.relative_pos.add(m.y[x.dst] - m.y[x.src] + m.M * m.cut[i] >= m.l_min[i])
-                m.relative_pos.add(m.y[x.dst] - m.y[x.src] - m.M * m.cut[i] <= m.l_max[i])
+                m.relative_pos.add(m.y[x.dst] - m.y[x.src] + 2 * m.My * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.y[x.dst] - m.y[x.src] - 2 * m.My * m.cut[i] <= m.l_max[i])
             elif x.direction == Direction.up:
-                m.relative_pos.add(m.z[x.dst] - m.z[x.src] + m.M * m.cut[i] >= m.l_min[i])
-                m.relative_pos.add(m.z[x.dst] - m.z[x.src] - m.M * m.cut[i] <= m.l_max[i])
+                m.relative_pos.add(m.z[x.dst] - m.z[x.src] + 2 * m.Mz * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.z[x.dst] - m.z[x.src] - 2 * m.Mz * m.cut[i] <= m.l_max[i])
             elif x.direction == Direction.west:
-                m.relative_pos.add(m.x[x.src] - m.x[x.dst] + m.M * m.cut[i] >= m.l_min[i])
-                m.relative_pos.add(m.x[x.src] - m.x[x.dst] - m.M * m.cut[i] <= m.l_max[i])
+                m.relative_pos.add(m.x[x.src] - m.x[x.dst] + 2 * m.Mx * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.x[x.src] - m.x[x.dst] - 2 * m.Mx * m.cut[i] <= m.l_max[i])
             elif x.direction == Direction.south:
-                m.relative_pos.add(m.y[x.src] - m.y[x.dst] + m.M * m.cut[i] >= m.l_min[i])
-                m.relative_pos.add(m.y[x.src] - m.y[x.dst] - m.M * m.cut[i] <= m.l_max[i])
+                m.relative_pos.add(m.y[x.src] - m.y[x.dst] + 2 * m.My * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.y[x.src] - m.y[x.dst] - 2 * m.My * m.cut[i] <= m.l_max[i])
             elif x.direction == Direction.down:
-                m.relative_pos.add(m.z[x.src] - m.z[x.dst] + m.M * m.cut[i] >= m.l_min[i])
-                m.relative_pos.add(m.z[x.src] - m.z[x.dst] - m.M * m.cut[i] <= m.l_max[i])
+                m.relative_pos.add(m.z[x.src] - m.z[x.dst] + 2 * m.Mz * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.z[x.src] - m.z[x.dst] - 2 * m.Mz * m.cut[i] <= m.l_max[i])
 
     m.obj = Objective(
         expr=m.M * m.M * (sum(m.cut[i] for i in range(len(exits))))
@@ -491,14 +638,14 @@ def solve(rdb, area_exits, timeout=None):
 
         for vnum in non_dummy_rooms:
             room = rdb[vnum]
-            room.x = m.x[vnum].value if m.x[vnum].value else 0
-            room.y = m.y[vnum].value if m.y[vnum].value else 0
-            room.z = m.z[vnum].value if m.z[vnum].value else 0
+            room.x = m.x[vnum].value if m.x[vnum].value is not None else 0
+            room.y = m.y[vnum].value if m.y[vnum].value is not None else 0
+            room.z = m.z[vnum].value if m.z[vnum].value is not None else 0
         position_dummy_rooms(rdb, exits)
         Plotter('progress.svg', rdb, exits).plot()
 
+        has_vertical_exits = any(e.direction in (Direction.up, Direction.down) for e in exits)
         added_constraints = 0
-        batch_target = max(1, int(sqrt(len(non_incidents)))) if non_incidents else 0
 
         coords = {
             vnum: (room.x, room.y, room.z)
@@ -514,6 +661,8 @@ def solve(rdb, area_exits, timeout=None):
             candidate_pairs=non_incidents,
         )
 
+        batch_target = get_candidate_batch_cap(len(overlapping_pairs))
+
         for left, right in tqdm.tqdm(overlapping_pairs, desc='Finding Overlaps'):
             ex, nx = (exits[left], exits[right])
             if (
@@ -525,24 +674,16 @@ def solve(rdb, area_exits, timeout=None):
                 non_incidents.discard((left, right))
                 continue
 
-            relation = Var(m.Directions, within=Boolean)
-            m.add_component(f'relation{relations}', relation)
-            relations += 1
-            m.crossings.add(sum([relation[j] for j in range(Direction.mod)]) >= 1)
-
-            prod = list(itertools.product((ex.src, ex.dst), (nx.src, nx.dst)))
-            for p, q in prod:
-                m.crossings.add(m.x[p] - m.x[q] + m.M * ((1 - relation[Direction.east]) + m.cut[left] + m.cut[right]) >= m.d_min)
-            for p, q in prod:
-                m.crossings.add(m.y[p] - m.y[q] + m.M * ((1 - relation[Direction.north]) + m.cut[left] + m.cut[right]) >= m.d_min)
-            for p, q in prod:
-                m.crossings.add(m.z[p] - m.z[q] + m.M * ((1 - relation[Direction.up]) + m.cut[left] + m.cut[right]) >= m.d_min)
-            for p, q in prod:
-                m.crossings.add(m.x[q] - m.x[p] + m.M * ((1 - relation[Direction.west]) + m.cut[left] + m.cut[right]) >= m.d_min)
-            for p, q in prod:
-                m.crossings.add(m.y[q] - m.y[p] + m.M * ((1 - relation[Direction.south]) + m.cut[left] + m.cut[right]) >= m.d_min)
-            for p, q in prod:
-                m.crossings.add(m.z[q] - m.z[p] + m.M * ((1 - relation[Direction.down]) + m.cut[left] + m.cut[right]) >= m.d_min)
+            relations = add_overlap_constraint(
+                m,
+                ex,
+                nx,
+                left,
+                right,
+                relations,
+                coords=coords,
+                has_vertical_exits=has_vertical_exits,
+            )
 
             non_incidents.discard((left, right))
             added_constraints += 1
