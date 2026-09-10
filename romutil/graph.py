@@ -6,7 +6,7 @@ from pyomo.environ import ConcreteModel, RangeSet, Param, Var, Objective, Constr
 from romutil.models import Direction, Room, Exit, RoomDef
 from romutil.plotter import Plotter
 from romutil.renderers import SVGRenderer, render_map
-from romutil.solver import solve
+from romutil.solver import position_dummy_rooms, solve
 
 log = logging.getLogger('Mapper.graph')
 
@@ -57,17 +57,18 @@ def mfas(edges):
     return [(u, v) for u, v in edges if model.b[labels[u], labels[v]].value]
 
 def _has_feasible_coordinates(model, rdb) -> bool:
-    """Check if model has valid coordinates populated for all rooms in rdb."""
+    """Check if model has valid coordinates populated for all non-dummy rooms in rdb."""
     if model is None:
         return False
     if not hasattr(model, 'x') or not hasattr(model, 'y') or not hasattr(model, 'z'):
         return False
     try:
-        return bool(rdb) and all(
+        non_dummy = [v for v, r in rdb.items() if getattr(r, 'dummy', False) is not True]
+        return bool(non_dummy) and all(
             v in model.x and model.x[v].value is not None
             and v in model.y and model.y[v].value is not None
             and v in model.z and model.z[v].value is not None
-            for v in rdb
+            for v in non_dummy
         )
     except (KeyError, AttributeError, TypeError):
         return False
@@ -150,11 +151,15 @@ def solve_layout(rdb, area=None, solver_timeout=None):
         return rdb, exits
 
     for vnum, room in list(rdb.items()):
+        if getattr(room, 'dummy', False) is True:
+            continue
         room.x = model.x[vnum].value if model.x[vnum].value is not None else 0
         room.y = model.y[vnum].value if model.y[vnum].value is not None else 0
         room.z = model.z[vnum].value if model.z[vnum].value is not None else 0
         for r in restore_rooms(room):
             rdb[r.vnum] = r
+
+    position_dummy_rooms(rdb, exits)
 
     valid_rooms = [r for r in rdb.values() if r.x is not None and r.y is not None and r.z is not None]
     if valid_rooms:

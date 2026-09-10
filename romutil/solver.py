@@ -150,10 +150,92 @@ def find_overlap_candidates(
     return overlaps
 
 
+def position_dummy_rooms(rdb: Mapping[int, Any], exits: Sequence[Exit]) -> None:
+    """
+    Position boundary dummy rooms exactly 1 unit distance in the nominal exit
+    direction from their source room: x_dummy = x_src + d_exit.
+    """
+    # Reset coordinates on dummy rooms so they are anchored afresh to source rooms
+    for room in rdb.values():
+        if getattr(room, 'dummy', False) is True:
+            room.x = None
+            room.y = None
+            room.z = None
+
+    positioned: set[int] = set()
+
+    # Pass 1: Forward exits from non-dummy source room to dummy destination room
+    for ex in exits:
+        if ex.src not in rdb or ex.dst not in rdb:
+            continue
+        src_room = rdb[ex.src]
+        dst_room = rdb[ex.dst]
+        if getattr(dst_room, 'dummy', False) is True and getattr(src_room, 'dummy', False) is not True:
+            if dst_room.vnum in positioned:
+                continue
+            if src_room.x is not None and src_room.y is not None and src_room.z is not None:
+                dx, dy, dz = (0, 0, 0)
+                if ex.direction == Direction.north:
+                    dy = 1
+                elif ex.direction == Direction.east:
+                    dx = 1
+                elif ex.direction == Direction.south:
+                    dy = -1
+                elif ex.direction == Direction.west:
+                    dx = -1
+                elif ex.direction == Direction.up:
+                    dz = 1
+                elif ex.direction == Direction.down:
+                    dz = -1
+                dst_room.x = src_room.x + dx
+                dst_room.y = src_room.y + dy
+                dst_room.z = src_room.z + dz
+                positioned.add(dst_room.vnum)
+
+    # Pass 2: Reverse exits from dummy source room to non-dummy destination room
+    for ex in exits:
+        if ex.src not in rdb or ex.dst not in rdb:
+            continue
+        src_room = rdb[ex.src]
+        dst_room = rdb[ex.dst]
+        if getattr(src_room, 'dummy', False) is True and getattr(dst_room, 'dummy', False) is not True:
+            if src_room.vnum in positioned:
+                continue
+            if dst_room.x is not None and dst_room.y is not None and dst_room.z is not None:
+                dx, dy, dz = (0, 0, 0)
+                if ex.direction == Direction.north:
+                    dy = 1
+                elif ex.direction == Direction.east:
+                    dx = 1
+                elif ex.direction == Direction.south:
+                    dy = -1
+                elif ex.direction == Direction.west:
+                    dx = -1
+                elif ex.direction == Direction.up:
+                    dz = 1
+                elif ex.direction == Direction.down:
+                    dz = -1
+                src_room.x = dst_room.x - dx
+                src_room.y = dst_room.y - dy
+                src_room.z = dst_room.z - dz
+                positioned.add(src_room.vnum)
+
+    # Pass 3: Fallback for any disconnected or unanchored dummy rooms
+    for room in rdb.values():
+        if getattr(room, 'dummy', False) is True:
+            if room.x is None:
+                room.x = 0
+            if room.y is None:
+                room.y = 0
+            if room.z is None:
+                room.z = 0
+
+
 def non_euler(rdb, exits):
     m = ConcreteModel()
 
-    m.Rooms = Set(initialize=rdb.keys())
+    non_dummy_rooms = [v for v, r in rdb.items() if not getattr(r, 'dummy', False)]
+    m.Rooms = Set(initialize=non_dummy_rooms)
     m.Exits = RangeSet(0, len(exits) - 1)
     m.Directions = RangeSet(0, Direction.mod.value - 1)
 
@@ -165,10 +247,18 @@ def non_euler(rdb, exits):
     m.cut = Var(m.Exits, within=Binary)
     m.relative_pos = ConstraintList()
 
-    one_way_exits = [e for e in exits if e.dst not in rdb or e not in rdb[e.dst].exits]
+    one_way_exits = [
+        e for e in exits
+        if e.dst not in rdb
+        or getattr(rdb.get(e.dst), 'dummy', False)
+        or getattr(rdb.get(e.src), 'dummy', False)
+        or e not in rdb[e.dst].exits
+    ]
 
     for i, e in enumerate(exits):
         if e in one_way_exits:
+            continue
+        if e.src not in m.Rooms or e.dst not in m.Rooms:
             continue
 
         if e.dst != e.src:
@@ -211,13 +301,34 @@ def solve(rdb, area_exits, timeout=None):
             exits[i].one_way = True
 
     for room in rdb.values():
-        if not len(room.exits):
+        if not getattr(room, 'dummy', False) and not len(room.exits):
             e = Exit(ExitDef(direction=0, dst_vnum=room.vnum), source=room.vnum)
             exits.append(e)
 
+    dummy_anchors: dict[int, tuple[int, int, int, int]] = {}
+    for e in exits:
+        if e.src in rdb and e.dst in rdb:
+            if getattr(rdb[e.dst], 'dummy', False) and not getattr(rdb[e.src], 'dummy', False):
+                if e.dst not in dummy_anchors:
+                    dx, dy, dz = (0, 0, 0)
+                    if e.direction == Direction.north:
+                        dy = 1
+                    elif e.direction == Direction.east:
+                        dx = 1
+                    elif e.direction == Direction.south:
+                        dy = -1
+                    elif e.direction == Direction.west:
+                        dx = -1
+                    elif e.direction == Direction.up:
+                        dz = 1
+                    elif e.direction == Direction.down:
+                        dz = -1
+                    dummy_anchors[e.dst] = (e.src, dx, dy, dz)
+
+    non_dummy_rooms = [v for v, r in rdb.items() if not getattr(r, 'dummy', False)]
     m = ConcreteModel()
 
-    m.Rooms = Set(initialize=rdb.keys())
+    m.Rooms = Set(initialize=non_dummy_rooms)
     m.Exits = RangeSet(0, len(exits) - 1)
     m.Directions = RangeSet(0, Direction.mod.value - 1)
 
@@ -236,13 +347,52 @@ def solve(rdb, area_exits, timeout=None):
     m.one_way_pos = ConstraintList()
     m.crossings = ConstraintList()
 
+    def get_x(vnum: int):
+        if vnum in m.Rooms:
+            return m.x[vnum]
+        if vnum in dummy_anchors:
+            src, dx, _, _ = dummy_anchors[vnum]
+            if src in m.Rooms:
+                return m.x[src] + dx
+        return 0
+
+    def get_y(vnum: int):
+        if vnum in m.Rooms:
+            return m.y[vnum]
+        if vnum in dummy_anchors:
+            src, _, dy, _ = dummy_anchors[vnum]
+            if src in m.Rooms:
+                return m.y[src] + dy
+        return 0
+
+    def get_z(vnum: int):
+        if vnum in m.Rooms:
+            return m.z[vnum]
+        if vnum in dummy_anchors:
+            src, _, _, dz = dummy_anchors[vnum]
+            if src in m.Rooms:
+                return m.z[src] + dz
+        return 0
+
     one_ways = []
 
     for e in exits:
-        if e.dst not in rdb or e not in rdb[e.dst].exits:
+        if (
+            e.dst not in rdb
+            or getattr(rdb.get(e.dst), 'dummy', False)
+            or getattr(rdb.get(e.src), 'dummy', False)
+            or e not in rdb[e.dst].exits
+        ):
             e.one_way = True
 
     for i, x in enumerate(exits):
+        if x.src not in m.Rooms and x.dst not in m.Rooms:
+            continue
+        if x.dst not in m.Rooms and dummy_anchors.get(x.dst, (None,))[0] == x.src:
+            continue
+        if x.src not in m.Rooms and dummy_anchors.get(x.src, (None,))[0] == x.dst:
+            continue
+
         if x.one_way:
             x_off = m.d_min if x.direction == Direction.east else -m.d_min if x.direction == Direction.west else 0
             y_off = m.d_min if x.direction == Direction.north else -m.d_min if x.direction == Direction.south else 0
@@ -250,19 +400,19 @@ def solve(rdb, area_exits, timeout=None):
             X = m.one_ways.add()
             Y = m.one_ways.add()
             Z = m.one_ways.add()
-            x_diff = m.x[x.dst] - m.x[x.src] - x_off
+            x_diff = get_x(x.dst) - get_x(x.src) - x_off
             m.one_way_pos.add(x_diff <= X)
             m.one_way_pos.add(-x_diff <= X)
-            y_diff = m.y[x.dst] - m.y[x.src] - y_off
+            y_diff = get_y(x.dst) - get_y(x.src) - y_off
             m.one_way_pos.add(y_diff <= Y)
             m.one_way_pos.add(-y_diff <= Y)
-            z_diff = m.z[x.dst] - m.z[x.src] - z_off
+            z_diff = get_z(x.dst) - get_z(x.src) - z_off
             m.one_way_pos.add(z_diff <= Z)
             m.one_way_pos.add(-z_diff <= Z)
             one_ways.append(X + Y + Z)
             continue
 
-        if x.dst != x.src:
+        if x.dst != x.src and x.src in m.Rooms and x.dst in m.Rooms:
             if x.direction not in (Direction.east, Direction.west):
                 m.relative_pos.add(m.x[x.src] + m.M * m.cut[i] >= m.x[x.dst])
                 m.relative_pos.add(m.x[x.dst] + m.M * m.cut[i] >= m.x[x.src])
@@ -322,33 +472,38 @@ def solve(rdb, area_exits, timeout=None):
         ):
             if result.solver.termination_condition == pyomo.opt.TerminationCondition.maxTimeLimit:
                 log.warning('Solver reached time limit.')
-            has_feasible = bool(rdb) and all(
+            has_feasible = bool(non_dummy_rooms) and all(
                 hasattr(m, 'x') and hasattr(m, 'y') and hasattr(m, 'z')
                 and vnum in m.x and m.x[vnum].value is not None
                 and vnum in m.y and m.y[vnum].value is not None
                 and vnum in m.z and m.z[vnum].value is not None
-                for vnum in rdb
+                for vnum in non_dummy_rooms
             )
             if has_feasible:
-                for vnum, room in list(rdb.items()):
+                for vnum in non_dummy_rooms:
+                    room = rdb[vnum]
                     room.x = m.x[vnum].value if m.x[vnum].value is not None else 0
                     room.y = m.y[vnum].value if m.y[vnum].value is not None else 0
                     room.z = m.z[vnum].value if m.z[vnum].value is not None else 0
+                position_dummy_rooms(rdb, exits)
                 Plotter('progress.svg', rdb, exits).plot()
             return m, result
 
-        for vnum, room in list(rdb.items()):
+        for vnum in non_dummy_rooms:
+            room = rdb[vnum]
             room.x = m.x[vnum].value if m.x[vnum].value else 0
             room.y = m.y[vnum].value if m.y[vnum].value else 0
             room.z = m.z[vnum].value if m.z[vnum].value else 0
+        position_dummy_rooms(rdb, exits)
         Plotter('progress.svg', rdb, exits).plot()
 
         added_constraints = 0
         batch_target = max(1, int(sqrt(len(non_incidents)))) if non_incidents else 0
 
         coords = {
-            vnum: (m.x[vnum].value, m.y[vnum].value, m.z[vnum].value)
-            for vnum in rdb
+            vnum: (room.x, room.y, room.z)
+            for vnum, room in rdb.items()
+            if room.x is not None and room.y is not None and room.z is not None
         }
         cut_values = [bool(m.cut[i].value) for i in range(len(exits))]
 
@@ -361,6 +516,14 @@ def solve(rdb, area_exits, timeout=None):
 
         for left, right in tqdm.tqdm(overlapping_pairs, desc='Finding Overlaps'):
             ex, nx = (exits[left], exits[right])
+            if (
+                ex.src not in m.Rooms
+                or ex.dst not in m.Rooms
+                or nx.src not in m.Rooms
+                or nx.dst not in m.Rooms
+            ):
+                non_incidents.discard((left, right))
+                continue
 
             relation = Var(m.Directions, within=Boolean)
             m.add_component(f'relation{relations}', relation)
@@ -392,4 +555,5 @@ def solve(rdb, area_exits, timeout=None):
     cut_sum = sum(m.cut[i].value for i in range(len(exits)) if m.cut[i].value is not None)
     log.debug(f'cut {cut_sum} exits')
     log.debug(f'{relations}/{len(non_incidents)} overlaps converted into constraints.')
+    position_dummy_rooms(rdb, exits)
     return m, result

@@ -142,6 +142,7 @@ Before invoking the mathematical solver, the graph is simplified to minimize var
 2. **External & Unresolved Exit Handling**:
    - Exits pointing to `-1` (incomplete rooms) are assigned a synthetic VNUM `max(rdb.keys()) + 1`.
    - Exits leading outside the area file create lightweight `dummy` rooms (`room.dummy = True`) so boundaries can still be routed without crashing.
+   - Boundary dummy rooms are excluded from the Pyomo decision space and anchored deterministically relative to their primary source room coordinates.
 3. **Connected Components**:
    Uses `networkx.connected_components()` to split disconnected areas into independent subgraphs, solving and plotting each component separately.
 4. **Spatial Candidate Tracking**:
@@ -156,10 +157,22 @@ Before invoking the mathematical solver, the graph is simplified to minimize var
 The layout is formulated as a Mixed-Integer Linear Program (MILP) using **Pyomo** and solved with the **Coin-OR CBC** solver:
 
 #### Variables:
-- `m.x[r]`, `m.y[r]`, `m.z[r]`: Integer coordinates for each room `r`.
+- `m.x[r]`, `m.y[r]`, `m.z[r]`: Integer coordinates for each non-dummy room `r` in $m.\text{Rooms}$ (boundary dummy rooms are excluded from the decision space).
 - `m.cut[e]`: Binary variable indicating if an exit `e` is "cut" (relaxed from geometric constraints).
 - `m.l_max[e]`: Positive integer measuring the maximum rendered length of exit `e`.
 - `m.one_ways`: Variables bounding Manhattan distance between one-way endpoints.
+
+#### Boundary Dummy Room Elimination & Affine Anchoring:
+To reduce combinatorial complexity and eliminate unconstrained floating rooms in $[-M, M]^3$, boundary dummy rooms ($r \in \text{Rooms}_{\text{dummy}}$) are omitted from the Pyomo integer decision variables:
+1. **Decision Space Reduction**:
+   The room set $m.\text{Rooms}$ is strictly initialized with non-dummy rooms ($V_{\text{core}}$). For an area with $N_{\text{dummy}}$ external boundary rooms, this eliminates $3 \cdot N_{\text{dummy}}$ integer decision variables from the branch-and-cut tree (e.g., reducing `midgaard.are` decision variables from 393 to 324, an exact 17.557% reduction).
+2. **Affine Spatial Anchoring**:
+   For each boundary exit $e = (u, v)$ with source room $u \in V_{\text{core}}$ and dummy room $v \in V_{\text{dummy}}$, the dummy room coordinates are treated as affine linear expressions:
+   $$\mathbf{x}_v = \mathbf{x}_u + \mathbf{d}_{\text{exit}}(e)$$
+   where $\mathbf{d}_{\text{exit}}(e) \in \{(0, 1, 0), (1, 0, 0), (0, -1, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)\}$ represents the unit vector in the nominal exit direction.
+   When secondary one-way exits connect back to a dummy room (e.g. exit $w \to v$), one-way distance constraints substitute the affine expression $\mathbf{x}_u + \mathbf{d}_{\text{exit}}(e)$ directly in place of $\mathbf{x}_v$, preserving multi-floor vertical separation without instantiating integer variables.
+3. **Deterministic Post-Solve Positioning**:
+   Following optimization and hallway corridor restoration, `position_dummy_rooms(rdb, exits)` anchors each dummy room exactly 1 unit distance in the nominal exit direction from its primary source room, ensuring consistent geometric placement for external exit stubs in SVG, JSON, and HTML renderers.
 
 #### Constraints:
 1. **Relative Distance Constraints**:
