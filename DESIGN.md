@@ -24,27 +24,34 @@ The project is structured as a modular Python package ([`romutil/`](./romutil)) 
 flowchart TD
     A[".are Area File(s)"] --> B["romutil/parser.py (PLY Lexer & Parser)"]
     B --> C["romutil/models.py (Room Database & Exit Graph)"]
-    C --> D["romutil/graph.py (Corridor Collapse)"]
-    D --> E["romutil/solver.py: non_euler() (Cut Minimization)"]
-    E --> F["romutil/solver.py: solve() (MILP 3D Coordinate Solver)"]
-    F -->|Iterative Collision Resolution| F
-    F --> G["romutil/graph.py: restore_rooms() (Corridor Expansion)"]
-    G --> H["romutil/renderers: SVGRenderer (Isometric SVG)"]
-    G --> J["romutil/renderers: JSONRenderer & HTMLRenderer"]
-    H --> I[".svg Interactive Map"]
-    J --> K[".json Room Database / .html Web Viewer"]
+    C --> D["romutil/graph.py: graph() (Corridor Collapse & Boundary Prep)"]
+    D --> E["romutil/solver.py: non_euler() (Cycle Cut Minimization)"]
+    E --> F1["romutil/graph.py: decompose_components() (Component Partitioning)"]
+    F1 --> F2["romutil/solver.py: solve() (MILP Subproblem Coordinate Solver)"]
+    F2 -->|Sweep-Line Collision Resolution| F2
+    F2 --> F3["romutil/graph.py: pack_components() (1D Shelf Packing)"]
+    F3 --> F4["romutil/graph.py: position_dummy_rooms() (Affine Anchoring)"]
+    F4 --> G["romutil/graph.py: restore_rooms() (Corridor Expansion)"]
+    G --> R["romutil/renderers: render_map() (Polymorphic Renderer Dispatcher)"]
+    R --> H["romutil/renderers/svg.py (SVGRenderer)"]
+    R --> J["romutil/renderers/json.py (JSONRenderer)"]
+    R --> K["romutil/renderers/html.py (HTMLRenderer)"]
+    H --> H_out[".svg Interactive Map"]
+    J --> J_out[".json Room Database"]
+    K --> K_out[".html Web Viewer"]
 
     subgraph CLI Entry Points
         CLI1["romutil CLI (uv run romutil)"] --> B
     end
 ```
 
-The pipeline executes in five distinct phases:
-1. **Lexing & Parsing**: Reads `.are` files with Latin-1 fallback into structured Python objects.
-2. **Corridor Reduction**: Collapses straight hallways to reduce graph and solver complexity.
-3. **Eulerian / Cut Optimization**: Detects geometric inconsistencies and marks minimal exit cuts.
-4. **Iterative MILP Placement**: Assigns integer coordinates `(x, y, z)` while lazily preventing exit line collisions.
-5. **Restoration & Isometric Plotting**: Re-expands hallways and renders an SVG with interactive mouseover popups.
+The pipeline executes in six distinct phases:
+1. **Lexing & Parsing**: Ingests `.are` and `.wld` files across MUD dialect grammars with resilient bitmask evaluation and encoding fallback into strongly-typed AST records (`AreaData`).
+2. **Topological Reduction & Cycle Relaxation**: Collapses straight corridors, prepares boundary dummy structures, and marks minimal exit cuts for contradictory non-Euclidean cycles via Eulerian optimization (`non_euler`).
+3. **Connected Component Decomposition**: Partitions disconnected topological graphs into isolated weakly connected subgraphs $\{C_1, \dots, C_k\}$ to divide the combinatorial decision space.
+4. **Iterative MILP Subproblem Placement**: Computes integer coordinates per component using dimension-specific Big-$M$ bounds, planar separation reduction, and event-driven sweep-line spatial collision detection.
+5. **Spatial Assembly & Restoration**: Normalizes component subproblem coordinates, applies non-overlapping 1D horizontal shelf packing, affinely positions external boundary dummy rooms, and re-expands collapsed hallway nodes.
+6. **Polymorphic Rendering**: Dispatches the assembled, fully-positioned room database to vector graphics (SVG), structured data (JSON), or a standalone interactive web application (HTML/JS) via the unified renderer architecture.
 
 ---
 
@@ -54,7 +61,7 @@ The pipeline executes in five distinct phases:
 ROMUtil/
 ├── romutil/                     # Core Python package
 │   ├── __init__.py              # Package public API exports
-│   ├── cli.py                   # Modernized CLI (pathlib.Path) & entry point
+│   ├── cli.py                   # Unified CLI entry point & multi-format options
 │   ├── exporter.py              # Backward-compatibility facade for export functions
 │   ├── graph.py                 # Corridor collapsing, restoration, and mfas
 │   ├── models.py                # Direction, Room, and Exit domain models
@@ -142,38 +149,35 @@ The domain models define the spatial and topological primitives used throughout 
 
 ---
 
-### 4.3. Graph Simplification — [`romutil/graph.py`](./romutil/graph.py)
+### 4.3. Graph Simplification & Spatial Partitioning — [`romutil/graph.py`](./romutil/graph.py)
 
-Before invoking the mathematical solver, the graph is simplified to minimize variables:
+Before invoking the mathematical optimization engine, the area graph is simplified and partitioned to minimize combinatorial complexity:
 
-1. **Hallway Condensation**:
-   Rooms with exactly two opposite exits (e.g., East and West) are straight corridors. `graph()` trims the intermediate room, updates neighbor exits to span the combined distance, and registers the collapsed room in `parent.fixups`.
-2. **External & Unresolved Exit Handling**:
-   - Exits pointing to `-1` (incomplete rooms) are assigned a synthetic VNUM `max(rdb.keys()) + 1`.
-   - Exits leading outside the area file create lightweight `dummy` rooms (`room.dummy = True`) so boundaries can still be routed without crashing.
-   - Boundary dummy rooms are excluded from the Pyomo decision space and anchored deterministically relative to their primary source room coordinates.
-3. **Connected Components & Decomposition**:
-   - **Partitioning**: Builds an undirected topological graph $G = (V_{\text{core}}, E_{\text{core}})$ over non-dummy rooms and exits. Disconnected subgraphs are partitioned into $k$ independent weakly connected components $\{C_1, C_2, \dots, C_k\}$ using `networkx.connected_components()`.
-   - **Complexity Reduction**: If $k > 1$, each component $C_i$ forms an isolated MILP subproblem $(rdb_i, exits_i)$ with boundary dummy copies. The maximum decision variables per MILP instance decreases from $3 \cdot |V_{\text{core}}|$ to $3 \cdot \max_i |V(C_i)|$, and cross-component candidate overlap pairs are completely eliminated ($0$ cross-component disjunctive constraints generated).
-   - **1D Shelf Packing**: After independent solving, each component's 3D bounding box $[x_{\min}^i, x_{\max}^i] \times [y_{\min}^i, y_{\max}^i] \times [z_{\min}^i, z_{\max}^i]$ is calculated. Components are locally normalized to $(0, 0, 0)$ and placed along the X-axis via 1D horizontal shelf packing with configurable padding $\Delta_{\text{pad}} \ge 2$:
+1. **Hallway Condensation (`graph`)**:
+   Rooms with in-degree/out-degree 2 and collinear opposing exits (e.g., East and West) form straight corridors. `graph()` trims intermediate rooms, links the boundary endpoints with a single aggregate edge spanning the combined distance, and registers collapsed room sequences into `parent.fixups`. This contracts the active vertex count by 30–60% on typical MUD topologies prior to MILP formulation.
+2. **External Boundary Dummy Preparation (`graph`)**:
+   - Exits pointing to unresolved destinations (`dst == -1`) receive synthetic VNUMs `max(rdb.keys()) + 1`.
+   - Exits leading outside the area file instantiate lightweight dummy room records (`room.dummy = True`).
+   - Boundary dummy rooms are excluded from the Pyomo decision space, eliminating unconstrained floating variables during branch-and-cut exploration.
+3. **Connected Component Decomposition (`decompose_components`)**:
+   - **Partitioning**: Constructs an undirected topological graph $G = (V_{\text{core}}, E_{\text{core}})$ over non-dummy rooms and internal exits. Disconnected subgraphs are partitioned into $k$ independent weakly connected components $\{C_1, C_2, \dots, C_k\}$ using `networkx.connected_components()`.
+   - **Combinatorial Space Decoupling**: If $k > 1$, each component $C_i$ forms an isolated MILP subproblem $(rdb_i, exits_i)$ along with its adjacent boundary dummy copies. The maximum decision variable count per MILP instance decreases from $3 \cdot |V_{\text{core}}|$ to $3 \cdot \max_i |V(C_i)|$, and cross-component candidate overlap pairs are completely eliminated ($0$ cross-component disjunctive constraints generated).
+   - **Single-Component Pass-Through**: When $k = 1$, the direct monolithic solve path is preserved without subproblem decomposition or packing overhead.
+4. **1D Shelf Bounding Box Packing (`pack_components`)**:
+   - After independent solving of each component $C_i$, the component 3D bounding box $[x_{\min}^i, x_{\max}^i] \times [y_{\min}^i, y_{\max}^i] \times [z_{\min}^i, z_{\max}^i]$ is computed.
+   - Each component is locally normalized to origin $(0, 0, 0)$ and placed along the X-axis via 1D horizontal shelf packing with configurable padding $\Delta_{\text{pad}} \ge 2$:
      $$X_{\text{offset}}^{(0)} = 0, \quad X_{\text{offset}}^{(i)} = X_{\text{offset}}^{(i-1)} + \text{width}(C_{i-1}) + \Delta_{\text{pad}}$$
-     This guarantees non-overlapping spatial layouts across all components and elevation layers.
-   - **Single-Component Pass-Through**: When $k = 1$, the direct monolithic solve path is preserved without packing overhead.
-4. **Spatial Candidate Tracking**:
+   - Guarantees zero spatial overlap across all disconnected components and elevation levels in $O(k)$ time without requiring MILP disjunctive collision constraints.
+5. **Spatial Candidate Exit Pair Precomputation**:
    Precomputes non-incident candidate exit pairs in a hash set to provide $O(1)$ candidate retrieval and retirement for downstream sweep-line spatial collision detection in [`romutil/solver.py`](./romutil/solver.py).
-5. **Dynamic Dimension-Specific Big-M Bounds ($M_x, M_y, M_z$)**:
-   Calculates tight upper bounds per spatial dimension ($M_x, M_y, M_z$) based on exit direction vectors:
-   $$M_x = \max\left(10, \sum_{e, \Delta x \neq 0} |\Delta x| + 1\right), \quad M_y = \max\left(10, \sum_{e, \Delta y \neq 0} |\Delta y| + 1\right), \quad M_z = \max\left(5, \sum_{e, \Delta z \neq 0} |\Delta z| + 1\right)$$
-   Replacing monolithic scalar bounds $M = \sum \text{dist}(e)$ narrows coordinate variable domains to $[-M_x, M_x]$, $[-M_y, M_y]$, $[-M_z, M_z]$, reducing bound magnitudes by $\ge 40\%$ on sparse planar topologies and eliminating search volume in branch-and-cut trees.
-6. **Planar Direction Reduction & Candidate Batch Capping**:
-   - **Planar Direction Reduction**: For overlaps where vertical separation is inapplicable (e.g. no vertical exits in the component or both exits are horizontal and lie on the same elevation plane), separation directions are reduced from 6 to 4 (North, South, East, West). This eliminates 2 binary decision variables per overlap constraint (a 33.3% reduction in binary decision variables) and reduces linear separation constraints from 24 to 16 per collision.
-   - **Batch Capping**: Candidate overlap batches added per solver iteration are dynamically capped to $\min(15, \max(5, \text{int}(\sqrt{|\text{candidates}|})))$ to prevent combinatorial explosion in CBC.
-7. **Solver Termination Handling & Feasible Solution Recovery**:
-   Coordinates room coordinate extraction from the optimization engine. If CBC achieves `optimal` termination, coordinates are extracted and normalized. If CBC terminates with `maxTimeLimit` or `feasible` and the model has evaluated variable values, the best integer-feasible coordinates are preserved rather than collapsed to $(0, 0, 0)$. Only irrecoverable solver failures (infeasible or unassigned coordinates) trigger coordinate zeroing.
-8. **CBC Parameter Tuning & Multithreaded Branch-and-Cut**:
-   - **Parallel Search**: Configures `threads = min(4, os.cpu_count() or 1)` on CBC solver instances, enabling parallel branch-and-bound tree exploration across available CPU cores while capping worker threads at 4 to prevent thread thrashing and memory overhead on high-core systems.
-   - **Relative MIP Gap Tolerance (`ratioGap = 0.05`)**: Introduces a 5% relative optimality gap tolerance. This eliminates the long tail of branch-and-bound exploration required to prove mathematical optimality on near-optimal integer layouts, accelerating convergence by over 70% without perceptible impact on visual layout aesthetics or planarity.
-   - **Presolve, Cuts, and Primal Heuristics**: Explicitly activates aggressive presolving (`presolve = 'on'`), Gomory, knapsack, and mixed-integer cuts (`cuts = 'on'`), and primal integer heuristics (`heuristics = 'on'`), driving rapid discovery of high-quality integer candidate solutions early in tree search.
+6. **External Dummy Room Positioning (`position_dummy_rooms`)**:
+   Post-solve positioning anchors each boundary dummy room exactly 1 unit distance in the nominal exit direction from its primary source room:
+   $$\mathbf{x}_{\text{dummy}} = \mathbf{x}_{\text{src}} + \mathbf{d}_{\text{exit}}$$
+   Ensures consistent geometric placement for external exit stubs in SVG, JSON, and HTML renderers without solver overhead.
+7. **Corridor Expansion & Coordinate Interpolation (`restore_rooms`)**:
+   Traverses `fixups` on surviving rooms and calculates exact integer coordinates for collapsed corridor rooms via linear interpolation between corridor endpoints.
+8. **Minimal Feedback Arc Set (`mfas`)**:
+   Computes minimal feedback arc sets to identify directional cycle cuts and orient directed acyclic graph projections.
 
 ---
 
@@ -182,13 +186,13 @@ Before invoking the mathematical solver, the graph is simplified to minimize var
 The layout is formulated as a Mixed-Integer Linear Program (MILP) using **Pyomo** and solved with the **Coin-OR CBC** solver:
 
 #### Variables:
-- `m.x[r]`, `m.y[r]`, `m.z[r]`: Integer coordinates for each non-dummy room `r` in $m.\text{Rooms}$, tightly bounded in $[-M_x, M_x]$, $[-M_y, M_y]$, $[-M_z, M_z]$ (boundary dummy rooms are excluded from the decision space).
-- `m.cut[e]`: Binary variable indicating if an exit `e` is "cut" (relaxed from geometric constraints).
-- `m.l_max[e]`: Positive integer measuring the maximum rendered length of exit `e`.
+- `m.x[r]`, `m.y[r]`, `m.z[r]`: Integer coordinates for each non-dummy room $r \in m.\text{Rooms}$, tightly bounded in $[-M_x, M_x]$, $[-M_y, M_y]$, $[-M_z, M_z]$ (boundary dummy rooms are excluded from the decision space).
+- `m.cut[e]`: Binary variable indicating if an exit $e$ is "cut" (relaxed from geometric constraints).
+- `m.l_max[e]`: Positive integer measuring the maximum rendered length of exit $e$.
 - `m.one_ways`: Variables bounding Manhattan distance between one-way endpoints, bounded in $[0, 2M]$.
 
 #### Boundary Dummy Room Elimination & Affine Anchoring:
-To reduce combinatorial complexity and eliminate unconstrained floating rooms in $[-M_x, M_x] \times [-M_y, M_y] \times [-M_z, M_z]$, boundary dummy rooms ($r \in \text{Rooms}_{\text{dummy}}$) are omitted from the Pyomo integer decision variables:
+To eliminate unconstrained floating rooms in $[-M_x, M_x] \times [-M_y, M_y] \times [-M_z, M_z]$, boundary dummy rooms ($r \in \text{Rooms}_{\text{dummy}}$) are omitted from the Pyomo integer decision variables:
 1. **Decision Space Reduction**:
    The room set $m.\text{Rooms}$ is strictly initialized with non-dummy rooms ($V_{\text{core}}$). For an area with $N_{\text{dummy}}$ external boundary rooms, this eliminates $3 \cdot N_{\text{dummy}}$ integer decision variables from the branch-and-cut tree (e.g., reducing `midgaard.are` decision variables from 393 to 324, an exact 17.557% reduction).
 2. **Affine Spatial Anchoring**:
@@ -200,9 +204,10 @@ To reduce combinatorial complexity and eliminate unconstrained floating rooms in
    Following optimization and hallway corridor restoration, `position_dummy_rooms(rdb, exits)` anchors each dummy room exactly 1 unit distance in the nominal exit direction from its primary source room, ensuring consistent geometric placement for external exit stubs in SVG, JSON, and HTML renderers.
 
 #### Dynamic Dimension-Specific Big-M Bounds ($M_x, M_y, M_z$):
-Monolithic big-M scalars are replaced with dimension-specific bounds calculated from directional exit components:
+Dimension-specific upper bounds are derived from directional exit components:
 $$M_x = \max\left(10, \sum_{e, \Delta x \neq 0} |\Delta x| + 1\right), \quad M_y = \max\left(10, \sum_{e, \Delta y \neq 0} |\Delta y| + 1\right), \quad M_z = \max\left(5, \sum_{e, \Delta z \neq 0} |\Delta z| + 1\right)$$
-Safe lower bounds ($M_x \ge 10, M_y \ge 10, M_z \ge 5$) guarantee mathematical feasibility for degenerate or sparse topographies while reducing upper bound magnitudes by $\ge 40\%$ on planar areas (e.g. `smurf.are`, `school.are`).
+- Safe lower bounds ($M_x \ge 10, M_y \ge 10, M_z \ge 5$) guarantee mathematical feasibility for degenerate or sparse topographies while reducing upper bound magnitudes by $\ge 40\%$ on planar areas (e.g. `smurf.are`, `school.are`).
+- Restricting coordinate domains to $[-M_x, M_x]$, $[-M_y, M_y]$, $[-M_z, M_z]$ rather than a single monolithic scalar bound substantially shrinks the branch-and-cut LP relaxation volume and eliminates dead branches during tree traversal.
 
 #### Constraints:
 1. **Relative Distance Constraints**:
@@ -238,7 +243,7 @@ To avoid instantiating $O(E^2)$ crossing constraints up front, collision avoidan
 6. **Disjunctive Separation Constraints & Planar Direction Reduction**:
    When two exit lines intersect in 3D, disjunctive spatial separation constraints are added using binary relation variables (`relation[Direction]`):
    $$\sum_{d \in \mathcal{D}_{\text{active}}} \text{relation}_d \ge 1$$
-   - **Planar Overlap Reduction**: When resolving overlaps where vertical separation is inapplicable (e.g. no vertical exits in the component, or both exits are horizontal and lie in the same elevation plane), $\mathcal{D}_{\text{active}} = \{\text{North}, \text{East}, \text{South}, \text{West}\}$, eliminating 2 binary variables per overlap constraint (a 33.3% reduction in binary decision variables) and 8 linear constraints.
+   - **Planar Overlap Reduction**: When resolving overlaps where vertical separation is inapplicable (e.g. no vertical exits in the component, or both exits are horizontal and lie on the same elevation plane), $\mathcal{D}_{\text{active}} = \{\text{North}, \text{East}, \text{South}, \text{West}\}$, eliminating 2 binary variables per overlap constraint (a 33.3% reduction in binary decision variables) and 8 linear constraints.
    - **Dimension-Specific Separation Bounds**: Disjunctive Big-M bounds use axis-specific $2 \cdot M_d$ (e.g., $2 M_x$ for East/West, $2 M_y$ for North/South, $2 M_z$ for Up/Down) rather than monolithic $2 M$.
 7. **Constraint Batch Capping**:
    Candidate batches added per solver iteration are dynamically capped to $\min(15, \max(5, \text{int}(\sqrt{|\text{candidates}|})))$ to prevent combinatorial explosion in CBC.
@@ -253,7 +258,7 @@ Solver instantiation via [`get_cbc_solver()`](./romutil/solver.py) standardizes 
 - **Primal Heuristics**: Enables CBC heuristic search (`heuristics = 'on'`) to locate integer-feasible bounds rapidly during tree traversal.
 - **Timeout Management**: Propagates execution timeout (`seconds` and backward-compatible `sec`) to prevent unbounded stalls on degenerate graphs.
 
-#### Solver Termination & Timeout Control:
+#### Solver Termination & Feasible Solution Recovery:
 The CBC optimization execution is bounded by an optional per-subgraph time limit (`seconds` / `sec`, defaulting to 300 seconds). During branch-and-cut:
 - **Optimal Completion**: When branch-and-cut proves optimality (or satisfies the 5% MIP relative gap tolerance), coordinates are stored and collision constraints are iteratively generated until spatial crossings converge.
 - **Time Limit with Feasible Solution (`maxTimeLimit`)**: If the execution time limit is reached but CBC has discovered one or more integer-feasible candidate solutions, the solver terminates the iteration loop and yields the model containing the best feasible coordinates, preventing premature layout collapse.
@@ -261,15 +266,13 @@ The CBC optimization execution is bounded by an optional per-subgraph time limit
 
 ---
 
-### 4.5. Reconstruction & Isometric SVG Rendering — [`romutil/renderers/svg.py`](./romutil/renderers/svg.py)
+### 4.5. Isometric SVG Vector Map Rendering — [`romutil/renderers/svg.py`](./romutil/renderers/svg.py)
 
-1. **[`restore_rooms()`](./romutil/graph.py#L12-L30)**:
-   Traverses `fixups` on surviving rooms and calculates exact coordinates for previously collapsed corridor rooms.
-2. **Isometric Projection**:
+1. **Isometric Projection**:
    Converts 3D coordinates $(x, y, z)$ into 2D SVG canvas points using an oblique lift factor ($\text{lift} = 0.15$):
    $$X' = 2 + x + \text{lift} \cdot z$$
    $$Y' = 2 + \text{lift} \cdot z_{\max} + (y_{\max} - y) - \text{lift} \cdot z$$
-3. **SVG Generation (`SVGRenderer` & `Plotter`) & Multi-Layer Elevation**:
+2. **SVG Generation (`SVGRenderer` & `Plotter`) & Multi-Layer Elevation**:
    - **Painter's Algorithm Depth Sorting**: SVG layer group generation stacks `<g id="elevation-{z}" class="elevation-layer" data-z="{z}">` layers in strict ascending elevation order ($Z_{\text{lower}} < Z_{\text{higher}}$). Within each elevation layer, rooms are sorted by isometric screen depth ($Y$ descending, then $X$ ascending) before executing SVG draw commands.
    - **Inter-Floor Exit Layering & Occlusion**: Vertical transitions (`up`/`down` exits) connecting floors $Z_1$ and $Z_2$ are attributed to the higher elevation layer $\max(Z_1, Z_2)$ and drawn before the upper floor's room geometry, ensuring ascending stairways naturally overlay lower stories while being cleanly occluded by upper-story room rectangles.
    - **Interactive Layer Controls**: Embedded `<style>` and JavaScript within the SVG `<defs>` provide clickable toggle buttons (`<g id="elevation-controls">`) with visual active/inactive states, allowing users to toggle individual floor levels on/off to prevent vertical visual occlusion.
@@ -284,6 +287,9 @@ The CBC optimization execution is bounded by an optional per-subgraph time limit
 ### 4.6. Unified Renderer Architecture & Export Engine — [`romutil/renderers/`](./romutil/renderers/)
 
 The unified renderer architecture provides an extensible, polymorphic pipeline for exporting solved area maps into vector graphics, structured interchange data, and standalone web applications:
+
+- **Decoupled Architecture (Layout Solver vs. Renderers)**:
+  The graph simplification and MILP solver pipeline (`romutil/solver.py`, `romutil/graph.py`) produces a pure spatial domain model: a dictionary of `Room` instances with solved integer coordinates `(x, y, z)` and connected `Exit` edges. The rendering subsystem (`romutil/renderers/`) has zero coupling to Pyomo or MILP formulations, consuming room coordinate models strictly as read-only inputs. This architectural decoupling enables adding new output targets without altering layout mathematics.
 
 1. **Renderer Protocol & Registry (`BaseRenderer`, `RENDERERS`, `render_map`)**:
    - **Protocol Interface ([`romutil/renderers/base.py`](./romutil/renderers/base.py))**: All renderers conform to the `@runtime_checkable` `BaseRenderer` protocol:
