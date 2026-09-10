@@ -1,8 +1,8 @@
 # Agent Guidelines for ROMUtil
 
-## Design Documentation (`DESIGN.md`) Policy
+## Design Documentation (`docs/DESIGN.md`) Policy
 - **Architectural Focus (Evergreen Design, Not a Changelog)**:
-  - [`DESIGN.md`](./DESIGN.md) is an **evergreen system architecture and design document**, NOT a pull request summary, commit log, or changelog of improvements.
+  - [`docs/DESIGN.md`](./docs/DESIGN.md) is an **evergreen system architecture and design document**, NOT a pull request summary, commit log, or changelog of improvements.
   - Always describe what the system *is* and *how it functions*. Never use diff/changelog language such as "recently added", "replaced", "modernized", or "refactored".
   - Focus on **system architecture, algorithmic invariants, mathematical formulations, data flow, and core domain abstractions**.
   - Do NOT document low-level implementation details, syntax choices, or internal refactors (e.g. exhaustive dataclass attribute inventories, type annotations, or Python deprecation workarounds) as design-level topics.
