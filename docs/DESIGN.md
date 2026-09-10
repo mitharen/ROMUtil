@@ -222,12 +222,21 @@ $$M_x = \max\left(10, \sum_{e, \Delta x \neq 0} |\Delta x| + 1\right), \quad M_y
    Non-cardinal axes are constrained to match (e.g., East exits enforce $y_u = y_v$ and $z_u = z_v$ unless cut).
 3. **Cut Relaxation**:
    If an area contains contradictory cycles (e.g., a maze or non-Euclidean loop), `cut[e] = 1` disables the strict geometric distance requirement for that edge.
+4. **Directional Half-Space Constraints for One-Way Exits**:
+   For each one-way exit $e = (u, v)$ with index $i$ in direction $d$, a directional half-space inequality is enforced, relaxed by the binary cut variable $m.\text{cut}[i]$ and scaled by dimension-specific bounds ($M_x, M_y, M_z$):
+   - $\text{East}: x_v - x_u + 2 M_x \cdot \text{cut}_i \ge d_{\min}$
+   - $\text{West}: x_u - x_v + 2 M_x \cdot \text{cut}_i \ge d_{\min}$
+   - $\text{North}: y_v - y_u + 2 M_y \cdot \text{cut}_i \ge d_{\min}$
+   - $\text{South}: y_u - y_v + 2 M_y \cdot \text{cut}_i \ge d_{\min}$
+   - $\text{Up}: z_v - z_u + 2 M_z \cdot \text{cut}_i \ge d_{\min}$
+   - $\text{Down}: z_u - z_v + 2 M_z \cdot \text{cut}_i \ge d_{\min}$
+   where dummy room endpoints resolve to affine expressions $x_u + d_{\text{exit}}(e)$. Combined with the soft $L_1$ proximity penalty $\sum \text{dist}_{\text{one-way}}$, these constraints guarantee that one-way exits strictly preserve true builder orientation without 180° inversion under topological tension, while permitting binary cut relaxation ($\text{cut}_i = 1$) only when non-Euclidean directed cycles mathematically require it.
 
 #### Objective Function:
 $$\min \left( M^2 \sum \text{cut}_e + \sum l_{\max}(e) + \sum \text{dist}_{\text{one-way}} \right)$$
 - Heavy penalty ($M^2$) prevents cutting exits unless mathematically unavoidable.
 - Minimizes overall exit lengths to keep rooms compact.
-- Keeps one-way endpoints clustered near each other.
+- Keeps one-way endpoints clustered near each other within their feasible forward half-space.
 
 #### Lazy Collision Avoidance & Sweep-Line Spatial Indexing:
 To avoid instantiating $O(E^2)$ crossing constraints up front, collision avoidance is resolved lazily:
