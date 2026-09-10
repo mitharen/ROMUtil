@@ -143,8 +143,13 @@ Before invoking the mathematical solver, the graph is simplified to minimize var
    - Exits pointing to `-1` (incomplete rooms) are assigned a synthetic VNUM `max(rdb.keys()) + 1`.
    - Exits leading outside the area file create lightweight `dummy` rooms (`room.dummy = True`) so boundaries can still be routed without crashing.
    - Boundary dummy rooms are excluded from the Pyomo decision space and anchored deterministically relative to their primary source room coordinates.
-3. **Connected Components**:
-   Uses `networkx.connected_components()` to split disconnected areas into independent subgraphs, solving and plotting each component separately.
+3. **Connected Components & Decomposition**:
+   - **Partitioning**: Builds an undirected topological graph $G = (V_{\text{core}}, E_{\text{core}})$ over non-dummy rooms and exits. Disconnected subgraphs are partitioned into $k$ independent weakly connected components $\{C_1, C_2, \dots, C_k\}$ using `networkx.connected_components()`.
+   - **Complexity Reduction**: If $k > 1$, each component $C_i$ forms an isolated MILP subproblem $(rdb_i, exits_i)$ with boundary dummy copies. The maximum decision variables per MILP instance decreases from $3 \cdot |V_{\text{core}}|$ to $3 \cdot \max_i |V(C_i)|$, and cross-component candidate overlap pairs are completely eliminated ($0$ cross-component disjunctive constraints generated).
+   - **1D Shelf Packing**: After independent solving, each component's 3D bounding box $[x_{\min}^i, x_{\max}^i] \times [y_{\min}^i, y_{\max}^i] \times [z_{\min}^i, z_{\max}^i]$ is calculated. Components are locally normalized to $(0, 0, 0)$ and placed along the X-axis via 1D horizontal shelf packing with configurable padding $\Delta_{\text{pad}} \ge 2$:
+     $$X_{\text{offset}}^{(0)} = 0, \quad X_{\text{offset}}^{(i)} = X_{\text{offset}}^{(i-1)} + \text{width}(C_{i-1}) + \Delta_{\text{pad}}$$
+     This guarantees non-overlapping spatial layouts across all components and elevation layers.
+   - **Single-Component Pass-Through**: When $k = 1$, the direct monolithic solve path is preserved without packing overhead.
 4. **Spatial Candidate Tracking**:
    Precomputes non-incident candidate exit pairs in a hash set to provide $O(1)$ candidate retrieval and retirement for downstream sweep-line spatial collision detection in [`romutil/solver.py`](./romutil/solver.py).
 5. **Dynamic Dimension-Specific Big-M Bounds ($M_x, M_y, M_z$)**:
