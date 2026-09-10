@@ -240,6 +240,46 @@ class TestDialectParserPositive:
         # Resets parsed
         assert len(area.resets) == 1
 
+    def test_parse_anatolia_fixture(self):
+        """Validate ANATOLIA 3.0 format: #RESETMESSAGE, #FLAG, custom sectors, and exits."""
+        filepath = FIXTURES_DIR / "anatolia.are"
+        area = Parser().parse(filepath.read_text(encoding="utf-8"))
+
+        assert isinstance(area, AreaData)
+        assert isinstance(area.header, AreaHeader)
+        assert area.header.filename == "anatolia.are"
+        assert area.header.name == "Anatolia Citadel"
+        assert area.header.builder == "{ 1 90 } Ilya Anatolia Citadel"
+        assert area.header.vnum_min == 100
+        assert area.header.vnum_max == 199
+
+        # Custom ANATOLIA 3.0 top-level attributes
+        assert area.reset_message == "The cold wind howls across the Anatolian plains."
+        assert area.flag == "reset_before arena"
+        assert area["#RESETMESSAGE"] == "The cold wind howls across the Anatolian plains."
+        assert area["#FLAG"] == "reset_before arena"
+
+        # Rooms and exits
+        assert len(area.rooms) == 5
+        vnum_map = {r.vnum: r for r in area.rooms}
+        assert 100 in vnum_map
+        assert 101 in vnum_map
+        assert 102 in vnum_map
+        assert 103 in vnum_map
+        assert 104 in vnum_map
+
+        room_100 = vnum_map[100]
+        assert room_100.name == "Citadel Gates"
+        assert len(room_100.exits) == 4
+
+        north_exit = next(e for e in room_100.exits if e.direction == 0)
+        assert north_exit.dst_vnum == 101
+        assert north_exit.keyword == "ironwood gate"
+        assert north_exit.flags == 1
+
+        # Resets
+        assert len(area.resets) == 2
+
 
 class TestDialectLayoutSolver:
     """Validate that area graphs from all 4 dialects solve cleanly and generate valid maps."""
@@ -251,6 +291,7 @@ class TestDialectLayoutSolver:
         ("circlemud.are", 4),
         ("dikumud_alfa.wld", 5),
         ("ackmud.are", 5),
+        ("anatolia.are", 5),
     ])
     def test_solve_and_render_all_dialects(self, fixture_name, expected_room_count, tmp_path):
         """Ensure layout solver assigns coordinates and plots SVG for each dialect without errors."""
@@ -833,3 +874,233 @@ M none~
 """
         norm = normalize_dialect_buffer(text_non_ack)
         assert "M none~" in norm
+
+class TestAnatoliaDialectFeatures:
+    """Comprehensive test suite for ANATOLIA 3.0 section tolerance, layout, and rendering."""
+
+    def test_anatolia_render_all_formats(self, tmp_path):
+        """Verify solved ANATOLIA area renders seamlessly to SVG, HTML, and JSON."""
+        filepath = FIXTURES_DIR / "anatolia.are"
+        area = Parser().parse(filepath.read_text(encoding="utf-8"))
+        rdb = {r.vnum: Room(r) for r in area.rooms}
+        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=10)
+
+        # SVG Rendering
+        svg_file = tmp_path / "anatolia.svg"
+        out_svg = SVGRenderer().render(solved_rdb, svg_file, header=area.header, exits=exits)
+        assert out_svg.exists()
+        svg_content = out_svg.read_text(encoding="utf-8")
+        assert "<svg" in svg_content
+        assert "Citadel Gates" in svg_content
+        assert "Citadel Courtyard" in svg_content
+        assert "Battle Arena" in svg_content
+
+        # HTML Rendering
+        html_file = tmp_path / "anatolia.html"
+        out_html = HTMLRenderer().render(solved_rdb, html_file, header=area.header, exits=exits)
+        assert out_html.exists()
+        html_content = out_html.read_text(encoding="utf-8")
+        assert "Anatolia Citadel" in html_content
+        assert "Citadel Gates" in html_content
+        assert "Battle Arena" in html_content
+
+        # JSON Rendering
+        json_file = tmp_path / "anatolia.json"
+        out_json = JSONRenderer().render(solved_rdb, json_file, header=area.header, exits=exits)
+        assert out_json.exists()
+        json_dict = json.loads(out_json.read_text(encoding="utf-8"))
+        assert json_dict["area"]["name"] == "Anatolia Citadel"
+        assert len(json_dict["rooms"]) == 5
+        room_names = [r["name"] for r in json_dict["rooms"]]
+        assert "Citadel Gates" in room_names
+        assert "Eastern Steppe" in room_names
+
+    def test_standalone_resetmessage_variations(self):
+        """Test inline, multiline, and whitespace-padded #RESETMESSAGE variations."""
+        # 1. Inline single-line
+        text_inline = """#AREA
+inline.are~
+Inline~
+Author~
+10 20
+
+#RESETMESSAGE You hear a hawk screeching in the distance.~
+
+#ROOMS
+#10
+Room 10~
+Desc~
+0 0 1
+S
+#0
+#$
+"""
+        area1 = Parser().parse(text_inline)
+        assert area1.reset_message == "You hear a hawk screeching in the distance."
+        assert area1.flag is None
+
+        # 2. Multiline message with internal formatting
+        text_multiline = """#AREA
+multi.are~
+Multi~
+Author~
+10 20
+
+#RESETMESSAGE
+The wind sweeps across the steppes,
+bringing the sharp chill of winter.~
+
+#ROOMS
+#10
+Room 10~
+Desc~
+0 0 1
+S
+#0
+#$
+"""
+        area2 = Parser().parse(text_multiline)
+        assert area2.reset_message == "The wind sweeps across the steppes,\nbringing the sharp chill of winter."
+
+    def test_standalone_flag_variations(self):
+        """Test alphanumeric, numeric bitvector, and piped flag variations."""
+        # 1. Alphanumeric flag words
+        text_alpha = """#AREA
+flags.are~
+Flags~
+Author~
+10 20
+
+#FLAG reset_before arena battle_arena
+
+#ROOMS
+#10
+Room 10~
+Desc~
+0 0 1
+S
+#0
+#$
+"""
+        area_alpha = Parser().parse(text_alpha)
+        assert area_alpha.flag == "reset_before arena battle_arena"
+
+        # 2. Numeric bitvector
+        text_num = """#AREA
+num.are~
+Num~
+Author~
+10 20
+
+#FLAG 2048
+
+#ROOMS
+#10
+Room 10~
+Desc~
+0 0 1
+S
+#0
+#$
+"""
+        area_num = Parser().parse(text_num)
+        assert area_num.flag == "2048"
+
+        # 3. Piped bitmasks normalized by preprocessor
+        text_piped = """#AREA
+piped.are~
+Piped~
+Author~
+10 20
+
+#FLAG 4|8|1024
+
+#ROOMS
+#10
+Room 10~
+Desc~
+0 0 1
+S
+#0
+#$
+"""
+        area_piped = Parser().parse(text_piped)
+        assert area_piped.flag == "1036"
+
+        # 4. Empty flag section
+        text_empty = """#AREA
+empty.are~
+Empty~
+Author~
+10 20
+
+#FLAG
+
+#ROOMS
+#10
+Room 10~
+Desc~
+0 0 1
+S
+#0
+#$
+"""
+        area_empty = Parser().parse(text_empty)
+        assert area_empty.flag is None
+
+    def test_section_ordering_and_areadata_mapping(self):
+        """Verify arbitrary section ordering resilience and AreaData dict/iteration behavior."""
+        text_reordered = """#AREA
+order.are~
+Reordered~
+Author~
+10 20
+
+#FLAG arena
+
+#RESETMESSAGE An ominous thunder rumbles.~
+
+#ROOMS
+#10
+Room 10~
+Desc~
+0 0 1
+S
+#0
+
+#$
+"""
+        area = Parser().parse(text_reordered)
+        assert area.flag == "arena"
+        assert area.reset_message == "An ominous thunder rumbles."
+        assert area["#FLAG"] == "arena"
+        assert area["#RESETMESSAGE"] == "An ominous thunder rumbles."
+
+        # Iteration yields custom sections
+        section_dict = dict(list(area))
+        assert section_dict["#RESETMESSAGE"] == "An ominous thunder rumbles."
+        assert section_dict["#FLAG"] == "arena"
+        assert len(section_dict) == 11
+
+    def test_anatolia_negative_malformed_sections(self):
+        """Verify that malformed sections or missing terminations raise exceptions."""
+        # Truncated reset message without tilde delimiter
+        bad_text = """#AREA
+bad.are~
+Bad~
+Author~
+10 20
+
+#RESETMESSAGE Missing tilde terminator here
+
+#ROOMS
+#10
+Room 10~
+Desc~
+0 0 1
+S
+#0
+#$
+"""
+        with pytest.raises(Exception):
+            Parser().parse(bad_text)

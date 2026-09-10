@@ -81,7 +81,7 @@ ROMUtil/
 
 ### 4.1. Parsing Engine — [`romutil/parser.py`](./romutil/parser.py)
 
-The parsing engine ingests text-based MUD area files across historical and modern DikuMUD derivative dialects (ROM 2.4, Merc 2.1/2.2, Envy 1.0/2.0, CircleMUD / DikuMUD III, DikuMUD Alfa / Gamma, and ACK!MUD / AckFUSS) and constructs structured in-memory area representations using Python PLY (`ply.lex` and `ply.yacc`).
+The parsing engine ingests text-based MUD area files across historical and modern DikuMUD derivative dialects (ROM 2.4, Merc 2.1/2.2, Envy 1.0/2.0, CircleMUD / DikuMUD III, DikuMUD Alfa / Gamma, ACK!MUD / AckFUSS, and ANATOLIA 3.0) and constructs structured in-memory area representations using Python PLY (`ply.lex` and `ply.yacc`).
 
 - **DikuMUD Alfa / Gamma Monolithic Ingestion & VNUM 0 ("The Void") Architecture**:
   - Ingests monolithic `.wld` files (such as `tinyworld.wld`) containing unpartitioned room definitions across multiple zones without `#AREA` metadata headers or `#ROOMS` section boundaries.
@@ -94,6 +94,10 @@ The parsing engine ingests text-based MUD area files across historical and moder
   - Normalizes tagged `#AREA` records into canonical 4-line metadata blocks (`filename`, `name`, `builder`, `vnum_min vnum_max`), extracting area titles (`K <name>~`), VNUM bounding intervals (`V <min> <max>`), and authors/builders (`O <builder>~` with fallback to `L <levels>~`).
   - Preprocesses text buffers via `sanitize_ackmud_colour` to strip ACK!MUD ANSI colour escape sequences (`@@<char>`, e.g. `@@y`, `@@b`, `@@R`, `@@N`, `@@W`, `@@d`) while expanding escaped `@` sequences (`@@@` $\to$ `@`).
   - Preserves monospace spacing, line breaks, and ASCII art room layouts across titles and multiline room descriptions, yielding clean plain-text strings for rendering in SVG, HTML, and JSON without visual artifacts or markup leakage.
+- **ANATOLIA 3.0 Custom Section Tolerance (`#RESETMESSAGE`, `#FLAG`)**:
+  - Ingests ANATOLIA 3.0 top-level area file sections, including tilde-terminated `#RESETMESSAGE <text>~` (and multiline `#RESETMESSAGE\n<text>~`) and area flag declarations (`#FLAG <flags>` or `#FLAG\n<flags>`) containing alphanumeric identifiers, words, or numeric bitvectors.
+  - Normalizes section boundaries within `normalize_dialect_buffer` to enforce canonical delimiter spacing without interfering with subsequent room blocks (`#ROOMS`) or resets (`#RESETS`).
+  - PLY reductions in `Parser` map `#RESETMESSAGE` and `#FLAG` AST nodes into `reset_message` and `flag` attributes on the `AreaData` domain model, exposing them through standard dictionary keys (`area["#RESETMESSAGE"]`, `area["#FLAG"]`) and sequence iteration while maintaining full backward compatibility with standard ROM 2.4 and Merc-derived formats.
 - **Dialect Normalization Layer (`normalize_dialect_buffer`)**:
   - Preprocesses input text buffers prior to lexical analysis to ensure deterministic state transitions in PLY's LALR(1) state machine without lookahead ambiguity.
   - Converts Envy `#AREADATA ... End` key-value blocks, ACK!MUD tagged `#AREA` blocks, and Merc single-line `#AREA { ... } ...~` headers into canonical 4-line `#AREA` metadata.
@@ -134,7 +138,7 @@ The domain models define the spatial and topological primitives used throughout 
   The mutable room node in the spatial graph. Stores integer coordinates `(x, y, z)`, connected exits, and a `fixups` queue of collapsed hallway nodes.
   - Flags synthetic boundary rooms (`room.dummy = True`) created for unresolved or out-of-area destinations.
 - **[`AreaData`](./romutil/models.py)**:
-  Top-level container holding strongly-typed AST definitions (`AreaHeader`, `RoomDef`, `ExitDef`, `ObjectDef`, `MobileDef`, `ResetDef`, `ShopDef`, `SpecialDef`, `HelpDef`, `SocialDef`, `ExtraDescr`), guaranteeing type safety across pipeline stages.
+  Top-level container holding strongly-typed AST definitions (`AreaHeader`, `RoomDef`, `ExitDef`, `ObjectDef`, `MobileDef`, `ResetDef`, `ShopDef`, `SpecialDef`, `HelpDef`, `SocialDef`, `ExtraDescr`, and optional ANATOLIA metadata `reset_message`, `flag`), guaranteeing type safety across pipeline stages.
 
 ---
 

@@ -1,0 +1,93 @@
+#AREA
+anatolia.are~
+Anatolia Citadel~
+{ 1 90 } Ilya Anatolia Citadel~
+100 199
+
+#RESETMESSAGE
+The cold wind howls across the Anatolian plains.~
+
+#FLAG
+reset_before arena
+
+#ROOMS
+#100
+Citadel Gates~
+You stand before the massive ironwood gates of the Anatolia Citadel.
+Wide expanses of rugged steppe stretch out to the horizon, while the
+ancient stronghold looms tall to the north.
+~
+0 0 1
+D0
+The great ironwood gates lead north into the keep.~
+ironwood gate~
+1 0 101
+D1
+A dust-covered trail winds eastward into the open steppe.~
+~
+0 0 102
+D2
+A rocky defile winds south towards the mountain foothills.~
+~
+0 0 103
+D3
+A fortified archway opens west into the training grounds.~
+~
+0 0 104
+S
+#101
+Citadel Courtyard~
+High granite battlements surround this vast central courtyard.
+Banners fluttering in the relentless wind bear the crescent emblem of
+the Anatolian warlords.
+~
+0 8 0
+D2
+The ironwood gates open south toward the citadel entrance.~
+ironwood gate~
+1 0 100
+S
+#102
+Eastern Steppe~
+Dry golden grasses rustle softly underfoot across the wide plateau.
+A brisk wind carries the distant scent of campfires and wild sage.
+~
+0 0 2
+D3
+The path leads west toward the citadel gates.~
+~
+0 0 100
+S
+#103
+Southern Watchpost~
+Perched atop a rugged limestone outcrop, this outpost offers an
+unobstructed view of the winding mountain trails below.
+~
+0 0 1
+D0
+The rocky defile leads north back to the citadel gates.~
+~
+0 0 100
+S
+#104
+Battle Arena~
+The ground here is packed dirt mingled with coarse sand and sawdust.
+Heavy wooden palisades surround the perimeter to contain combatants.
+~
+0 0 0
+D1
+The archway leads east to the citadel gates.~
+~
+0 0 100
+S
+#0
+
+#RESETS
+D 0 100 0 1
+D 0 101 2 1
+S
+
+#SPECIALS
+S
+
+#$

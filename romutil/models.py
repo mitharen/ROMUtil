@@ -193,6 +193,8 @@ class AreaData:
     specials: tuple[SpecialDef, ...] = ()
     helps: tuple[HelpDef, ...] = ()
     socials: tuple[SocialDef, ...] = ()
+    reset_message: str | None = None
+    flag: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("rooms", "mobiles", "objects", "resets", "shops", "specials", "helps", "socials"):
@@ -210,6 +212,10 @@ class AreaData:
         yield ("#SPECIALS", self.specials)
         yield ("#HELPS", self.helps)
         yield ("#SOCIALS", self.socials)
+        if self.reset_message is not None:
+            yield ("#RESETMESSAGE", self.reset_message)
+        if self.flag is not None:
+            yield ("#FLAG", self.flag)
 
     def __len__(self) -> int:
         return len(self.rooms) if self.rooms else 9
@@ -228,6 +234,8 @@ class AreaData:
                 "#SPECIALS": self.specials,
                 "#HELPS": self.helps,
                 "#SOCIALS": self.socials,
+                "#RESETMESSAGE": self.reset_message,
+                "#FLAG": self.flag,
             }
             if key in mapping:
                 return mapping[key]

@@ -89,6 +89,7 @@ def normalize_dialect_buffer(buffer: str) -> str:
     - Merc inline or single-line #AREA headers converted to 4-line standard format.
     - Missing #AREA header synthesized with default area metadata.
     - Piped bitmask flags evaluated (4|8|1024 -> 1036, A|B -> AB).
+    - ANATOLIA 3.0 #RESETMESSAGE and #FLAG top-level sections normalized for PLY grammar ingestion.
     - Strips unsupported dialect-specific sections (#GAMES, #CLANS, #ECONOMY, #OLC).
     - Ensures CircleMUD / headerless room definitions have #ROOMS section marker.
     - Normalizes CircleMUD / Diku EOF delimiters ($~, $) to standard #$.
@@ -237,11 +238,37 @@ def normalize_dialect_buffer(buffer: str) -> str:
 
     buffer = re.sub(r'#AREA\s*\n([^\n~]+~)\s*\n(?=#)', replace_merc_area_single_line, buffer)
 
+    # ANATOLIA 3.0: Normalize #RESETMESSAGE
+    def replace_resetmessage(match: re.Match[str]) -> str:
+        msg = match.group(1).rstrip("~").strip()
+        return f"#RESETMESSAGE\n{msg}~\n"
+
+    buffer = re.sub(
+        r'#RESETMESSAGE\s+([^~]*~)',
+        replace_resetmessage,
+        buffer,
+    )
+
+    # ANATOLIA 3.0: Normalize #FLAG
+    def replace_area_flag(match: re.Match[str]) -> str:
+        body = match.group(1).strip()
+        if body:
+            normalized_flags = ' '.join(body.split())
+            return f"#FLAG\n{normalized_flags}\n"
+        return "#FLAG\n"
+
+    buffer = re.sub(
+        r'#FLAG[ \t]*(.*?)(?=\n#[A-Z$]|\Z)',
+        replace_area_flag,
+        buffer,
+        flags=re.DOTALL,
+    )
+
     # 4. Strip dialect-specific non-standard sections
     buffer = re.sub(r'#(?:GAMES|CLANS|ECONOMY|OLC|PRACTICERS|RESETCONT)\b.*?(?=\n#|\Z)', '', buffer, flags=re.DOTALL)
 
     # 5. If no #ROOMS or #ROOMDATA header but room VNUMs exist in standalone room files, prepend #ROOMS
-    if not re.search(r'#(?:ROOMS|ROOMDATA)\b', buffer) and not re.search(r'#(?:HELPS|SOCIALS|MOBILES|OBJECTS)\b', buffer):
+    if not re.search(r'#(?:ROOMS|ROOMDATA)\b', buffer) and not re.search(r'#(?:HELPS|SOCIALS|MOBILES|OBJECTS|RESETMESSAGE|FLAG)\b', buffer):
         if re.search(r'^\#\d+\b', buffer, re.MULTILINE):
             buffer = re.sub(r'\A(?:[ \t\r\n]|(?:\*[^\n]*\n))+', '', buffer)
             buffer = re.sub(r'(?m)^\*[^\n]*\n(?=\s*#\d+)', '', buffer)
@@ -272,6 +299,8 @@ class Lexer:
     )
     tokens = (
         'AREA',
+        'RESETMESSAGE',
+        'AREA_FLAG',
         'HELPS',
         'SOCIALS',
         'MOBILES',
@@ -309,6 +338,15 @@ class Lexer:
     def t_AREA(self, t):
         r'\#(?:AREA|AREADATA)'
         t.value = '#AREA'
+        return t
+
+    def t_RESETMESSAGE(self, t):
+        r'\#RESETMESSAGE'
+        return t
+
+    def t_AREA_FLAG(self, t):
+        r'\#FLAG'
+        t.value = '#FLAG'
         return t
 
     def t_HELPS(self, t):
@@ -512,6 +550,8 @@ class Parser:
         specials = []
         helps = []
         socials = []
+        reset_message = None
+        flag = None
 
         if p[1]:
             for sec in p[1]:
@@ -544,6 +584,10 @@ class Parser:
                 elif tag == '#SOCIALS':
                     if data:
                         socials.extend([s for s in data if isinstance(s, (SocialDef, tuple))])
+                elif tag == '#RESETMESSAGE':
+                    reset_message = data
+                elif tag == '#FLAG':
+                    flag = data
 
         p[0] = AreaData(
             header=header,
@@ -555,6 +599,8 @@ class Parser:
             specials=tuple(specials),
             helps=tuple(helps),
             socials=tuple(socials),
+            reset_message=reset_message,
+            flag=flag,
         )
 
     def p_sections(self, p):
@@ -596,6 +642,11 @@ class Parser:
 
     def p_section(self, p):
         '''section : AREA EOL area
+                   | RESETMESSAGE EOL reset_message
+                   | RESETMESSAGE reset_message
+                   | AREA_FLAG EOL area_flag
+                   | AREA_FLAG area_flag
+                   | AREA_FLAG EOL
                    | HELPS EOL helps
                    | SOCIALS EOL socials
                    | MOBILES EOL mobiles
@@ -604,7 +655,39 @@ class Parser:
                    | RESETS EOL comments resets
                    | SHOPS EOL shops
                    | SPECIALS EOL comments specials'''
-        p[0] = (p[1], p[3] if len(p) != 5 else p[4])
+        if len(p) == 5:
+            data = p[4]
+        elif len(p) == 4:
+            data = p[3]
+        elif len(p) == 3:
+            data = p[2] if p[2] != "\n" else None
+        else:
+            data = None
+        p[0] = (p[1], data)
+
+    def p_reset_message(self, p):
+        '''reset_message : str STRING EOL
+                         | str STRING'''
+        p[0] = p[2]
+
+    def p_area_flag(self, p):
+        '''area_flag : area_flag_tokens EOL
+                     | area_flag_tokens'''
+        p[0] = p[1]
+
+    def p_area_flag_tokens(self, p):
+        '''area_flag_tokens : area_flag_token area_flag_tokens
+                            | area_flag_token'''
+        if len(p) == 3:
+            p[0] = f"{p[1]} {p[2]}"
+        else:
+            p[0] = str(p[1])
+
+    def p_area_flag_token(self, p):
+        '''area_flag_token : WORD
+                           | NUMBER
+                           | SYMBOL'''
+        p[0] = str(p[1])
 
     def p_area(self, p):
         '''area : str STRING EOL str STRING EOL str STRING EOL NUMBER NUMBER EOL'''
