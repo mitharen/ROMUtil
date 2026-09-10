@@ -195,6 +195,14 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
                 if r.z is None: r.z = 0
             return rdb, exits
 
+        if hasattr(model, 'cut'):
+            for i, ex in enumerate(exits):
+                try:
+                    val = model.cut[i].value if hasattr(model.cut[i], 'value') else model.cut[i]
+                    ex.cut = bool(round(val or 0))
+                except (KeyError, IndexError, AttributeError):
+                    ex.cut = False
+
         for vnum, room in list(rdb.items()):
             if getattr(room, 'dummy', False) is True:
                 continue
@@ -272,6 +280,13 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
             restored_rooms_i = []
 
             if (is_optimal_i or is_time_limit_or_feasible_i) and has_valid_coords_i:
+                if hasattr(model_i, 'cut'):
+                    for j, ex in enumerate(exits_i):
+                        try:
+                            val = model_i.cut[j].value if hasattr(model_i.cut[j], 'value') else model_i.cut[j]
+                            ex.cut = bool(round(val or 0))
+                        except (KeyError, IndexError, AttributeError):
+                            ex.cut = False
                 if is_optimal_i:
                     log.info(f'{area_name} Component {i+1} solve completed.')
                 else:
@@ -351,6 +366,13 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
     for vnum, orig_ex in original_exits.items():
         if vnum in rdb:
             rdb[vnum].exits = orig_ex
+
+    cut_map = {(e.src, e.dst, e.direction): getattr(e, 'cut', False) for e in exits}
+    for r in rdb.values():
+        if getattr(r, 'dummy', False):
+            continue
+        for e in r.exits:
+            e.cut = cut_map.get((e.src, e.dst, e.direction), False)
 
     # Compute one_way status on all exits
     for r in rdb.values():

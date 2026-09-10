@@ -259,6 +259,7 @@ class Exit:
         self.src = effective_source
         self.distance = distance
         self.one_way = False
+        self.cut = False
 
         if e is not None:
             if isinstance(e, ExitDef):
@@ -267,6 +268,8 @@ class Exit:
             elif isinstance(e, Exit):
                 self.dst = e.dst
                 self.direction = e.direction
+                self.one_way = e.one_way
+                self.cut = getattr(e, 'cut', False)
                 if distance == 1 and e.distance != 1:
                     self.distance = e.distance
             else:

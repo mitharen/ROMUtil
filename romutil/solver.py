@@ -396,6 +396,7 @@ def get_cbc_solver(timeout: Optional[int] = None, **custom_options: Any) -> Any:
     solver = SolverFactory('cbc', tee=False)
     cpu_count = os.cpu_count() or 1
     solver.options['threads'] = min(4, cpu_count)
+    solver.options['timeM'] = 'elapsed'
     solver.options['ratioGap'] = 0.05
     solver.options['presolve'] = 'on'
     solver.options['cuts'] = 'on'
@@ -608,6 +609,18 @@ def solve(rdb, area_exits, timeout=None):
                 m.one_way_pos.add(get_z(x.dst) - get_z(x.src) + 2 * m.Mz * m.cut[i] >= m.d_min)
             elif x.direction == Direction.down:
                 m.one_way_pos.add(get_z(x.src) - get_z(x.dst) + 2 * m.Mz * m.cut[i] >= m.d_min)
+
+            if x.direction in (Direction.east, Direction.west):
+                m.one_way_pos.add(get_y(x.src) - get_y(x.dst) + 2 * m.My * m.cut[i] >= 0)
+                m.one_way_pos.add(get_y(x.dst) - get_y(x.src) + 2 * m.My * m.cut[i] >= 0)
+            elif x.direction in (Direction.north, Direction.south):
+                m.one_way_pos.add(get_x(x.src) - get_x(x.dst) + 2 * m.Mx * m.cut[i] >= 0)
+                m.one_way_pos.add(get_x(x.dst) - get_x(x.src) + 2 * m.Mx * m.cut[i] >= 0)
+            elif x.direction in (Direction.up, Direction.down):
+                m.one_way_pos.add(get_x(x.src) - get_x(x.dst) + 2 * m.Mx * m.cut[i] >= 0)
+                m.one_way_pos.add(get_x(x.dst) - get_x(x.src) + 2 * m.Mx * m.cut[i] >= 0)
+                m.one_way_pos.add(get_y(x.src) - get_y(x.dst) + 2 * m.My * m.cut[i] >= 0)
+                m.one_way_pos.add(get_y(x.dst) - get_y(x.src) + 2 * m.My * m.cut[i] >= 0)
             continue
 
         if x.dst != x.src and x.src in m.Rooms and x.dst in m.Rooms:
