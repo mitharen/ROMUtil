@@ -595,6 +595,19 @@ def solve(rdb, area_exits, timeout=None):
             m.one_way_pos.add(z_diff <= Z)
             m.one_way_pos.add(-z_diff <= Z)
             one_ways.append(X + Y + Z)
+
+            if x.direction == Direction.east:
+                m.one_way_pos.add(get_x(x.dst) - get_x(x.src) + 2 * m.Mx * m.cut[i] >= m.d_min)
+            elif x.direction == Direction.west:
+                m.one_way_pos.add(get_x(x.src) - get_x(x.dst) + 2 * m.Mx * m.cut[i] >= m.d_min)
+            elif x.direction == Direction.north:
+                m.one_way_pos.add(get_y(x.dst) - get_y(x.src) + 2 * m.My * m.cut[i] >= m.d_min)
+            elif x.direction == Direction.south:
+                m.one_way_pos.add(get_y(x.src) - get_y(x.dst) + 2 * m.My * m.cut[i] >= m.d_min)
+            elif x.direction == Direction.up:
+                m.one_way_pos.add(get_z(x.dst) - get_z(x.src) + 2 * m.Mz * m.cut[i] >= m.d_min)
+            elif x.direction == Direction.down:
+                m.one_way_pos.add(get_z(x.src) - get_z(x.dst) + 2 * m.Mz * m.cut[i] >= m.d_min)
             continue
 
         if x.dst != x.src and x.src in m.Rooms and x.dst in m.Rooms:
