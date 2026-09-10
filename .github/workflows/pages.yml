@@ -40,7 +40,7 @@ jobs:
 
       - name: Build Pages site and map artifacts
         run: |
-          python scripts/build_pages.py --outdir _site
+          uv run python scripts/build_pages.py --outdir _site
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

@@ -21,20 +21,23 @@ def resolve_candidate_areas():
     """Discover available sample and fixture areas for page generation."""
     candidates = []
 
-    # 1. Check external QuickMUD area directory if present
+    # 1. Check local fixture areas or external QuickMUD area directory
+    sample_dirs = [
+        REPO_ROOT / "tests" / "fixtures" / "areas",
+    ]
     quickmud_env = os.environ.get("QUICKMUD_AREA_DIR", "").strip()
-    quickmud_paths = []
     if quickmud_env:
-        quickmud_paths.append(Path(quickmud_env))
-    quickmud_paths.append(REPO_ROOT.parent / "QuickMUD" / "area")
+        sample_dirs.insert(0, Path(quickmud_env))
+    sample_dirs.append(REPO_ROOT.parent / "QuickMUD" / "area")
 
-    for qpath in quickmud_paths:
-        if qpath.is_dir():
+    for sdir in sample_dirs:
+        if sdir.is_dir():
             for name in ("school.are", "smurf.are"):
-                area_file = qpath / name
+                area_file = sdir / name
                 if area_file.is_file():
                     candidates.append(("quickmud", area_file.stem, area_file, False))
-            break
+            if candidates:
+                break
 
     # 2. Add local repository dialect test fixtures
     dialects_dir = REPO_ROOT / "tests" / "fixtures" / "dialects"
@@ -70,7 +73,8 @@ def render_area(name, source_path, is_dir, outdir):
     log.info(f"Rendering HTML viewer for {name}...")
     res = subprocess.run(cmd_html, cwd=str(REPO_ROOT), capture_output=True, text=True)
     if res.returncode != 0:
-        log.warning(f"Failed to render HTML for {name}: {res.stderr}")
+        log.error(f"Failed to render HTML for {name}: {res.stderr}")
+        raise RuntimeError(f"Failed to render HTML for {name}: {res.stderr}")
 
     # Render SVG map
     cmd_svg = [
@@ -88,7 +92,10 @@ def render_area(name, source_path, is_dir, outdir):
         ]
 
     log.info(f"Rendering SVG map for {name}...")
-    subprocess.run(cmd_svg, cwd=str(REPO_ROOT), capture_output=True, text=True)
+    res_svg = subprocess.run(cmd_svg, cwd=str(REPO_ROOT), capture_output=True, text=True)
+    if res_svg.returncode != 0:
+        log.error(f"Failed to render SVG for {name}: {res_svg.stderr}")
+        raise RuntimeError(f"Failed to render SVG for {name}: {res_svg.stderr}")
 
 
 def generate_index_html(rendered_areas, outdir):
