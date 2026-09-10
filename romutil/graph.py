@@ -5,6 +5,7 @@ from pyomo.environ import ConcreteModel, RangeSet, Param, Var, Objective, Constr
 
 from romutil.models import Direction, Room, Exit, RoomDef
 from romutil.plotter import Plotter
+from romutil.renderers import SVGRenderer, render_map
 from romutil.solver import solve
 
 log = logging.getLogger('Mapper.graph')
@@ -192,15 +193,12 @@ def graph(rdb, name, area, split_levels=False, outbase=None, solver_timeout=None
     if not len(exits) and not len(rdb):
         return
 
-    if split_levels:
-        unique_zs = sorted(list(set(int(r.z) for r in rdb.values() if not r.dummy and r.z is not None)))
-        if not unique_zs:
-            unique_zs = [0]
-        base = outbase if outbase else (name[:-4] if name.endswith('.svg') else name)
-        for z in unique_zs:
-            level_name = f"{base}_z{z}.svg"
-            dwg = Plotter(level_name, rdb, exits, target_z=z)
-            dwg.plot()
-    else:
-        dwg = Plotter(name, rdb, exits)
-        dwg.plot()
+    render_map(
+        rdb,
+        name,
+        fmt="svg",
+        header=area,
+        exits=exits,
+        split_levels=split_levels,
+        outbase=outbase,
+    )
