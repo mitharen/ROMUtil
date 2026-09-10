@@ -231,6 +231,8 @@
     /* Exits Styling */
     .exit-line {
       stroke-linecap: round;
+      cursor: pointer;
+      pointer-events: stroke;
       transition: stroke 0.2s, stroke-width 0.2s;
     }
 
@@ -243,6 +245,10 @@
       stroke: var(--one-way);
       stroke-width: 2.2;
       stroke-dasharray: 4, 3;
+    }
+
+    .exit-line.inter-floor {
+      stroke-width: 2.6;
     }
 
     .exit-line.stub {
@@ -267,7 +273,7 @@
     }
 
     .elevation-layer.dimmed {
-      opacity: 0.15;
+      /* Inactive elevation layer - children (.room-group, .exit-line) manage dimming to allow inclusive inter-floor visibility */
     }
 
     /* Sidebar Drawer */
@@ -346,6 +352,26 @@
     .exit-tag.one-way {
       border-color: var(--one-way);
       color: #fca5a5;
+    }
+
+    .exit-tag.incoming-tag {
+      border-color: #f87171;
+      background-color: rgba(239, 68, 68, 0.12);
+    }
+
+    .exit-tag.incoming-tag:hover {
+      border-color: #ef4444;
+      background-color: rgba(239, 68, 68, 0.22);
+    }
+
+    .exit-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      line-height: 1;
+      cursor: help;
+      margin-left: 2px;
     }
 
     /* Minimap Radar */
@@ -442,7 +468,7 @@
     <div class="main-workspace">
       <div class="viewport-container" id="viewport-container">
         <svg id="map-svg">
-          <defs>
+          <defs id="svg-defs">
             <marker id="arrow-one-way" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
               <path d="M 0 1 L 9 5 L 0 9 z" fill="#ef4444" />
             </marker>
@@ -469,6 +495,10 @@
           <div style="margin-top: 10px;">
             <strong style="font-size: 0.8rem; color: var(--text-muted);">EXITS</strong>
             <div class="exit-badge-list" id="card-room-exits"></div>
+          </div>
+          <div id="incoming-exits-section" style="margin-top: 12px;">
+            <strong style="font-size: 0.8rem; color: var(--text-muted);">INCOMING EXITS / ENTRANCES</strong>
+            <div class="exit-badge-list" id="card-room-incoming"></div>
           </div>
         </div>
 
@@ -556,6 +586,7 @@ __JSON_DATA__
 
       // Canvas / SVG Elements
       const svg = document.getElementById('map-svg');
+      const svgDefs = document.getElementById('svg-defs') || svg.querySelector('defs');
       const canvasRoot = document.getElementById('canvas-root');
       const exitsLayer = document.getElementById('exits-layer');
       const roomsLayer = document.getElementById('rooms-layer');
@@ -563,6 +594,34 @@ __JSON_DATA__
       const tooltip = document.getElementById('room-tooltip');
       const minimap = document.getElementById('minimap');
       const miniCtx = minimap.getContext('2d');
+
+      const ONE_WAY_TOOLTIP = 'One-Way Exit: This exit has no reciprocal return path from the destination room.';
+      const WARNING_TOOLTIP = 'Geometric Relaxation / Boundary: Exit distance relaxed due to a non-Euclidean loop contradiction or connects to an external boundary stub.';
+
+      // Index incoming one-way exits: destination vnum -> list of incoming exits
+      const incomingOneWays = new Map();
+      rooms.forEach(r => incomingOneWays.set(r.vnum, []));
+
+      rooms.forEach(srcRoom => {
+        (srcRoom.exits || []).forEach(ex => {
+          if (roomMap.has(ex.dst)) {
+            const dstRoom = roomMap.get(ex.dst);
+            let isOneWay = ex.one_way;
+            if (isOneWay === undefined) {
+              const oppDir = { north: 'south', south: 'north', east: 'west', west: 'east', up: 'down', down: 'up' }[ex.direction];
+              isOneWay = !(dstRoom.exits || []).some(re => re.direction === oppDir && re.dst === srcRoom.vnum);
+            }
+            if (isOneWay) {
+              incomingOneWays.get(ex.dst).push({
+                srcVnum: srcRoom.vnum,
+                srcName: srcRoom.name,
+                direction: ex.direction,
+                distance: ex.distance || 1,
+              });
+            }
+          }
+        });
+      });
 
       // Transform state
       let panX = 0;
@@ -636,25 +695,82 @@ __JSON_DATA__
 
             const edgeZ = Math.max(r.coords.z, target.coords.z);
             const targetLayer = elevationLayers.get(edgeZ) || elevationLayers.get(r.coords.z);
+            const isInterFloor = r.coords.z !== target.coords.z;
+            let strokeStyle = null;
+
+            // Dual-end elevation gradient for vertical transitions
+            if (isInterFloor && svgDefs) {
+              const gradId = 'grad-' + r.vnum + '-' + target.vnum;
+              let grad = document.getElementById(gradId);
+              if (!grad) {
+                grad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+                grad.setAttribute('id', gradId);
+                grad.setAttribute('gradientUnits', 'userSpaceOnUse');
+                grad.setAttribute('x1', p1.px);
+                grad.setAttribute('y1', p1.py);
+                grad.setAttribute('x2', p2.px);
+                grad.setAttribute('y2', p2.py);
+
+                const stop1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+                stop1.setAttribute('offset', '0%');
+                stop1.setAttribute('stop-color', getRoomColor(r.coords.z));
+
+                const stop2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+                stop2.setAttribute('offset', '100%');
+                stop2.setAttribute('stop-color', getRoomColor(target.coords.z));
+
+                grad.appendChild(stop1);
+                grad.appendChild(stop2);
+                svgDefs.appendChild(grad);
+              }
+              strokeStyle = 'url(#' + gradId + ')';
+            }
 
             const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
             line.setAttribute('x1', p1.px);
             line.setAttribute('y1', p1.py);
             line.setAttribute('x2', p2.px);
             line.setAttribute('y2', p2.py);
-            line.setAttribute('class', 'exit-line ' + (e.one_way ? 'one-way' : 'two-way'));
+            line.setAttribute('class', 'exit-line ' + (e.one_way ? 'one-way' : 'two-way') + (isInterFloor ? ' inter-floor' : ''));
             line.setAttribute('data-src', r.vnum);
             line.setAttribute('data-dst', e.dst);
             line.setAttribute('data-z', edgeZ);
+            line.setAttribute('data-src-z', r.coords.z);
+            line.setAttribute('data-dst-z', target.coords.z);
+            if (strokeStyle) {
+              line.style.stroke = strokeStyle;
+            }
             if (e.one_way) {
               line.setAttribute('marker-end', 'url(#arrow-one-way)');
             }
+
+            const isRelaxed = Boolean(e.distance && e.distance > 1);
+            const exitInfo = {
+              src: r.vnum,
+              dst: e.dst,
+              srcName: r.name,
+              dstName: target.name,
+              direction: e.direction,
+              distance: e.distance || 1,
+              one_way: Boolean(e.one_way),
+              isStub: false,
+              isRelaxed: isRelaxed,
+              srcZ: r.coords.z,
+              dstZ: target.coords.z,
+            };
+            line.addEventListener('mouseenter', (ev) => showExitTooltip(exitInfo, ev));
+            line.addEventListener('mousemove', (ev) => positionTooltip(ev));
+            line.addEventListener('mouseleave', hideTooltip);
+
             if (targetLayer) {
               targetLayer.exitsGroup.appendChild(line);
             } else if (exitsLayer) {
               exitsLayer.appendChild(line);
             }
             exitElements.set(r.vnum + '->' + e.dst, line);
+            if (!e.one_way) {
+              exitElements.set(e.dst + '->' + r.vnum, line);
+            }
           } else {
             // External stub exit
             let dx = 0, dy = 0;
@@ -674,8 +790,29 @@ __JSON_DATA__
             line.setAttribute('y2', p1.py + dy);
             line.setAttribute('class', 'exit-line stub');
             line.setAttribute('data-src', r.vnum);
+            line.setAttribute('data-dst', e.dst);
             line.setAttribute('data-z', r.coords.z);
+            line.setAttribute('data-src-z', r.coords.z);
+            line.setAttribute('data-dst-z', r.coords.z);
             line.setAttribute('marker-end', 'url(#arrow-one-way)');
+
+            const stubInfo = {
+              src: r.vnum,
+              dst: e.dst,
+              srcName: r.name,
+              dstName: 'External Boundary (' + e.direction + ')',
+              direction: e.direction,
+              distance: e.distance || 1,
+              one_way: true,
+              isStub: true,
+              isRelaxed: Boolean(e.distance && e.distance > 1),
+              srcZ: r.coords.z,
+              dstZ: r.coords.z,
+            };
+            line.addEventListener('mouseenter', (ev) => showExitTooltip(stubInfo, ev));
+            line.addEventListener('mousemove', (ev) => positionTooltip(ev));
+            line.addEventListener('mouseleave', hideTooltip);
+
             if (targetLayer) {
               targetLayer.exitsGroup.appendChild(line);
             } else if (exitsLayer) {
@@ -737,10 +874,55 @@ __JSON_DATA__
       function showTooltip(room, e) {
         document.getElementById('tt-name').textContent = '[' + room.vnum + '] ' + room.name;
         document.getElementById('tt-meta').textContent = 'Floor Z: ' + room.coords.z + ' | Coords: (' + room.coords.x + ', ' + room.coords.y + ', ' + room.coords.z + ')';
-        const exitNames = (room.exits || []).map(ex => ex.direction + ' -> ' + ex.dst + (ex.one_way ? ' (1-way)' : '')).join(', ');
-        document.getElementById('tt-exits').textContent = exitNames ? 'Exits: ' + exitNames : 'No exits';
+
+        const exitItems = (room.exits || []).map(ex => {
+          const isStub = !roomMap.has(ex.dst);
+          const isRelaxed = Boolean(ex.distance && ex.distance > 1);
+          const flags = [];
+          if (ex.one_way) flags.push('🔴 1-way');
+          if (isStub || isRelaxed) flags.push('⚠️ relaxed/boundary');
+          const flagStr = flags.length > 0 ? ' (' + flags.join(', ') + ')' : '';
+          return ex.direction + ' -> ' + ex.dst + flagStr;
+        });
+
+        let html = exitItems.length ? '<div>Exits: ' + exitItems.join(', ') + '</div>' : '<div>No exits</div>';
+        const hasOneWay = (room.exits || []).some(ex => ex.one_way);
+        const hasWarning = (room.exits || []).some(ex => !roomMap.has(ex.dst) || (ex.distance && ex.distance > 1));
+        if (hasOneWay) {
+          html += '<div style="margin-top:4px; color:#fca5a5;">🔴 ' + ONE_WAY_TOOLTIP + '</div>';
+        }
+        if (hasWarning) {
+          html += '<div style="margin-top:4px; color:#fcd34d;">⚠️ ' + WARNING_TOOLTIP + '</div>';
+        }
+        document.getElementById('tt-exits').innerHTML = html;
         tooltip.style.display = 'block';
         positionTooltip(e);
+      }
+
+      function showExitTooltip(info, ev) {
+        const isWarning = info.isStub || info.isRelaxed;
+        let title = (info.one_way ? '🔴 One-Way Exit' : 'Two-Way Exit') + ': [' + info.src + '] ➔ [' + info.dst + ']';
+        document.getElementById('tt-name').textContent = title;
+
+        let meta = 'Direction: ' + info.direction.toUpperCase() + ' | Distance: ' + info.distance;
+        if (info.srcZ !== info.dstZ) {
+          meta += ' | Vertical: Z=' + info.srcZ + ' ➔ Z=' + info.dstZ;
+        }
+        document.getElementById('tt-meta').textContent = meta;
+
+        let html = '';
+        if (info.one_way) {
+          html += '<div style="margin-top:4px; color:#fca5a5;">🔴 ' + ONE_WAY_TOOLTIP + '</div>';
+        }
+        if (isWarning) {
+          html += '<div style="margin-top:4px; color:#fcd34d;">⚠️ ' + WARNING_TOOLTIP + '</div>';
+        }
+        if (!info.one_way && !isWarning) {
+          html += '<div style="margin-top:4px; color:#cbd5e1;">Navigable connection between [' + info.src + '] and [' + info.dst + '].</div>';
+        }
+        document.getElementById('tt-exits').innerHTML = html;
+        tooltip.style.display = 'block';
+        positionTooltip(ev);
       }
 
       function positionTooltip(e) {
@@ -770,18 +952,67 @@ __JSON_DATA__
 
         const exitsElem = document.getElementById('card-room-exits');
         exitsElem.innerHTML = '';
-        (room.exits || []).forEach(ex => {
-          const tag = document.createElement('div');
-          tag.className = 'exit-tag ' + (ex.one_way ? 'one-way' : '');
-          tag.textContent = ex.direction.toUpperCase() + ' -> ' + ex.dst + (ex.one_way ? ' ⚠️' : '');
-          tag.addEventListener('click', () => {
-            if (roomMap.has(ex.dst)) {
-              centerOnRoom(ex.dst);
-              selectRoom(ex.dst);
+        if (!room.exits || room.exits.length === 0) {
+          exitsElem.innerHTML = '<span style="font-size: 0.75rem; color: var(--text-muted); font-style: italic;">No exits</span>';
+        } else {
+          (room.exits || []).forEach(ex => {
+            const isStub = !roomMap.has(ex.dst);
+            const isRelaxed = Boolean(ex.distance && ex.distance > 1);
+            const isWarning = isStub || isRelaxed;
+
+            const tag = document.createElement('div');
+            tag.className = 'exit-tag ' + (ex.one_way ? 'one-way' : '');
+
+            let label = ex.direction.toUpperCase() + ' -> ' + ex.dst;
+            let tooltipParts = [];
+            if (ex.one_way) {
+              label += ' <span class="exit-badge red-badge" title="' + ONE_WAY_TOOLTIP + '">🔴</span>';
+              tooltipParts.push(ONE_WAY_TOOLTIP);
             }
+            if (isWarning) {
+              label += ' <span class="exit-badge warn-badge" title="' + WARNING_TOOLTIP + '">⚠️</span>';
+              tooltipParts.push(WARNING_TOOLTIP);
+            }
+            tag.innerHTML = label;
+            if (tooltipParts.length > 0) {
+              tag.setAttribute('title', tooltipParts.join(' | '));
+            }
+
+            tag.addEventListener('click', () => {
+              if (roomMap.has(ex.dst)) {
+                centerOnRoom(ex.dst);
+                selectRoom(ex.dst);
+              }
+            });
+            exitsElem.appendChild(tag);
           });
-          exitsElem.appendChild(tag);
-        });
+        }
+
+        // Incoming exits / Entrances (One-Way)
+        const incomingElem = document.getElementById('card-room-incoming');
+        const incomingSection = document.getElementById('incoming-exits-section');
+        if (incomingElem && incomingSection) {
+          incomingElem.innerHTML = '';
+          const incoming = incomingOneWays.get(vnum) || [];
+          if (incoming.length === 0) {
+            incomingElem.innerHTML = '<span style="font-size: 0.75rem; color: var(--text-muted); font-style: italic;">No incoming one-way exits</span>';
+          } else {
+            incoming.forEach(inc => {
+              const tag = document.createElement('div');
+              tag.className = 'exit-tag incoming-tag one-way';
+              tag.innerHTML = '<span style="color: var(--one-way);">↙</span> ' + inc.direction.toUpperCase() + ' from [' + inc.srcVnum + '] ' + inc.srcName;
+              tag.title = 'Incoming one-way exit from [' + inc.srcVnum + '] ' + inc.srcName + ' (' + inc.direction + '). Click to inspect.';
+              tag.addEventListener('click', () => {
+                if (roomMap.has(inc.srcVnum)) {
+                  centerOnRoom(inc.srcVnum);
+                  selectRoom(inc.srcVnum);
+                }
+              });
+              incomingElem.appendChild(tag);
+            });
+          }
+          incomingSection.style.display = 'block';
+        }
 
         // If pathfind mode open, prefill
         const pfDst = document.getElementById('pf-dst');
@@ -831,25 +1062,26 @@ __JSON_DATA__
         searchInput.dispatchEvent(new Event('input'));
       });
 
-      // Floor Filter
+      // Floor Filter: Inclusive inter-floor exit visibility
       floorFilter.addEventListener('change', () => {
         const val = floorFilter.value;
-        const targetZ = val === 'all' ? null : parseInt(val, 10);
+        const activeZ = (val === 'all' || val === null) ? null : parseInt(val, 10);
 
         elevationLayers.forEach(({ layer }, z) => {
-          const visible = (targetZ === null || z === targetZ);
+          const visible = (activeZ === null || activeZ === 'all' || z === activeZ);
           layer.classList.toggle('dimmed', !visible);
         });
 
         roomGroups.forEach((g, vnum) => {
           const z = parseInt(g.getAttribute('data-z'), 10);
-          const visible = (targetZ === null || z === targetZ);
+          const visible = (activeZ === null || activeZ === 'all' || z === activeZ);
           g.classList.toggle('dimmed', !visible);
         });
 
         canvasRoot.querySelectorAll('.exit-line').forEach(line => {
-          const z = parseInt(line.getAttribute('data-z'), 10);
-          const visible = (targetZ === null || z === targetZ);
+          const srcZ = parseInt(line.getAttribute('data-src-z'), 10);
+          const dstZ = parseInt(line.getAttribute('data-dst-z'), 10);
+          const visible = (activeZ === null || activeZ === 'all' || activeZ === srcZ || activeZ === dstZ);
           line.classList.toggle('dimmed', !visible);
         });
       });
@@ -897,14 +1129,49 @@ __JSON_DATA__
         updateTransform();
       });
 
-      document.getElementById('btn-reset-view').addEventListener('click', resetView);
+      function computeIsometricCentroidAndBounds() {
+        if (rooms.length === 0) {
+          return { minPx: 0, maxPx: 0, minPy: 0, maxPy: 0, boxW: 0, boxH: 0, centroidX: 0, centroidY: 0 };
+        }
+        let minPx = Infinity, maxPx = -Infinity;
+        let minPy = Infinity, maxPy = -Infinity;
+        rooms.forEach(r => {
+          const pt = project(r.coords.x, r.coords.y, r.coords.z);
+          minPx = Math.min(minPx, pt.px - roomSize / 2);
+          maxPx = Math.max(maxPx, pt.px + roomSize / 2);
+          minPy = Math.min(minPy, pt.py - roomSize / 2);
+          maxPy = Math.max(maxPy, pt.py + roomSize / 2);
+        });
+        const boxW = maxPx - minPx;
+        const boxH = maxPy - minPy;
+        const centroidX = (minPx + maxPx) / 2;
+        const centroidY = (minPy + maxPy) / 2;
+        return { minPx, maxPx, minPy, maxPy, boxW, boxH, centroidX, centroidY };
+      }
 
       function resetView() {
-        zoom = 1;
-        panX = 0;
-        panY = 0;
+        if (rooms.length === 0) {
+          zoom = 1;
+          panX = 0;
+          panY = 0;
+          updateTransform();
+          return;
+        }
+        const { boxW, boxH, centroidX, centroidY } = computeIsometricCentroidAndBounds();
+        const rect = viewport.getBoundingClientRect();
+        const vpW = (rect && rect.width > 0) ? rect.width : window.innerWidth;
+        const vpH = (rect && rect.height > 0) ? rect.height : window.innerHeight;
+        const padding = 60;
+        const availW = Math.max(vpW - padding * 2, 50);
+        const availH = Math.max(vpH - padding * 2, 50);
+        const fitZoom = Math.min(availW / Math.max(boxW, 1), availH / Math.max(boxH, 1));
+        zoom = Math.min(Math.max(fitZoom, 0.15), 1.2);
+        panX = vpW / 2 - centroidX * zoom;
+        panY = vpH / 2 - centroidY * zoom;
         updateTransform();
       }
+
+      document.getElementById('btn-reset-view').addEventListener('click', resetView);
 
       // Pathfinder (BFS)
       const btnPathfind = document.getElementById('btn-pathfind');

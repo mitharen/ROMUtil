@@ -401,3 +401,179 @@ class TestGraphPresentationDecoupling:
     def test_graph_empty_returns_early(self):
         # Empty rdb and no exits should return early without error
         assert graph({}, "dummy.svg", None) is None
+
+
+class TestWebViewerVisualAndUsabilityOptimizations:
+    """Unit and regression tests for Task 9c web viewer visual & usability enhancements."""
+
+    @pytest.fixture
+    def multi_floor_rdb(self) -> tuple[dict[int, Room], AreaHeader]:
+        """Create a multi-floor room database with one-way and relaxed exits."""
+        r1 = Room(
+            RoomDef(
+                vnum=100,
+                name="Ground Hall",
+                description="Grand hall on the ground floor.",
+                exits=(
+                    ExitDef(direction=0, dst_vnum=101),  # Two-way north
+                    ExitDef(direction=4, dst_vnum=200),  # Inter-floor up (Z=0 -> Z=1)
+                    ExitDef(direction=1, dst_vnum=105),  # One-way east (no return)
+                    ExitDef(direction=2, dst_vnum=999),  # Stub south (external)
+                ),
+            )
+        )
+        r1.x, r1.y, r1.z = 0, 0, 0
+
+        r2 = Room(
+            RoomDef(
+                vnum=101,
+                name="North Antechamber",
+                description="Antechamber north of the hall.",
+                exits=(ExitDef(direction=2, dst_vnum=100),),
+            )
+        )
+        r2.x, r2.y, r2.z = 0, 1, 0
+
+        r3 = Room(
+            RoomDef(
+                vnum=200,
+                name="Tower Balcony",
+                description="Upper balcony overlooking the courtyard.",
+                exits=(ExitDef(direction=5, dst_vnum=100),),  # Inter-floor down (Z=1 -> Z=0)
+            )
+        )
+        r3.x, r3.y, r3.z = 0, 0, 1
+
+        r4 = Room(
+            RoomDef(
+                vnum=105,
+                name="Secret Cellar",
+                description="A one-way trap cellar with no reciprocal return exit.",
+                exits=(),  # No exits back to 100
+            )
+        )
+        r4.x, r4.y, r4.z = 2, 0, 0
+
+        header = AreaHeader(
+            filename="tower.are",
+            name="The Mystic Tower",
+            builder="Archmage",
+            vnum_min=100,
+            vnum_max=200,
+        )
+        rdb = {100: r1, 101: r2, 200: r3, 105: r4}
+        return rdb, header
+
+    def test_viewport_auto_centering_logic(self, multi_floor_rdb):
+        """Verify that generated HTML incorporates bounding box and centroid auto-centering logic."""
+        rdb, header = multi_floor_rdb
+        data = build_area_json(rdb, area_meta=header)
+        html = generate_html_viewer(data)
+
+        # 1. Verify centroid and bounds computation function exists
+        assert "function computeIsometricCentroidAndBounds()" in html
+        assert "centroidX = (minPx + maxPx) / 2" in html
+        assert "centroidY = (minPy + maxPy) / 2" in html
+        assert "boxW = maxPx - minPx" in html
+        assert "boxH = maxPy - minPy" in html
+
+        # 2. Verify auto-centering and fitting in resetView
+        assert "function resetView()" in html
+        assert "computeIsometricCentroidAndBounds()" in html
+        assert "fitZoom = Math.min(" in html
+        assert "panX = vpW / 2 - centroidX * zoom" in html
+        assert "panY = vpH / 2 - centroidY * zoom" in html
+
+        # 3. Verify reset button binds to resetView
+        assert "document.getElementById('btn-reset-view').addEventListener('click', resetView);" in html
+
+    def test_dual_end_elevation_gradient_definitions(self, multi_floor_rdb):
+        """Verify that inter-floor exits generate dual-end elevation gradients."""
+        rdb, header = multi_floor_rdb
+        data = build_area_json(rdb, area_meta=header)
+        html = generate_html_viewer(data)
+
+        # 1. Verify linearGradient creation in defs for inter-floor transitions
+        assert "isInterFloor = r.coords.z !== target.coords.z" in html
+        assert "document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient')" in html
+        assert "grad.setAttribute('gradientUnits', 'userSpaceOnUse')" in html
+        assert "getRoomColor(r.coords.z)" in html
+        assert "getRoomColor(target.coords.z)" in html
+
+        # 2. Verify stroke URL assignment and CSS class
+        assert "line.style.stroke = strokeStyle" in html
+        assert "inter-floor" in html
+        assert ".exit-line.inter-floor" in html
+
+    def test_inclusive_floor_filtering_predicate(self, multi_floor_rdb):
+        """Verify inclusive floor filter predicate where exits are visible if either endpoint matches."""
+        rdb, header = multi_floor_rdb
+        data = build_area_json(rdb, area_meta=header)
+        html = generate_html_viewer(data)
+
+        # 1. Verify exit lines store endpoint elevation attributes
+        assert "line.setAttribute('data-src-z', r.coords.z);" in html
+        assert "line.setAttribute('data-dst-z', target.coords.z);" in html
+
+        # 2. Verify inclusive floor filter visibility predicate
+        assert "activeZ === null || activeZ === 'all' || activeZ === srcZ || activeZ === dstZ" in html
+
+    def test_contextual_tooltips_markup_and_explanations(self, multi_floor_rdb):
+        """Verify clear, accessible tooltips for one-way red exits and boundary/relaxation warnings."""
+        rdb, header = multi_floor_rdb
+        data = build_area_json(rdb, area_meta=header)
+        html = generate_html_viewer(data)
+
+        # 1. Exact tooltip wording constants embedded in script
+        assert "One-Way Exit: This exit has no reciprocal return path from the destination room." in html
+        assert "Geometric Relaxation / Boundary: Exit distance relaxed due to a non-Euclidean loop contradiction or connects to an external boundary stub." in html
+
+        # 2. Hover listener bindings for exit lines
+        assert "line.addEventListener('mouseenter', (ev) => showExitTooltip(" in html
+        assert "function showExitTooltip(info, ev)" in html
+
+        # 3. Accessible title attributes in info pane exit tags
+        assert "red-badge" in html
+        assert "warn-badge" in html
+        assert "tag.setAttribute('title', tooltipParts.join(' | '));" in html
+
+    def test_incoming_oneway_exit_indexing_and_inspector(self, multi_floor_rdb):
+        """Verify incoming one-way exits are indexed and presented with jump-to navigation in sidebar."""
+        rdb, header = multi_floor_rdb
+        data = build_area_json(rdb, area_meta=header)
+        html = generate_html_viewer(data)
+
+        # 1. Reverse topological index for incoming one-way exits
+        assert "const incomingOneWays = new Map();" in html
+        assert "incomingOneWays.get(ex.dst).push({" in html
+
+        # 2. Sidebar incoming exits section and badges
+        assert 'id="incoming-exits-section"' in html
+        assert 'id="card-room-incoming"' in html
+        assert "INCOMING EXITS / ENTRANCES" in html
+
+        # 3. Interactive jump-to click handler
+        assert "centerOnRoom(inc.srcVnum);" in html
+        assert "selectRoom(inc.srcVnum);" in html
+
+    def test_standalone_html_export_end_to_end(self, multi_floor_rdb, tmp_path):
+        """End-to-end integration test writing HTML viewer to disk and verifying all enhancements."""
+        rdb, header = multi_floor_rdb
+        out_file = tmp_path / "interactive_map.html"
+        renderer = HTMLRenderer()
+        result = renderer.render(rdb, out_file, header=header, title="Interactive Tower")
+
+        assert result == out_file
+        assert out_file.exists()
+        content = out_file.read_text(encoding="utf-8")
+
+        # Check document title & header
+        assert "Interactive Tower" in content
+        assert "The Mystic Tower" in content
+
+        # Check all 5 visual & usability optimizations are present in rendered file
+        assert "computeIsometricCentroidAndBounds" in content
+        assert "linearGradient" in content
+        assert "activeZ === srcZ || activeZ === dstZ" in content
+        assert "One-Way Exit: This exit has no reciprocal return path" in content
+        assert "incoming-exits-section" in content
