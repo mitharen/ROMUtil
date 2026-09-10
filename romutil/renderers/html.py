@@ -34,8 +34,9 @@ def generate_html_viewer(data: Dict[str, Any], title: Optional[str] = None) -> s
     """
     Generates a single, self-contained HTML/JS map viewer that renders the map
     data with viewport auto-centering, dual-end elevation gradients for inter-floor
-    transitions, inclusive floor filtering, contextual warning tooltips, and an
-    incoming exits inspector without requiring external network access, CDNs, or Node.js.
+    transitions, inclusive floor filtering, contextual warning tooltips, an
+    incoming exits inspector, and interactive edge and room selection highlighting
+    without requiring external network access, CDNs, or Node.js.
     """
     area_name = data.get('area', {}).get('name') or 'ROM MUD Area'
     area_file = data.get('area', {}).get('file') or 'area.are'

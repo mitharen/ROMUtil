@@ -556,6 +556,72 @@ class TestWebViewerVisualAndUsabilityOptimizations:
         assert "centerOnRoom(inc.srcVnum);" in html
         assert "selectRoom(inc.srcVnum);" in html
 
+    def test_interactive_edge_selection_markup_and_handlers(self, multi_floor_rdb):
+        """Verify selectEdge handler, edge click listeners, CSS rules, and edge inspector card."""
+        rdb, header = multi_floor_rdb
+        data = build_area_json(rdb, area_meta=header)
+        html = generate_html_viewer(data)
+
+        # 1. Assert selectEdge function and click event listeners are present on .exit-line
+        assert "function selectEdge(lineElem, exitInfo)" in html
+        assert "line.addEventListener('click', (ev) => {" in html
+        assert "selectEdge(line, exitInfo);" in html
+        assert "selectEdge(line, stubInfo);" in html
+
+        # 2. Assert .exit-line.highlighted and .exit-line.selected CSS rules exist
+        assert ".exit-line.highlighted" in html
+        assert "stroke: #38bdf8 !important;" in html
+        assert "stroke-width: 3.5 !important;" in html
+        assert ".exit-line.selected" in html
+        assert "stroke: #f59e0b !important;" in html
+        assert "stroke-width: 4 !important;" in html
+        assert ".room-group.selected-endpoint .room-box" in html
+
+        # 3. Assert edge inspector card markup / fields are present in the HTML template
+        assert 'id="card-edge-inspector"' in html
+        assert 'id="edge-src-label"' in html
+        assert 'id="btn-jump-edge-src"' in html
+        assert 'id="edge-dst-label"' in html
+        assert 'id="btn-jump-edge-dst"' in html
+        assert 'id="edge-direction-label"' in html
+        assert 'id="edge-type-label"' in html
+        assert 'id="edge-geometry-label"' in html
+        assert 'id="edge-elevation-label"' in html
+
+    def test_room_selection_highlights_attached_edges(self, multi_floor_rdb):
+        """Verify selectRoom queries attached exit lines and toggles highlighted and connected-neighbor."""
+        rdb, header = multi_floor_rdb
+        data = build_area_json(rdb, area_meta=header)
+        html = generate_html_viewer(data)
+
+        # 1. Assert selectRoom queries/iterates attached exit lines (data-src / data-dst) and toggles highlighted
+        assert "canvasRoot.querySelectorAll('.exit-line').forEach(line => {" in html
+        assert "srcV === vnum || dstV === vnum" in html
+        assert "line.classList.add('highlighted');" in html
+        assert "line.classList.remove('highlighted', 'selected');" in html
+
+        # 2. Assert neighbor rooms get connected-neighbor class
+        assert "neighborGroup.classList.add('connected-neighbor');" in html
+        assert ".room-group.connected-neighbor .room-box" in html
+        assert "stroke: #38bdf8;" in html
+
+    def test_canvas_click_deselection(self, multi_floor_rdb):
+        """Assert canvas/viewport click listener clears room and edge selections."""
+        rdb, header = multi_floor_rdb
+        data = build_area_json(rdb, area_meta=header)
+        html = generate_html_viewer(data)
+
+        # 1. Assert canvas/viewport click listener is present
+        assert "viewport.addEventListener('click', (e) => {" in html
+        assert "deselectAll();" in html
+
+        # 2. Assert deselectAll function clears room and edge selections
+        assert "function deselectAll()" in html
+        assert "selectedVnum = null;" in html
+        assert "selectedEdge = null;" in html
+        assert "g.classList.remove('selected', 'highlighted', 'connected-neighbor', 'selected-endpoint');" in html
+        assert "l.classList.remove('selected', 'highlighted');" in html
+
     def test_standalone_html_export_end_to_end(self, multi_floor_rdb, tmp_path):
         """End-to-end integration test writing HTML viewer to disk and verifying all enhancements."""
         rdb, header = multi_floor_rdb
@@ -571,9 +637,12 @@ class TestWebViewerVisualAndUsabilityOptimizations:
         assert "Interactive Tower" in content
         assert "The Mystic Tower" in content
 
-        # Check all 5 visual & usability optimizations are present in rendered file
+        # Check all visual & usability optimizations are present in rendered file
         assert "computeIsometricCentroidAndBounds" in content
         assert "linearGradient" in content
         assert "activeZ === srcZ || activeZ === dstZ" in content
         assert "One-Way Exit: This exit has no reciprocal return path" in content
         assert "incoming-exits-section" in content
+        assert "selectEdge" in content
+        assert "card-edge-inspector" in content
+        assert "connected-neighbor" in content

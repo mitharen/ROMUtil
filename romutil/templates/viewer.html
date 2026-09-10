@@ -218,6 +218,19 @@
       filter: drop-shadow(0 0 12px #ffffff);
     }
 
+    .room-group.connected-neighbor .room-box {
+      stroke: #38bdf8;
+      stroke-width: 2.5;
+      stroke-dasharray: 4, 2;
+      filter: drop-shadow(0 0 8px #38bdf8);
+    }
+
+    .room-group.selected-endpoint .room-box {
+      stroke: #f59e0b;
+      stroke-width: 3;
+      filter: drop-shadow(0 0 10px #f59e0b);
+    }
+
     .room-group.path-node .room-box {
       stroke: var(--path-color);
       stroke-width: 3;
@@ -233,7 +246,7 @@
       stroke-linecap: round;
       cursor: pointer;
       pointer-events: stroke;
-      transition: stroke 0.2s, stroke-width 0.2s;
+      transition: stroke 0.2s, stroke-width 0.2s, opacity 0.2s;
     }
 
     .exit-line.two-way {
@@ -255,6 +268,19 @@
       stroke: var(--one-way);
       stroke-width: 2;
       stroke-dasharray: 2, 3;
+    }
+
+    .exit-line.highlighted {
+      stroke: #38bdf8 !important;
+      stroke-width: 3.5 !important;
+      filter: drop-shadow(0 0 8px #38bdf8);
+    }
+
+    .exit-line.selected {
+      stroke: #f59e0b !important;
+      stroke-width: 4 !important;
+      filter: drop-shadow(0 0 10px #f59e0b);
+      stroke-dasharray: none !important;
     }
 
     .exit-line.path-edge {
@@ -502,6 +528,42 @@
           </div>
         </div>
 
+        <div class="card" id="card-edge-inspector" style="display: none;">
+          <h3>⚡ Exit / Edge Details</h3>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px; font-size: 0.85rem;">
+            <div>
+              <span style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; font-weight: 600;">Source Room:</span>
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 3px;">
+                <span id="edge-src-label" style="font-weight: 600;">-</span>
+                <button id="btn-jump-edge-src" style="padding: 2px 8px; font-size: 0.75rem;">Jump</button>
+              </div>
+            </div>
+            <div>
+              <span style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; font-weight: 600;">Destination:</span>
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 3px;">
+                <span id="edge-dst-label" style="font-weight: 600;">-</span>
+                <button id="btn-jump-edge-dst" style="padding: 2px 8px; font-size: 0.75rem;">Jump</button>
+              </div>
+            </div>
+            <div>
+              <span style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; font-weight: 600;">Direction:</span>
+              <div id="edge-direction-label" style="font-weight: 600; margin-top: 3px;">-</div>
+            </div>
+            <div>
+              <span style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; font-weight: 600;">Exit Type:</span>
+              <div id="edge-type-label" style="font-weight: 600; margin-top: 3px;">-</div>
+            </div>
+            <div>
+              <span style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; font-weight: 600;">Geometry & Length:</span>
+              <div id="edge-geometry-label" style="margin-top: 3px;">-</div>
+            </div>
+            <div>
+              <span style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; font-weight: 600;">Elevation Transition:</span>
+              <div id="edge-elevation-label" style="margin-top: 3px;">-</div>
+            </div>
+          </div>
+        </div>
+
         <div class="card" id="pathfind-card" style="display: none;">
           <h3>📍 Shortest Path</h3>
           <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
@@ -628,9 +690,11 @@ __JSON_DATA__
       let panY = 0;
       let zoom = 1;
       let isPanning = false;
+      let wasDragging = false;
       let startX = 0;
       let startY = 0;
       let selectedVnum = null;
+      let selectedEdge = null;
 
       function updateTransform() {
         canvasRoot.setAttribute('transform', 'translate(' + panX + ',' + panY + ') scale(' + zoom + ')');
@@ -761,6 +825,10 @@ __JSON_DATA__
             line.addEventListener('mouseenter', (ev) => showExitTooltip(exitInfo, ev));
             line.addEventListener('mousemove', (ev) => positionTooltip(ev));
             line.addEventListener('mouseleave', hideTooltip);
+            line.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              selectEdge(line, exitInfo);
+            });
 
             if (targetLayer) {
               targetLayer.exitsGroup.appendChild(line);
@@ -812,6 +880,10 @@ __JSON_DATA__
             line.addEventListener('mouseenter', (ev) => showExitTooltip(stubInfo, ev));
             line.addEventListener('mousemove', (ev) => positionTooltip(ev));
             line.addEventListener('mouseleave', hideTooltip);
+            line.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              selectEdge(line, stubInfo);
+            });
 
             if (targetLayer) {
               targetLayer.exitsGroup.appendChild(line);
@@ -935,14 +1007,165 @@ __JSON_DATA__
         tooltip.style.display = 'none';
       }
 
+      function selectEdge(lineElem, exitInfo) {
+        selectedVnum = null;
+        selectedEdge = lineElem;
+
+        // Remove .selected, .highlighted, .connected-neighbor, .selected-endpoint from all rooms and lines
+        roomGroups.forEach(g => {
+          g.classList.remove('selected', 'highlighted', 'connected-neighbor', 'selected-endpoint');
+        });
+        canvasRoot.querySelectorAll('.exit-line').forEach(l => {
+          l.classList.remove('selected', 'highlighted');
+        });
+
+        // Add .exit-line.selected to clicked line element
+        lineElem.classList.add('selected');
+
+        // Highlight source room and (if internal) destination room
+        const srcGroup = roomGroups.get(exitInfo.src);
+        if (srcGroup) {
+          srcGroup.classList.add('selected-endpoint');
+        }
+        if (!exitInfo.isStub && roomMap.has(exitInfo.dst)) {
+          const dstGroup = roomGroups.get(exitInfo.dst);
+          if (dstGroup) {
+            dstGroup.classList.add('selected-endpoint');
+          }
+        }
+
+        // Switch sidebar cards
+        const roomCard = document.getElementById('room-detail-card');
+        if (roomCard) roomCard.style.display = 'none';
+
+        const edgeCard = document.getElementById('card-edge-inspector');
+        if (edgeCard) {
+          edgeCard.style.display = 'block';
+
+          // Source room info
+          const srcLabel = document.getElementById('edge-src-label');
+          if (srcLabel) {
+            srcLabel.textContent = '[' + exitInfo.src + '] ' + exitInfo.srcName;
+          }
+          const btnJumpSrc = document.getElementById('btn-jump-edge-src');
+          if (btnJumpSrc) {
+            btnJumpSrc.onclick = () => {
+              centerOnRoom(exitInfo.src);
+              selectRoom(exitInfo.src);
+            };
+          }
+
+          // Destination room info
+          const dstLabel = document.getElementById('edge-dst-label');
+          const btnJumpDst = document.getElementById('btn-jump-edge-dst');
+          if (exitInfo.isStub) {
+            if (dstLabel) {
+              dstLabel.textContent = 'External Boundary (' + exitInfo.direction + ')';
+            }
+            if (btnJumpDst) {
+              btnJumpDst.style.display = 'none';
+            }
+          } else {
+            if (dstLabel) {
+              dstLabel.textContent = '[' + exitInfo.dst + '] ' + exitInfo.dstName;
+            }
+            if (btnJumpDst) {
+              btnJumpDst.style.display = 'inline-block';
+              btnJumpDst.onclick = () => {
+                if (roomMap.has(exitInfo.dst)) {
+                  centerOnRoom(exitInfo.dst);
+                  selectRoom(exitInfo.dst);
+                }
+              };
+            }
+          }
+
+          // Direction
+          const dirLabel = document.getElementById('edge-direction-label');
+          if (dirLabel) {
+            dirLabel.textContent = exitInfo.direction.toUpperCase();
+          }
+
+          // Exit Type: Two-Way Bidirectional vs One-Way Directed vs External Stub
+          const typeLabel = document.getElementById('edge-type-label');
+          if (typeLabel) {
+            let typeText = 'Two-Way Bidirectional';
+            if (exitInfo.isStub) {
+              typeText = 'External Stub';
+            } else if (exitInfo.one_way) {
+              typeText = 'One-Way Directed';
+            }
+            typeLabel.textContent = typeText;
+          }
+
+          // Geometry & Length: Distance d, relaxed/cut status
+          const geomLabel = document.getElementById('edge-geometry-label');
+          if (geomLabel) {
+            let geomText = 'Distance: ' + exitInfo.distance;
+            if (exitInfo.isRelaxed) {
+              geomText += ' (Relaxed / Cut)';
+            } else {
+              geomText += ' (Standard)';
+            }
+            geomLabel.textContent = geomText;
+          }
+
+          // Elevation Transition: Same floor (z = srcZ) vs Inter-Floor (srcZ -> dstZ)
+          const elevLabel = document.getElementById('edge-elevation-label');
+          if (elevLabel) {
+            let elevText = '';
+            if (exitInfo.srcZ === exitInfo.dstZ) {
+              elevText = 'Same floor (Z = ' + exitInfo.srcZ + ')';
+            } else {
+              elevText = 'Inter-Floor (Z=' + exitInfo.srcZ + ' ➔ Z=' + exitInfo.dstZ + ')';
+            }
+            elevLabel.textContent = elevText;
+          }
+        }
+      }
+
       function selectRoom(vnum) {
         selectedVnum = vnum;
+        selectedEdge = null;
+
+        // Clear existing edge highlights
+        canvasRoot.querySelectorAll('.exit-line').forEach(line => {
+          line.classList.remove('highlighted', 'selected');
+        });
+
+        // Clear neighbor room highlights and endpoint highlights
         roomGroups.forEach((g, v) => {
           g.classList.toggle('selected', v === vnum);
+          g.classList.remove('connected-neighbor', 'selected-endpoint');
         });
+
+        // Show room detail card, hide edge inspector card
+        const edgeCard = document.getElementById('card-edge-inspector');
+        if (edgeCard) edgeCard.style.display = 'none';
+        const roomCard = document.getElementById('room-detail-card');
+        if (roomCard) roomCard.style.display = 'block';
 
         const room = roomMap.get(vnum);
         if (!room) return;
+
+        // Index or query all exit lines where data-src == vnum OR data-dst == vnum
+        canvasRoot.querySelectorAll('.exit-line').forEach(line => {
+          const srcV = parseInt(line.getAttribute('data-src'), 10);
+          const dstV = parseInt(line.getAttribute('data-dst'), 10);
+          if (srcV === vnum || dstV === vnum) {
+            // Add CSS class highlighted to all attached exit lines
+            line.classList.add('highlighted');
+
+            // For each attached internal exit, add CSS class connected-neighbor to neighbor room group
+            const neighborVnum = (srcV === vnum) ? dstV : srcV;
+            if (roomMap.has(neighborVnum)) {
+              const neighborGroup = roomGroups.get(neighborVnum);
+              if (neighborGroup) {
+                neighborGroup.classList.add('connected-neighbor');
+              }
+            }
+          }
+        });
 
         document.getElementById('card-room-name').textContent = '[' + room.vnum + '] ' + room.name;
         document.getElementById('card-room-meta').textContent = 'Coordinates: (' + room.coords.x + ', ' + room.coords.y + ', ' + room.coords.z + ') | Floor Z = ' + room.coords.z;
@@ -1086,16 +1309,53 @@ __JSON_DATA__
         });
       });
 
+      function deselectAll() {
+        selectedVnum = null;
+        selectedEdge = null;
+
+        roomGroups.forEach(g => {
+          g.classList.remove('selected', 'highlighted', 'connected-neighbor', 'selected-endpoint');
+        });
+
+        canvasRoot.querySelectorAll('.exit-line').forEach(l => {
+          l.classList.remove('selected', 'highlighted');
+        });
+
+        const edgeCard = document.getElementById('card-edge-inspector');
+        if (edgeCard) edgeCard.style.display = 'none';
+
+        const roomCard = document.getElementById('room-detail-card');
+        if (roomCard) roomCard.style.display = 'block';
+
+        document.getElementById('card-room-name').textContent = 'Select a Room';
+        document.getElementById('card-room-meta').textContent = 'Click any room on the map to inspect details.';
+        const descElem = document.getElementById('card-room-desc');
+        if (descElem) {
+          descElem.style.display = 'none';
+          descElem.textContent = '';
+        }
+        const exitsElem = document.getElementById('card-room-exits');
+        if (exitsElem) exitsElem.innerHTML = '';
+        const incomingElem = document.getElementById('card-room-incoming');
+        if (incomingElem) incomingElem.innerHTML = '';
+        const incomingSection = document.getElementById('incoming-exits-section');
+        if (incomingSection) incomingSection.style.display = 'none';
+      }
+
       // Pan & Zoom handlers
       viewport.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         isPanning = true;
+        wasDragging = false;
         startX = e.clientX - panX;
         startY = e.clientY - panY;
       });
 
       window.addEventListener('mousemove', (e) => {
         if (!isPanning) return;
+        if (Math.abs(e.clientX - (startX + panX)) > 4 || Math.abs(e.clientY - (startY + panY)) > 4) {
+          wasDragging = true;
+        }
         panX = e.clientX - startX;
         panY = e.clientY - startY;
         updateTransform();
@@ -1103,6 +1363,13 @@ __JSON_DATA__
 
       window.addEventListener('mouseup', () => {
         isPanning = false;
+      });
+
+      // Canvas / Background click for deselection
+      viewport.addEventListener('click', (e) => {
+        if (wasDragging) return;
+        if (e.target && e.target.closest && e.target.closest('.minimap-container')) return;
+        deselectAll();
       });
 
       viewport.addEventListener('wheel', (e) => {
