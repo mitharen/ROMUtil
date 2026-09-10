@@ -3,6 +3,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 import pytest
 
@@ -132,12 +133,83 @@ class TestGalleryAssetsGeneration:
         candidates = resolve_candidate_areas()
         assert len(candidates) >= 1
         dummy_rendered = [("fixture", "rom24")]
+
+        # Case 1: Asset files do not exist -> verify 'N/A' fallback is emitted
         generate_index_html(dummy_rendered, tmp_path)
+        index_file = tmp_path / "index.html"
+        assert index_file.exists()
+        content_missing = index_file.read_text(encoding="utf-8")
+        assert "ROMUtil Map Directory" in content_missing
+        assert "rom24" in content_missing
+        assert "N/A" in content_missing
+        assert '<a href="rom24.html">' not in content_missing
+        assert '<a href="rom240.svg">' not in content_missing
+
+        # Case 2: Asset files exist -> verify valid <a href= links and 'N/A' is absent
+        (tmp_path / "rom24.html").write_text("<!DOCTYPE html><html><body>viewer</body></html>", encoding="utf-8")
+        (tmp_path / "rom240.svg").write_text("<svg></svg>", encoding="utf-8")
+        generate_index_html(dummy_rendered, tmp_path)
+        content_present = index_file.read_text(encoding="utf-8")
+        assert '<a href="rom24.html">Interactive Viewer</a>' in content_present
+        assert '<a href="rom240.svg">SVG Map</a>' in content_present
+        assert "N/A" not in content_present
+
+        # Case 2b: Fallback to <name>.svg when <name>0.svg is not present
+        (tmp_path / "rom240.svg").unlink()
+        (tmp_path / "rom24.svg").write_text("<svg></svg>", encoding="utf-8")
+        generate_index_html(dummy_rendered, tmp_path)
+        content_single_svg = index_file.read_text(encoding="utf-8")
+        assert '<a href="rom24.svg">SVG Map</a>' in content_single_svg
+        assert "N/A" not in content_single_svg
+
+    def test_render_area_success(self, tmp_path):
+        from scripts.build_pages import render_area
+        fixture_path = REPO_ROOT / "tests" / "fixtures" / "dialects" / "rom24.are"
+        render_area("rom24", fixture_path, is_dir=False, outdir=tmp_path)
+        assert (tmp_path / "rom24.html").exists()
+        assert (tmp_path / "rom240.svg").exists()
+        validate_html_viewer_file(tmp_path / "rom24.html")
+        validate_svg_file(tmp_path / "rom240.svg")
+
+    def test_render_area_failure_raises(self, tmp_path):
+        from scripts.build_pages import render_area
+        nonexistent = tmp_path / "nonexistent.are"
+        with pytest.raises(RuntimeError, match="Failed to render"):
+            render_area("nonexistent", nonexistent, is_dir=False, outdir=tmp_path)
+
+        nonexistent_dir = tmp_path / "nonexistent_dir"
+        with pytest.raises(RuntimeError, match="Failed to render"):
+            render_area("nonexistent_dir", nonexistent_dir, is_dir=True, outdir=tmp_path)
+
+        # Test failure during SVG rendering stage
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Simulated SVG generation failure"),
+            ]
+            with pytest.raises(RuntimeError, match="Failed to render SVG"):
+                render_area("mock_area", tmp_path / "mock.are", is_dir=False, outdir=tmp_path)
+
+    def test_build_pages_main_e2e(self, tmp_path):
+        from scripts.build_pages import main
+
+        fixture_area = REPO_ROOT / "tests" / "fixtures" / "dialects" / "rom24.are"
+        mock_candidates = [("fixture", "rom24", fixture_area, False)]
+
+        with patch("scripts.build_pages.resolve_candidate_areas", return_value=mock_candidates):
+            with patch("sys.argv", ["build_pages.py", "--outdir", str(tmp_path)]):
+                main()
+
         index_file = tmp_path / "index.html"
         assert index_file.exists()
         content = index_file.read_text(encoding="utf-8")
         assert "ROMUtil Map Directory" in content
         assert "rom24" in content
+        assert '<a href="rom24.html">Interactive Viewer</a>' in content
+        assert '<a href="rom240.svg">SVG Map</a>' in content
+        assert "N/A" not in content
+        assert (tmp_path / "rom24.html").exists()
+        assert (tmp_path / "rom240.svg").exists()
 
 
 class TestSvgAssetIntegrity:
