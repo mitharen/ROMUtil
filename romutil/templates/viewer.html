@@ -1,0 +1,1032 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>__TITLE__</title>
+  <style>
+    :root {
+      --bg-primary: #0f172a;
+      --bg-secondary: #1e293b;
+      --bg-card: #334155;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-hover: #0284c7;
+      --border-color: #475569;
+      --one-way: #ef4444;
+      --two-way: #64748b;
+      --path-color: #10b981;
+      --highlight: #fbbf24;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg-primary);
+      color: var(--text-main);
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+    }
+
+    header.toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 16px;
+      background-color: var(--bg-secondary);
+      border-bottom: 1px solid var(--border-color);
+      z-index: 20;
+      flex-wrap: wrap;
+    }
+
+    .brand-section {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-section .title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      background-color: var(--bg-card);
+      color: var(--text-muted);
+      border: 1px solid var(--border-color);
+    }
+
+    .search-section {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      position: relative;
+      flex: 1;
+      max-width: 380px;
+    }
+
+    .search-section input {
+      width: 100%;
+      padding: 6px 12px;
+      padding-right: 30px;
+      background-color: var(--bg-primary);
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .search-section input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+    }
+
+    .search-section .clear-btn {
+      position: absolute;
+      right: 8px;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 1rem;
+      line-height: 1;
+      display: none;
+    }
+
+    .controls-section {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    button, select {
+      background-color: var(--bg-card);
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      outline: none;
+    }
+
+    button:hover, select:hover {
+      background-color: var(--border-color);
+      border-color: var(--accent);
+    }
+
+    button.btn-active {
+      background-color: var(--accent);
+      color: var(--bg-primary);
+      border-color: var(--accent);
+    }
+
+    .main-workspace {
+      display: flex;
+      flex: 1;
+      height: calc(100% - 53px);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .viewport-container {
+      flex: 1;
+      height: 100%;
+      position: relative;
+      cursor: grab;
+      user-select: none;
+      background-image: radial-gradient(#1e293b 1px, transparent 1px);
+      background-size: 24px 24px;
+    }
+
+    .viewport-container:active {
+      cursor: grabbing;
+    }
+
+    #map-svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* Room Styling */
+    .room-group {
+      cursor: pointer;
+      transition: transform 0.1s ease;
+    }
+
+    .room-box {
+      stroke: #0f172a;
+      stroke-width: 1.5;
+      rx: 5px;
+      ry: 5px;
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.35));
+      transition: all 0.2s;
+    }
+
+    .room-label {
+      font-size: 11px;
+      font-weight: 700;
+      fill: #ffffff;
+      pointer-events: none;
+      user-select: none;
+      text-anchor: middle;
+      dominant-baseline: central;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+    }
+
+    .room-group:hover .room-box {
+      stroke: var(--accent);
+      stroke-width: 2.5;
+      filter: drop-shadow(0 0 8px var(--accent));
+    }
+
+    .room-group.highlighted .room-box {
+      stroke: var(--highlight);
+      stroke-width: 3;
+      filter: drop-shadow(0 0 10px var(--highlight));
+    }
+
+    .room-group.selected .room-box {
+      stroke: #ffffff;
+      stroke-width: 3;
+      filter: drop-shadow(0 0 12px #ffffff);
+    }
+
+    .room-group.path-node .room-box {
+      stroke: var(--path-color);
+      stroke-width: 3;
+      filter: drop-shadow(0 0 10px var(--path-color));
+    }
+
+    .room-group.dimmed {
+      opacity: 0.18;
+    }
+
+    /* Exits Styling */
+    .exit-line {
+      stroke-linecap: round;
+      transition: stroke 0.2s, stroke-width 0.2s;
+    }
+
+    .exit-line.two-way {
+      stroke: var(--two-way);
+      stroke-width: 2;
+    }
+
+    .exit-line.one-way {
+      stroke: var(--one-way);
+      stroke-width: 2.2;
+      stroke-dasharray: 4, 3;
+    }
+
+    .exit-line.stub {
+      stroke: var(--one-way);
+      stroke-width: 2;
+      stroke-dasharray: 2, 3;
+    }
+
+    .exit-line.path-edge {
+      stroke: var(--path-color) !important;
+      stroke-width: 4 !important;
+      stroke-dasharray: none !important;
+      filter: drop-shadow(0 0 6px var(--path-color));
+    }
+
+    .exit-line.dimmed {
+      opacity: 0.12;
+    }
+
+    .elevation-layer {
+      transition: opacity 0.2s ease, visibility 0.2s ease;
+    }
+
+    .elevation-layer.dimmed {
+      opacity: 0.15;
+    }
+
+    /* Sidebar Drawer */
+    aside.sidebar {
+      width: 340px;
+      background-color: var(--bg-secondary);
+      border-left: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      z-index: 10;
+      transition: transform 0.3s ease;
+      overflow-y: auto;
+      padding: 16px;
+      gap: 16px;
+    }
+
+    .card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .card h3 {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .room-desc {
+      font-size: 0.85rem;
+      line-height: 1.5;
+      color: #cbd5e1;
+      white-space: pre-wrap;
+      max-height: 200px;
+      overflow-y: auto;
+      background-color: var(--bg-primary);
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border-color);
+      font-family: monospace;
+      margin-top: 8px;
+    }
+
+    .exit-badge-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .exit-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      background-color: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      cursor: pointer;
+      color: var(--text-main);
+    }
+
+    .exit-tag:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .exit-tag.one-way {
+      border-color: var(--one-way);
+      color: #fca5a5;
+    }
+
+    /* Minimap Radar */
+    .minimap-container {
+      position: absolute;
+      bottom: 16px;
+      right: 360px;
+      background-color: rgba(15, 23, 42, 0.9);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      z-index: 15;
+    }
+
+    #minimap {
+      display: block;
+      cursor: crosshair;
+    }
+
+    /* Floating Tooltip */
+    .tooltip {
+      position: fixed;
+      background-color: rgba(15, 23, 42, 0.96);
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      padding: 10px 14px;
+      pointer-events: none;
+      z-index: 100;
+      max-width: 320px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+      font-size: 0.8rem;
+      line-height: 1.4;
+      display: none;
+    }
+
+    .tooltip-title {
+      font-weight: 700;
+      font-size: 0.9rem;
+      color: var(--accent);
+      margin-bottom: 4px;
+    }
+
+    .tooltip-meta {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    .path-step-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 10px;
+      max-height: 250px;
+      overflow-y: auto;
+    }
+
+    .path-step {
+      padding: 6px 10px;
+      background-color: var(--bg-primary);
+      border-left: 3px solid var(--path-color);
+      border-radius: 0 4px 4px 0;
+      font-size: 0.8rem;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header class="toolbar">
+      <div class="brand-section">
+        <span class="title">🗺️ __AREA_NAME__</span>
+        <span class="badge">__AREA_FILE__</span>
+        <span class="badge" id="stat-rooms">__ROOM_COUNT__ Rooms</span>
+        <span class="badge" id="stat-bounds">Bounds: (__MAX_X__x__MAX_Y__)</span>
+      </div>
+
+      <div class="search-section">
+        <input type="text" id="search-input" placeholder="Search by room name or VNUM..." autocomplete="off">
+        <button id="search-clear" class="clear-btn">&times;</button>
+      </div>
+
+      <div class="controls-section">
+        <select id="floor-filter">
+          <option value="all">All Floors (Z)</option>
+        </select>
+        <button id="btn-zoom-in" title="Zoom In">+</button>
+        <button id="btn-zoom-out" title="Zoom Out">&minus;</button>
+        <button id="btn-reset-view" title="Reset View">Reset</button>
+        <button id="btn-pathfind" title="Shortest Path Mode">Pathfinder</button>
+      </div>
+    </header>
+
+    <div class="main-workspace">
+      <div class="viewport-container" id="viewport-container">
+        <svg id="map-svg">
+          <defs>
+            <marker id="arrow-one-way" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+              <path d="M 0 1 L 9 5 L 0 9 z" fill="#ef4444" />
+            </marker>
+            <marker id="arrow-path" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M 0 1 L 9 5 L 0 9 z" fill="#10b981" />
+            </marker>
+          </defs>
+          <g id="canvas-root">
+            <g id="exits-layer" style="display:none;"></g>
+            <g id="rooms-layer" style="display:none;"></g>
+          </g>
+        </svg>
+
+        <div class="minimap-container">
+          <canvas id="minimap" width="180" height="135"></canvas>
+        </div>
+      </div>
+
+      <aside class="sidebar" id="sidebar">
+        <div class="card" id="room-detail-card">
+          <h3 id="card-room-name">Select a Room</h3>
+          <div class="tooltip-meta" id="card-room-meta">Click any room on the map to inspect details.</div>
+          <div id="card-room-desc" class="room-desc" style="display:none;"></div>
+          <div style="margin-top: 10px;">
+            <strong style="font-size: 0.8rem; color: var(--text-muted);">EXITS</strong>
+            <div class="exit-badge-list" id="card-room-exits"></div>
+          </div>
+        </div>
+
+        <div class="card" id="pathfind-card" style="display: none;">
+          <h3>📍 Shortest Path</h3>
+          <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
+            <input type="number" id="pf-start" placeholder="Start VNUM">
+            <input type="number" id="pf-dst" placeholder="Destination VNUM">
+            <div style="display: flex; gap: 6px;">
+              <button id="btn-calc-path" style="flex:1; background-color: var(--path-color); color:#fff;">Find Route</button>
+              <button id="btn-clear-path">Clear</button>
+            </div>
+          </div>
+          <div class="path-step-list" id="path-steps"></div>
+        </div>
+
+        <div class="card">
+          <h3>Elevation Legend</h3>
+          <div id="legend-list" style="display: flex; flex-direction: column; gap: 6px; margin-top: 6px;"></div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <div id="room-tooltip" class="tooltip">
+    <div class="tooltip-title" id="tt-name"></div>
+    <div class="tooltip-meta" id="tt-meta"></div>
+    <div style="font-size: 0.75rem; color: #cbd5e1;" id="tt-exits"></div>
+  </div>
+
+  <script id="romutil-data" type="application/json">
+__JSON_DATA__
+  </script>
+
+  <script>
+    (function() {
+      const mapData = JSON.parse(document.getElementById('romutil-data').textContent);
+      const rooms = mapData.rooms || [];
+      const bounds = mapData.bounds || { min_x: 0, max_x: 10, min_y: 0, max_y: 10, min_z: 0, max_z: 0 };
+
+      const roomMap = new Map();
+      rooms.forEach(r => roomMap.set(r.vnum, r));
+
+      // Floor colors by Z
+      const floorColors = [
+        '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
+        '#06b6d4', '#ec4899', '#84cc16', '#6366f1', '#14b8a6'
+      ];
+      function getRoomColor(z) {
+        return floorColors[Math.abs(z) % floorColors.length];
+      }
+
+      // Populate Floor filter
+      const zValues = Array.from(new Set(rooms.map(r => r.coords.z))).sort((a, b) => a - b);
+      const floorFilter = document.getElementById('floor-filter');
+      const legendList = document.getElementById('legend-list');
+      zValues.forEach(z => {
+        const opt = document.createElement('option');
+        opt.value = z;
+        opt.textContent = 'Floor Z = ' + z;
+        floorFilter.appendChild(opt);
+
+        const leg = document.createElement('div');
+        leg.style.display = 'flex';
+        leg.style.alignItems = 'center';
+        leg.style.gap = '8px';
+        leg.style.fontSize = '0.8rem';
+        leg.innerHTML = '<span style="width: 14px; height: 14px; border-radius: 3px; background-color: ' + getRoomColor(z) + ';"></span> Floor Z = ' + z;
+        legendList.appendChild(leg);
+      });
+
+      // Coordinate Projection: Isometric lift
+      const lift = 0.28;
+      const roomSize = 34;
+      const gridScale = 72;
+      const max_y = bounds.max_y;
+      const min_x = bounds.min_x;
+      const min_y = bounds.min_y;
+
+      function project(x, y, z) {
+        const px = (x - min_x + z * lift) * gridScale + 80;
+        const py = ((max_y - y) - z * lift) * gridScale + 80;
+        return { px, py };
+      }
+
+      // Canvas / SVG Elements
+      const svg = document.getElementById('map-svg');
+      const canvasRoot = document.getElementById('canvas-root');
+      const exitsLayer = document.getElementById('exits-layer');
+      const roomsLayer = document.getElementById('rooms-layer');
+      const viewport = document.getElementById('viewport-container');
+      const tooltip = document.getElementById('room-tooltip');
+      const minimap = document.getElementById('minimap');
+      const miniCtx = minimap.getContext('2d');
+
+      // Transform state
+      let panX = 0;
+      let panY = 0;
+      let zoom = 1;
+      let isPanning = false;
+      let startX = 0;
+      let startY = 0;
+      let selectedVnum = null;
+
+      function updateTransform() {
+        canvasRoot.setAttribute('transform', 'translate(' + panX + ',' + panY + ') scale(' + zoom + ')');
+        renderMinimap();
+      }
+
+      // Painter's algorithm depth sorting: elevation (Z ascending), isometric screen depth (Y descending / X ascending)
+      const sortedRooms = [...rooms].sort((a, b) => {
+        if (a.coords.z !== b.coords.z) {
+          return a.coords.z - b.coords.z;
+        }
+        if (a.coords.y !== b.coords.y) {
+          return b.coords.y - a.coords.y;
+        }
+        if (a.coords.x !== b.coords.x) {
+          return a.coords.x - b.coords.x;
+        }
+        return a.vnum - b.vnum;
+      });
+
+      // Create DOM elevation layer groups in strict ascending Z order (Z_lower < Z_higher)
+      const elevationLayers = new Map();
+      zValues.forEach(z => {
+        const layer = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        layer.setAttribute('id', 'elevation-' + z);
+        layer.setAttribute('class', 'elevation-layer');
+        layer.setAttribute('data-z', z);
+
+        const exitsGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        exitsGroup.setAttribute('class', 'elevation-exits');
+
+        const roomsGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        roomsGroup.setAttribute('class', 'elevation-rooms');
+
+        layer.appendChild(exitsGroup);
+        layer.appendChild(roomsGroup);
+        canvasRoot.appendChild(layer);
+
+        elevationLayers.set(z, { layer, exitsGroup, roomsGroup });
+      });
+
+      // Render exits into elevation layers according to painter's order
+      const exitElements = new Map();
+      const drawnBidirectional = new Set();
+
+      sortedRooms.forEach(r => {
+        const p1 = project(r.coords.x, r.coords.y, r.coords.z);
+        (r.exits || []).forEach(e => {
+          const isInternal = roomMap.has(e.dst);
+          if (isInternal) {
+            const target = roomMap.get(e.dst);
+            const p2 = project(target.coords.x, target.coords.y, target.coords.z);
+
+            const edgeKey = e.one_way
+              ? 'oneway-' + r.vnum + '->' + e.dst
+              : [Math.min(r.vnum, e.dst), Math.max(r.vnum, e.dst)].join('<->');
+
+            if (!e.one_way && drawnBidirectional.has(edgeKey)) {
+              return;
+            }
+            if (!e.one_way) drawnBidirectional.add(edgeKey);
+
+            const edgeZ = Math.max(r.coords.z, target.coords.z);
+            const targetLayer = elevationLayers.get(edgeZ) || elevationLayers.get(r.coords.z);
+
+            const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            line.setAttribute('x1', p1.px);
+            line.setAttribute('y1', p1.py);
+            line.setAttribute('x2', p2.px);
+            line.setAttribute('y2', p2.py);
+            line.setAttribute('class', 'exit-line ' + (e.one_way ? 'one-way' : 'two-way'));
+            line.setAttribute('data-src', r.vnum);
+            line.setAttribute('data-dst', e.dst);
+            line.setAttribute('data-z', edgeZ);
+            if (e.one_way) {
+              line.setAttribute('marker-end', 'url(#arrow-one-way)');
+            }
+            if (targetLayer) {
+              targetLayer.exitsGroup.appendChild(line);
+            } else if (exitsLayer) {
+              exitsLayer.appendChild(line);
+            }
+            exitElements.set(r.vnum + '->' + e.dst, line);
+          } else {
+            // External stub exit
+            let dx = 0, dy = 0;
+            const stubLen = 22;
+            if (e.direction === 'north') dy = -stubLen;
+            else if (e.direction === 'south') dy = stubLen;
+            else if (e.direction === 'east') dx = stubLen;
+            else if (e.direction === 'west') dx = -stubLen;
+            else if (e.direction === 'up') { dx = stubLen * lift; dy = -stubLen * lift; }
+            else if (e.direction === 'down') { dx = -stubLen * lift; dy = stubLen * lift; }
+
+            const targetLayer = elevationLayers.get(r.coords.z);
+            const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            line.setAttribute('x1', p1.px);
+            line.setAttribute('y1', p1.py);
+            line.setAttribute('x2', p1.px + dx);
+            line.setAttribute('y2', p1.py + dy);
+            line.setAttribute('class', 'exit-line stub');
+            line.setAttribute('data-src', r.vnum);
+            line.setAttribute('data-z', r.coords.z);
+            line.setAttribute('marker-end', 'url(#arrow-one-way)');
+            if (targetLayer) {
+              targetLayer.exitsGroup.appendChild(line);
+            } else if (exitsLayer) {
+              exitsLayer.appendChild(line);
+            }
+          }
+        });
+      });
+
+      // Render rooms strictly in depth-sorted order
+      const roomGroups = new Map();
+      sortedRooms.forEach(r => {
+        const pt = project(r.coords.x, r.coords.y, r.coords.z);
+        const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        g.setAttribute('class', 'room-group');
+        g.setAttribute('data-vnum', r.vnum);
+        g.setAttribute('data-z', r.coords.z);
+        g.setAttribute('transform', 'translate(' + pt.px + ',' + pt.py + ')');
+
+        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('x', -roomSize / 2);
+        rect.setAttribute('y', -roomSize / 2);
+        rect.setAttribute('width', roomSize);
+        rect.setAttribute('height', roomSize);
+        rect.setAttribute('fill', getRoomColor(r.coords.z));
+        rect.setAttribute('class', 'room-box');
+
+        const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        label.setAttribute('class', 'room-label');
+        label.textContent = r.vnum;
+
+        g.appendChild(rect);
+        g.appendChild(label);
+
+        const targetLayer = elevationLayers.get(r.coords.z);
+        if (targetLayer) {
+          targetLayer.roomsGroup.appendChild(g);
+        } else if (roomsLayer) {
+          roomsLayer.appendChild(g);
+        }
+        roomGroups.set(r.vnum, g);
+
+        // Hover & click listeners
+        g.addEventListener('mouseenter', (e) => {
+          showTooltip(r, e);
+        });
+        g.addEventListener('mousemove', (e) => {
+          positionTooltip(e);
+        });
+        g.addEventListener('mouseleave', () => {
+          hideTooltip();
+        });
+        g.addEventListener('click', (e) => {
+          e.stopPropagation();
+          selectRoom(r.vnum);
+        });
+      });
+
+      function showTooltip(room, e) {
+        document.getElementById('tt-name').textContent = '[' + room.vnum + '] ' + room.name;
+        document.getElementById('tt-meta').textContent = 'Floor Z: ' + room.coords.z + ' | Coords: (' + room.coords.x + ', ' + room.coords.y + ', ' + room.coords.z + ')';
+        const exitNames = (room.exits || []).map(ex => ex.direction + ' -> ' + ex.dst + (ex.one_way ? ' (1-way)' : '')).join(', ');
+        document.getElementById('tt-exits').textContent = exitNames ? 'Exits: ' + exitNames : 'No exits';
+        tooltip.style.display = 'block';
+        positionTooltip(e);
+      }
+
+      function positionTooltip(e) {
+        const offset = 14;
+        tooltip.style.left = (e.clientX + offset) + 'px';
+        tooltip.style.top = (e.clientY + offset) + 'px';
+      }
+
+      function hideTooltip() {
+        tooltip.style.display = 'none';
+      }
+
+      function selectRoom(vnum) {
+        selectedVnum = vnum;
+        roomGroups.forEach((g, v) => {
+          g.classList.toggle('selected', v === vnum);
+        });
+
+        const room = roomMap.get(vnum);
+        if (!room) return;
+
+        document.getElementById('card-room-name').textContent = '[' + room.vnum + '] ' + room.name;
+        document.getElementById('card-room-meta').textContent = 'Coordinates: (' + room.coords.x + ', ' + room.coords.y + ', ' + room.coords.z + ') | Floor Z = ' + room.coords.z;
+        const descElem = document.getElementById('card-room-desc');
+        descElem.style.display = 'block';
+        descElem.textContent = room.desc || 'No description available.';
+
+        const exitsElem = document.getElementById('card-room-exits');
+        exitsElem.innerHTML = '';
+        (room.exits || []).forEach(ex => {
+          const tag = document.createElement('div');
+          tag.className = 'exit-tag ' + (ex.one_way ? 'one-way' : '');
+          tag.textContent = ex.direction.toUpperCase() + ' -> ' + ex.dst + (ex.one_way ? ' ⚠️' : '');
+          tag.addEventListener('click', () => {
+            if (roomMap.has(ex.dst)) {
+              centerOnRoom(ex.dst);
+              selectRoom(ex.dst);
+            }
+          });
+          exitsElem.appendChild(tag);
+        });
+
+        // If pathfind mode open, prefill
+        const pfDst = document.getElementById('pf-dst');
+        const pfStart = document.getElementById('pf-start');
+        if (!pfStart.value) pfStart.value = vnum;
+        else if (!pfDst.value) pfDst.value = vnum;
+      }
+
+      function centerOnRoom(vnum) {
+        const room = roomMap.get(vnum);
+        if (!room) return;
+        const pt = project(room.coords.x, room.coords.y, room.coords.z);
+        const rect = viewport.getBoundingClientRect();
+        panX = rect.width / 2 - pt.px * zoom;
+        panY = rect.height / 2 - pt.py * zoom;
+        updateTransform();
+      }
+
+      // Search functionality
+      const searchInput = document.getElementById('search-input');
+      const searchClear = document.getElementById('search-clear');
+
+      searchInput.addEventListener('input', () => {
+        const query = searchInput.value.trim().toLowerCase();
+        searchClear.style.display = query ? 'block' : 'none';
+
+        let firstMatch = null;
+        roomGroups.forEach((g, vnum) => {
+          const r = roomMap.get(vnum);
+          const matches = query && (r.vnum.toString() === query || r.name.toLowerCase().includes(query));
+          g.classList.toggle('highlighted', Boolean(matches));
+          g.classList.toggle('dimmed', Boolean(query && !matches));
+          if (matches && !firstMatch) firstMatch = vnum;
+        });
+
+        exitElements.forEach(line => {
+          line.classList.toggle('dimmed', Boolean(query));
+        });
+
+        if (firstMatch && (query.length > 2 || !isNaN(query))) {
+          centerOnRoom(firstMatch);
+        }
+      });
+
+      searchClear.addEventListener('click', () => {
+        searchInput.value = '';
+        searchInput.dispatchEvent(new Event('input'));
+      });
+
+      // Floor Filter
+      floorFilter.addEventListener('change', () => {
+        const val = floorFilter.value;
+        const targetZ = val === 'all' ? null : parseInt(val, 10);
+
+        elevationLayers.forEach(({ layer }, z) => {
+          const visible = (targetZ === null || z === targetZ);
+          layer.classList.toggle('dimmed', !visible);
+        });
+
+        roomGroups.forEach((g, vnum) => {
+          const z = parseInt(g.getAttribute('data-z'), 10);
+          const visible = (targetZ === null || z === targetZ);
+          g.classList.toggle('dimmed', !visible);
+        });
+
+        canvasRoot.querySelectorAll('.exit-line').forEach(line => {
+          const z = parseInt(line.getAttribute('data-z'), 10);
+          const visible = (targetZ === null || z === targetZ);
+          line.classList.toggle('dimmed', !visible);
+        });
+      });
+
+      // Pan & Zoom handlers
+      viewport.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        isPanning = true;
+        startX = e.clientX - panX;
+        startY = e.clientY - panY;
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (!isPanning) return;
+        panX = e.clientX - startX;
+        panY = e.clientY - startY;
+        updateTransform();
+      });
+
+      window.addEventListener('mouseup', () => {
+        isPanning = false;
+      });
+
+      viewport.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const factor = e.deltaY < 0 ? 1.15 : 0.85;
+        const rect = viewport.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        const newZoom = Math.min(Math.max(zoom * factor, 0.15), 5.0);
+        panX = mouseX - (mouseX - panX) * (newZoom / zoom);
+        panY = mouseY - (mouseY - panY) * (newZoom / zoom);
+        zoom = newZoom;
+        updateTransform();
+      }, { passive: false });
+
+      document.getElementById('btn-zoom-in').addEventListener('click', () => {
+        zoom = Math.min(zoom * 1.25, 5.0);
+        updateTransform();
+      });
+
+      document.getElementById('btn-zoom-out').addEventListener('click', () => {
+        zoom = Math.max(zoom * 0.8, 0.15);
+        updateTransform();
+      });
+
+      document.getElementById('btn-reset-view').addEventListener('click', resetView);
+
+      function resetView() {
+        zoom = 1;
+        panX = 0;
+        panY = 0;
+        updateTransform();
+      }
+
+      // Pathfinder (BFS)
+      const btnPathfind = document.getElementById('btn-pathfind');
+      const pathfindCard = document.getElementById('pathfind-card');
+      btnPathfind.addEventListener('click', () => {
+        const isShown = pathfindCard.style.display !== 'none';
+        pathfindCard.style.display = isShown ? 'none' : 'block';
+        btnPathfind.classList.toggle('btn-active', !isShown);
+      });
+
+      document.getElementById('btn-calc-path').addEventListener('click', () => {
+        const start = parseInt(document.getElementById('pf-start').value, 10);
+        const dst = parseInt(document.getElementById('pf-dst').value, 10);
+        if (isNaN(start) || isNaN(dst) || !roomMap.has(start) || !roomMap.has(dst)) {
+          alert('Please enter valid Start and Destination VNUMs.');
+          return;
+        }
+
+        // BFS traversal
+        const queue = [[start]];
+        const visited = new Set([start]);
+        let foundPath = null;
+
+        while (queue.length > 0) {
+          const path = queue.shift();
+          const node = path[path.length - 1];
+          if (node === dst) {
+            foundPath = path;
+            break;
+          }
+          const r = roomMap.get(node);
+          for (const ex of (r.exits || [])) {
+            if (roomMap.has(ex.dst) && !visited.has(ex.dst)) {
+              visited.add(ex.dst);
+              queue.push([...path, ex.dst]);
+            }
+          }
+        }
+
+        clearPathHighlight();
+        const stepsContainer = document.getElementById('path-steps');
+        stepsContainer.innerHTML = '';
+
+        if (!foundPath) {
+          stepsContainer.innerHTML = '<div style="color: #ef4444; font-size: 0.8rem;">No navigable path found between specified rooms.</div>';
+          return;
+        }
+
+        // Highlight path nodes and edges
+        foundPath.forEach((vnum, idx) => {
+          const g = roomGroups.get(vnum);
+          if (g) g.classList.add('path-node');
+
+          if (idx < foundPath.length - 1) {
+            const nextVnum = foundPath[idx + 1];
+            const currRoom = roomMap.get(vnum);
+            const exitObj = (currRoom.exits || []).find(e => e.dst === nextVnum);
+            const dir = exitObj ? exitObj.direction.toUpperCase() : 'MOVE';
+
+            const stepDiv = document.createElement('div');
+            stepDiv.className = 'path-step';
+            stepDiv.innerHTML = '<strong>Step ' + (idx + 1) + ':</strong> Go ' + dir + ' to [' + nextVnum + '] ' + roomMap.get(nextVnum).name;
+            stepsContainer.appendChild(stepDiv);
+
+            // Highlight exit line
+            const line = exitElements.get(vnum + '->' + nextVnum) || exitElements.get(nextVnum + '->' + vnum);
+            if (line) line.classList.add('path-edge');
+          }
+        });
+      });
+
+      document.getElementById('btn-clear-path').addEventListener('click', clearPathHighlight);
+
+      function clearPathHighlight() {
+        roomGroups.forEach(g => g.classList.remove('path-node'));
+        canvasRoot.querySelectorAll('.exit-line').forEach(l => l.classList.remove('path-edge'));
+        document.getElementById('path-steps').innerHTML = '';
+      }
+
+      // Minimap rendering
+      function renderMinimap() {
+        miniCtx.fillStyle = '#0f172a';
+        miniCtx.fillRect(0, 0, minimap.width, minimap.height);
+
+        const w = minimap.width;
+        const h = minimap.height;
+        const padding = 10;
+
+        const totalWidth = (bounds.max_x - min_x + 1) * gridScale + 160;
+        const totalHeight = (bounds.max_y - min_y + 1) * gridScale + 160;
+
+        const sx = (w - padding * 2) / totalWidth;
+        const sy = (h - padding * 2) / totalHeight;
+        const scale = Math.min(sx, sy);
+
+        // Draw dots for rooms sorted by elevation (Z ascending) and isometric screen depth
+        sortedRooms.forEach(r => {
+          const pt = project(r.coords.x, r.coords.y, r.coords.z);
+          const mx = padding + pt.px * scale;
+          const my = padding + pt.py * scale;
+          miniCtx.fillStyle = getRoomColor(r.coords.z);
+          miniCtx.fillRect(mx - 1.5, my - 1.5, 3, 3);
+        });
+
+        // Draw viewport bounds
+        const vpRect = viewport.getBoundingClientRect();
+        const vx1 = padding + (-panX / zoom) * scale;
+        const vy1 = padding + (-panY / zoom) * scale;
+        const vw = (vpRect.width / zoom) * scale;
+        const vh = (vpRect.height / zoom) * scale;
+
+        miniCtx.strokeStyle = '#38bdf8';
+        miniCtx.lineWidth = 1.5;
+        miniCtx.strokeRect(vx1, vy1, vw, vh);
+      }
+
+      // Initial fit & render
+      resetView();
+      if (rooms.length > 0) {
+        selectRoom(rooms[0].vnum);
+      }
+    })();
+  </script>
+</body>
+</html>

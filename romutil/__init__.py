@@ -21,6 +21,16 @@ from romutil.solver import solve, non_euler, find_overlap_candidates
 from romutil.graph import graph, solve_layout, restore_rooms, mfas
 from romutil.exporter import build_area_json, export_json, generate_html_viewer, export_html
 from romutil.cli import main, cli
+from romutil.renderers import (
+    BaseRenderer,
+    SVGRenderer,
+    JSONRenderer,
+    HTMLRenderer,
+    render_map,
+    get_renderer,
+    RENDERERS,
+    HTML_TEMPLATE,
+)
 
 __all__ = [
     'AreaData',
@@ -56,4 +66,12 @@ __all__ = [
     'export_html',
     'main',
     'cli',
+    'BaseRenderer',
+    'SVGRenderer',
+    'JSONRenderer',
+    'HTMLRenderer',
+    'render_map',
+    'get_renderer',
+    'RENDERERS',
+    'HTML_TEMPLATE',
 ]

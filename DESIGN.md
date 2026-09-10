@@ -29,8 +29,8 @@ flowchart TD
     E --> F["romutil/solver.py: solve() (MILP 3D Coordinate Solver)"]
     F -->|Iterative Collision Resolution| F
     F --> G["romutil/graph.py: restore_rooms() (Corridor Expansion)"]
-    G --> H["romutil/plotter.py: Plotter (Isometric SVG Renderer)"]
-    G --> J["romutil/exporter.py: JSON & Standalone HTML Exporter"]
+    G --> H["romutil/renderers: SVGRenderer (Isometric SVG)"]
+    G --> J["romutil/renderers: JSONRenderer & HTMLRenderer"]
     H --> I[".svg Interactive Map"]
     J --> K[".json Room Database / .html Web Viewer"]
 
@@ -55,12 +55,21 @@ ROMUtil/
 ├── romutil/                     # Core Python package
 │   ├── __init__.py              # Package public API exports
 │   ├── cli.py                   # Modernized CLI (pathlib.Path) & entry point
-│   ├── exporter.py              # Interactive JSON and standalone HTML map export
+│   ├── exporter.py              # Backward-compatibility facade for export functions
 │   ├── graph.py                 # Corridor collapsing, restoration, and mfas
 │   ├── models.py                # Direction, Room, and Exit domain models
 │   ├── parser.py                # PLY Lexer & LALR Parser with resilient encoding
-│   ├── plotter.py               # Oblique isometric SVG rendering engine
-│   └── solver.py                # Pyomo MILP optimization and overlap detection
+│   ├── plotter.py               # Backward-compatibility facade for Plotter
+│   ├── renderers/               # Unified map renderer architecture
+│   │   ├── __init__.py          # RENDERERS registry, get_renderer, and render_map
+│   │   ├── base.py              # BaseRenderer protocol definition
+│   │   ├── html.py              # Standalone interactive HTML/JS map viewer renderer
+│   │   ├── json.py              # Structured JSON map data renderer & serializer
+│   │   └── svg.py               # Oblique isometric SVG vector map renderer
+│   ├── solver.py                # Pyomo MILP optimization and overlap detection
+│   └── templates/               # Embedded web application templates
+│       ├── __init__.py
+│       └── viewer.html          # Self-contained HTML/JS map viewer asset
 ├── pyproject.toml               # PEP 621 package metadata & script definitions
 ├── uv.lock                      # Pinned dependency lockfile managed by uv
 └── tests/                       # Comprehensive unit and integration test suite
@@ -197,15 +206,15 @@ The CBC optimization execution is bounded by an optional per-subgraph time limit
 
 ---
 
-### 4.5. Reconstruction & Rendering — [`romutil/plotter.py`](./romutil/plotter.py)
+### 4.5. Reconstruction & Isometric SVG Rendering — [`romutil/renderers/svg.py`](./romutil/renderers/svg.py)
 
-1. **[`restore_rooms()`](./romutil/graph.py#L12-L29)**:
+1. **[`restore_rooms()`](./romutil/graph.py#L12-L30)**:
    Traverses `fixups` on surviving rooms and calculates exact coordinates for previously collapsed corridor rooms.
 2. **Isometric Projection**:
    Converts 3D coordinates $(x, y, z)$ into 2D SVG canvas points using an oblique lift factor ($\text{lift} = 0.15$):
    $$X' = 2 + x + \text{lift} \cdot z$$
    $$Y' = 2 + \text{lift} \cdot z_{\max} + (y_{\max} - y) - \text{lift} \cdot z$$
-3. **SVG Generation (`svgwrite`) & Multi-Layer Elevation**:
+3. **SVG Generation (`SVGRenderer` & `Plotter`) & Multi-Layer Elevation**:
    - **Painter's Algorithm Depth Sorting**: SVG layer group generation stacks `<g id="elevation-{z}" class="elevation-layer" data-z="{z}">` layers in strict ascending elevation order ($Z_{\text{lower}} < Z_{\text{higher}}$). Within each elevation layer, rooms are sorted by isometric screen depth ($Y$ descending, then $X$ ascending) before executing SVG draw commands.
    - **Inter-Floor Exit Layering & Occlusion**: Vertical transitions (`up`/`down` exits) connecting floors $Z_1$ and $Z_2$ are attributed to the higher elevation layer $\max(Z_1, Z_2)$ and drawn before the upper floor's room geometry, ensuring ascending stairways naturally overlay lower stories while being cleanly occluded by upper-story room rectangles.
    - **Interactive Layer Controls**: Embedded `<style>` and JavaScript within the SVG `<defs>` provide clickable toggle buttons (`<g id="elevation-controls">`) with visual active/inactive states, allowing users to toggle individual floor levels on/off to prevent vertical visual occlusion.
@@ -213,14 +222,31 @@ The CBC optimization execution is bounded by an optional per-subgraph time limit
    - Bidirectional exits are drawn as black lines; one-way exits as red lines.
    - External exits are rendered as stub arrows pointing off-map.
    - Interactive `<set>` triggers display floating tooltips on mouseover showing room names, full descriptions, and exit directions.
+   - **Backward-Compatibility Facade**: [`romutil/plotter.py`](./romutil/plotter.py) re-exports [`Plotter`](./romutil/renderers/svg.py), `_DynamicPalette`, and `Direction`.
 
 ---
 
-### 4.6. Web & JSON Export Engine — [`romutil/exporter.py`](./romutil/exporter.py)
+### 4.6. Unified Renderer Architecture & Export Engine — [`romutil/renderers/`](./romutil/renderers/)
 
-Exports complete solved area databases into portable structured formats and interactive standalone web viewers:
+The unified renderer architecture provides an extensible, polymorphic pipeline for exporting solved area maps into vector graphics, structured interchange data, and standalone web applications:
 
-1. **Structured JSON Map (`build_area_json`, `export_json`)**:
+1. **Renderer Protocol & Registry (`BaseRenderer`, `RENDERERS`, `render_map`)**:
+   - **Protocol Interface ([`romutil/renderers/base.py`](./romutil/renderers/base.py))**: All renderers conform to the `@runtime_checkable` `BaseRenderer` protocol:
+     ```python
+     class BaseRenderer(Protocol):
+         def render(
+             self,
+             rdb: dict[int, Room],
+             output_path: str | Path,
+             header: AreaHeader | None = None,
+             **options: Any,
+         ) -> Path: ...
+     ```
+   - **Central Registry & Lookup (`RENDERERS`, `get_renderer`)**: Maps format identifiers (`"svg"`, `"json"`, `"html"`) to renderer implementations (`SVGRenderer`, `JSONRenderer`, `HTMLRenderer`), normalizing case and leading extensions while supporting custom third-party renderer registration.
+   - **Format Dispatcher (`render_map`)**: Dispatches room database rendering to the appropriate format, inferring format automatically from destination file extensions when omitted.
+
+2. **Structured JSON Map ([`romutil/renderers/json.py`](./romutil/renderers/json.py))**:
+   - Implemented via `JSONRenderer`, `build_area_json`, and `export_json`.
    - Exports the entire room graph with solved integer 3D coordinates `(x, y, z)` and normalized area bounds.
    - Preserves 100% of room definitions, descriptions, and directional connections.
    - Computes directed `one_way` exit properties and directional step distances.
@@ -243,7 +269,9 @@ Exports complete solved area databases into portable structured formats and inte
      }
      ```
 
-2. **Standalone HTML Viewer (`generate_html_viewer`, `export_html`)**:
+3. **Standalone HTML Viewer ([`romutil/renderers/html.py`](./romutil/renderers/html.py))**:
+   - Implemented via `HTMLRenderer`, `generate_html_viewer`, and `export_html`.
+   - **Embedded Asset Loading**: Dedicated template asset file ([`romutil/templates/viewer.html`](./romutil/templates/viewer.html)) loaded cleanly via `importlib.resources` with a filesystem fallback, distributed as package data configured in `pyproject.toml`.
    - A single, self-contained HTML/JS web application requiring **zero external network requests**, CDNs, or Node.js dependencies.
    - **Painter's Algorithm Layering**: The client-side rendering pipeline sorts room draw queues and minimap draw lists strictly by elevation ($Z$ ascending), then isometric screen depth ($Y$ descending / $X$ ascending). Independent DOM elevation groups (`<g id="elevation-{z}" class="elevation-layer">`) are constructed in ascending $Z$ order, with vertical transitions assigned to the higher elevation plane. This guarantees that multi-level views cleanly render upper stories and vertical stairways atop lower stories without visual interleaving or occlusion inversion.
    - Features smooth drag-to-pan and cursor-centered wheel zoom.
@@ -252,6 +280,10 @@ Exports complete solved area databases into portable structured formats and inte
    - Embedded shortest-path Breadth-First Search (BFS) pathfinder with visual route highlighting and turn-by-turn navigation instructions.
    - Elevation floor filter (`Floor Z`) with dynamic color mapping and interactive multi-floor visibility toggling.
    - Embedded interactive radar minimap canvas for orientation and rapid viewport panning.
+
+4. **Backward-Compatibility Shims**:
+   - [`romutil/plotter.py`](./romutil/plotter.py): Re-exports `Plotter`, `_DynamicPalette`, and `Direction` from `romutil.renderers.svg` and `romutil.models`.
+   - [`romutil/exporter.py`](./romutil/exporter.py): Re-exports `build_area_json`, `export_json`, `generate_html_viewer`, `export_html`, and `HTML_TEMPLATE` from `romutil.renderers`.
 
 ---
 

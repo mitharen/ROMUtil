@@ -20,6 +20,9 @@ dependencies = [
 [project.scripts]
 romutil = "romutil.cli:cli"
 
+[tool.setuptools.package-data]
+"romutil.templates" = ["*.html"]
+
 [dependency-groups]
 dev = [
     "mypy>=1.19.1",

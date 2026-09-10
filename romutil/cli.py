@@ -10,7 +10,7 @@ import pyomo.common.config
 from romutil.models import Room, AreaData, AreaHeader
 from romutil.parser import Parser, parse_circlemud_directory
 from romutil.graph import graph, solve_layout
-from romutil.exporter import build_area_json, export_json, export_html
+from romutil.renderers import RENDERERS, get_renderer, render_map
 
 logging.basicConfig()
 log = logging.getLogger('Mapper')
@@ -102,7 +102,7 @@ def main(area_files, outbase, split_levels=False, fmt="svg", circle_dir=None, so
             else:
                 base_name = outbase if len(connected_comps) == 1 else f'{outbase}{i}'
                 graph(sub_rdb, f'{base_name}.svg', area_meta, split_levels=True, outbase=base_name, solver_timeout=solver_timeout)
-    elif fmt in ('json', 'html'):
+    elif fmt in ('json', 'html') or fmt in RENDERERS:
         all_solved_rooms = {}
         offset_x = 0
         for i, sub_graph in enumerate(connected_comps):
@@ -118,16 +118,15 @@ def main(area_files, outbase, split_levels=False, fmt="svg", circle_dir=None, so
                 offset_x = max_x + 3
             all_solved_rooms.update({r.vnum: r for r in non_dummy})
 
-        data = build_area_json(all_solved_rooms, area_meta)
-
+        renderer = get_renderer(fmt)
+        out_file = outbase if outbase.endswith(f'.{fmt}') else f'{outbase}.{fmt}'
+        renderer.render(all_solved_rooms, out_file, header=area_meta)
         if fmt == 'json':
-            json_path = outbase if outbase.endswith('.json') else f'{outbase}.json'
-            export_json(data, json_path)
-            log.info(f'Exported JSON map to {json_path}')
+            log.info(f'Exported JSON map to {out_file}')
         elif fmt == 'html':
-            html_path = outbase if outbase.endswith('.html') else f'{outbase}.html'
-            export_html(data, html_path)
-            log.info(f'Exported HTML viewer to {html_path}')
+            log.info(f'Exported HTML viewer to {out_file}')
+        else:
+            log.info(f'Exported {fmt.upper()} to {out_file}')
 
     sys.exit(0)
 
