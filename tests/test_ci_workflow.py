@@ -208,10 +208,107 @@ class TestCIWorkflowPositive:
             step for step in steps
             if "pytest" in step.get("run", "")
         ]
-        assert len(pytest_steps) > 0, "Test job must run pytest"
-        cmd = pytest_steps[0]["run"]
-        assert "--cov=romutil" in cmd, "Pytest must track coverage for romutil"
-        assert "--cov-fail-under=95" in cmd, "Pytest must enforce >= 95% coverage threshold"
+        assert len(pytest_steps) >= 2, "Test job must run selective test execution steps"
+
+        # Verify fast unit test step deselects slow tests
+        fast_steps = [s for s in pytest_steps if "not slow" in s.get("run", "")]
+        assert len(fast_steps) > 0, "Test job must include a fast unit test step deselecting slow tests"
+
+        # Verify integration test step runs slow or integration tests
+        integration_steps = [
+            s for s in pytest_steps
+            if "slow" in s.get("run", "") or "integration" in s.get("run", "")
+        ]
+        assert len(integration_steps) > 0, "Test job must include an integration test step"
+
+        # Verify full test suite step enforces >= 95% coverage threshold
+        coverage_steps = [
+            s for s in pytest_steps
+            if "--cov=romutil" in s.get("run", "") and "--cov-fail-under=95" in s.get("run", "")
+        ]
+        assert len(coverage_steps) > 0, "Test job must enforce >= 95% coverage threshold"
+
+    def test_pytest_markers_registered_in_pyproject(self):
+        """Verify 'slow' and 'integration' markers are registered in pyproject.toml."""
+        import tomllib
+        pyproject_path = REPO_ROOT / "pyproject.toml"
+        assert pyproject_path.is_file(), "pyproject.toml must exist"
+        data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        markers = data.get("tool", {}).get("pytest", {}).get("ini_options", {}).get("markers", [])
+        assert any(m.startswith("slow:") or m.startswith("slow") for m in markers), (
+            f"'slow' marker must be registered in pyproject.toml: {markers}"
+        )
+        assert any(m.startswith("integration:") or m.startswith("integration") for m in markers), (
+            f"'integration' marker must be registered in pyproject.toml: {markers}"
+        )
+
+    def test_pytest_configure_harmonizes_coverage_thresholds(self):
+        """Verify pytest_configure relaxes coverage on filtered runs and preserves it on full runs."""
+        from tests.conftest import pytest_configure
+
+        class DummyPlugin:
+            def __init__(self, fail_under=95):
+                self.options = type("PluginOptions", (), {"cov_fail_under": fail_under})()
+
+        class DummyConfig:
+            def __init__(self, markexpr="", fail_under=95, with_cov_plugin=True):
+                self.option = type("ConfigOptions", (), {
+                    "markexpr": markexpr,
+                    "cov_fail_under": fail_under,
+                })()
+                self._plugin = DummyPlugin(fail_under) if with_cov_plugin else None
+                self.pluginmanager = type("PluginManager", (), {
+                    "get_plugin": lambda s, name: self._plugin if name == "_cov" else None
+                })()
+
+        # 1. Full suite run (empty markexpr): cov_fail_under remains 95
+        cfg_full = DummyConfig(markexpr="", fail_under=95)
+        pytest_configure(cfg_full)  # type: ignore[arg-type]
+        assert cfg_full.option.cov_fail_under == 95
+        assert cfg_full._plugin.options.cov_fail_under == 95
+
+        # 2. Filtered run with "not slow": cov_fail_under cleared to None
+        cfg_fast = DummyConfig(markexpr="not slow", fail_under=95)
+        pytest_configure(cfg_fast)  # type: ignore[arg-type]
+        assert cfg_fast.option.cov_fail_under is None
+        assert cfg_fast._plugin.options.cov_fail_under is None
+
+        # 3. Filtered run with "not integration": cov_fail_under cleared to None
+        cfg_fast_integ = DummyConfig(markexpr="not integration", fail_under=95)
+        pytest_configure(cfg_fast_integ)  # type: ignore[arg-type]
+        assert cfg_fast_integ.option.cov_fail_under is None
+        assert cfg_fast_integ._plugin.options.cov_fail_under is None
+
+        # 4. Filtered run with "slow": cov_fail_under cleared to None
+        cfg_slow = DummyConfig(markexpr="slow", fail_under=95)
+        pytest_configure(cfg_slow)  # type: ignore[arg-type]
+        assert cfg_slow.option.cov_fail_under is None
+        assert cfg_slow._plugin.options.cov_fail_under is None
+
+        # 5. Filtered run with "integration": cov_fail_under cleared to None
+        cfg_integ = DummyConfig(markexpr="integration", fail_under=95)
+        pytest_configure(cfg_integ)  # type: ignore[arg-type]
+        assert cfg_integ.option.cov_fail_under is None
+        assert cfg_integ._plugin.options.cov_fail_under is None
+
+        # 6. Unrelated markexpr (e.g. "unit"): cov_fail_under retained
+        cfg_unit = DummyConfig(markexpr="unit", fail_under=95)
+        pytest_configure(cfg_unit)  # type: ignore[arg-type]
+        assert cfg_unit.option.cov_fail_under == 95
+        assert cfg_unit._plugin.options.cov_fail_under == 95
+
+        # 7. Config without cov_plugin or cov_fail_under: handles gracefully
+        cfg_bare = type("BareConfig", (), {
+            "option": type("BareOptions", (), {"markexpr": "not slow"})(),
+            "pluginmanager": type("BarePM", (), {"get_plugin": lambda s, n: None})(),
+        })()
+        pytest_configure(cfg_bare)  # type: ignore[arg-type]
+
+        # 8. Config where markexpr is None
+        cfg_none_mark = DummyConfig(markexpr="", fail_under=95)
+        cfg_none_mark.option.markexpr = None
+        pytest_configure(cfg_none_mark)  # type: ignore[arg-type]
+        assert cfg_none_mark.option.cov_fail_under == 95
 
     def test_static_analysis_and_linting(self):
         data = load_workflow_data()
@@ -286,6 +383,13 @@ class TestCIWorkflowNegative:
         assert f"--cov-fail-under={threshold}" not in faulty_cmd, (
             "Validator correctly flags insufficient coverage threshold"
         )
+
+    def test_missing_selective_test_markers_in_pyproject_rejected(self):
+        """Negative test verifying detection when markers are missing in pyproject config."""
+        pyproject_without_markers = {"tool": {"pytest": {"ini_options": {"markers": []}}}}
+        markers = pyproject_without_markers["tool"]["pytest"]["ini_options"]["markers"]
+        assert not any("slow" in m for m in markers)
+        assert not any("integration" in m for m in markers)
 
 
 class TestPagesWorkflowPositive:

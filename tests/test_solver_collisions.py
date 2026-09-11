@@ -36,6 +36,8 @@ def assert_no_room_collisions(rdb: Mapping[int, Room]) -> None:
     assert not collisions, f"Detected room coordinate collisions: {collisions}"
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 def test_school_are_zero_collisions_and_zero_cuts() -> None:
     """Verify school.are solves with 0 collisions, 0 cuts, and within 10 seconds."""
     filepath = FIXTURES_DIR / "areas" / "school.are"
@@ -52,6 +54,8 @@ def test_school_are_zero_collisions_and_zero_cuts() -> None:
     assert elapsed < 10.0, f"Solve time {elapsed:.2f}s exceeded 10.0s threshold"
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 def test_smurf_are_zero_collisions() -> None:
     """Verify smurf.are solves with 0 collisions and 0 cuts."""
     filepath = FIXTURES_DIR / "areas" / "smurf.are"
@@ -191,6 +195,8 @@ def test_vertical_dummy_stub_collision_avoidance() -> None:
     assert_no_room_or_dummy_collisions(rooms)
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 def test_school_are_zero_dummy_collisions() -> None:
     """Verify school.are layout has zero room-to-dummy coordinate collisions."""
     filepath = FIXTURES_DIR / "areas" / "school.are"
@@ -242,3 +248,17 @@ def test_multi_dummy_grid_no_collisions() -> None:
 
     position_dummy_rooms(rooms, exits)
     assert_no_room_or_dummy_collisions(rooms)
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_collision_school_are_pairwise_unique_coordinates() -> None:
+    """Verify school.are solves with pairwise unique coordinates and zero cuts."""
+    test_school_are_zero_collisions_and_zero_cuts()
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_collision_smurf_are_pairwise_unique_coordinates() -> None:
+    """Verify smurf.are solves with pairwise unique coordinates and zero cuts."""
+    test_smurf_are_zero_collisions()

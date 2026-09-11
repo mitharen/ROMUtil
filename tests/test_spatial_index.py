@@ -390,6 +390,7 @@ class TestSpatialIndexEdgeCasesAndNegative:
         assert _get_coords({1: r_none}, 1) is None
 
 
+@pytest.mark.slow
 class TestSpatialIndexPerformance:
     """Performance benchmarks verifying sub-20ms sweep-line scaling."""
 

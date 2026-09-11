@@ -319,6 +319,8 @@ class TestDialectParserPositive:
         assert len(area.resets) == 2
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 class TestDialectLayoutSolver:
     """Validate that area graphs from all 4 dialects solve cleanly and generate valid maps."""
 

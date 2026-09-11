@@ -174,6 +174,8 @@ class TestExporterUnit:
 class TestExporterIntegration:
     """End-to-end integration tests asserting CLI --format json and --format html."""
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_romutil_school_format_json(self, tmp_path):
         school_file = os.path.join(SAMPLE_AREAS_DIR, "school.are")
         if not os.path.exists(school_file):
@@ -226,6 +228,8 @@ class TestExporterIntegration:
                 assert isinstance(ex["distance"], int)
                 assert isinstance(ex["one_way"], bool)
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_romutil_school_format_html(self, tmp_path):
         school_file = os.path.join(SAMPLE_AREAS_DIR, "school.are")
         if not os.path.exists(school_file):
@@ -259,6 +263,8 @@ class TestExporterIntegration:
         css_urls = re.findall(r'url\([\'"]?https?://', content, re.IGNORECASE)
         assert len(css_urls) == 0, f"External CSS URLs found in HTML: {css_urls}"
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_cli_execution_with_formats(self, tmp_path, monkeypatch):
         smurf_file = os.path.join(SAMPLE_AREAS_DIR, "smurf.are")
         if not os.path.exists(smurf_file):
@@ -280,6 +286,8 @@ class TestExporterIntegration:
         assert exc2.value.code == 0
         assert (tmp_path / "cli_smurf.html").exists()
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_cli_default_outbase_derivation(self, tmp_path, monkeypatch):
         smurf_file = os.path.join(SAMPLE_AREAS_DIR, "smurf.are")
         if not os.path.exists(smurf_file):
@@ -350,6 +358,8 @@ class TestExporterNegative:
         assert solved_rdb[1].x == 0
         assert solved_rdb[2].x == 0
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_cli_main_entrypoint(self, tmp_path, monkeypatch):
         import runpy
         smurf_file = os.path.join(SAMPLE_AREAS_DIR, "smurf.are")
@@ -363,6 +373,8 @@ class TestExporterNegative:
         assert exc.value.code == 0
         assert (tmp_path / "runpy_smurf.json").exists()
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_main_multi_component_area_offset(self, tmp_path):
         # Create an area with 2 disconnected components
         multi_comp_are = """#AREA

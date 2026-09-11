@@ -62,6 +62,14 @@ S
 class TestSvgElevationGrouping:
     """Automated tests for SVG elevation grouping and interactive controls."""
 
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_elevation_layering_tower_are(self, tmp_path):
+        """Verify elevation layering and group tags on tower.are."""
+        return self.test_svg_elevation_grouping_tags_for_all_unique_z(tmp_path)
+
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_svg_elevation_grouping_tags_for_all_unique_z(self, tmp_path):
         out_svg = str(tmp_path / "tower.svg")
         parsed = Parser().parse(SAMPLE_TOWER_ARE)
@@ -483,3 +491,10 @@ class TestElevationPaintersLayering:
         line_idx = next(i for i, child in enumerate(children) if child.tag.endswith("line"))
         rect_idx = next(i for i, child in enumerate(children) if child.tag.endswith("rect"))
         assert line_idx < rect_idx
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_elevation_layering_tower_are(tmp_path):
+    """Module-level alias for tower.are elevation layering tests."""
+    TestSvgElevationGrouping().test_svg_elevation_grouping_tags_for_all_unique_z(tmp_path)

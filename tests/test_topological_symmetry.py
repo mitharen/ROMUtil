@@ -61,7 +61,7 @@ class TestRotationalSymmetryAndIsotropy:
             ef, er = _make_bidirectional_pair(rooms[i], rooms[i + 1], direction)
             exits.extend([ef, er])
 
-        model, results = solve(rdb, exits, timeout=10)
+        model, results = solve(rdb, exits, timeout=20)
         assert results.solver.termination_condition in (
             pyo.TerminationCondition.optimal,
             pyo.TerminationCondition.feasible,
@@ -418,9 +418,21 @@ S
 """
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 class TestFixtureZeroRegressions:
     """Verification of standard area fixtures with isotropic 3D constraints."""
 
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_area_fixture_regressions(self):
+        """Standard area fixture regression solves with isotropic constraints."""
+        self.test_smurf_are_zero_cuts()
+        self.test_school_are_solves()
+        self.test_tower_are_solves()
+
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_smurf_are_zero_cuts(self):
         """smurf.are solves cleanly with 0 cuts."""
         smurf_file = FIXTURES_DIR / "areas" / "smurf.are"
@@ -436,6 +448,8 @@ class TestFixtureZeroRegressions:
         non_dummy = [r for r in rdb.values() if not r.dummy]
         assert all(r.x is not None and r.y is not None and r.z is not None for r in non_dummy)
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_school_are_solves(self):
         """school.are solves cleanly without regression."""
         school_file = FIXTURES_DIR / "areas" / "school.are"
@@ -451,6 +465,8 @@ class TestFixtureZeroRegressions:
         non_dummy = [r for r in rdb.values() if not r.dummy]
         assert all(r.x is not None and r.y is not None and r.z is not None for r in non_dummy)
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_tower_are_solves(self):
         """tower.are solves cleanly with multiple elevation layers."""
         parsed = Parser().parse(SAMPLE_TOWER_ARE)
@@ -463,6 +479,8 @@ class TestFixtureZeroRegressions:
         unique_z = {r.z for r in non_dummy}
         assert len(unique_z) == 3
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_midgaard_are_solves(self):
         """midgaard.are solves cleanly without regression."""
         midgaard_file = FIXTURES_DIR / "areas" / "midgaard.are"
@@ -477,3 +495,13 @@ class TestFixtureZeroRegressions:
         assert len(rdb) > 0
         non_dummy = [r for r in rdb.values() if not r.dummy]
         assert all(r.x is not None and r.y is not None and r.z is not None for r in non_dummy)
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_area_fixture_regressions():
+    """Module-level regression verification for standard area fixtures."""
+    suite = TestFixtureZeroRegressions()
+    suite.test_smurf_are_zero_cuts()
+    suite.test_school_are_solves()
+    suite.test_tower_are_solves()

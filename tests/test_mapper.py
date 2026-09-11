@@ -315,6 +315,8 @@ class TestMapperIntegration:
         graph(rdb, out_svg, AreaHeader(filename="test.are", name="Test Incomplete", builder="", vnum_min=10, vnum_max=10))
         assert os.path.exists(out_svg)
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_mapper_main_single_area(self, tmp_path):
         smurf_file = os.path.join(SAMPLE_AREAS_DIR, "smurf.are")
         if not os.path.exists(smurf_file):
@@ -328,6 +330,66 @@ class TestMapperIntegration:
 
         # Verify at least one SVG was generated
         svgs = list(tmp_path.glob("smurf_out*.svg"))
+        assert len(svgs) >= 1
+        assert svgs[0].stat().st_size > 0
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_mapper_smurf(self, tmp_path):
+        """End-to-end full solve and SVG rendering of smurf.are."""
+        return self.test_mapper_main_single_area(tmp_path)
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_mapper_school(self, tmp_path):
+        """End-to-end full solve and SVG rendering of school.are."""
+        school_file = os.path.join(SAMPLE_AREAS_DIR, "school.are")
+        if not os.path.exists(school_file):
+            pytest.skip("QuickMUD area files not found")
+
+        outbase = str(tmp_path / "school_out")
+        with open(school_file, 'r', encoding='latin-1') as f:
+            with pytest.raises(SystemExit) as exc_info:
+                main([f], outbase)
+            assert exc_info.value.code == 0
+
+        svgs = list(tmp_path.glob("school_out*.svg"))
+        assert len(svgs) >= 1
+        assert svgs[0].stat().st_size > 0
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_mapper_tower(self, tmp_path):
+        """End-to-end full solve and SVG rendering of tower.are."""
+        tower_file = os.path.join(SAMPLE_AREAS_DIR, "tower.are")
+        if not os.path.exists(tower_file):
+            pytest.skip("QuickMUD area files not found")
+
+        outbase = str(tmp_path / "tower_out")
+        with open(tower_file, 'r', encoding='latin-1') as f:
+            with pytest.raises(SystemExit) as exc_info:
+                main([f], outbase)
+            assert exc_info.value.code == 0
+
+        svgs = list(tmp_path.glob("tower_out*.svg"))
+        assert len(svgs) >= 1
+        assert svgs[0].stat().st_size > 0
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_mapper_midgaard(self, tmp_path):
+        """End-to-end full solve and SVG rendering of midgaard.are."""
+        midgaard_file = os.path.join(SAMPLE_AREAS_DIR, "midgaard.are")
+        if not os.path.exists(midgaard_file):
+            pytest.skip("QuickMUD area files not found")
+
+        outbase = str(tmp_path / "midgaard_out")
+        with open(midgaard_file, 'r', encoding='latin-1') as f:
+            with pytest.raises(SystemExit) as exc_info:
+                main([f], outbase)
+            assert exc_info.value.code == 0
+
+        svgs = list(tmp_path.glob("midgaard_out*.svg"))
         assert len(svgs) >= 1
         assert svgs[0].stat().st_size > 0
 
@@ -352,6 +414,8 @@ class TestMapperIntegration:
         assert exc_info.value.code == 0
         assert "No rooms to plot" in caplog.text
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_cli_execution(self, tmp_path, monkeypatch):
         smurf_file = os.path.join(SAMPLE_AREAS_DIR, "smurf.are")
         if not os.path.exists(smurf_file):
@@ -371,6 +435,8 @@ class TestMapperIntegration:
             cli()
         assert exc.value.code == 0
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_cli_module_run(self, tmp_path, monkeypatch):
         import sys
         import runpy

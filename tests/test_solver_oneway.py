@@ -363,6 +363,8 @@ class TestOneWayDummyAffineAnchoring:
         assert model.x[3].value >= d2.x + 1
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 class TestSchoolAreOneWayPreservation:
     """Regression and integration tests on Mud School (school.are)."""
 

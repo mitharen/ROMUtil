@@ -42,6 +42,8 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 class TestDecisionVariableReduction:
     """Verify Pyomo MIP decision variable reduction on real and synthetic topologies."""
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_midgaard_decision_variable_reduction(self):
         """Verify that midgaard.are achieves exactly 69 fewer decision variables (17.557% reduction).
 
@@ -289,6 +291,8 @@ class TestSolverMultiFixtureFeasibility:
             "dialects/dikumud_alfa.wld",
         ],
     )
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_fixture_solves_with_valid_coordinates(self, fixture_rel_path):
         """Verify area solves to optimality/feasibility with integer coordinates for all rooms."""
         filepath = FIXTURES_DIR / fixture_rel_path
@@ -329,6 +333,8 @@ class TestSolverMultiFixtureFeasibility:
                     assert dummy.y == src.y + dy
                     assert dummy.z == src.z + dz
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_circle_world_directory_solve(self):
         """Verify CircleMUD multi-file zone/wld directory solve layout."""
         area = parse_circlemud_directory(FIXTURES_DIR / "dialects" / "circle_world")
@@ -464,6 +470,8 @@ class TestRendererExternalExitStubs:
 class TestMultiSourceDummyDecoupling:
     """Verify that multiple exits to the same external target VNUM are decoupled into distinct dummy stubs."""
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_school_external_exit_decoupling(self):
         """school.are rooms 3700 (exit down) and 3760 (exit up) both lead to 3001 (Temple of Mota).
 

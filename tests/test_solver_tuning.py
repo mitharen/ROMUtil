@@ -161,6 +161,8 @@ class TestCBCSolverConfiguration:
         assert solve_opts.get("heuristics") == "on"
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 class TestStandardFixturesLayoutSolving:
     """Verify layout solving succeeds with valid integer coordinates across all standard area fixtures."""
 

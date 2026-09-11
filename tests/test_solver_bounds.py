@@ -366,6 +366,8 @@ class TestModelVariableBounds:
             assert model.z[v].bounds == (-model.Mz.value, model.Mz.value)
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 class TestEndToEndSolverFixtures:
     """Zero solver regressions across all fixtures."""
 

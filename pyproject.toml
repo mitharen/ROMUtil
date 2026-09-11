@@ -35,6 +35,10 @@ dev = [
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "--cov=romutil --cov-report=term-missing --cov-fail-under=95"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as full end-to-end integration or MILP solves",
+]
 
 [tool.mypy]
 explicit_package_bases = true

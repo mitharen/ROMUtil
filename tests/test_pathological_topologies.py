@@ -81,6 +81,8 @@ def _build_3x3_grid() -> tuple[dict[int, Room], list[Exit]]:
     return rooms, exits
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 class TestStarburstConvergingFunnel:
     """Micro-fixtures testing starburst and converging funnel topologies."""
 
@@ -216,6 +218,8 @@ class TestStarburstConvergingFunnel:
         assert_no_room_collisions(solved_rdb)
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 class TestMultiFloorCardinalZPlunge:
     """Micro-fixtures testing cardinal horizontal exits linking distinct elevation tiers."""
 
@@ -319,6 +323,8 @@ class TestMultiFloorCardinalZPlunge:
         assert_no_room_collisions(rdb)
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 class TestOrthogonalDiagonalBypassTension:
     """Micro-fixtures verifying clean cut relaxation under forced lateral offset."""
 
@@ -428,6 +434,8 @@ class TestOrthogonalDiagonalBypassTension:
         assert_no_room_collisions(rdb)
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 class TestMacroBypassCircuit:
     """Micro-fixtures testing directed rings with reverse chords (school entrance / arena split)."""
 

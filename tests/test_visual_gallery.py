@@ -121,6 +121,8 @@ def sample_gallery_artifacts(tmp_path_factory):
     return out_dir
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 class TestGalleryAssetsGeneration:
     """Verifies that map and viewer artifacts are dynamically generated with correct outputs."""
 
@@ -212,6 +214,8 @@ class TestGalleryAssetsGeneration:
         assert (tmp_path / "rom240.svg").exists()
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 class TestSvgAssetIntegrity:
     """Verifies XML well-formedness, root elements, and visual shapes in SVG outputs."""
 
@@ -233,6 +237,8 @@ class TestSvgAssetIntegrity:
             )
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 class TestHtmlAssetIntegrity:
     """Verifies standalone HTML application requirements and zero external dependencies."""
 

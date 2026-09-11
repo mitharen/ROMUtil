@@ -129,6 +129,8 @@ class TestHelperFunctions:
         assert comps[2] == {100}
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 class TestComponentDecompositionSolving:
     """Integration tests for multi-component solving and shelf packing."""
 

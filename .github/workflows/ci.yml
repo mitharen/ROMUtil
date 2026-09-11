@@ -67,7 +67,13 @@ jobs:
       - name: Static type analysis (mypy)
         run: uv run --python ${{ matrix.python-version }} mypy romutil
 
-      - name: Run test suite with coverage enforcement
+      - name: Run fast unit tests
+        run: uv run --python ${{ matrix.python-version }} pytest -v -m "not slow"
+
+      - name: Run integration test suite
+        run: uv run --python ${{ matrix.python-version }} pytest -v -m "slow or integration"
+
+      - name: Run full test suite with coverage enforcement
         run: |
           uv run --python ${{ matrix.python-version }} pytest -v --cov=romutil --cov-fail-under=95 --tb=short 2>&1 | tee test_output.log || {
             echo "### Pytest Failures (Python ${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY

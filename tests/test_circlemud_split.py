@@ -208,6 +208,8 @@ $
         assert len(resets) == 0
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 class TestCircleMudLayoutAndExport:
     """Validate spatial layout solving and SVG/JSON/HTML rendering for split world."""
 
@@ -257,6 +259,8 @@ class TestCircleMudLayoutAndExport:
 class TestCircleMudCliIntegration:
     """Verify CLI behavior when invoking romutil on CircleMUD directories."""
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_cli_positional_directory_argument(self, tmp_path, monkeypatch):
         """Invoking romutil with a directory positional argument loads split world."""
         outbase = str(tmp_path / "map_pos")
@@ -266,6 +270,8 @@ class TestCircleMudCliIntegration:
         assert exc.value.code == 0
         assert (tmp_path / "map_pos0.svg").exists()
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_cli_circle_dir_flag(self, tmp_path, monkeypatch):
         """Invoking romutil with --circle-dir flag loads split world."""
         outbase = str(tmp_path / "map_flag")
@@ -275,6 +281,8 @@ class TestCircleMudCliIntegration:
         assert exc.value.code == 0
         assert (tmp_path / "map_flag0.svg").exists()
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_cli_circle_dir_json_and_html(self, tmp_path, monkeypatch):
         """Invoking romutil with --circle-dir exports JSON and HTML."""
         out_json = str(tmp_path / "circle_map")
