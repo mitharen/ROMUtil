@@ -65,11 +65,9 @@ ROMUtil/
 ├── romutil/                     # Core Python package
 │   ├── __init__.py              # Package public API exports
 │   ├── cli.py                   # Unified CLI entry point & multi-format options
-│   ├── exporter.py              # Backward-compatibility facade for export functions
 │   ├── graph.py                 # Corridor collapsing, restoration, and mfas
 │   ├── models.py                # Direction, Room, and Exit domain models
 │   ├── parser.py                # PLY Lexer & LALR Parser with resilient encoding
-│   ├── plotter.py               # Backward-compatibility facade for Plotter
 │   ├── renderers/               # Unified map renderer architecture
 │   │   ├── __init__.py          # RENDERERS registry, get_renderer, and render_map
 │   │   ├── base.py              # BaseRenderer protocol definition
@@ -307,7 +305,7 @@ The CBC optimization execution is bounded by an optional per-subgraph time limit
    - Bidirectional exits are drawn as black lines; one-way exits as red lines.
    - External exits are rendered as stub arrows pointing off-map.
    - Interactive `<set>` triggers display floating tooltips on mouseover showing room names, full descriptions, and exit directions.
-   - **Backward-Compatibility Facade**: [`romutil/plotter.py`](../romutil/plotter.py) re-exports [`Plotter`](../romutil/renderers/svg.py), `_DynamicPalette`, and `Direction`.
+   - **Canonical Implementation**: Implemented by [`SVGRenderer`](../romutil/renderers/svg.py) (aliased to `Plotter` for backward compatibility) and `_DynamicPalette` within [`romutil/renderers/svg.py`](../romutil/renderers/svg.py).
 
 ---
 
@@ -375,9 +373,12 @@ The unified renderer architecture provides an extensible, polymorphic pipeline f
    - Elevation floor filter (`Floor Z`) with dynamic color mapping and interactive multi-floor visibility toggling.
    - Embedded interactive radar minimap canvas for orientation and rapid viewport panning.
 
-4. **Backward-Compatibility Shims**:
-   - [`romutil/plotter.py`](../romutil/plotter.py): Re-exports `Plotter`, `_DynamicPalette`, and `Direction` from `romutil.renderers.svg` and `romutil.models`.
-   - [`romutil/exporter.py`](../romutil/exporter.py): Re-exports `build_area_json`, `export_json`, `generate_html_viewer`, `export_html`, and `HTML_TEMPLATE` from `romutil.renderers`.
+4. **Canonical Rendering Subsystem Exports ([`romutil/renderers/`](../romutil/renderers/))**:
+   - **Vector SVG**: [`SVGRenderer`](../romutil/renderers/svg.py), `Plotter`, and `_DynamicPalette`.
+   - **Structured JSON**: [`JSONRenderer`](../romutil/renderers/json.py), `build_area_json`, and `export_json`.
+   - **Interactive HTML**: [`HTMLRenderer`](../romutil/renderers/html.py), `generate_html_viewer`, `export_html`, and `HTML_TEMPLATE`.
+   - **Dispatcher & Registry**: `render_map`, `get_renderer`, `BaseRenderer`, and `RENDERERS`.
+   All rendering primitives are re-exported at the package root (`romutil`) for streamlined access.
 
 ---
 

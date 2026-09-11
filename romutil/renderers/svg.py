@@ -15,7 +15,7 @@ from romutil.renderers.base import BaseRenderer
 class _DynamicPalette:
     """Dynamic palette mapping Z index to an HSL color for backward compatibility."""
 
-    def __init__(self, plotter: Plotter) -> None:
+    def __init__(self, plotter: Any) -> None:
         self._plotter = plotter
 
     def __getitem__(self, idx: int) -> str:
@@ -25,7 +25,7 @@ class _DynamicPalette:
         return len(self._plotter.get_unique_elevations())
 
 
-class Plotter:
+class _Plotter:
     lift: float = 0.15
     colors: Any = ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet']
 
@@ -328,8 +328,22 @@ function toggleElevation(z) {
         dwg.save()
 
 
-class SVGRenderer:
+class SVGRenderer(_Plotter):
     """Renderer generating 2D/3D isometric SVG vector maps conforming to BaseRenderer."""
+
+    def __init__(
+        self,
+        name: str | Path = "",
+        rdb: Dict[int, Room] | None = None,
+        exits: List[Exit] | None = None,
+        target_z: Optional[int] = None,
+    ) -> None:
+        super().__init__(
+            name=name,
+            rdb=rdb if rdb is not None else {},
+            exits=exits if exits is not None else [],
+            target_z=target_z,
+        )
 
     def render(
         self,
@@ -367,10 +381,19 @@ class SVGRenderer:
             base = outbase if outbase else (str(out_path)[:-4] if str(out_path).endswith('.svg') else str(out_path))
             for z in unique_zs:
                 level_name = f"{base}_z{z}.svg"
-                plotter = Plotter(level_name, rdb, exits, target_z=z)
+                plotter = SVGRenderer(level_name, rdb, exits, target_z=z)
                 plotter.plot()
             return out_path
         else:
-            plotter = Plotter(str(out_path), rdb, exits, target_z=target_z)
+            plotter = SVGRenderer(str(out_path), rdb, exits, target_z=target_z)
             plotter.plot()
             return out_path
+
+
+Plotter = SVGRenderer
+
+__all__ = [
+    "SVGRenderer",
+    "Plotter",
+    "_DynamicPalette",
+]

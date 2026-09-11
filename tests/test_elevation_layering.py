@@ -10,7 +10,7 @@ import pytest
 import pyomo.opt
 
 from romutil.models import Direction, Room, Exit, RoomDef, ExitDef, AreaHeader, AreaData
-from romutil.plotter import Plotter, _DynamicPalette
+from romutil.renderers.svg import SVGRenderer as Plotter, _DynamicPalette
 from romutil.parser import Parser
 from romutil.graph import graph
 from romutil.cli import cli, main

@@ -7,7 +7,7 @@ import pytest
 
 from romutil.models import Direction, Room, Exit, RoomDef, ExitDef, AreaHeader
 from romutil.graph import solve_layout
-from romutil.exporter import (
+from romutil.renderers import (
     build_area_json,
     export_json,
     generate_html_viewer,

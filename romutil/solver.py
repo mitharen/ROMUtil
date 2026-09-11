@@ -15,7 +15,7 @@ from pyomo.environ import (
 import tqdm
 
 from romutil.models import Direction, Exit, ExitDef
-from romutil.plotter import Plotter
+from romutil.renderers.svg import SVGRenderer as Plotter
 
 log = logging.getLogger('Mapper.solver')
 

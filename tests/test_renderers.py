@@ -8,8 +8,6 @@ from unittest.mock import patch
 import pytest
 
 import romutil
-import romutil.exporter as legacy_exporter
-import romutil.plotter as legacy_plotter
 from romutil.graph import graph
 from romutil.models import AreaHeader, Direction, Exit, ExitDef, Room, RoomDef
 from romutil.renderers import (
@@ -350,20 +348,8 @@ class TestTemplateAssetLoading:
                     html_module._load_html_template()
 
 
-class TestBackwardCompatibilityFacades:
-    """Verify backward-compatibility re-exports across legacy modules and package root."""
-
-    def test_legacy_plotter_imports(self):
-        assert legacy_plotter.Plotter is Plotter
-        assert legacy_plotter._DynamicPalette is _DynamicPalette
-        assert legacy_plotter.Direction is Direction
-
-    def test_legacy_exporter_imports(self):
-        assert legacy_exporter.build_area_json is build_area_json
-        assert legacy_exporter.export_json is export_json
-        assert legacy_exporter.generate_html_viewer is generate_html_viewer
-        assert legacy_exporter.export_html is export_html
-        assert legacy_exporter.HTML_TEMPLATE == HTML_TEMPLATE
+class TestPackageRootExports:
+    """Verify renderer public API exports on the package root."""
 
     def test_package_root_exports(self):
         assert romutil.BaseRenderer is BaseRenderer
@@ -375,6 +361,10 @@ class TestBackwardCompatibilityFacades:
         assert romutil.RENDERERS is RENDERERS
         assert romutil.HTML_TEMPLATE == HTML_TEMPLATE
         assert romutil.Plotter is Plotter
+        assert romutil.build_area_json is build_area_json
+        assert romutil.export_json is export_json
+        assert romutil.generate_html_viewer is generate_html_viewer
+        assert romutil.export_html is export_html
 
 
 class TestGraphPresentationDecoupling:

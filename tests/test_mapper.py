@@ -4,7 +4,7 @@ import pytest
 import xml.etree.ElementTree as ET
 
 from romutil.models import Direction, Room, Exit, RoomDef, ExitDef, AreaHeader
-from romutil.plotter import Plotter
+from romutil.renderers.svg import SVGRenderer as Plotter
 from romutil.solver import non_euler, solve
 from romutil.graph import restore_rooms, mfas, graph
 from romutil.cli import main, cli

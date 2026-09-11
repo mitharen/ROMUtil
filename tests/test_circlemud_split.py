@@ -21,7 +21,7 @@ from romutil.parser import (
     parse_circlemud_zone_file,
 )
 from romutil.graph import solve_layout, graph
-from romutil.exporter import build_area_json, export_json, export_html
+from romutil.renderers import build_area_json, export_json, export_html
 from romutil.cli import cli, main
 
 

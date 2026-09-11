@@ -9,7 +9,7 @@ import pyomo.opt
 from pyomo.environ import ConcreteModel, RangeSet, Param, Var, Objective, ConstraintList, Binary, NonNegativeIntegers, SolverFactory
 
 from romutil.models import Direction, Room, Exit, RoomDef
-from romutil.plotter import Plotter
+from romutil.renderers.svg import SVGRenderer as Plotter
 from romutil.renderers import SVGRenderer, render_map
 from romutil.solver import position_dummy_rooms, solve
 
