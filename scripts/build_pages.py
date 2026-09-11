@@ -32,7 +32,7 @@ def resolve_candidate_areas():
 
     for sdir in sample_dirs:
         if sdir.is_dir():
-            for name in ("school.are", "smurf.are"):
+            for name in ("school.are", "midgaard.are"):
                 area_file = sdir / name
                 if area_file.is_file():
                     candidates.append(("quickmud", area_file.stem, area_file, False))
