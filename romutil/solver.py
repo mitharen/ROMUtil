@@ -274,6 +274,7 @@ def add_overlap_constraint(
     relations: int,
     coords: Optional[Mapping[int, Any]] = None,
     has_vertical_exits: bool = True,
+    dummy_anchors: Optional[Mapping[int, tuple[int, int, int, int]]] = None,
 ) -> int:
     """
     Add disjunctive spatial separation constraints between two overlapping exit segments.
@@ -284,7 +285,7 @@ def add_overlap_constraint(
     per overlap constraint (33% reduction in binary decision variables).
 
     Disjunctive Big-M constraints use dimension-specific bounds (2 * Mx, 2 * My, 2 * Mz)
-    rather than monolithic M.
+    rather than monolithic M. Supports affine dummy room endpoints when dummy_anchors is provided.
 
     Returns:
         int: The next relation index (relations + 1).
@@ -324,49 +325,175 @@ def add_overlap_constraint(
     mz = getattr(m, 'Mz', getattr(m, 'M', 100))
     d_min = getattr(m, 'd_min', 1)
 
+    def _get_var_x(v: int):
+        if v in m.Rooms:
+            return m.x[v]
+        if dummy_anchors and v in dummy_anchors:
+            s, dx, _, _ = dummy_anchors[v]
+            if s in m.Rooms:
+                return m.x[s] + dx
+        return 0
+
+    def _get_var_y(v: int):
+        if v in m.Rooms:
+            return m.y[v]
+        if dummy_anchors and v in dummy_anchors:
+            s, _, dy, _ = dummy_anchors[v]
+            if s in m.Rooms:
+                return m.y[s] + dy
+        return 0
+
+    def _get_var_z(v: int):
+        if v in m.Rooms:
+            return m.z[v]
+        if dummy_anchors and v in dummy_anchors:
+            s, _, _, dz = dummy_anchors[v]
+            if s in m.Rooms:
+                return m.z[s] + dz
+        return 0
+
     prod = list(itertools.product((ex.src, ex.dst), (nx.src, nx.dst)))
 
     # East: x[p] - x[q] >= d_min
     if Direction.east in active_dirs:
         for p, q in prod:
             m.crossings.add(
-                m.x[p] - m.x[q] + 2 * mx * ((1 - relation[Direction.east]) + m.cut[left] + m.cut[right]) >= d_min
+                _get_var_x(p) - _get_var_x(q) + (2 * mx + 4) * ((1 - relation[Direction.east]) + m.cut[left] + m.cut[right]) >= d_min
             )
 
     # West: x[q] - x[p] >= d_min
     if Direction.west in active_dirs:
         for p, q in prod:
             m.crossings.add(
-                m.x[q] - m.x[p] + 2 * mx * ((1 - relation[Direction.west]) + m.cut[left] + m.cut[right]) >= d_min
+                _get_var_x(q) - _get_var_x(p) + (2 * mx + 4) * ((1 - relation[Direction.west]) + m.cut[left] + m.cut[right]) >= d_min
             )
 
     # North: y[p] - y[q] >= d_min
     if Direction.north in active_dirs:
         for p, q in prod:
             m.crossings.add(
-                m.y[p] - m.y[q] + 2 * my * ((1 - relation[Direction.north]) + m.cut[left] + m.cut[right]) >= d_min
+                _get_var_y(p) - _get_var_y(q) + (2 * my + 4) * ((1 - relation[Direction.north]) + m.cut[left] + m.cut[right]) >= d_min
             )
 
     # South: y[q] - y[p] >= d_min
     if Direction.south in active_dirs:
         for p, q in prod:
             m.crossings.add(
-                m.y[q] - m.y[p] + 2 * my * ((1 - relation[Direction.south]) + m.cut[left] + m.cut[right]) >= d_min
+                _get_var_y(q) - _get_var_y(p) + (2 * my + 4) * ((1 - relation[Direction.south]) + m.cut[left] + m.cut[right]) >= d_min
             )
 
     # Up: z[p] - z[q] >= d_min
     if Direction.up in active_dirs:
         for p, q in prod:
             m.crossings.add(
-                m.z[p] - m.z[q] + 2 * mz * ((1 - relation[Direction.up]) + m.cut[left] + m.cut[right]) >= d_min
+                _get_var_z(p) - _get_var_z(q) + (2 * mz + 4) * ((1 - relation[Direction.up]) + m.cut[left] + m.cut[right]) >= d_min
             )
 
     # Down: z[q] - z[p] >= d_min
     if Direction.down in active_dirs:
         for p, q in prod:
             m.crossings.add(
-                m.z[q] - m.z[p] + 2 * mz * ((1 - relation[Direction.down]) + m.cut[left] + m.cut[right]) >= d_min
+                _get_var_z(q) - _get_var_z(p) + (2 * mz + 4) * ((1 - relation[Direction.down]) + m.cut[left] + m.cut[right]) >= d_min
             )
+
+    return relations + 1
+
+
+def add_dummy_separation_constraint(
+    m: ConcreteModel,
+    v: int,
+    s: int,
+    dx: int,
+    dy: int,
+    dz: int,
+    relations: int,
+    coords: Optional[Mapping[int, Any]] = None,
+    has_vertical_exits: bool = True,
+) -> int:
+    """
+    Add disjunctive spatial separation constraints between a core room v and
+    an affine dummy stub coordinate anchored at (x_s + dx, y_s + dy, z_s + dz).
+
+    Enforces that room v is separated from the dummy stub by at least 1 unit
+    along at least one axis without introducing new integer decision variables:
+      East:  x_v - x_s >= 1 + dx
+      West:  x_s - x_v >= 1 - dx
+      North: y_v - y_s >= 1 + dy
+      South: y_s - y_v >= 1 - dy
+      Up:    z_v - z_s >= 1 + dz
+      Down:  z_s - z_v >= 1 - dz
+
+    Returns:
+        int: The next relation index (relations + 1).
+    """
+    z_match = False
+    if coords is not None:
+        p_v = _get_coords(coords, v)
+        p_s = _get_coords(coords, s)
+        if p_v is not None and p_s is not None:
+            z_match = (p_v[2] == p_s[2] + dz)
+
+    is_planar = (not has_vertical_exits) or (dz == 0 and (coords is None or z_match))
+
+    if is_planar:
+        active_dirs = [Direction.north, Direction.east, Direction.south, Direction.west]
+    else:
+        active_dirs = [
+            Direction.north,
+            Direction.east,
+            Direction.up,
+            Direction.south,
+            Direction.west,
+            Direction.down,
+        ]
+
+    relation = Var(active_dirs, within=Boolean)
+    m.add_component(f'dummy_rel_{relations}', relation)
+    m.crossings.add(sum(relation[d] for d in active_dirs) >= 1)
+
+    mx = getattr(m, 'Mx', getattr(m, 'M', 100))
+    my = getattr(m, 'My', getattr(m, 'M', 100))
+    mz = getattr(m, 'Mz', getattr(m, 'M', 100))
+
+    big_mx = 2 * mx + 4
+    big_my = 2 * my + 4
+    big_mz = 2 * mz + 4
+
+    # East: x_v - x_s >= 1 + dx
+    if Direction.east in active_dirs:
+        m.crossings.add(
+            m.x[v] - m.x[s] + big_mx * (1 - relation[Direction.east]) >= 1 + dx
+        )
+
+    # West: x_s - x_v >= 1 - dx
+    if Direction.west in active_dirs:
+        m.crossings.add(
+            m.x[s] - m.x[v] + big_mx * (1 - relation[Direction.west]) >= 1 - dx
+        )
+
+    # North: y_v - y_s >= 1 + dy
+    if Direction.north in active_dirs:
+        m.crossings.add(
+            m.y[v] - m.y[s] + big_my * (1 - relation[Direction.north]) >= 1 + dy
+        )
+
+    # South: y_s - y_v >= 1 - dy
+    if Direction.south in active_dirs:
+        m.crossings.add(
+            m.y[s] - m.y[v] + big_my * (1 - relation[Direction.south]) >= 1 - dy
+        )
+
+    # Up: z_v - z_s >= 1 + dz
+    if Direction.up in active_dirs:
+        m.crossings.add(
+            m.z[v] - m.z[s] + big_mz * (1 - relation[Direction.up]) >= 1 + dz
+        )
+
+    # Down: z_s - z_v >= 1 - dz
+    if Direction.down in active_dirs:
+        m.crossings.add(
+            m.z[s] - m.z[v] + big_mz * (1 - relation[Direction.down]) >= 1 - dz
+        )
 
     return relations + 1
 
@@ -659,6 +786,7 @@ def solve(rdb, area_exits, timeout=None):
 
     timeout_sec = 30 if timeout is None else int(timeout)
     solver = get_cbc_solver(timeout=timeout_sec)
+    constrained_dummy_collisions: set[tuple[int, int]] = set()
 
     while True:
         result = solver.solve(m, tee=False)
@@ -706,6 +834,38 @@ def solve(rdb, area_exits, timeout=None):
         }
         cut_values = [bool(m.cut[i].value) for i in range(len(exits))]
 
+        # Check for room-to-dummy point collisions
+        for dv, anchor in dummy_anchors.items():
+            src_vnum, dx, dy, dz = anchor
+            if src_vnum not in m.Rooms:
+                continue
+            d_pos = _get_coords(coords, dv)
+            if d_pos is None:
+                continue
+            for vnum in non_dummy_rooms:
+                if vnum == src_vnum:
+                    continue
+                v_pos = _get_coords(coords, vnum)
+                if v_pos is not None and v_pos == d_pos:
+                    if (vnum, dv) not in constrained_dummy_collisions:
+                        constrained_dummy_collisions.add((vnum, dv))
+                        relations = add_dummy_separation_constraint(
+                            m,
+                            vnum,
+                            src_vnum,
+                            dx,
+                            dy,
+                            dz,
+                            relations,
+                            coords=coords,
+                            has_vertical_exits=has_vertical_exits,
+                        )
+                        added_constraints += 1
+                        log.info(
+                            f'Separated core room {vnum} from colliding dummy stub {dv} '
+                            f'(anchored to {src_vnum} with offset {(dx, dy, dz)})'
+                        )
+
         overlapping_pairs = find_overlap_candidates(
             exits,
             coords,
@@ -717,12 +877,10 @@ def solve(rdb, area_exits, timeout=None):
 
         for left, right in tqdm.tqdm(overlapping_pairs, desc='Finding Overlaps'):
             ex, nx = (exits[left], exits[right])
-            if (
-                ex.src not in m.Rooms
-                or ex.dst not in m.Rooms
-                or nx.src not in m.Rooms
-                or nx.dst not in m.Rooms
-            ):
+            def _endpoint_valid(v: int) -> bool:
+                return v in m.Rooms or (v in dummy_anchors and dummy_anchors[v][0] in m.Rooms)
+
+            if not (_endpoint_valid(ex.src) and _endpoint_valid(ex.dst) and _endpoint_valid(nx.src) and _endpoint_valid(nx.dst)):
                 non_incidents.discard((left, right))
                 continue
 
@@ -735,11 +893,12 @@ def solve(rdb, area_exits, timeout=None):
                 relations,
                 coords=coords,
                 has_vertical_exits=has_vertical_exits,
+                dummy_anchors=dummy_anchors,
             )
 
             non_incidents.discard((left, right))
             added_constraints += 1
-            if added_constraints == batch_target:
+            if added_constraints >= batch_target:
                 break
         else:
             if not added_constraints:

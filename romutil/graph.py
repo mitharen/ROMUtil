@@ -147,13 +147,63 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
 
     exits = list(set([e for r in rdb.values() for e in r.exits]))
 
+    # Decouple external exits and multi-source destinations
+    claimed_targets: set[int] = set()
+    next_synth_vnum = -1
+
     for e in exits:
-        if e.dst == -1:
-            e.dst = max(rdb.keys()) + 1
-        if e.dst not in rdb:
-            rdb[e.dst] = Room(RoomDef(vnum=e.dst, name='', description='', exits=()))
-            rdb[e.dst].exits.append(e)
-            rdb[e.dst].dummy = True
+        orig_dst = getattr(e, 'target_vnum', None)
+        if orig_dst is None:
+            orig_dst = e.dst
+
+        # Check if destination is external (not a non-dummy core room in rdb)
+        is_external = (
+            e.dst == -1
+            or orig_dst == -1
+            or e.dst not in rdb
+            or getattr(rdb.get(e.dst), 'dummy', False)
+        )
+        if not is_external:
+            continue
+
+        e.target_vnum = orig_dst
+
+        # If it is a valid non-negative target VNUM not yet claimed by another exit
+        if orig_dst != -1 and orig_dst not in claimed_targets and orig_dst not in rdb:
+            claimed_targets.add(orig_dst)
+            dummy_room = Room(RoomDef(vnum=orig_dst, name=f'External {orig_dst}', description='', exits=()), target_vnum=orig_dst)
+            dummy_room.dummy = True
+            dummy_room.exits.append(e)
+            rdb[orig_dst] = dummy_room
+            e.dst = orig_dst
+            if e.src in original_exits:
+                for oe in original_exits[e.src]:
+                    if oe.direction == e.direction and oe.dst == orig_dst:
+                        oe.target_vnum = orig_dst
+                        break
+        else:
+            # Multi-source external exit or unresolved dst == -1: decouple into dedicated synthetic dummy room
+            while next_synth_vnum in rdb:
+                next_synth_vnum -= 1
+            synth_vnum = next_synth_vnum
+            next_synth_vnum -= 1
+
+            dummy_name = f'External {orig_dst}' if orig_dst != -1 else 'Unresolved'
+            dummy_room = Room(RoomDef(vnum=synth_vnum, name=dummy_name, description='', exits=()), target_vnum=orig_dst)
+            dummy_room.dummy = True
+            dummy_room.exits.append(e)
+            rdb[synth_vnum] = dummy_room
+
+            # Update the exit to point to the dedicated dummy room
+            e.dst = synth_vnum
+
+            # Update matching exit in original_exits so that exit restoration retains decoupled stub
+            if e.src in original_exits:
+                for oe in original_exits[e.src]:
+                    if oe.direction == e.direction and (oe.dst == orig_dst or oe.dst == -1):
+                        oe.dst = synth_vnum
+                        oe.target_vnum = orig_dst
+                        break
 
     if not len(exits):
         log.warning(f'Ignoring disconnected room: {list(rdb.keys())}')

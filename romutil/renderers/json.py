@@ -78,12 +78,17 @@ def build_area_json(
         exits_data = []
         for e in sorted_exits:
             dir_name = e.direction.name if hasattr(e.direction, 'name') else str(e.direction)
-            exits_data.append({
+            target = getattr(e, 'target_vnum', None)
+            dst_val = target if target is not None and target != -1 else e.dst
+            exit_dict = {
                 'direction': dir_name,
-                'dst': int(e.dst),
+                'dst': int(dst_val),
                 'distance': int(e.distance),
                 'one_way': bool(getattr(e, 'one_way', False)),
-            })
+            }
+            if target is not None:
+                exit_dict['target_vnum'] = int(target)
+            exits_data.append(exit_dict)
 
         rooms_data.append({
             'vnum': int(r.vnum),

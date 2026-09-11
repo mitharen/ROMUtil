@@ -252,6 +252,7 @@ class Exit:
         src: int | None = None,
         dst: int | None = None,
         direction: Direction | int | None = None,
+        target_vnum: int | None = None,
     ) -> None:
         effective_source = source if source is not None else src
         if effective_source is None:
@@ -260,22 +261,29 @@ class Exit:
         self.distance = distance
         self.one_way = False
         self.cut = False
+        self.target_vnum: int | None = target_vnum
 
         if e is not None:
             if isinstance(e, ExitDef):
                 self.dst = e.dst_vnum
                 self.direction = Direction(direction_matrix[e.direction])
+                if self.target_vnum is None:
+                    self.target_vnum = e.dst_vnum
             elif isinstance(e, Exit):
                 self.dst = e.dst
                 self.direction = e.direction
                 self.one_way = e.one_way
                 self.cut = getattr(e, 'cut', False)
+                if self.target_vnum is None:
+                    self.target_vnum = getattr(e, 'target_vnum', None)
                 if distance == 1 and e.distance != 1:
                     self.distance = e.distance
             else:
                 raise TypeError(f"Expected ExitDef or Exit, got {type(e).__name__}")
         elif dst is not None and direction is not None:
             self.dst = dst
+            if self.target_vnum is None:
+                self.target_vnum = dst
             if isinstance(direction, Direction):
                 self.direction = direction
             else:
@@ -314,9 +322,11 @@ class Room:
         desc: str = "",
         description: str | None = None,
         exits: list[Exit] | tuple[ExitDef, ...] | list[ExitDef] | None = None,
+        target_vnum: int | None = None,
     ) -> None:
         self.fixups: list[Any] = []
         self.dummy = False
+        self.target_vnum: int | None = target_vnum
         self.x: int | None = None
         self.y: int | None = None
         self.z: int | None = None
@@ -333,6 +343,8 @@ class Room:
                 self.desc = r.desc
                 self.exits = list(r.exits)
                 self.dummy = r.dummy
+                if self.target_vnum is None:
+                    self.target_vnum = getattr(r, 'target_vnum', None)
                 self.fixups = list(r.fixups)
                 self.x = r.x
                 self.y = r.y

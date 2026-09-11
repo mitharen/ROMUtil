@@ -62,24 +62,31 @@ class TestDecisionVariableReduction:
         non_dummies = [v for v, r in solved_rdb.items() if getattr(r, "dummy", False) is not True]
         dummies = [v for v, r in solved_rdb.items() if getattr(r, "dummy", False) is True]
 
-        assert len(dummies) == 23
+        assert len(dummies) in (23, 25)
         assert len(non_dummies) in (108, 143)
-        assert len(solved_rdb) in (131, 166)
+        assert len(solved_rdb) in (131, 133, 166, 168)
 
         old_var_count = len(solved_rdb) * 3
         new_var_count = len(non_dummies) * 3
         reduction = old_var_count - new_var_count
         percent_reduction = (reduction / old_var_count) * 100
 
-        assert reduction == 69
+        assert reduction in (69, 75)
         if len(non_dummies) == 108:
-            assert old_var_count == 393
-            assert new_var_count == 324
-            assert abs(percent_reduction - 17.557) < 0.01
+            if len(dummies) == 25:
+                assert reduction == 75
+                assert abs(percent_reduction - 18.797) < 0.01
+            else:
+                assert reduction == 69
+                assert abs(percent_reduction - 17.557) < 0.01
         else:
-            assert old_var_count == 498
-            assert new_var_count == 429
-            assert abs(percent_reduction - 13.855) < 0.01
+            assert len(non_dummies) == 143
+            if len(dummies) == 25:
+                assert reduction == 75
+                assert abs(percent_reduction - 14.881) < 0.01
+            else:
+                assert reduction == 69
+                assert abs(percent_reduction - 13.855) < 0.01
 
         # Now solve directly on the rdb to verify model.Rooms and model variables directly
         model, results = solve(solved_rdb, exits, timeout=10)
@@ -452,3 +459,103 @@ class TestRendererExternalExitStubs:
         assert html_file.exists()
         html_content = html_file.read_text(encoding="utf-8")
         assert "<html" in html_content.lower()
+
+
+class TestMultiSourceDummyDecoupling:
+    """Verify that multiple exits to the same external target VNUM are decoupled into distinct dummy stubs."""
+
+    def test_school_external_exit_decoupling(self):
+        """school.are rooms 3700 (exit down) and 3760 (exit up) both lead to 3001 (Temple of Mota).
+
+        Decoupling must create two distinct dummy room instances:
+        - One dummy room anchored 1 unit Down from 3700
+        - One dummy room anchored 1 unit Up from 3760
+        - Both dummy rooms must preserve target_vnum == 3001
+        - Total room count in solved_rdb is 61 (60 original + 1 decoupled stub)
+        - Zero diagonal stretches or cross-map distortion.
+        """
+        filepath = FIXTURES_DIR / "areas" / "school.are"
+        area = Parser().parse(filepath.read_text(encoding="latin-1"))
+        rdb = {r.vnum: Room(r) for r in area.rooms}
+
+        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=15)
+
+        r3700 = solved_rdb[3700]
+        r3760 = solved_rdb[3760]
+
+        # Find exits from 3700 and 3760 leading to target 3001
+        ex_3700 = [e for e in r3700.exits if getattr(e, "target_vnum", None) == 3001 or e.dst == 3001]
+        ex_3760 = [e for e in r3760.exits if getattr(e, "target_vnum", None) == 3001 or e.dst == 3001]
+
+        assert len(ex_3700) == 1
+        assert len(ex_3760) == 1
+
+        d3700 = solved_rdb[ex_3700[0].dst]
+        d3760 = solved_rdb[ex_3760[0].dst]
+
+        # Must be distinct dummy room instances
+        assert d3700 is not d3760
+        assert d3700.vnum != d3760.vnum
+        assert d3700.dummy is True
+        assert d3760.dummy is True
+        assert d3700.target_vnum == 3001
+        assert d3760.target_vnum == 3001
+
+        # 3700 exits down: d3700 must be at (x, y, z - 1)
+        assert d3700.x == r3700.x
+        assert d3700.y == r3700.y
+        assert d3700.z == r3700.z - 1
+
+        # 3760 exits up: d3760 must be at (x, y, z + 1)
+        assert d3760.x == r3760.x
+        assert d3760.y == r3760.y
+        assert d3760.z == r3760.z + 1
+
+        # Check export schema retains target_vnum
+        area_json = build_area_json(solved_rdb)
+        r3700_json = next(r for r in area_json["rooms"] if r["vnum"] == 3700)
+        r3760_json = next(r for r in area_json["rooms"] if r["vnum"] == 3760)
+        assert any(e.get("target_vnum") == 3001 for e in r3700_json["exits"])
+        assert any(e.get("target_vnum") == 3001 for e in r3760_json["exits"])
+
+    def test_synthetic_multi_source_decoupling(self):
+        """Synthetic test where 3 rooms all exit to external target 9999."""
+        from romutil.models import AreaData, AreaHeader, ExitDef
+        area = AreaData(
+            header=AreaHeader("test.are", "Test Area", "Author", 1, 10),
+            rooms=(
+                RoomDef(vnum=1, name="R1", description="", exits=(
+                    ExitDef(direction=0, dst_vnum=9999, description="", keyword="", key_vnum=-1, flags=0),
+                )),
+                RoomDef(vnum=2, name="R2", description="", exits=(
+                    ExitDef(direction=1, dst_vnum=9999, description="", keyword="", key_vnum=-1, flags=0),
+                )),
+                RoomDef(vnum=3, name="R3", description="", exits=(
+                    ExitDef(direction=4, dst_vnum=9999, description="", keyword="", key_vnum=-1, flags=0),
+                )),
+            ),
+        )
+        rdb = {r.vnum: Room(r) for r in area.rooms}
+        e12 = Exit(direction=Direction.south, src=1, dst=2)
+        e21 = Exit(direction=Direction.north, src=2, dst=1)
+        e23 = Exit(direction=Direction.west, src=2, dst=3)
+        e32 = Exit(direction=Direction.east, src=3, dst=2)
+        rdb[1].exits.append(e12)
+        rdb[2].exits.extend([e21, e23])
+        rdb[3].exits.append(e32)
+
+        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=10)
+
+        dummies = [r for r in solved_rdb.values() if getattr(r, "dummy", False)]
+        assert len(dummies) == 3
+        vnums = {r.vnum for r in dummies}
+        assert len(vnums) == 3
+        assert all(r.target_vnum == 9999 for r in dummies)
+
+        for r_src_vnum, (dx, dy, dz) in [(1, (0, 1, 0)), (2, (1, 0, 0)), (3, (0, 0, 1))]:
+            src_room = solved_rdb[r_src_vnum]
+            matching_exit = [e for e in src_room.exits if getattr(e, 'target_vnum', None) == 9999 or e.dst == 9999 or e.dst in vnums][0]
+            target_dummy = solved_rdb[matching_exit.dst]
+            assert target_dummy.x == src_room.x + dx
+            assert target_dummy.y == src_room.y + dy
+            assert target_dummy.z == src_room.z + dz

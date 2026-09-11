@@ -158,9 +158,9 @@ Before invoking the mathematical optimization engine, the area graph is simplifi
 
 1. **Hallway Condensation (`graph`)**:
    Rooms with in-degree/out-degree 2 and collinear opposing exits (e.g., East and West) form straight corridors. `graph()` trims intermediate rooms, links the boundary endpoints with a single aggregate edge spanning the combined distance, and registers collapsed room sequences into `parent.fixups`. This contracts the active vertex count by 30–60% on typical MUD topologies prior to MILP formulation.
-2. **External Boundary Dummy Preparation (`graph`)**:
-   - Exits pointing to unresolved destinations (`dst == -1`) receive synthetic VNUMs `max(rdb.keys()) + 1`.
-   - Exits leading outside the area file instantiate lightweight dummy room records (`room.dummy = True`).
+2. **External Boundary Dummy Decoupling & Preparation (`graph`)**:
+   - **Multi-Source External Exit Decoupling**: When multiple rooms in an area file feature exits leading to the same external target VNUM (e.g. `school.are` rooms 3700 and 3760 exiting to external room 3001), each exit is decoupled into a dedicated synthetic dummy stub instance (`room.dummy = True`) assigned unique synthetic negative VNUMs while preserving `target_vnum`. This prevents multi-source external exits from anchoring to a single shared spatial point and eliminates long diagonal cross-map edge stretching or zero-length collapse across the layout.
+   - **Unresolved Exit Stubbing**: Exits pointing to unresolved destinations (`dst == -1`) receive dedicated synthetic dummy stubs (`room.dummy = True`).
    - Boundary dummy rooms are excluded from the Pyomo decision space, eliminating unconstrained floating variables during branch-and-cut exploration.
 3. **Connected Component Decomposition (`decompose_components`)**:
    - **Partitioning**: Constructs an undirected topological graph $G = (V_{\text{core}}, E_{\text{core}})$ over non-dummy rooms and internal exits. Disconnected subgraphs are partitioned into $k$ independent weakly connected components $\{C_1, C_2, \dots, C_k\}$ using `networkx.connected_components()`.
@@ -205,6 +205,16 @@ To eliminate unconstrained floating rooms in $[-M_x, M_x] \times [-M_y, M_y] \ti
    When secondary one-way exits connect back to a dummy room (e.g. exit $w \to v$), one-way distance constraints substitute the affine expression $\mathbf{x}_u + \mathbf{d}_{\text{exit}}(e)$ directly in place of $\mathbf{x}_v$, preserving multi-floor vertical separation without instantiating integer variables.
 3. **Deterministic Post-Solve Positioning**:
    Following optimization and hallway corridor restoration, `position_dummy_rooms(rdb, exits)` anchors each dummy room exactly 1 unit distance in the nominal exit direction from its primary source room, ensuring consistent geometric placement for external exit stubs in SVG, JSON, and HTML renderers.
+4. **Disjunctive Dummy Stub Collision Avoidance**:
+   Because boundary dummy rooms are omitted from $m.\text{Rooms}$ and represented as affine linear expressions $\mathbf{x}_{\text{dummy}} = \mathbf{x}_s + \mathbf{d}_{\text{exit}}$, core rooms could theoretically occupy identical spatial coordinates to an adjacent dummy stub if unconstrained. During iterative collision detection, room-to-dummy point collisions ($\mathbf{x}_v = \mathbf{x}_s + \mathbf{d}$) are identified and resolved by generating disjunctive Big-M separation constraints:
+   $$x_v - x_s \ge 1 + dx - M_{\text{sep}} (1 - \text{relation}_x)$$
+   $$x_s - x_v \ge 1 - dx - M_{\text{sep}} (1 - \text{relation}_{-x})$$
+   $$y_v - y_s \ge 1 + dy - M_{\text{sep}} (1 - \text{relation}_y)$$
+   $$y_s - y_v \ge 1 - dy - M_{\text{sep}} (1 - \text{relation}_{-y})$$
+   $$z_v - z_s \ge 1 + dz - M_{\text{sep}} (1 - \text{relation}_z)$$
+   $$z_s - z_v \ge 1 - dz - M_{\text{sep}} (1 - \text{relation}_{-z})$$
+   $$\sum_{d \in \mathcal{D}_{\text{active}}} \text{relation}_d \ge 1, \quad \text{relation}_d \in \{0, 1\}$$
+   where safe bounds $M_{\text{sep}} = 2 M_d + 4$ prevent infeasibility and guarantee zero spatial collisions between core rooms and dummy stubs without introducing integer decision variables for the dummy stubs.
 
 #### Dynamic Dimension-Specific Big-M Bounds ($M_x, M_y, M_z$):
 Dimension-specific upper bounds are derived from directional exit components:
