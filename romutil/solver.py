@@ -292,10 +292,12 @@ def add_overlap_constraint(
     """
     z_match = False
     if coords is not None:
-        p1 = _get_coords(coords, ex.src)
-        p2 = _get_coords(coords, nx.src)
-        if p1 is not None and p2 is not None:
-            z_match = (p1[2] == p2[2])
+        p1_src = _get_coords(coords, ex.src)
+        p1_dst = _get_coords(coords, ex.dst)
+        p2_src = _get_coords(coords, nx.src)
+        p2_dst = _get_coords(coords, nx.dst)
+        if p1_src is not None and p1_dst is not None and p2_src is not None and p2_dst is not None:
+            z_match = (p1_src[2] == p1_dst[2] == p2_src[2] == p2_dst[2])
 
     is_horizontal_pair = (
         ex.direction not in (Direction.up, Direction.down)
@@ -578,9 +580,6 @@ def non_euler(rdb, exits):
             if e.direction not in (Direction.north, Direction.south):
                 m.relative_pos.add(m.y[e.src] - m.y[e.dst] + 2 * m.My * m.cut[i] >= 0)
                 m.relative_pos.add(m.y[e.dst] - m.y[e.src] + 2 * m.My * m.cut[i] >= 0)
-            if e.direction not in (Direction.up, Direction.down):
-                m.relative_pos.add(m.z[e.src] - m.z[e.dst] + 2 * m.Mz * m.cut[i] >= 0)
-                m.relative_pos.add(m.z[e.dst] - m.z[e.src] + 2 * m.Mz * m.cut[i] >= 0)
 
             if e.direction == Direction.east:
                 m.relative_pos.add(m.x[e.dst] - m.x[e.src] + 2 * m.Mx * m.cut[i] >= 1)
@@ -654,6 +653,7 @@ def solve(rdb, area_exits, timeout=None):
     m.z = Var(m.Rooms, within=Integers, bounds=(-m.Mz, m.Mz))
     m.cut = Var(m.Exits, within=Binary)
     m.l_max = Var(m.Exits, within=PositiveIntegers)
+    m.dz = Var(m.Exits, within=NonNegativeIntegers)
     m.one_ways = VarList(within=NonNegativeIntegers, bounds=(0, 2 * m.M))
 
     m.relative_pos = ConstraintList()
@@ -747,8 +747,8 @@ def solve(rdb, area_exits, timeout=None):
                 m.relative_pos.add(m.y[x.src] + 2 * m.My * m.cut[i] >= m.y[x.dst])
                 m.relative_pos.add(m.y[x.dst] + 2 * m.My * m.cut[i] >= m.y[x.src])
             if x.direction not in (Direction.up, Direction.down):
-                m.relative_pos.add(m.z[x.src] + 2 * m.Mz * m.cut[i] >= m.z[x.dst])
-                m.relative_pos.add(m.z[x.dst] + 2 * m.Mz * m.cut[i] >= m.z[x.src])
+                m.relative_pos.add(m.dz[i] >= m.z[x.dst] - m.z[x.src])
+                m.relative_pos.add(m.dz[i] >= m.z[x.src] - m.z[x.dst])
 
             if x.direction == Direction.east:
                 m.relative_pos.add(m.x[x.dst] - m.x[x.src] + 2 * m.Mx * m.cut[i] >= m.l_min[i])
@@ -772,6 +772,7 @@ def solve(rdb, area_exits, timeout=None):
     m.obj = Objective(
         expr=m.M * m.M * (sum(m.cut[i] for i in range(len(exits))))
         + sum([m.l_max[e] for e in m.Exits])
+        + sum([m.dz[e] for e in m.Exits])
         + sum([way for way in one_ways])
     )
 

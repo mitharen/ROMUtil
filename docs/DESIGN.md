@@ -192,6 +192,7 @@ The layout is formulated as a Mixed-Integer Linear Program (MILP) using **Pyomo*
 - `m.x[r]`, `m.y[r]`, `m.z[r]`: Integer coordinates for each non-dummy room $r \in m.\text{Rooms}$, tightly bounded in $[-M_x, M_x]$, $[-M_y, M_y]$, $[-M_z, M_z]$ (boundary dummy rooms are excluded from the decision space).
 - `m.cut[e]`: Binary variable indicating if an exit $e$ is "cut" (relaxed from geometric constraints).
 - `m.l_max[e]`: Positive integer measuring the maximum rendered length of exit $e$.
+- `m.dz[e]`: Non-negative integer representing elevation slack $|z_{\text{dst}} - z_{\text{src}}|$ for horizontal bidirectional exits.
 - `m.one_ways`: Variables bounding Manhattan distance between one-way endpoints, bounded in $[0, 2M]$.
 
 #### Boundary Dummy Room Elimination & Affine Anchoring:
@@ -228,8 +229,11 @@ $$M_x = \max\left(10, \sum_{e, \Delta x \neq 0} |\Delta x| + 1\right), \quad M_y
    $$x_v - x_u + 2 M_x \cdot \text{cut}_e \ge l_{\min}(e)$$
    $$x_v - x_u - 2 M_x \cdot \text{cut}_e \le l_{\max}(e)$$
    *(analogously using $2 M_y$ for North/South exits and $2 M_z$ for Up/Down exits).*
-2. **Axis Alignment**:
-   Non-cardinal axes are constrained to match (e.g., East exits enforce $y_u = y_v$ and $z_u = z_v$ unless cut).
+2. **Axis Alignment & Elevation Slack**:
+   Horizontal exits enforce rigid alignment on their perpendicular horizontal axis ($y_u = y_v$ for East/West exits, $x_u = x_v$ for North/South exits, relaxed by $2 M \cdot \text{cut}_e$). Along the elevation axis ($Z$), horizontal bidirectional exits do not enforce rigid $z_u = z_v$; instead, an elevation slack variable $dz_e \ge 0$ captures vertical elevation steps:
+   $$dz_e \ge z_v - z_u$$
+   $$dz_e \ge z_u - z_v$$
+   For vertical exits (Up/Down), horizontal axes are rigidly aligned ($x_u = x_v, y_u = y_v$ unless cut) and vertical progression is enforced along $Z$.
 3. **Cut Relaxation**:
    If an area contains contradictory cycles (e.g., a maze or non-Euclidean loop), `cut[e] = 1` disables the strict geometric distance requirement for that edge.
 4. **Directional Half-Space Constraints for One-Way Exits**:
@@ -243,9 +247,10 @@ $$M_x = \max\left(10, \sum_{e, \Delta x \neq 0} |\Delta x| + 1\right), \quad M_y
    where dummy room endpoints resolve to affine expressions $x_u + d_{\text{exit}}(e)$. Combined with the soft $L_1$ proximity penalty $\sum \text{dist}_{\text{one-way}}$, these constraints guarantee that one-way exits strictly preserve true builder orientation without 180° inversion under topological tension, while permitting binary cut relaxation ($\text{cut}_i = 1$) only when non-Euclidean directed cycles mathematically require it. Orthogonal coordinates naturally achieve compact, collinear alignment via soft $L_1$ proximity minimization without imposing rigid orthogonal equality constraints, ensuring that topologies with converging one-way exits (such as arena funnels or multi-room exits to safe rooms) remain feasible, avoid duplicate coordinate collisions, and avoid combinatorial explosion.
 
 #### Objective Function:
-$$\min \left( M^2 \sum \text{cut}_e + \sum l_{\max}(e) + \sum \text{dist}_{\text{one-way}} \right)$$
+$$\min \left( M^2 \sum \text{cut}_e + \sum l_{\max}(e) + \sum dz_e + \sum \text{dist}_{\text{one-way}} \right)$$
 - Heavy penalty ($M^2$) prevents cutting exits unless mathematically unavoidable.
 - Minimizes overall exit lengths to keep rooms compact.
+- Elevation slack penalty ($\sum dz_e$) keeps planar rooms on the same horizontal plane ($dz_e = 0$) by default, while allowing elevation ramps, hillsides, and mountain slopes to step across elevation tiers ($dz_e \ge 1$) smoothly without incurring spurious $M^2$ binary cuts.
 - Keeps one-way endpoints clustered near each other within their feasible forward half-space.
 
 #### Lazy Collision Avoidance & Sweep-Line Spatial Indexing:
