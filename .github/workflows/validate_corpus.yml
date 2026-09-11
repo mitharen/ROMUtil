@@ -1,0 +1,50 @@
+name: Validate External Corpus
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Target repository name or 'all'"
+        required: false
+        default: "all"
+        type: string
+      dialect:
+        description: "Target codebase dialect (e.g. rom, merc, envy, diku, circlemud, smaug, anatolia, ackmud) or 'all'"
+        required: false
+        default: "all"
+        type: string
+      limit:
+        description: "Max area files to parse per repository"
+        required: false
+        default: "5"
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: External Corpus Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run corpus validation
+        run: uv run python scripts/validate_corpus.py --repo "${{ inputs.repo }}" --dialect "${{ inputs.dialect }}" --limit "${{ inputs.limit }}" --summary-json "corpus_summary.json"
+
+      - name: Upload validation summary
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: corpus-validation-summary
+          path: corpus_summary.json

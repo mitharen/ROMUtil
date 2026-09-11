@@ -429,6 +429,47 @@ Map visualization assets are generated on demand rather than committed as static
 
 ---
 
+### 4.9. Bulk External Corpus Validation Harness — [`scripts/validate_corpus.py`](../scripts/validate_corpus.py)
+
+To verify parser robustness, multi-dialect compatibility, and grammar resilience without bloating version control history or distributing megabytes of third-party assets, ROMUtil provides an on-demand external corpus verification harness and CI workflow:
+
+1. **On-Demand Ephemeral Verification Architecture**:
+   Rather than bundling hundreds of authentic historical MUD area files into the Git repository, the validation harness fetches upstream public repositories on demand using shallow clones (`git clone --depth 1`) target-pinned to immutable commit SHAs. Cloned repositories reside in an ephemeral local cache directory (`.corpus_cache/`, ignored in version control), eliminating repository bloat.
+
+2. **Authoritative Repository Registry**:
+   The validation harness defines a structured registry (`REPOSITORY_REGISTRY`) mirroring the verified catalog in [`docs/MUD_REPOSITORIES.md`](MUD_REPOSITORIES.md), spanning 15 canonical codebases across 8 dialect lineages:
+   - **ROM Family**: QuickMUD (`avinson/rom24-quickmud`), ROM 2.4b6 (`DikuMUDOmnibus/ROM`), RaM-Fire (`DikuMUDOmnibus/RaM-Fire`).
+   - **Merc Family**: Merc 2.1 (`alexmchale/merc-mud`), Merc 2.2 (`iam-TJ/merc`).
+   - **Envy Family**: EnvyMUD (`lolindrath/EnvyMUD`), Ultra-Envy (`DikuMUDOmnibus/Ultra-Envy`).
+   - **DikuMUD Core**: DikuMUD Alfa (`Seifert69/DikuMUD`).
+   - **CircleMUD Family**: CircleMUD 3.1 (`Yuffster/CircleMUD`), tbaMUD (`tbamud/tbamud`).
+   - **SMAUG Lineage**: SmaugFUSS (`Arthmoor/SmaugFUSS`), SMAUG Core (`smaugmuds/_smaug_`).
+   - **ANATOLIA Lineage**: ANATOLIA 3.0 (`jaromil/anatoliamud`).
+   - **ACK!MUD Lineage**: AckFUSS (`Kline-/ackfuss`), AckMUD Classic (`DikuMUDOmnibus/AckMUD`).
+
+3. **Filtering & Execution Control**:
+   The CLI interface (`scripts/validate_corpus.py`) supports granular execution targeting:
+   - `--repo`: Target specific repository name or slug (or `'all'`).
+   - `--dialect`: Target specific dialect (`rom`, `merc`, `envy`, `diku`, `circlemud`, `smaug`, `anatolia`, `ackmud`, or `'all'`).
+   - `--limit`: Maximum area files parsed per repository (integer $\ge 1$).
+   - `--cache-dir`: Local shallow clone destination (defaults to `.corpus_cache`).
+   - `--summary-json`: Destination path for structured JSON metrics reporting.
+   - `--dry-run`: Displays planned fetch and verification steps without network downloads or file parsing.
+   - `--verbose` / `-v`: Emits per-file room and exit extraction telemetry.
+
+4. **Metrics Tracking & Structured Telemetry**:
+   Each discovered `.are` or `.wld` area file is ingested through [`Parser().parse()`](../romutil/parser.py), tracking:
+   - Files scanned vs. files successfully parsed.
+   - Total room vertex and directional exit counts extracted.
+   - Failure diagnostics including exception types, error messages, and full execution tracebacks.
+   - Aggregate success rates across repositories and dialect families.
+   - Structured JSON output (`corpus_summary.json`) capturing full execution telemetry.
+
+5. **Continuous Integration Workflow ([`.github/workflows/validate_corpus.yml`](../.github/workflows/validate_corpus.yml))**:
+   An on-demand GitHub Actions workflow provides manual triggering via `workflow_dispatch` with configurable inputs (`repo`, `dialect`, `limit`). The workflow executes in Ubuntu Linux with `uv`, runs the validation harness, and uploads `corpus_summary.json` as a build artifact for regression inspection.
+
+---
+
 ## 5. Testing & Verification Workflow
 
 The development workflow is standardized using **`uv`**, **`pytest`**, and **`pre-commit`**:
