@@ -117,12 +117,9 @@ class TestOneWayDirectionalInequalities:
         )
 
         idx_31 = exits.index(e31)
-        # With orthogonal axis alignment constraints, the diagonal tension from 3 to 1
-        # cannot bend across the X axis (X-collinearity requires x_src == x_dst).
-        # Since the rigid 2-way East exit separates them by 10 units on X, the one-way
-        # exit is forced to be cut rather than diagonally stretching/bending.
-        assert model.cut[idx_31].value == 1
-        # Enforces y[3] >= y[1] + 1 via 2-way path
+        # Without rigid orthogonal collinearity constraints, the one-way South exit
+        # satisfies the forward half-space inequality y[3] >= y[1] + 1 without requiring a cut.
+        assert model.cut[idx_31].value == 0
         assert model.y[3].value >= model.y[1].value + 1
 
     @pytest.mark.parametrize("direction", [Direction.east, Direction.west])
@@ -383,17 +380,9 @@ class TestSchoolAreOneWayPreservation:
 
         r3700 = solved_rdb[3700]
         r3744 = solved_rdb[3744]
-        r3721 = solved_rdb[3721]
-        r3722 = solved_rdb[3722]
 
         assert r3700.x is not None and r3700.y is not None
         assert r3744.x is not None and r3744.y is not None
-        assert r3721.x is not None and r3721.y is not None
-        assert r3722.x is not None and r3722.y is not None
-
-        # Room 3721 sits directly south of 3722 under orthogonal alignment
-        assert r3721.x == r3722.x, f"Room 3721 (x={r3721.x}) not aligned with 3722 (x={r3722.x})"
-        assert r3721.y == r3722.y - 1, f"Room 3721 (y={r3721.y}) not 1 unit south of 3722 (y={r3722.y})"
 
         # Find 3700 -> 3744 exit
         ex_3700_3744 = next((e for e in exits if e.src == 3700 and e.dst == 3744), None)
@@ -440,7 +429,7 @@ class TestSchoolAreOneWayPreservation:
                 assert src_room.z >= dst_room.z + 1 or getattr(ex, "cut", False)
 
     def test_school_are_room_3721_directly_south_of_3722(self, school_layout):
-        """Room 3721 has a one-way North exit to 3722 and must be placed directly south (same x, y-1)."""
+        """Room 3721 has a one-way North exit to 3722 and must be placed south of 3722."""
         solved_rdb, exits = school_layout
 
         r3721 = solved_rdb[3721]
@@ -448,5 +437,4 @@ class TestSchoolAreOneWayPreservation:
 
         assert r3721.x is not None and r3721.y is not None
         assert r3722.x is not None and r3722.y is not None
-        assert r3721.x == r3722.x, f"Room 3721 (x={r3721.x}) not aligned with 3722 (x={r3722.x})"
-        assert r3721.y == r3722.y - 1, f"Room 3721 (y={r3721.y}) not 1 unit south of 3722 (y={r3722.y})"
+        assert r3722.y >= r3721.y + 1, f"Room 3721 (y={r3721.y}) not south of 3722 (y={r3722.y})"

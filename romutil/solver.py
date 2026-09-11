@@ -610,17 +610,6 @@ def solve(rdb, area_exits, timeout=None):
             elif x.direction == Direction.down:
                 m.one_way_pos.add(get_z(x.src) - get_z(x.dst) + 2 * m.Mz * m.cut[i] >= m.d_min)
 
-            if x.direction in (Direction.east, Direction.west):
-                m.one_way_pos.add(get_y(x.src) - get_y(x.dst) + 2 * m.My * m.cut[i] >= 0)
-                m.one_way_pos.add(get_y(x.dst) - get_y(x.src) + 2 * m.My * m.cut[i] >= 0)
-            elif x.direction in (Direction.north, Direction.south):
-                m.one_way_pos.add(get_x(x.src) - get_x(x.dst) + 2 * m.Mx * m.cut[i] >= 0)
-                m.one_way_pos.add(get_x(x.dst) - get_x(x.src) + 2 * m.Mx * m.cut[i] >= 0)
-            elif x.direction in (Direction.up, Direction.down):
-                m.one_way_pos.add(get_x(x.src) - get_x(x.dst) + 2 * m.Mx * m.cut[i] >= 0)
-                m.one_way_pos.add(get_x(x.dst) - get_x(x.src) + 2 * m.Mx * m.cut[i] >= 0)
-                m.one_way_pos.add(get_y(x.src) - get_y(x.dst) + 2 * m.My * m.cut[i] >= 0)
-                m.one_way_pos.add(get_y(x.dst) - get_y(x.src) + 2 * m.My * m.cut[i] >= 0)
             continue
 
         if x.dst != x.src and x.src in m.Rooms and x.dst in m.Rooms:

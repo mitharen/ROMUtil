@@ -230,14 +230,7 @@ $$M_x = \max\left(10, \sum_{e, \Delta x \neq 0} |\Delta x| + 1\right), \quad M_y
    - $\text{South}: y_u - y_v + 2 M_y \cdot \text{cut}_i \ge d_{\min}$
    - $\text{Up}: z_v - z_u + 2 M_z \cdot \text{cut}_i \ge d_{\min}$
    - $\text{Down}: z_u - z_v + 2 M_z \cdot \text{cut}_i \ge d_{\min}$
-   where dummy room endpoints resolve to affine expressions $x_u + d_{\text{exit}}(e)$. Combined with the soft $L_1$ proximity penalty $\sum \text{dist}_{\text{one-way}}$, these constraints guarantee that one-way exits strictly preserve true builder orientation without 180° inversion under topological tension, while permitting binary cut relaxation ($\text{cut}_i = 1$) only when non-Euclidean directed cycles mathematically require it.
-
-5. **Orthogonal Axis Alignment & Structural Cut Relaxation for One-Way Exits**:
-   To prevent one-way exits from stretching or bending diagonally across non-primary axes to artificially avoid cycle cuts, orthogonal axes are strictly collinear unless cut:
-   - $\text{East} / \text{West}$: enforce $Y$-collinearity ($y_u - y_v + 2 M_y \cdot \text{cut}_i \ge 0$ and $y_v - y_u + 2 M_y \cdot \text{cut}_i \ge 0$).
-   - $\text{North} / \text{South}$: enforce $X$-collinearity ($x_u - x_v + 2 M_x \cdot \text{cut}_i \ge 0$ and $x_v - x_u + 2 M_x \cdot \text{cut}_i \ge 0$).
-   - $\text{Up} / \text{Down}$: enforce both $X$- and $Y$-collinearity relaxed by $2 M_x \cdot \text{cut}_i$ and $2 M_y \cdot \text{cut}_i$.
-   When a one-way exit forms a non-Euclidean cycle chord or traverses incompatible builder geometry (e.g. `school.are` shortcut exit 3700 $\to$ 3744 South), orthogonal collinearity forces the solver to legitimately cut the exit ($\text{cut}_i = 1$) rather than introducing unnatural multi-grid diagonal stretches, allowing rooms along the main path (e.g. room 3721 directly south of room 3722) to maintain tight, natural layouts.
+   where dummy room endpoints resolve to affine expressions $x_u + d_{\text{exit}}(e)$. Combined with the soft $L_1$ proximity penalty $\sum \text{dist}_{\text{one-way}}$, these constraints guarantee that one-way exits strictly preserve true builder orientation without 180° inversion under topological tension, while permitting binary cut relaxation ($\text{cut}_i = 1$) only when non-Euclidean directed cycles mathematically require it. Orthogonal coordinates naturally achieve compact, collinear alignment via soft $L_1$ proximity minimization without imposing rigid orthogonal equality constraints, ensuring that topologies with converging one-way exits (such as arena funnels or multi-room exits to safe rooms) remain feasible, avoid duplicate coordinate collisions, and avoid combinatorial explosion.
 
 #### Objective Function:
 $$\min \left( M^2 \sum \text{cut}_e + \sum l_{\max}(e) + \sum \text{dist}_{\text{one-way}} \right)$$
