@@ -545,3 +545,280 @@ class TestExporterPaintersLayering:
         html = generate_html_viewer(data)
         assert "Math.max(r.coords.z, target.coords.z)" in html
         assert "elevationLayers.get(edgeZ)" in html
+
+
+class TestSingleSolveMultiFormatCLI:
+    """Tests for single-solve multi-format output and CLI parsing (Task 9f)."""
+
+    SAMPLE_MULTI_ARE = """#AREA
+multi.are~
+MultiFormat~
+{ 1 10 } Builder~
+1 4
+
+#ROOMS
+#1
+Center Room~
+Desc Center~
+0 0 0
+D0
+~
+~
+0 0 2
+D1
+~
+~
+0 0 3
+S
+#2
+North Room~
+Desc North~
+0 0 0
+D2
+~
+~
+0 0 1
+S
+#3
+East Room~
+Desc East~
+0 0 0
+D3
+~
+~
+0 0 1
+S
+#4
+Isolated Room~
+Desc Isolated~
+0 0 0
+S
+#0
+
+#$
+"""
+
+    def test_cli_multi_format_html_svg_positive(self, tmp_path, monkeypatch):
+        """Positive test: CLI call with --format html,svg generates both .html and .svg in a single pass."""
+        are_file = tmp_path / "multi.are"
+        are_file.write_text(self.SAMPLE_MULTI_ARE)
+        outbase = str(tmp_path / "multi_out")
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["romutil", str(are_file), "-outbase", outbase, "--format", "html,svg"]
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli()
+        assert exc.value.code == 0
+
+        html_file = tmp_path / "multi_out.html"
+        svg_file = tmp_path / "multi_out.svg"
+        svg_file_0 = tmp_path / "multi_out0.svg"
+
+        assert html_file.exists()
+        assert svg_file.exists()
+        assert svg_file_0.exists()
+        assert len(html_file.read_text(encoding="utf-8")) > 0
+        assert len(svg_file.read_text(encoding="utf-8")) > 0
+
+    def test_cli_multi_format_coordinate_identity(self, tmp_path, monkeypatch):
+        """Coordinate identity test: room coordinates in .html match .json and .svg projections with 100% identity."""
+        are_file = tmp_path / "multi.are"
+        are_file.write_text(self.SAMPLE_MULTI_ARE)
+        outbase = str(tmp_path / "identity_out")
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["romutil", str(are_file), "-outbase", outbase, "--format", "html,svg,json"]
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli()
+        assert exc.value.code == 0
+
+        html_file = tmp_path / "identity_out.html"
+        json_file = tmp_path / "identity_out.json"
+        svg_file = tmp_path / "identity_out.svg"
+
+        assert html_file.exists()
+        assert json_file.exists()
+        assert svg_file.exists()
+
+        # Parse JSON coordinates
+        json_data = json.loads(json_file.read_text(encoding="utf-8"))
+        json_rooms = {
+            r["vnum"]: (r["coords"]["x"], r["coords"]["y"], r["coords"]["z"])
+            for r in json_data["rooms"]
+        }
+        assert len(json_rooms) == 4
+
+        # Parse HTML coordinates from embedded script tag
+        html_content = html_file.read_text(encoding="utf-8")
+        match = re.search(r'<script id="romutil-data" type="application/json">\s*(.*?)\s*</script>', html_content, re.DOTALL)
+        assert match is not None, "Embedded JSON script block not found in HTML"
+        html_data = json.loads(match.group(1))
+        html_rooms = {
+            r["vnum"]: (r["coords"]["x"], r["coords"]["y"], r["coords"]["z"])
+            for r in html_data["rooms"]
+        }
+
+        # 100% Coordinate Identity Check between HTML and JSON
+        assert html_rooms == json_rooms, f"HTML coordinates {html_rooms} do not match JSON {json_rooms}"
+
+        # Verify component packing along X-axis
+        # Rooms 1, 2, 3 are in component 1; room 4 is disconnected component 2
+        comp1_vnums = {1, 2, 3}
+        max_x_comp1 = max(json_rooms[v][0] for v in comp1_vnums)
+        assert json_rooms[4][0] >= max_x_comp1 + 3
+
+        # Verify SVG contains elements corresponding to each room
+        svg_content = svg_file.read_text(encoding="utf-8")
+        for vnum in (1, 2, 3, 4):
+            room_obj = next(r for r in json_data["rooms"] if r["vnum"] == vnum)
+            assert room_obj["name"] in svg_content
+
+    def test_cli_format_parsing_variations(self, tmp_path, monkeypatch):
+        """Format list parsing handles whitespace, case-insensitivity, and deduplication."""
+        are_file = tmp_path / "multi.are"
+        are_file.write_text(self.SAMPLE_MULTI_ARE)
+        outbase = str(tmp_path / "variations")
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["romutil", str(are_file), "-outbase", outbase, "-f", "  HTML ,  svg , json, html "]
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli()
+        assert exc.value.code == 0
+        assert (tmp_path / "variations.html").exists()
+        assert (tmp_path / "variations.svg").exists()
+        assert (tmp_path / "variations.json").exists()
+
+    def test_cli_invalid_format_negative(self, tmp_path, monkeypatch, capsys):
+        """Negative test: invalid format in comma-separated string raises parser error."""
+        are_file = tmp_path / "multi.are"
+        are_file.write_text(self.SAMPLE_MULTI_ARE)
+        outbase = str(tmp_path / "neg_out")
+
+        # Mixed valid and invalid format
+        monkeypatch.setattr(
+            "sys.argv",
+            ["romutil", str(are_file), "-outbase", outbase, "--format", "html,invalid_fmt"]
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli()
+        assert exc.value.code == 2
+        captured = capsys.readouterr()
+        assert "Unsupported format 'invalid_fmt'" in captured.err
+
+        # Empty format string
+        monkeypatch.setattr(
+            "sys.argv",
+            ["romutil", str(are_file), "-outbase", outbase, "--format", "   ,   "]
+        )
+        with pytest.raises(SystemExit) as exc2:
+            cli()
+        assert exc2.value.code == 2
+        captured2 = capsys.readouterr()
+        assert "No format specified" in captured2.err
+
+    def test_main_programmatic_format_validation(self, tmp_path):
+        """Direct invocation of main() validates format types and values."""
+        are_file = tmp_path / "multi.are"
+        are_file.write_text(self.SAMPLE_MULTI_ARE)
+        outbase = str(tmp_path / "prog_out")
+
+        with pytest.raises(ValueError, match="Unsupported format 'bogus'"):
+            main([are_file], outbase, fmt="html,bogus")
+
+        with pytest.raises(ValueError, match="No formats specified"):
+            main([are_file], outbase, fmt="")
+
+        with pytest.raises(ValueError, match="No formats specified"):
+            main([are_file], outbase, fmt=[])
+
+        with pytest.raises(TypeError, match="Expected format string or sequence"):
+            main([are_file], outbase, fmt=123)
+
+    def test_main_positional_directory_source(self, tmp_path):
+        """main() handles directory passed as area_file positional argument."""
+        from tests.conftest import REPO_ROOT
+        circle_dir = REPO_ROOT / "tests" / "fixtures" / "dialects" / "circle_world"
+        outbase = str(tmp_path / "pos_dir_out")
+        with pytest.raises(SystemExit) as exc:
+            main([circle_dir], outbase, fmt="html,json")
+        assert exc.value.code == 0
+        assert (tmp_path / "pos_dir_out.html").exists()
+        assert (tmp_path / "pos_dir_out.json").exists()
+
+    def test_main_area_header_fallback(self, tmp_path):
+        """main() supplies fallback AreaHeader when area file has no header."""
+        are_no_header = """#ROOMS
+#50
+Lonely~
+No header~
+0 0 0
+S
+#0
+#$
+"""
+        are_file = tmp_path / "no_hdr.are"
+        are_file.write_text(are_no_header)
+        outbase = str(tmp_path / "no_hdr_out")
+        with pytest.raises(SystemExit) as exc:
+            main([are_file], outbase, fmt="json")
+        assert exc.value.code == 0
+        json_data = json.loads((tmp_path / "no_hdr_out.json").read_text(encoding="utf-8"))
+        assert json_data["area"]["name"] == "no_hdr"
+
+    def test_cli_map_subcommand_compatibility(self, tmp_path, monkeypatch):
+        """CLI drops legacy 'map' positional token if present."""
+        are_file = tmp_path / "multi.are"
+        are_file.write_text(self.SAMPLE_MULTI_ARE)
+        outbase = str(tmp_path / "map_token_out")
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["romutil", "map", str(are_file), "-outbase", outbase, "--format", "json"]
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli()
+        assert exc.value.code == 0
+        assert (tmp_path / "map_token_out.json").exists()
+
+    def test_main_custom_renderer_dispatch(self, tmp_path, monkeypatch):
+        """main() dispatches to custom renderer registered in RENDERERS."""
+        from romutil.renderers import RENDERERS
+        from romutil.renderers.base import BaseRenderer
+
+        class MockCustomRenderer(BaseRenderer):
+            def render(self, rdb, output_path, header=None, **options):
+                out = Path(output_path)
+                out.write_text("custom-rendered", encoding="utf-8")
+                return out
+
+        monkeypatch.setitem(RENDERERS, "custom", MockCustomRenderer)
+        are_file = tmp_path / "multi.are"
+        are_file.write_text(self.SAMPLE_MULTI_ARE)
+        outbase = str(tmp_path / "custom_out")
+
+        with pytest.raises(SystemExit) as exc:
+            main([are_file], outbase, fmt="custom")
+        assert exc.value.code == 0
+        assert (tmp_path / "custom_out.custom").read_text(encoding="utf-8") == "custom-rendered"
+
+    def test_main_svg_copyfile_failure_handled_gracefully(self, tmp_path, monkeypatch):
+        """Failure to copy SVG to 0.svg is caught and ignored."""
+        import shutil
+        are_file = tmp_path / "multi.are"
+        are_file.write_text(self.SAMPLE_MULTI_ARE)
+        outbase = str(tmp_path / "copy_fail")
+
+        def fake_copyfile(src, dst):
+            raise OSError("Read-only filesystem")
+
+        monkeypatch.setattr(shutil, "copyfile", fake_copyfile)
+        with pytest.raises(SystemExit) as exc:
+            main([are_file], outbase, fmt="svg")
+        assert exc.value.code == 0
+        assert (tmp_path / "copy_fail.svg").exists()

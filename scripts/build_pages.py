@@ -51,51 +51,29 @@ def resolve_candidate_areas():
     return candidates
 
 
-def render_area(name, source_path, is_dir, outdir):
-    """Invokes romutil to render HTML viewer and SVG vector map."""
+def render_area(name, source_path, is_dir, outdir, solver_timeout=60):
+    """Invokes romutil to render HTML viewer and SVG vector map in a single pass."""
     outbase = outdir / name
 
-    # Render HTML viewer
-    cmd_html = [
+    cmd = [
         sys.executable, "-m", "romutil.cli",
-        str(source_path),
-        "-outbase", str(outbase),
-        "--format", "html",
     ]
     if is_dir:
-        cmd_html = [
-            sys.executable, "-m", "romutil.cli",
-            "--circle-dir", str(source_path),
-            "-outbase", str(outbase),
-            "--format", "html",
-        ]
+        cmd.extend(["--circle-dir", str(source_path)])
+    else:
+        cmd.append(str(source_path))
 
-    log.info(f"Rendering HTML viewer for {name}...")
-    res = subprocess.run(cmd_html, cwd=str(REPO_ROOT), capture_output=True, text=True)
+    cmd.extend([
+        "-outbase", str(outbase),
+        "--format", "html,svg",
+        "--solver-timeout", str(solver_timeout),
+    ])
+
+    log.info(f"Rendering map artifacts for {name}...")
+    res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True)
     if res.returncode != 0:
-        log.error(f"Failed to render HTML for {name}: {res.stderr}")
-        raise RuntimeError(f"Failed to render HTML for {name}: {res.stderr}")
-
-    # Render SVG map
-    cmd_svg = [
-        sys.executable, "-m", "romutil.cli",
-        str(source_path),
-        "-outbase", str(outbase),
-        "--format", "svg",
-    ]
-    if is_dir:
-        cmd_svg = [
-            sys.executable, "-m", "romutil.cli",
-            "--circle-dir", str(source_path),
-            "-outbase", str(outbase),
-            "--format", "svg",
-        ]
-
-    log.info(f"Rendering SVG map for {name}...")
-    res_svg = subprocess.run(cmd_svg, cwd=str(REPO_ROOT), capture_output=True, text=True)
-    if res_svg.returncode != 0:
-        log.error(f"Failed to render SVG for {name}: {res_svg.stderr}")
-        raise RuntimeError(f"Failed to render SVG for {name}: {res_svg.stderr}")
+        log.error(f"Failed to render map artifacts for {name}: {res.stderr}")
+        raise RuntimeError(f"Failed to render map artifacts for {name}: {res.stderr}")
 
 
 def generate_index_html(rendered_areas, outdir):
@@ -182,6 +160,7 @@ def generate_index_html(rendered_areas, outdir):
 def main():
     parser = argparse.ArgumentParser(description="Build GitHub Pages site with map viewers")
     parser.add_argument("--outdir", type=Path, default=REPO_ROOT / "_site", help="Output directory")
+    parser.add_argument("--solver-timeout", type=int, default=60, help="CBC solver timeout in seconds (default: 60)")
     args = parser.parse_args()
 
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -190,7 +169,7 @@ def main():
 
     rendered = []
     for category, name, source_path, is_dir in candidates:
-        render_area(name, source_path, is_dir, args.outdir)
+        render_area(name, source_path, is_dir, args.outdir, solver_timeout=args.solver_timeout)
         rendered.append((category, name))
 
     generate_index_html(rendered, args.outdir)

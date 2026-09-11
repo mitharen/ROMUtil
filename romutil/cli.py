@@ -2,12 +2,14 @@ import argparse
 import logging
 import os
 from pathlib import Path
+import shutil
 import sys
+from typing import Any, Sequence
 
 import networkx as nx
 import pyomo.common.config
 
-from romutil.models import Room, AreaData, AreaHeader
+from romutil.models import Room, Exit, AreaData, AreaHeader
 from romutil.parser import Parser, parse_circlemud_directory
 from romutil.graph import graph, solve_layout
 from romutil.renderers import RENDERERS, get_renderer, render_map
@@ -15,7 +17,37 @@ from romutil.renderers import RENDERERS, get_renderer, render_map
 logging.basicConfig()
 log = logging.getLogger('Mapper')
 
-def main(area_files, outbase, split_levels=False, fmt="svg", circle_dir=None, solver_timeout=None):
+def main(
+    area_files: Sequence[Any],
+    outbase: str,
+    split_levels: bool = False,
+    fmt: str | Sequence[str] = "svg",
+    circle_dir: Path | str | None = None,
+    solver_timeout: int | None = None,
+) -> None:
+    if isinstance(fmt, str):
+        format_list = [f.strip().lower() for f in fmt.split(',') if f.strip()]
+    elif isinstance(fmt, (list, tuple, set)):
+        format_list = [str(f).strip().lower() for f in fmt if str(f).strip()]
+    else:
+        raise TypeError(f"Expected format string or sequence of formats, got {type(fmt).__name__}")
+
+    if not format_list:
+        raise ValueError("No formats specified.")
+
+    for f in format_list:
+        if f not in RENDERERS:
+            supported = ", ".join(sorted(RENDERERS.keys()))
+            raise ValueError(f"Unsupported format '{f}'. Supported formats: {supported}")
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    formats: list[str] = []
+    for f in format_list:
+        if f not in seen:
+            seen.add(f)
+            formats.append(f)
+
     rdb = {}
     area_meta = None
     first_file_name = "area.are"
@@ -48,8 +80,8 @@ def main(area_files, outbase, split_levels=False, fmt="svg", circle_dir=None, so
             first_file_name = getattr(area_file, 'name', 'area.are')
         else:
             first_file_name = str(area_file)
-            with open(area_file, 'r', encoding='latin-1', errors='replace') as f:
-                content = f.read()
+            with open(area_file, 'r', encoding='latin-1', errors='replace') as fp:
+                content = fp.read()
 
         parser = Parser()
         try:
@@ -93,40 +125,66 @@ def main(area_files, outbase, split_levels=False, fmt="svg", circle_dir=None, so
     g.add_edges_from(edges)
 
     connected_comps = list(nx.connected_components(g.to_undirected()))
+    connected_comps.sort(key=lambda c: min(c) if c else 0)
 
-    if fmt == 'svg':
-        for i, sub_graph in enumerate(connected_comps):
-            sub_rdb = {node: rdb[node] for node in sub_graph}
-            if not split_levels:
-                graph(sub_rdb, f'{outbase}{i}.svg', area_meta, split_levels=False, solver_timeout=solver_timeout)
-            else:
-                base_name = outbase if len(connected_comps) == 1 else f'{outbase}{i}'
-                graph(sub_rdb, f'{base_name}.svg', area_meta, split_levels=True, outbase=base_name, solver_timeout=solver_timeout)
-    elif fmt in ('json', 'html') or fmt in RENDERERS:
-        all_solved_rooms = {}
-        offset_x = 0
-        for i, sub_graph in enumerate(connected_comps):
-            sub_rdb = {node: rdb[node] for node in sub_graph}
-            solved_sub, _ = solve_layout(sub_rdb, area_meta, solver_timeout=solver_timeout)
-            non_dummy = [r for r in solved_sub.values() if not r.dummy]
-            if non_dummy:
-                if offset_x > 0:
-                    for r in non_dummy:
-                        if r.x is not None:
-                            r.x += offset_x
-                max_x = max(r.x for r in non_dummy if r.x is not None)
+    all_solved_rooms: dict[int, Room] = {}
+    all_exits: list[Exit] = []
+    offset_x = 0
+
+    for i, sub_graph in enumerate(connected_comps):
+        sub_rdb = {node: rdb[node] for node in sub_graph}
+        solved_sub, solved_exits = solve_layout(sub_rdb, area_meta, solver_timeout=solver_timeout)
+        non_dummy = [r for r in solved_sub.values() if not getattr(r, 'dummy', False)]
+        if non_dummy:
+            if offset_x > 0:
+                for r in non_dummy:
+                    if r.x is not None:
+                        r.x += offset_x
+            valid_x = [r.x for r in non_dummy if r.x is not None]
+            if valid_x:
+                max_x = max(valid_x)
                 offset_x = max_x + 3
-            all_solved_rooms.update({r.vnum: r for r in non_dummy})
+        all_solved_rooms.update({r.vnum: r for r in non_dummy})
+        all_exits.extend(solved_exits)
 
-        renderer = get_renderer(fmt)
-        out_file = outbase if outbase.endswith(f'.{fmt}') else f'{outbase}.{fmt}'
-        renderer.render(all_solved_rooms, out_file, header=area_meta)
-        if fmt == 'json':
-            log.info(f'Exported JSON map to {out_file}')
-        elif fmt == 'html':
+    # Clean base name (strip known renderer extensions if present)
+    clean_base = outbase
+    for ext in ('.html', '.svg', '.json'):
+        if clean_base.lower().endswith(ext):
+            clean_base = clean_base[:-len(ext)]
+            break
+
+    for fmt_name in formats:
+        renderer = get_renderer(fmt_name)
+        if fmt_name == 'html':
+            out_file = outbase if outbase.endswith('.html') else f'{clean_base}.html'
+            renderer.render(all_solved_rooms, out_file, header=area_meta)
             log.info(f'Exported HTML viewer to {out_file}')
+        elif fmt_name == 'json':
+            out_file = outbase if outbase.endswith('.json') else f'{clean_base}.json'
+            renderer.render(all_solved_rooms, out_file, header=area_meta)
+            log.info(f'Exported JSON map to {out_file}')
+        elif fmt_name == 'svg':
+            out_file = outbase if outbase.endswith('.svg') else f'{clean_base}.svg'
+            renderer.render(
+                all_solved_rooms,
+                out_file,
+                header=area_meta,
+                exits=all_exits,
+                split_levels=split_levels,
+                outbase=clean_base,
+            )
+            if not split_levels:
+                out_file_0 = Path(f'{clean_base}0.svg')
+                try:
+                    shutil.copyfile(out_file, out_file_0)
+                except Exception:
+                    pass
+            log.info(f'Exported SVG map to {out_file}')
         else:
-            log.info(f'Exported {fmt.upper()} to {out_file}')
+            out_file = outbase if outbase.endswith(f'.{fmt_name}') else f'{clean_base}.{fmt_name}'
+            renderer.render(all_solved_rooms, out_file, header=area_meta)
+            log.info(f'Exported {fmt_name.upper()} to {out_file}')
 
     sys.exit(0)
 
@@ -144,9 +202,8 @@ def cli():
     parser.add_argument('-d', '--debug', action='store_true', help='Show debug info')
     parser.add_argument(
         '-f', '--format',
-        choices=['svg', 'json', 'html'],
         default='svg',
-        help='Output format: svg (default), json, or html'
+        help='Output format(s), comma-separated: svg (default), json, html (e.g. -f html,svg)',
     )
     parser.add_argument(
         '--solver-timeout',
@@ -162,6 +219,16 @@ def cli():
     if not args.areas and not args.circle_dir:
         parser.error('At least one area file or --circle-dir must be provided.')
 
+    # Validate format list in CLI
+    raw_fmt = args.format
+    format_list = [f.strip().lower() for f in raw_fmt.split(',') if f.strip()]
+    if not format_list:
+        parser.error("No format specified in --format argument.")
+    for f in format_list:
+        if f not in RENDERERS:
+            supported = ", ".join(sorted(RENDERERS.keys()))
+            parser.error(f"Unsupported format '{f}'. Supported formats: {supported}")
+
     pyomo.common.config.logger.setLevel(logging.ERROR)
     if args.debug:
         log.setLevel(logging.DEBUG)
@@ -173,7 +240,14 @@ def cli():
         elif args.circle_dir:
             outbase = str(args.circle_dir / args.circle_dir.name)
 
-    main(args.areas, outbase, split_levels=args.split_levels, fmt=args.format, circle_dir=args.circle_dir, solver_timeout=args.solver_timeout)
+    main(
+        args.areas,
+        outbase,
+        split_levels=args.split_levels,
+        fmt=format_list,
+        circle_dir=args.circle_dir,
+        solver_timeout=args.solver_timeout,
+    )
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     cli()

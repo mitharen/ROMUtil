@@ -183,14 +183,44 @@ class TestGalleryAssetsGeneration:
         with pytest.raises(RuntimeError, match="Failed to render"):
             render_area("nonexistent_dir", nonexistent_dir, is_dir=True, outdir=tmp_path)
 
-        # Test failure during SVG rendering stage
+        # Test failure during rendering execution
         with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
-                subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Simulated SVG generation failure"),
-            ]
-            with pytest.raises(RuntimeError, match="Failed to render SVG"):
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr="Simulated generation failure"
+            )
+            with pytest.raises(RuntimeError, match="Failed to render"):
                 render_area("mock_area", tmp_path / "mock.are", is_dir=False, outdir=tmp_path)
+
+    def test_render_area_invokes_cli_single_solve_with_timeout(self, tmp_path):
+        from scripts.build_pages import render_area
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            render_area("test_area", tmp_path / "test.are", is_dir=False, outdir=tmp_path)
+
+            mock_run.assert_called_once()
+            cmd = mock_run.call_args[0][0]
+            assert "--format" in cmd
+            fmt_idx = cmd.index("--format")
+            assert cmd[fmt_idx + 1] == "html,svg"
+            assert "--solver-timeout" in cmd
+            timeout_idx = cmd.index("--solver-timeout")
+            assert cmd[timeout_idx + 1] == "60"
+
+    def test_render_area_circle_dir_invokes_cli_with_timeout(self, tmp_path):
+        from scripts.build_pages import render_area
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            render_area("circle_area", tmp_path / "circle_dir", is_dir=True, outdir=tmp_path, solver_timeout=42)
+
+            mock_run.assert_called_once()
+            cmd = mock_run.call_args[0][0]
+            assert "--circle-dir" in cmd
+            assert "--format" in cmd
+            fmt_idx = cmd.index("--format")
+            assert cmd[fmt_idx + 1] == "html,svg"
+            assert "--solver-timeout" in cmd
+            timeout_idx = cmd.index("--solver-timeout")
+            assert cmd[timeout_idx + 1] == "42"
 
     def test_build_pages_main_e2e(self, tmp_path):
         from scripts.build_pages import main

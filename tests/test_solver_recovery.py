@@ -376,10 +376,12 @@ class TestCliSolverTimeout:
         monkeypatch.setattr(cli_mod.Parser, "parse", lambda self, text: mock_area)
 
         passed_timeouts = []
-        def mock_graph(rdb, name, area, split_levels=False, outbase=None, solver_timeout=None):
+        orig_solve_layout = solve_layout
+        def mock_solve_layout(rdb, area=None, solver_timeout=None):
             passed_timeouts.append(solver_timeout)
+            return orig_solve_layout(rdb, area, solver_timeout=solver_timeout)
 
-        monkeypatch.setattr(cli_mod, "graph", mock_graph)
+        monkeypatch.setattr(cli_mod, "solve_layout", mock_solve_layout)
         with pytest.raises(SystemExit):
             main([are_file], str(tmp_path / "out"), fmt="svg", solver_timeout=45)
         assert 45 in passed_timeouts
