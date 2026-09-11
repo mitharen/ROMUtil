@@ -112,7 +112,7 @@ def normalize_dialect_buffer(buffer: str) -> str:
     buffer = re.sub(r'\b\d+(?:\|\d+)+\b', replace_pipe_flags, buffer)
     buffer = re.sub(r'(?<=[A-Za-z])\|(?=[A-Za-z])', '', buffer)
 
-    # 3. Normalize Envy #AREADATA ... End
+    # 3. Normalize Envy / SmaugFUSS #AREADATA / #FUSSAREA ... End
     def replace_areadata(match):
         body = match.group(1)
         data = {}
@@ -125,7 +125,7 @@ def normalize_dialect_buffer(buffer: str) -> str:
                 k = parts[0]
                 v = parts[1].rstrip('~').strip()
                 data[k] = v
-                if k in ('VNUMs', 'V'):
+                if k in ('VNUMs', 'V', 'Vnums'):
                     nums = [int(n) for n in v.split() if n.lstrip('-+').isdigit()]
                     if len(nums) >= 2:
                         data['vnum_min'] = nums[0]
@@ -137,7 +137,23 @@ def normalize_dialect_buffer(buffer: str) -> str:
         file_name = data.get('FileName', name.lower().replace(' ', '_') + ".are")
         return f"#AREA\n{file_name}~\n{name}~\n{author}~\n{v_min} {v_max}\n"
 
+    buffer = re.sub(r'#FUSSAREA\s*\n(?=#AREADATA\b)', '', buffer)
+    buffer = re.sub(r'#FUSSAREA\s*\n(.*?)\nEnd\b', replace_areadata, buffer, flags=re.DOTALL)
+    buffer = re.sub(r'#FUSSAREA\b[^\n]*\n?', '', buffer)
     buffer = re.sub(r'#AREADATA\s*\n(.*?)\nEnd\b', replace_areadata, buffer, flags=re.DOTALL)
+
+    # SMAUG: If #AREA single-line is followed by #AUTHOR(S) <author>~, extract author
+    def replace_smaug_author_header(match: re.Match[str]) -> str:
+        name = match.group(1).rstrip('~').strip()
+        author = match.group(2).rstrip('~').strip() or 'Unknown'
+        file_name = name.lower().replace(' ', '_') + '.are'
+        return f"#AREA\n{file_name}~\n{name}~\n{author}~\n0 0\n"
+
+    buffer = re.sub(
+        r'#AREA[ \t]+([^\n~]*~)\s*\n#AUTHORS?[ \t]+([^\n~]*~)',
+        replace_smaug_author_header,
+        buffer,
+    )
 
     # 4. Normalize ACK!MUD 4.3 tagged single-character #AREA headers
     def replace_ackmud_area(match: re.Match[str]) -> str:
@@ -265,10 +281,10 @@ def normalize_dialect_buffer(buffer: str) -> str:
     )
 
     # 4. Strip dialect-specific non-standard sections
-    buffer = re.sub(r'#(?:GAMES|CLANS|ECONOMY|OLC|PRACTICERS|RESETCONT)\b.*?(?=\n#|\Z)', '', buffer, flags=re.DOTALL)
+    buffer = re.sub(r'#(?:GAMES|CLANS|ECONOMY|OLC|PRACTICERS|RESETCONT|AUTHORS?|RANGES|RESETMSG|FLAGS|REPAIRS)\b.*?(?=\n#|\Z)', '', buffer, flags=re.DOTALL)
 
     # 5. If no #ROOMS or #ROOMDATA header but room VNUMs exist in standalone room files, prepend #ROOMS
-    if not re.search(r'#(?:ROOMS|ROOMDATA)\b', buffer) and not re.search(r'#(?:HELPS|SOCIALS|MOBILES|OBJECTS|RESETMESSAGE|FLAG)\b', buffer):
+    if not re.search(r'#(?:ROOMS?|ROOMDATA)\b', buffer) and not re.search(r'#(?:HELPS|SOCIALS|MOBILES|OBJECTS|RESETMESSAGE|FLAG)\b', buffer):
         if re.search(r'^\#\d+\b', buffer, re.MULTILINE):
             buffer = re.sub(r'\A(?:[ \t\r\n]|(?:\*[^\n]*\n))+', '', buffer)
             buffer = re.sub(r'(?m)^\*[^\n]*\n(?=\s*#\d+)', '', buffer)
@@ -287,7 +303,10 @@ def normalize_dialect_buffer(buffer: str) -> str:
             content = content.rstrip() + '\n#0\n'
         return content
 
-    buffer = re.sub(r'#(?:ROOMS|ROOMDATA)\s*\n.*?(?=\n#[A-Z$]|\Z)', fix_rooms_terminator, buffer, flags=re.DOTALL)
+    # Normalize #ROOMDATA and #ROOM to #ROOMS
+    buffer = re.sub(r'#(?:ROOMDATA|ROOM)\b', '#ROOMS', buffer)
+
+    buffer = re.sub(r'#(?:ROOMS?|ROOMDATA)\s*\n.*?(?=\n#[A-Z$]|\Z)', fix_rooms_terminator, buffer, flags=re.DOTALL)
 
     return buffer
 
@@ -368,7 +387,7 @@ class Lexer:
         return t
 
     def t_ROOMS(self, t):
-        r'\#(?:ROOMS|ROOMDATA)'
+        r'\#(?:ROOMS?|ROOMDATA)'
         t.value = '#ROOMS'
         return t
 

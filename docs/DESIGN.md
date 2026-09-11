@@ -136,8 +136,8 @@ The parsing engine ingests text-based MUD area files across historical and moder
 The domain models define the spatial and topological primitives used throughout the graph layout and rendering pipeline:
 
 - **[`Direction`](../romutil/models.py)**:
-  An enumeration representing the 6 degrees of spatial movement (`North`, `East`, `Up`, `South`, `West`, `Down`).
-  - Defines opposing directional symmetry via `invert() = (dir + 3) % 6`.
+  An enumeration representing the 10 degrees of spatial movement across cardinal (`North`, `East`, `South`, `West`), vertical (`Up`, `Down`), and intercardinal diagonal (`Northeast`, `Northwest`, `Southeast`, `Southwest`) vectors.
+  - Defines opposing directional symmetry via `invert()` mapping each cardinal, vertical, and intercardinal direction to its spatial inverse (`North` <-> `South`, `East` <-> `West`, `Up` <-> `Down`, `Northeast` <-> `Southwest`, `Northwest` <-> `Southeast`).
 - **[`Exit`](../romutil/models.py)**:
   Represents a directed spatial edge between `src` and `dst` with an associated direction and distance span.
   - Implements symmetrical equality (`__eq__`) and hash invariance so opposing exits (`A -> B East` and `B -> A West`) map to the same logical edge.
@@ -199,7 +199,7 @@ To eliminate unconstrained floating rooms in $[-M_x, M_x] \times [-M_y, M_y] \ti
 2. **Affine Spatial Anchoring**:
    For each boundary exit $e = (u, v)$ with source room $u \in V_{\text{core}}$ and dummy room $v \in V_{\text{dummy}}$, the dummy room coordinates are treated as affine linear expressions:
    $$\mathbf{x}_v = \mathbf{x}_u + \mathbf{d}_{\text{exit}}(e)$$
-   where $\mathbf{d}_{\text{exit}}(e) \in \{(0, 1, 0), (1, 0, 0), (0, -1, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)\}$ represents the unit vector in the nominal exit direction.
+   where $\mathbf{d}_{\text{exit}}(e)$ represents the displacement vector in the nominal exit direction (cardinal, vertical, or intercardinal diagonal $(\pm 1, \pm 1, 0)$).
    When secondary one-way exits connect back to a dummy room (e.g. exit $w \to v$), one-way distance constraints substitute the affine expression $\mathbf{x}_u + \mathbf{d}_{\text{exit}}(e)$ directly in place of $\mathbf{x}_v$, preserving multi-floor vertical separation without instantiating integer variables.
 3. **Deterministic Post-Solve Positioning**:
    Following optimization and hallway corridor restoration, `position_dummy_rooms(rdb, exits)` anchors each dummy room exactly 1 unit distance in the nominal exit direction from its primary source room, ensuring consistent geometric placement for external exit stubs in SVG, JSON, and HTML renderers.
@@ -227,7 +227,7 @@ $$M_x = \max\left(10, \sum_{e, \Delta x \neq 0} |\Delta x| + 1\right), \quad M_y
    $$x_v - x_u - 2 M_x \cdot \text{cut}_e \le l_{\max}(e)$$
    *(analogously using $2 M_y$ for North/South exits and $2 M_z$ for Up/Down exits).*
 2. **Orthogonal Axis Alignment & 3D Topological Symmetry**:
-   Bidirectional exits enforce uniform orthogonal alignment across all perpendicular axes, ensuring isotropic mathematical symmetry across all three spatial dimensions ($X, Y, Z$):
+   Bidirectional exits enforce uniform orthogonal alignment across all perpendicular axes, ensuring isotropic mathematical symmetry across all spatial dimensions:
    - East/West exits enforce $y_u = y_v$ and $z_u = z_v$, relaxed by dimension-specific Big-M cut bounds:
      $$y_u + 2 M_y \cdot \text{cut}_e \ge y_v, \quad y_v + 2 M_y \cdot \text{cut}_e \ge y_u$$
      $$z_u + 2 M_z \cdot \text{cut}_e \ge z_v, \quad z_v + 2 M_z \cdot \text{cut}_e \ge z_u$$
@@ -237,15 +237,17 @@ $$M_x = \max\left(10, \sum_{e, \Delta x \neq 0} |\Delta x| + 1\right), \quad M_y
    - Up/Down exits enforce $x_u = x_v$ and $y_u = y_v$, relaxed by dimension-specific Big-M cut bounds:
      $$x_u + 2 M_x \cdot \text{cut}_e \ge x_v, \quad x_v + 2 M_x \cdot \text{cut}_e \ge x_u$$
      $$y_u + 2 M_y \cdot \text{cut}_e \ge y_v, \quad y_v + 2 M_y \cdot \text{cut}_e \ge y_u$$
-   Along the active directional axis, relative distance inequalities enforce proper progression ($l_{\min} \le \Delta \le l_{\max}$).
+   - Diagonal exits (Northeast, Northwest, Southeast, Southwest) enforce planar vertical equality $z_u = z_v$ while displacing both $X$ and $Y$ according to directional signs:
+     $$z_u + 2 M_z \cdot \text{cut}_e \ge z_v, \quad z_v + 2 M_z \cdot \text{cut}_e \ge z_u$$
+   Along active directional axes, relative distance inequalities enforce proper progression ($l_{\min} \le \Delta \le l_{\max}$).
 3. **Cut Relaxation**:
    If an area contains contradictory cycles (e.g., a maze or non-Euclidean loop), `cut[e] = 1` disables the strict geometric distance requirement for that edge.
 4. **Directional Half-Space Constraints for One-Way Exits**:
-   For each one-way exit $e = (u, v)$ with index $i$ in direction $d$, a directional half-space inequality is enforced, relaxed by the binary cut variable $m.\text{cut}[i]$ and scaled by dimension-specific bounds ($M_x, M_y, M_z$):
-   - $\text{East}: x_v - x_u + 2 M_x \cdot \text{cut}_i \ge d_{\min}$
-   - $\text{West}: x_u - x_v + 2 M_x \cdot \text{cut}_i \ge d_{\min}$
-   - $\text{North}: y_v - y_u + 2 M_y \cdot \text{cut}_i \ge d_{\min}$
-   - $\text{South}: y_u - y_v + 2 M_y \cdot \text{cut}_i \ge d_{\min}$
+   For each one-way exit $e = (u, v)$ with index $i$ in direction $d$, directional half-space inequalities are enforced along active axes, relaxed by the binary cut variable $m.\text{cut}[i]$ and scaled by dimension-specific bounds ($M_x, M_y, M_z$):
+   - $\text{East} / \text{Northeast} / \text{Southeast}: x_v - x_u + 2 M_x \cdot \text{cut}_i \ge d_{\min}$
+   - $\text{West} / \text{Northwest} / \text{Southwest}: x_u - x_v + 2 M_x \cdot \text{cut}_i \ge d_{\min}$
+   - $\text{North} / \text{Northeast} / \text{Northwest}: y_v - y_u + 2 M_y \cdot \text{cut}_i \ge d_{\min}$
+   - $\text{South} / \text{Southeast} / \text{Southwest}: y_u - y_v + 2 M_y \cdot \text{cut}_i \ge d_{\min}$
    - $\text{Up}: z_v - z_u + 2 M_z \cdot \text{cut}_i \ge d_{\min}$
    - $\text{Down}: z_u - z_v + 2 M_z \cdot \text{cut}_i \ge d_{\min}$
    where dummy room endpoints resolve to affine expressions $x_u + d_{\text{exit}}(e)$. Combined with the soft $L_1$ proximity penalty $\sum \text{dist}_{\text{one-way}}$, these constraints guarantee that one-way exits strictly preserve true builder orientation without 180° inversion under topological tension, while permitting binary cut relaxation ($\text{cut}_i = 1$) only when non-Euclidean directed cycles mathematically require it. Orthogonal coordinates naturally achieve compact, collinear alignment via soft $L_1$ proximity minimization without imposing rigid orthogonal equality constraints, ensuring that topologies with converging one-way exits (such as arena funnels or multi-room exits to safe rooms) remain feasible, avoid duplicate coordinate collisions, and avoid combinatorial explosion.

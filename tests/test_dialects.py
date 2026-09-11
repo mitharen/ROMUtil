@@ -87,6 +87,44 @@ class TestDialectParserPositive:
         # Comments inside resets and specials parsed gracefully
         assert len(area.resets) == 2
 
+    def test_parse_smaug_fixture(self):
+        """Validate SMAUG format: 10-direction exits (D0-D9), #ROOMDATA, #AUTHOR, #RANGES, #RESETMSG, #ECONOMY, #REPAIRS."""
+        filepath = FIXTURES_DIR / "smaug.are"
+        area = Parser().parse(filepath.read_text(encoding="utf-8"))
+
+        assert isinstance(area, AreaData)
+        assert isinstance(area.header, AreaHeader)
+        assert area.header.name == "Astral Sanctum"
+        assert area.header.builder == "Altrag"
+        assert area.header.filename == "astral_sanctum.are"
+
+        assert len(area.rooms) == 11
+        vnum_map = {r.vnum: r for r in area.rooms}
+        assert 500 in vnum_map
+        nexus = vnum_map[500]
+        assert nexus.name == "Central Nexus"
+        assert len(nexus.exits) == 10
+
+        # Check cardinal and vertical exits
+        assert next(e for e in nexus.exits if e.direction == 0).dst_vnum == 501  # North
+        assert next(e for e in nexus.exits if e.direction == 1).dst_vnum == 502  # East
+        assert next(e for e in nexus.exits if e.direction == 2).dst_vnum == 503  # South
+        assert next(e for e in nexus.exits if e.direction == 3).dst_vnum == 504  # West
+        assert next(e for e in nexus.exits if e.direction == 4).dst_vnum == 505  # Up
+        assert next(e for e in nexus.exits if e.direction == 5).dst_vnum == 506  # Down
+
+        # Check diagonal exits
+        assert next(e for e in nexus.exits if e.direction == 6).dst_vnum == 507  # Northeast
+        assert next(e for e in nexus.exits if e.direction == 7).dst_vnum == 508  # Northwest
+        assert next(e for e in nexus.exits if e.direction == 8).dst_vnum == 509  # Southeast
+        assert next(e for e in nexus.exits if e.direction == 9).dst_vnum == 510  # Southwest
+
+        # Check reciprocal diagonal exits
+        assert next(e for e in vnum_map[507].exits if e.direction == 9).dst_vnum == 500  # SW -> 500
+        assert next(e for e in vnum_map[508].exits if e.direction == 8).dst_vnum == 500  # SE -> 500
+        assert next(e for e in vnum_map[509].exits if e.direction == 7).dst_vnum == 500  # NW -> 500
+        assert next(e for e in vnum_map[510].exits if e.direction == 6).dst_vnum == 500  # NE -> 500
+
     def test_parse_envy20_fixture(self):
         """Validate Envy 1.0/2.0 format: #AREADATA block, #ROOMDATA, extended sectors, non-standard section skipping."""
         filepath = FIXTURES_DIR / "envy20.are"
@@ -1104,3 +1142,462 @@ S
 """
         with pytest.raises(Exception):
             Parser().parse(bad_text)
+
+
+class TestSmaugCompatibility:
+    """Comprehensive test suite for SMAUG and SmaugFUSS 10-direction compatibility."""
+
+    def test_smaug_fixture_parsing(self):
+        """Verify parsing of authentic SMAUG fixture with all 10 exit directions."""
+        filepath = FIXTURES_DIR / "smaug.are"
+        area = Parser().parse(filepath.read_text(encoding="utf-8"))
+        assert len(area.rooms) == 11
+        nexus = next(r for r in area.rooms if r.vnum == 500)
+        assert len(nexus.exits) == 10
+
+        dirs = {e.direction for e in nexus.exits}
+        assert dirs == set(range(10))
+
+    def test_smaug_direction_model_and_inversions(self):
+        """Verify 10-direction Direction enum values, inversions, and matrix mapping."""
+        # Value assertions
+        assert Direction.north == 0
+        assert Direction.east == 1
+        assert Direction.up == 2
+        assert Direction.south == 3
+        assert Direction.west == 4
+        assert Direction.down == 5
+        assert Direction.northeast == 6
+        assert Direction.northwest == 7
+        assert Direction.southeast == 8
+        assert Direction.southwest == 9
+
+        # Inversion assertions
+        assert Direction.north.invert() == Direction.south
+        assert Direction.south.invert() == Direction.north
+        assert Direction.east.invert() == Direction.west
+        assert Direction.west.invert() == Direction.east
+        assert Direction.up.invert() == Direction.down
+        assert Direction.down.invert() == Direction.up
+        assert Direction.northeast.invert() == Direction.southwest
+        assert Direction.southwest.invert() == Direction.northeast
+        assert Direction.northwest.invert() == Direction.southeast
+        assert Direction.southeast.invert() == Direction.northwest
+
+        # Double inversion invariance for all 10 directions
+        for d in Direction:
+            assert d.invert().invert() == d
+
+        # direction_matrix mapping
+        from romutil.models import direction_matrix
+        assert len(direction_matrix) == 10
+        assert direction_matrix[0] == Direction.north
+        assert direction_matrix[1] == Direction.east
+        assert direction_matrix[2] == Direction.south
+        assert direction_matrix[3] == Direction.west
+        assert direction_matrix[4] == Direction.up
+        assert direction_matrix[5] == Direction.down
+        assert direction_matrix[6] == Direction.northeast
+        assert direction_matrix[7] == Direction.northwest
+        assert direction_matrix[8] == Direction.southeast
+        assert direction_matrix[9] == Direction.southwest
+
+        # Exit model equality and symmetric inversion
+        e_ne = Exit(src=500, dst=507, direction=Direction.northeast)
+        e_sw = Exit(src=507, dst=500, direction=Direction.southwest)
+        assert e_ne == e_sw
+        assert hash(e_ne) == hash(e_sw)
+
+        e_nw = Exit(src=500, dst=508, direction=Direction.northwest)
+        e_se = Exit(src=508, dst=500, direction=Direction.southeast)
+        assert e_nw == e_se
+        assert hash(e_nw) == hash(e_se)
+
+        # ExitDef mapping with raw integer 6-9
+        exit_def_6 = ExitDef(direction=6, dst_vnum=507)
+        mapped_exit = Exit(exit_def_6, source=500)
+        assert mapped_exit.direction == Direction.northeast
+
+    def test_smaug_layout_solving_geometric_properties(self):
+        """Verify solver assigns correct relative coordinates for cardinal, vertical, and diagonal exits."""
+        filepath = FIXTURES_DIR / "smaug.are"
+        area = Parser().parse(filepath.read_text(encoding="utf-8"))
+        rdb = {r.vnum: Room(r) for r in area.rooms}
+        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
+
+        nexus = solved_rdb[500]
+        assert nexus.x is not None and nexus.y is not None and nexus.z is not None
+
+        # Verify cardinal directions
+        assert solved_rdb[501].x == nexus.x and solved_rdb[501].y > nexus.y and solved_rdb[501].z == nexus.z  # North
+        assert solved_rdb[502].x > nexus.x and solved_rdb[502].y == nexus.y and solved_rdb[502].z == nexus.z  # East
+        assert solved_rdb[503].x == nexus.x and solved_rdb[503].y < nexus.y and solved_rdb[503].z == nexus.z  # South
+        assert solved_rdb[504].x < nexus.x and solved_rdb[504].y == nexus.y and solved_rdb[504].z == nexus.z  # West
+        assert solved_rdb[505].x == nexus.x and solved_rdb[505].y == nexus.y and solved_rdb[505].z > nexus.z  # Up
+        assert solved_rdb[506].x == nexus.x and solved_rdb[506].y == nexus.y and solved_rdb[506].z < nexus.z  # Down
+
+        # Verify diagonal directions
+        ne = solved_rdb[507]
+        assert ne.x > nexus.x and ne.y > nexus.y and ne.z == nexus.z, f"Northeast failed: ({ne.x}, {ne.y})"
+
+        nw = solved_rdb[508]
+        assert nw.x < nexus.x and nw.y > nexus.y and nw.z == nexus.z, f"Northwest failed: ({nw.x}, {nw.y})"
+
+        se = solved_rdb[509]
+        assert se.x > nexus.x and se.y < nexus.y and se.z == nexus.z, f"Southeast failed: ({se.x}, {se.y})"
+
+        sw = solved_rdb[510]
+        assert sw.x < nexus.x and sw.y < nexus.y and sw.z == nexus.z, f"Southwest failed: ({sw.x}, {sw.y})"
+
+    def test_smaug_rendering_diagonals(self, tmp_path):
+        """Verify SVG, HTML, and JSON renderers handle areas with diagonal exits."""
+        filepath = FIXTURES_DIR / "smaug.are"
+        area = Parser().parse(filepath.read_text(encoding="utf-8"))
+        rdb = {r.vnum: Room(r) for r in area.rooms}
+        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
+
+        # SVG Rendering
+        svg_file = tmp_path / "smaug.svg"
+        out_svg = SVGRenderer().render(solved_rdb, svg_file, header=area.header, exits=exits)
+        assert out_svg.exists()
+        svg_content = out_svg.read_text(encoding="utf-8")
+        assert "<svg" in svg_content
+        assert "Central Nexus" in svg_content
+        assert "Dawn Spire" in svg_content
+        assert "Dusk Spire" in svg_content
+        assert "Solstice Pavilion" in svg_content
+        assert "Equinox Dome" in svg_content
+
+        # HTML Rendering
+        html_file = tmp_path / "smaug.html"
+        out_html = HTMLRenderer().render(solved_rdb, html_file, header=area.header, exits=exits)
+        assert out_html.exists()
+        html_content = out_html.read_text(encoding="utf-8")
+        assert "Astral Sanctum" in html_content
+        assert "Dawn Spire" in html_content
+
+        # JSON Rendering
+        json_file = tmp_path / "smaug.json"
+        out_json = JSONRenderer().render(solved_rdb, json_file, header=area.header, exits=exits)
+        assert out_json.exists()
+        json_dict = json.loads(out_json.read_text(encoding="utf-8"))
+        assert json_dict["area"]["name"] == "Astral Sanctum"
+        assert len(json_dict["rooms"]) == 11
+        for room_data in json_dict["rooms"]:
+            assert room_data["coords"]["x"] is not None
+            assert room_data["coords"]["y"] is not None
+            assert room_data["coords"]["z"] is not None
+
+    def test_smaug_fussarea_normalization(self):
+        """Verify SmaugFUSS #FUSSAREA header normalization and parsing."""
+        fuss_text = """#FUSSAREA
+#AREADATA
+Version      2
+Name         FUSS Astral~
+Author       SmaugDev~
+Vnums        600 699
+Ranges       0 65 0 65
+Economy      0 12500000
+ResetMsg     The fabric of space shivers.~
+ResetFreq    15
+Flags        0
+End
+
+#ROOMDATA
+#600
+Fuss Sanctum~
+The crystalline walls pulse with arcane energy.~
+0 0 1
+D6
+A diagonal trail leads northeast.~
+~
+0 0 601
+S
+#601
+Northeast Alcove~
+A quiet alcove on the northeastern perimeter.~
+0 0 1
+D9
+The trail leads southwest back to the sanctum.~
+~
+0 0 600
+S
+#0
+#$
+"""
+        area = Parser().parse(fuss_text)
+        assert area.header is not None
+        assert area.header.name == "FUSS Astral"
+        assert area.header.builder == "SmaugDev"
+        assert area.header.vnum_min == 600
+        assert area.header.vnum_max == 699
+        assert len(area.rooms) == 2
+
+    def test_smaug_standalone_fussarea_block(self):
+        """Verify #FUSSAREA as a standalone key-value block without preceding #AREADATA."""
+        fuss_standalone = """#FUSSAREA
+Name Standalone FUSS~
+Author Kline~
+Vnums 700 799
+End
+
+#ROOMS
+#700
+Standalone Chamber~
+A simple test room.~
+0 0 1
+S
+#0
+#$
+"""
+        area = Parser().parse(fuss_standalone)
+        assert area.header is not None
+        assert area.header.name == "Standalone FUSS"
+        assert area.header.builder == "Kline"
+        assert area.header.vnum_min == 700
+        assert len(area.rooms) == 1
+
+    def test_smaug_non_spatial_section_stripping(self):
+        """Verify SMAUG non-spatial sections (#AUTHOR, #RANGES, #RESETMSG, #FLAGS, #ECONOMY, #REPAIRS) are stripped."""
+        text = """#AREA SMAUG Strip Test~
+#AUTHOR Derek~
+#RANGES 1 50 1 50
+#RESETMSG A sudden tremor shakes the ground.~
+#FLAGS 12
+#ECONOMY 100 500000
+#REPAIRS
+0
+#ROOMDATA
+#800
+Sanctuary~
+A peaceful sanctuary.~
+0 0 1
+S
+#0
+#$
+"""
+        area = Parser().parse(text)
+        assert area.header is not None
+        assert area.header.name == "SMAUG Strip Test"
+        assert area.header.builder == "Derek"
+        assert len(area.rooms) == 1
+        assert area.rooms[0].vnum == 800
+
+    def test_diagonal_one_way_exit_solving(self, tmp_path):
+        """Verify one-way diagonal exits position destination in the forward half-space and render correctly."""
+        text = """#AREA OneWay Diagonal~
+#ROOMS
+#800
+Hub~
+Central room.~
+0 0 1
+D6
+~
+~
+0 0 801
+D7
+~
+~
+0 0 802
+D8
+~
+~
+0 0 803
+D9
+~
+~
+0 0 804
+S
+#801
+NE OneWay~
+Destination northeast.~
+0 0 1
+S
+#802
+NW OneWay~
+Destination northwest.~
+0 0 1
+S
+#803
+SE OneWay~
+Destination southeast.~
+0 0 1
+S
+#804
+SW OneWay~
+Destination southwest.~
+0 0 1
+S
+#0
+#$
+"""
+        area = Parser().parse(text)
+        rdb = {r.vnum: Room(r) for r in area.rooms}
+        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
+
+        hub = solved_rdb[800]
+        ne = solved_rdb[801]
+        nw = solved_rdb[802]
+        se = solved_rdb[803]
+        sw = solved_rdb[804]
+
+        # One-way forward half-space constraints
+        assert ne.x >= hub.x + 1 and ne.y >= hub.y + 1
+        assert nw.x <= hub.x - 1 and nw.y >= hub.y + 1
+        assert se.x >= hub.x + 1 and se.y <= hub.y - 1
+        assert sw.x <= hub.x - 1 and sw.y <= hub.y - 1
+
+        # Verify SVG rendering with one-way diagonal boundary exits
+        svg_file = tmp_path / "oneway_diagonals.svg"
+        out_svg = SVGRenderer().render(solved_rdb, svg_file, header=area.header, exits=exits)
+        assert out_svg.exists()
+
+    def test_diagonal_contradictory_cycle_relaxation(self):
+        """Verify that contradictory diagonal cycles engage cut relaxation and solve feasibly."""
+        text = """#AREA Diagonal Cycle~
+#ROOMS
+#900
+Room 900~
+Origin room.~
+0 0 1
+D6
+~
+~
+0 0 901
+S
+#901
+Room 901~
+Second room.~
+0 0 1
+D1
+~
+~
+0 0 902
+S
+#902
+Room 902~
+Third room creating impossible loop by heading northeast back to origin.~
+0 0 1
+D6
+~
+~
+0 0 900
+S
+#0
+#$
+"""
+        area = Parser().parse(text)
+        rdb = {r.vnum: Room(r) for r in area.rooms}
+        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
+
+        # Solver must resolve without crashing and assign valid coordinates
+        for v in (900, 901, 902):
+            assert solved_rdb[v].x is not None
+            assert solved_rdb[v].y is not None
+            assert solved_rdb[v].z is not None
+
+        # At least one exit should have been cut to relax the contradictory loop
+        assert any(getattr(e, "one_way", False) or getattr(e, "cut", False) for e in exits)
+
+    def test_graph_restore_rooms_diagonals(self):
+        """Verify restore_rooms correctly restores coordinates for collapsed diagonal corridors."""
+        from romutil.graph import restore_rooms
+
+        parent = Room(vnum=1000, name="Center")
+        parent.x = 10
+        parent.y = 10
+        parent.z = 5
+
+        r_ne = Room(vnum=1001, name="NE Corridor")
+        r_nw = Room(vnum=1002, name="NW Corridor")
+        r_se = Room(vnum=1003, name="SE Corridor")
+        r_sw = Room(vnum=1004, name="SW Corridor")
+
+        parent.fixups = [
+            (r_ne, Direction.northeast, 2),
+            (r_nw, Direction.northwest, 3),
+            (r_se, Direction.southeast, 4),
+            (r_sw, Direction.southwest, 5),
+        ]
+
+        restored = restore_rooms(parent)
+        assert len(restored) == 4
+
+        assert r_ne.x == 10 + 2 and r_ne.y == 10 + 2 and r_ne.z == 5
+        assert r_nw.x == 10 - 3 and r_nw.y == 10 + 3 and r_nw.z == 5
+        assert r_se.x == 10 + 4 and r_se.y == 10 - 4 and r_se.z == 5
+        assert r_sw.x == 10 - 5 and r_sw.y == 10 - 5 and r_sw.z == 5
+
+    def test_smaug_roomdata_normalization_and_termination(self):
+        """Verify #ROOMDATA normalization to #ROOMS and automatic #0 termination if missing."""
+        # Missing #0 terminator
+        raw_text = """#AREA AutoTerm~
+#ROOMDATA
+#1100
+Lone Room~
+A solitary chamber.~
+0 0 1
+S
+#$
+"""
+        area = Parser().parse(raw_text)
+        assert len(area.rooms) == 1
+        assert area.rooms[0].vnum == 1100
+
+    def test_diagonal_dummy_rooms_positioning_and_svg_stubs(self, tmp_path):
+        """Verify position_dummy_rooms and SVGRenderer._line_coords handle all 4 diagonals."""
+        from romutil.solver import position_dummy_rooms
+        from romutil.renderers.svg import SVGRenderer
+
+        # Test Pass 1: exits from non-dummy to dummy for all 4 diagonals
+        r_core = Room(vnum=1, name="Core")
+        r_core.x, r_core.y, r_core.z = 10, 10, 0
+
+        dummies = {
+            Direction.northeast: Room(vnum=2, name="NE Dummy"),
+            Direction.northwest: Room(vnum=3, name="NW Dummy"),
+            Direction.southeast: Room(vnum=4, name="SE Dummy"),
+            Direction.southwest: Room(vnum=5, name="SW Dummy"),
+        }
+        for d in dummies.values():
+            d.dummy = True
+
+        rdb = {1: r_core, **{r.vnum: r for r in dummies.values()}}
+        exits = [
+            Exit(src=1, dst=dummies[d].vnum, direction=d)
+            for d in (Direction.northeast, Direction.northwest, Direction.southeast, Direction.southwest)
+        ]
+        position_dummy_rooms(rdb, exits)
+
+        assert dummies[Direction.northeast].x == 11 and dummies[Direction.northeast].y == 11
+        assert dummies[Direction.northwest].x == 9 and dummies[Direction.northwest].y == 11
+        assert dummies[Direction.southeast].x == 11 and dummies[Direction.southeast].y == 9
+        assert dummies[Direction.southwest].x == 9 and dummies[Direction.southwest].y == 9
+
+        # Test Pass 2: exits from dummy to non-dummy for all 4 diagonals
+        dummies_rev = {
+            Direction.northeast: Room(vnum=12, name="NE Rev"),
+            Direction.northwest: Room(vnum=13, name="NW Rev"),
+            Direction.southeast: Room(vnum=14, name="SE Rev"),
+            Direction.southwest: Room(vnum=15, name="SW Rev"),
+        }
+        for d in dummies_rev.values():
+            d.dummy = True
+
+        rdb_rev = {1: r_core, **{r.vnum: r for r in dummies_rev.values()}}
+        exits_rev = [
+            Exit(src=dummies_rev[d].vnum, dst=1, direction=d)
+            for d in (Direction.northeast, Direction.northwest, Direction.southeast, Direction.southwest)
+        ]
+        position_dummy_rooms(rdb_rev, exits_rev)
+
+        assert dummies_rev[Direction.northeast].x == 9 and dummies_rev[Direction.northeast].y == 9
+        assert dummies_rev[Direction.northwest].x == 11 and dummies_rev[Direction.northwest].y == 9
+        assert dummies_rev[Direction.southeast].x == 9 and dummies_rev[Direction.southeast].y == 11
+        assert dummies_rev[Direction.southwest].x == 11 and dummies_rev[Direction.southwest].y == 11
+
+        # Test SVGRenderer renders all dummy diagonal stubs without exception
+        svg_file = tmp_path / "dummy_stubs.svg"
+        header = AreaHeader(filename="stubs.are", name="Stubs", builder="Tester", vnum_min=1, vnum_max=15)
+        out_svg = SVGRenderer().render(rdb, svg_file, header=header, exits=exits)
+        assert out_svg.exists()

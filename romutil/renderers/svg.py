@@ -102,6 +102,14 @@ class _Plotter:
                 end = (start[0] + self.lift, start[1] - self.lift)
             elif ex.direction == Direction.down:
                 end = (start[0] - self.lift, start[1] + self.lift)
+            elif ex.direction == Direction.northeast:
+                end = (start[0] + 1.0, start[1] - 1.0)
+            elif ex.direction == Direction.northwest:
+                end = (start[0] - 1.0, start[1] - 1.0)
+            elif ex.direction == Direction.southeast:
+                end = (start[0] + 1.0, start[1] + 1.0)
+            elif ex.direction == Direction.southwest:
+                end = (start[0] - 1.0, start[1] + 1.0)
             else:
                 end = start
 

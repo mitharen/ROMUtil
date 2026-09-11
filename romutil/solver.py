@@ -188,6 +188,18 @@ def position_dummy_rooms(rdb: Mapping[int, Any], exits: Sequence[Exit]) -> None:
                     dz = 1
                 elif ex.direction == Direction.down:
                     dz = -1
+                elif ex.direction == Direction.northeast:
+                    dx = 1
+                    dy = 1
+                elif ex.direction == Direction.northwest:
+                    dx = -1
+                    dy = 1
+                elif ex.direction == Direction.southeast:
+                    dx = 1
+                    dy = -1
+                elif ex.direction == Direction.southwest:
+                    dx = -1
+                    dy = -1
                 dst_room.x = src_room.x + dx
                 dst_room.y = src_room.y + dy
                 dst_room.z = src_room.z + dz
@@ -216,6 +228,18 @@ def position_dummy_rooms(rdb: Mapping[int, Any], exits: Sequence[Exit]) -> None:
                     dz = 1
                 elif ex.direction == Direction.down:
                     dz = -1
+                elif ex.direction == Direction.northeast:
+                    dx = 1
+                    dy = 1
+                elif ex.direction == Direction.northwest:
+                    dx = -1
+                    dy = 1
+                elif ex.direction == Direction.southeast:
+                    dx = 1
+                    dy = -1
+                elif ex.direction == Direction.southwest:
+                    dx = -1
+                    dy = -1
                 src_room.x = dst_room.x - dx
                 src_room.y = dst_room.y - dy
                 src_room.z = dst_room.z - dz
@@ -244,8 +268,30 @@ def compute_dimension_bounds(exits: Sequence[Exit]) -> tuple[int, int, int]:
     Returns:
         tuple[int, int, int]: (Mx, My, Mz)
     """
-    sum_x = sum(e.distance for e in exits if e.direction in (Direction.east, Direction.west))
-    sum_y = sum(e.distance for e in exits if e.direction in (Direction.north, Direction.south))
+    sum_x = sum(
+        e.distance
+        for e in exits
+        if e.direction in (
+            Direction.east,
+            Direction.west,
+            Direction.northeast,
+            Direction.northwest,
+            Direction.southeast,
+            Direction.southwest,
+        )
+    )
+    sum_y = sum(
+        e.distance
+        for e in exits
+        if e.direction in (
+            Direction.north,
+            Direction.south,
+            Direction.northeast,
+            Direction.northwest,
+            Direction.southeast,
+            Direction.southwest,
+        )
+    )
     sum_z = sum(e.distance for e in exits if e.direction in (Direction.up, Direction.down))
 
     mx = max(10, sum_x + 1)
@@ -545,7 +591,7 @@ def non_euler(rdb, exits):
     non_dummy_rooms = [v for v, r in rdb.items() if not getattr(r, 'dummy', False)]
     m.Rooms = Set(initialize=non_dummy_rooms)
     m.Exits = RangeSet(0, len(exits) - 1)
-    m.Directions = RangeSet(0, Direction.mod.value - 1)
+    m.Directions = RangeSet(0, len(Direction) - 1)
 
     mx, my, mz = compute_dimension_bounds(exits)
     m.Mx = Param(initialize=mx)
@@ -574,10 +620,24 @@ def non_euler(rdb, exits):
             continue
 
         if e.dst != e.src:
-            if e.direction not in (Direction.east, Direction.west):
+            if e.direction not in (
+                Direction.east,
+                Direction.west,
+                Direction.northeast,
+                Direction.northwest,
+                Direction.southeast,
+                Direction.southwest,
+            ):
                 m.relative_pos.add(m.x[e.src] - m.x[e.dst] + 2 * m.Mx * m.cut[i] >= 0)
                 m.relative_pos.add(m.x[e.dst] - m.x[e.src] + 2 * m.Mx * m.cut[i] >= 0)
-            if e.direction not in (Direction.north, Direction.south):
+            if e.direction not in (
+                Direction.north,
+                Direction.south,
+                Direction.northeast,
+                Direction.northwest,
+                Direction.southeast,
+                Direction.southwest,
+            ):
                 m.relative_pos.add(m.y[e.src] - m.y[e.dst] + 2 * m.My * m.cut[i] >= 0)
                 m.relative_pos.add(m.y[e.dst] - m.y[e.src] + 2 * m.My * m.cut[i] >= 0)
             if e.direction not in (Direction.up, Direction.down):
@@ -596,6 +656,18 @@ def non_euler(rdb, exits):
                 m.relative_pos.add(m.y[e.src] - m.y[e.dst] + 2 * m.My * m.cut[i] >= 1)
             elif e.direction == Direction.down:
                 m.relative_pos.add(m.z[e.src] - m.z[e.dst] + 2 * m.Mz * m.cut[i] >= 1)
+            elif e.direction == Direction.northeast:
+                m.relative_pos.add(m.x[e.dst] - m.x[e.src] + 2 * m.Mx * m.cut[i] >= 1)
+                m.relative_pos.add(m.y[e.dst] - m.y[e.src] + 2 * m.My * m.cut[i] >= 1)
+            elif e.direction == Direction.northwest:
+                m.relative_pos.add(m.x[e.src] - m.x[e.dst] + 2 * m.Mx * m.cut[i] >= 1)
+                m.relative_pos.add(m.y[e.dst] - m.y[e.src] + 2 * m.My * m.cut[i] >= 1)
+            elif e.direction == Direction.southeast:
+                m.relative_pos.add(m.x[e.dst] - m.x[e.src] + 2 * m.Mx * m.cut[i] >= 1)
+                m.relative_pos.add(m.y[e.src] - m.y[e.dst] + 2 * m.My * m.cut[i] >= 1)
+            elif e.direction == Direction.southwest:
+                m.relative_pos.add(m.x[e.src] - m.x[e.dst] + 2 * m.Mx * m.cut[i] >= 1)
+                m.relative_pos.add(m.y[e.src] - m.y[e.dst] + 2 * m.My * m.cut[i] >= 1)
 
     m.obj = Objective(expr=sum(m.cut[i] for i in range(len(exits))))
 
@@ -634,6 +706,18 @@ def solve(rdb, area_exits, timeout=None):
                         dz = 1
                     elif e.direction == Direction.down:
                         dz = -1
+                    elif e.direction == Direction.northeast:
+                        dx = 1
+                        dy = 1
+                    elif e.direction == Direction.northwest:
+                        dx = -1
+                        dy = 1
+                    elif e.direction == Direction.southeast:
+                        dx = 1
+                        dy = -1
+                    elif e.direction == Direction.southwest:
+                        dx = -1
+                        dy = -1
                     dummy_anchors[e.dst] = (e.src, dx, dy, dz)
 
     non_dummy_rooms = [v for v, r in rdb.items() if not getattr(r, 'dummy', False)]
@@ -641,7 +725,7 @@ def solve(rdb, area_exits, timeout=None):
 
     m.Rooms = Set(initialize=non_dummy_rooms)
     m.Exits = RangeSet(0, len(exits) - 1)
-    m.Directions = RangeSet(0, Direction.mod.value - 1)
+    m.Directions = RangeSet(0, len(Direction) - 1)
 
     mx, my, mz = compute_dimension_bounds(exits)
     m.Mx = Param(initialize=mx)
@@ -709,9 +793,27 @@ def solve(rdb, area_exits, timeout=None):
             continue
 
         if x.one_way:
-            x_off = m.d_min if x.direction == Direction.east else -m.d_min if x.direction == Direction.west else 0
-            y_off = m.d_min if x.direction == Direction.north else -m.d_min if x.direction == Direction.south else 0
-            z_off = m.d_min if x.direction == Direction.up else -m.d_min if x.direction == Direction.down else 0
+            if x.direction in (Direction.east, Direction.northeast, Direction.southeast):
+                x_off = m.d_min
+            elif x.direction in (Direction.west, Direction.northwest, Direction.southwest):
+                x_off = -m.d_min
+            else:
+                x_off = 0
+
+            if x.direction in (Direction.north, Direction.northeast, Direction.northwest):
+                y_off = m.d_min
+            elif x.direction in (Direction.south, Direction.southeast, Direction.southwest):
+                y_off = -m.d_min
+            else:
+                y_off = 0
+
+            if x.direction == Direction.up:
+                z_off = m.d_min
+            elif x.direction == Direction.down:
+                z_off = -m.d_min
+            else:
+                z_off = 0
+
             X = m.one_ways.add()
             Y = m.one_ways.add()
             Z = m.one_ways.add()
@@ -726,15 +828,17 @@ def solve(rdb, area_exits, timeout=None):
             m.one_way_pos.add(-z_diff <= Z)
             one_ways.append(X + Y + Z)
 
-            if x.direction == Direction.east:
+            if x.direction in (Direction.east, Direction.northeast, Direction.southeast):
                 m.one_way_pos.add(get_x(x.dst) - get_x(x.src) + 2 * m.Mx * m.cut[i] >= m.d_min)
-            elif x.direction == Direction.west:
+            elif x.direction in (Direction.west, Direction.northwest, Direction.southwest):
                 m.one_way_pos.add(get_x(x.src) - get_x(x.dst) + 2 * m.Mx * m.cut[i] >= m.d_min)
-            elif x.direction == Direction.north:
+
+            if x.direction in (Direction.north, Direction.northeast, Direction.northwest):
                 m.one_way_pos.add(get_y(x.dst) - get_y(x.src) + 2 * m.My * m.cut[i] >= m.d_min)
-            elif x.direction == Direction.south:
+            elif x.direction in (Direction.south, Direction.southeast, Direction.southwest):
                 m.one_way_pos.add(get_y(x.src) - get_y(x.dst) + 2 * m.My * m.cut[i] >= m.d_min)
-            elif x.direction == Direction.up:
+
+            if x.direction == Direction.up:
                 m.one_way_pos.add(get_z(x.dst) - get_z(x.src) + 2 * m.Mz * m.cut[i] >= m.d_min)
             elif x.direction == Direction.down:
                 m.one_way_pos.add(get_z(x.src) - get_z(x.dst) + 2 * m.Mz * m.cut[i] >= m.d_min)
@@ -742,10 +846,24 @@ def solve(rdb, area_exits, timeout=None):
             continue
 
         if x.dst != x.src and x.src in m.Rooms and x.dst in m.Rooms:
-            if x.direction not in (Direction.east, Direction.west):
+            if x.direction not in (
+                Direction.east,
+                Direction.west,
+                Direction.northeast,
+                Direction.northwest,
+                Direction.southeast,
+                Direction.southwest,
+            ):
                 m.relative_pos.add(m.x[x.src] + 2 * m.Mx * m.cut[i] >= m.x[x.dst])
                 m.relative_pos.add(m.x[x.dst] + 2 * m.Mx * m.cut[i] >= m.x[x.src])
-            if x.direction not in (Direction.north, Direction.south):
+            if x.direction not in (
+                Direction.north,
+                Direction.south,
+                Direction.northeast,
+                Direction.northwest,
+                Direction.southeast,
+                Direction.southwest,
+            ):
                 m.relative_pos.add(m.y[x.src] + 2 * m.My * m.cut[i] >= m.y[x.dst])
                 m.relative_pos.add(m.y[x.dst] + 2 * m.My * m.cut[i] >= m.y[x.src])
             if x.direction not in (Direction.up, Direction.down):
@@ -770,6 +888,26 @@ def solve(rdb, area_exits, timeout=None):
             elif x.direction == Direction.down:
                 m.relative_pos.add(m.z[x.src] - m.z[x.dst] + 2 * m.Mz * m.cut[i] >= m.l_min[i])
                 m.relative_pos.add(m.z[x.src] - m.z[x.dst] - 2 * m.Mz * m.cut[i] <= m.l_max[i])
+            elif x.direction == Direction.northeast:
+                m.relative_pos.add(m.x[x.dst] - m.x[x.src] + 2 * m.Mx * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.x[x.dst] - m.x[x.src] - 2 * m.Mx * m.cut[i] <= m.l_max[i])
+                m.relative_pos.add(m.y[x.dst] - m.y[x.src] + 2 * m.My * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.y[x.dst] - m.y[x.src] - 2 * m.My * m.cut[i] <= m.l_max[i])
+            elif x.direction == Direction.northwest:
+                m.relative_pos.add(m.x[x.src] - m.x[x.dst] + 2 * m.Mx * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.x[x.src] - m.x[x.dst] - 2 * m.Mx * m.cut[i] <= m.l_max[i])
+                m.relative_pos.add(m.y[x.dst] - m.y[x.src] + 2 * m.My * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.y[x.dst] - m.y[x.src] - 2 * m.My * m.cut[i] <= m.l_max[i])
+            elif x.direction == Direction.southeast:
+                m.relative_pos.add(m.x[x.dst] - m.x[x.src] + 2 * m.Mx * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.x[x.dst] - m.x[x.src] - 2 * m.Mx * m.cut[i] <= m.l_max[i])
+                m.relative_pos.add(m.y[x.src] - m.y[x.dst] + 2 * m.My * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.y[x.src] - m.y[x.dst] - 2 * m.My * m.cut[i] <= m.l_max[i])
+            elif x.direction == Direction.southwest:
+                m.relative_pos.add(m.x[x.src] - m.x[x.dst] + 2 * m.Mx * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.x[x.src] - m.x[x.dst] - 2 * m.Mx * m.cut[i] <= m.l_max[i])
+                m.relative_pos.add(m.y[x.src] - m.y[x.dst] + 2 * m.My * m.cut[i] >= m.l_min[i])
+                m.relative_pos.add(m.y[x.src] - m.y[x.dst] - 2 * m.My * m.cut[i] <= m.l_max[i])
 
     m.obj = Objective(
         expr=m.M * m.M * (sum(m.cut[i] for i in range(len(exits))))

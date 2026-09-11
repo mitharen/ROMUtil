@@ -12,10 +12,25 @@ class Direction(enum.IntEnum):
     south = 3
     west = 4
     down = 5
-    mod = 6
+    northeast = 6
+    northwest = 7
+    southeast = 8
+    southwest = 9
 
     def invert(self) -> Direction:
-        return Direction((self + self.mod // 2) % self.mod)
+        inverses = {
+            Direction.north: Direction.south,
+            Direction.south: Direction.north,
+            Direction.east: Direction.west,
+            Direction.west: Direction.east,
+            Direction.up: Direction.down,
+            Direction.down: Direction.up,
+            Direction.northeast: Direction.southwest,
+            Direction.southwest: Direction.northeast,
+            Direction.northwest: Direction.southeast,
+            Direction.southeast: Direction.northwest,
+        }
+        return inverses[self]
 
 
 direction_matrix = [
@@ -25,6 +40,10 @@ direction_matrix = [
     Direction.west,
     Direction.up,
     Direction.down,
+    Direction.northeast,
+    Direction.northwest,
+    Direction.southeast,
+    Direction.southwest,
 ]
 
 

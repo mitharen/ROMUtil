@@ -1,0 +1,160 @@
+#AREA Astral Sanctum~
+#AUTHOR Altrag~
+#RANGES 1 50 1 50
+#RESETMSG The fabric of the sanctum shivers.~
+#FLAGS 0
+#ECONOMY 0 12500000
+#REPAIRS
+0
+
+#ROOMDATA
+#500
+Central Nexus~
+A grand crystalline pavilion stands at the crossroads of the planes.
+Gleaming silver pathways stretch in all directions through the misty void.
+~
+0 0 1
+D0
+A silver archway leads north into the northern colonnade.~
+~
+0 0 501
+D1
+A glowing walkway extends east towards the sun gallery.~
+~
+0 0 502
+D2
+A stone staircase descends south to the meditation garden.~
+~
+0 0 503
+D3
+A vaulted passage leads west to the library of twilight.~
+~
+0 0 504
+D4
+A spiral beam of light ascends up into the celestial observatory.~
+~
+0 0 505
+D5
+A dark shaft drops down into the crypt undercroft.~
+~
+0 0 506
+D6
+A shimmering trail of stardust runs northeast toward the dawn spire.~
+~
+0 0 507
+D7
+A shadowed causeway extends northwest toward the dusk spire.~
+~
+0 0 508
+D8
+A crystal footbridge crosses southeast toward the solstice pavilion.~
+~
+0 0 509
+D9
+An obsidian pathway winds southwest toward the equinox dome.~
+~
+0 0 510
+S
+#501
+Northern Colonnade~
+Towering alabaster columns flank this serene northern corridor.
+~
+0 0 1
+D2
+The colonnade leads south back to the central nexus.~
+~
+0 0 500
+S
+#502
+Sun Gallery~
+Brilliant amber sunlight streams through crystalline clerestory windows.
+~
+0 0 1
+D3
+The gallery leads west to the central nexus.~
+~
+0 0 500
+S
+#503
+Meditation Garden~
+Bonsai trees and fragrant lotus blossoms surround a tranquil pool.
+~
+0 0 1
+D0
+A stone staircase leads north back up to the nexus.~
+~
+0 0 500
+S
+#504
+Library of Twilight~
+Endless shelves of ancient tomes and star charts line the violet walls.
+~
+0 0 1
+D1
+The vaulted passage leads east back to the nexus.~
+~
+0 0 500
+S
+#505
+Celestial Observatory~
+A massive brass armillary sphere rotates slowly beneath the open sky.
+~
+0 0 1
+D5
+A spiral beam descends down to the nexus.~
+~
+0 0 500
+S
+#506
+Crypt Undercroft~
+Cool subterranean air chills this vault of granite sarcophagi.
+~
+0 0 1
+D4
+A vertical shaft ascends up to the nexus.~
+~
+0 0 500
+S
+#507
+Dawn Spire~
+Rose-gold light bathes the pinnacle of this soaring northeast tower.
+~
+0 0 1
+D9
+The stardust trail leads southwest back to the central nexus.~
+~
+0 0 500
+S
+#508
+Dusk Spire~
+Deep indigo shadows cling to the high parapets of this northwest turret.
+~
+0 0 1
+D8
+The causeway leads southeast back to the central nexus.~
+~
+0 0 500
+S
+#509
+Solstice Pavilion~
+Golden banners ripple in the warm breeze of this southeast terrace.
+~
+0 0 1
+D7
+The crystal footbridge leads northwest back to the central nexus.~
+~
+0 0 500
+S
+#510
+Equinox Dome~
+A geometric dome of obsidian and quartz creates an aura of perfect balance.
+~
+0 0 1
+D6
+The obsidian path leads northeast back to the central nexus.~
+~
+0 0 500
+S
+#0
+
+#$

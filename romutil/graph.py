@@ -31,6 +31,18 @@ def restore_rooms(room):
             r.z += dist
         elif d == Direction.down:
             r.z -= dist
+        elif d == Direction.northeast:
+            r.x += dist
+            r.y += dist
+        elif d == Direction.northwest:
+            r.x -= dist
+            r.y += dist
+        elif d == Direction.southeast:
+            r.x += dist
+            r.y -= dist
+        elif d == Direction.southwest:
+            r.x -= dist
+            r.y -= dist
         rooms.append(r)
         rooms += restore_rooms(r)
     return rooms
