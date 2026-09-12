@@ -157,8 +157,8 @@ class TestGalleryAssetsGeneration:
         cat, name, paths, is_dir = comp_candidates[0]
         assert name == "midgaard_metropolitan"
         assert isinstance(paths, list)
-        assert len(paths) == 4
-        assert [p.name for p in paths] == ["midgaard.are", "hood.are", "grave.are", "mobfact.are"]
+        assert len(paths) == 5
+        assert [p.name for p in paths] == ["midgaard.are", "hood.are", "grave.are", "mobfact.are", "school.are"]
         assert all(p.is_file() for p in paths)
         assert not is_dir
 
@@ -326,6 +326,7 @@ class TestGalleryAssetsGeneration:
                 tmp_path / "hood.are",
                 tmp_path / "grave.are",
                 tmp_path / "mobfact.are",
+                tmp_path / "school.are",
             ]
             render_area(
                 "midgaard_metropolitan",
@@ -426,6 +427,99 @@ class TestGalleryAssetsGeneration:
         validate_svg_file(tmp_path / "test_composite0.svg")
         assert len(html_data["rooms"]) > 0
 
+
+    def test_composite_showcase_cluster_metadata(self):
+        """Assert school.are is part of the constituent filenames for midgaard_metropolitan."""
+        from scripts.build_pages import COMPOSITE_SHOWCASE_AREAS, resolve_candidate_areas
+
+        cluster_entry = next((item for item in COMPOSITE_SHOWCASE_AREAS if item[1] == "midgaard_metropolitan"), None)
+        assert cluster_entry is not None
+        cat, name, filenames = cluster_entry[:3]
+        assert "school.are" in filenames
+        assert filenames == ("midgaard.are", "hood.are", "grave.are", "mobfact.are", "school.are")
+
+        candidates = resolve_candidate_areas()
+        comp_candidate = next((c for c in candidates if c[1] == "midgaard_metropolitan"), None)
+        assert comp_candidate is not None
+        source_paths = comp_candidate.source_path
+        assert isinstance(source_paths, list)
+        source_filenames = [p.name for p in source_paths]
+        assert "school.are" in source_filenames
+        assert source_filenames == ["midgaard.are", "hood.are", "grave.are", "mobfact.are", "school.are"]
+
+    def test_render_composite_area_generates_artifacts_and_resolves_cross_exits(self, tmp_path):
+        """Verify rendering composite area generates artifacts and resolves cross-area exit 3700<->3001 as internal exit."""
+        from scripts.build_pages import render_area
+        from romutil.parser import Parser
+        from romutil.models import merge_areas, Room
+
+        midgaard_path = REPO_ROOT / "tests" / "fixtures" / "areas" / "midgaard.are"
+        school_path = REPO_ROOT / "tests" / "fixtures" / "areas" / "school.are"
+
+        render_area(
+            "test_composite_school",
+            [midgaard_path, school_path],
+            is_dir=False,
+            outdir=tmp_path,
+            solver_timeout=5,
+        )
+
+        html_file = tmp_path / "test_composite_school.html"
+        svg_file = tmp_path / "test_composite_school0.svg"
+        assert html_file.exists()
+        assert svg_file.exists()
+
+        html_data = validate_html_viewer_file(html_file)
+        validate_svg_file(svg_file)
+
+        # Assert rooms in range(3700, 3761) are included in the generated rooms
+        rooms = html_data["rooms"]
+        room_vnums = {r["vnum"] for r in rooms}
+        school_vnums = {v for v in room_vnums if v in range(3700, 3761)}
+        assert len(school_vnums) == 59
+        assert 3700 in room_vnums
+        assert 3001 in room_vnums
+
+        # Verify exit from 3700 to 3001 is present as an internal exit rather than a dummy stub
+        r3700 = next(r for r in rooms if r["vnum"] == 3700)
+        assert r3700.get("dummy", False) is False
+        exit_to_3001 = next(
+            (e for e in r3700.get("exits", []) if e.get("dst") == 3001 or e.get("target_vnum") == 3001),
+            None,
+        )
+        assert exit_to_3001 is not None
+        assert exit_to_3001["dst"] == 3001
+        assert exit_to_3001["direction"] == "down"
+
+        # Verify reciprocal exit from 3001 to 3700 is present as an internal exit
+        r3001 = next(r for r in rooms if r["vnum"] == 3001)
+        assert r3001.get("dummy", False) is False
+        exit_to_3700 = next(
+            (e for e in r3001.get("exits", []) if e.get("dst") == 3700 or e.get("target_vnum") == 3700),
+            None,
+        )
+        assert exit_to_3700 is not None
+        assert exit_to_3700["dst"] == 3700
+        assert exit_to_3700["direction"] == "up"
+
+        # Composite verification across all 5 constituents in the metropolitan cluster
+        fixtures_dir = REPO_ROOT / "tests" / "fixtures" / "areas"
+        areas = [
+            Parser().parse((fixtures_dir / fname).read_text("latin-1"))
+            for fname in ("midgaard.are", "hood.are", "grave.are", "mobfact.are", "school.are")
+        ]
+        composite_all = merge_areas(areas)
+        composite_rdb = {r.vnum: Room(r) for r in composite_all.rooms}
+        assert 3700 in composite_rdb and not composite_rdb[3700].dummy
+        assert 3001 in composite_rdb and not composite_rdb[3001].dummy
+        ex_down = next(e for e in composite_rdb[3700].exits if e.dst == 3001)
+        ex_up = next(e for e in composite_rdb[3001].exits if e.dst == 3700)
+        assert ex_down.dst == 3001
+        assert ex_up.dst == 3700
+        assert composite_rdb[ex_down.dst].dummy is False
+        assert composite_rdb[ex_up.dst].dummy is False
+        assert ex_down == ex_up
+
     def test_composite_showcase_constituents_parsing_and_integrity(self):
         from romutil.parser import parse_file
         areas_dir = REPO_ROOT / "tests" / "fixtures" / "areas"
@@ -434,6 +528,7 @@ class TestGalleryAssetsGeneration:
             "hood.are": 70,
             "grave.are": 30,
             "mobfact.are": 25,
+            "school.are": 59,
         }
         for filename, min_rooms in expected_counts.items():
             area_path = areas_dir / filename
