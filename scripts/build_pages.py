@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -27,7 +28,7 @@ SHOWCASE_AREAS = (
     "smurf.are",
 )
 
-# Curated composite showcase clusters (category, name/slug, constituent filenames)
+# Curated composite showcase clusters (category, name/slug, constituent filenames, [optional timeout])
 COMPOSITE_SHOWCASE_AREAS = (
     (
         "ROM 2.4 / Composite",
@@ -37,9 +38,40 @@ COMPOSITE_SHOWCASE_AREAS = (
 )
 
 
-def resolve_candidate_areas() -> list[tuple[str, str, Path | list[Path], bool]]:
+class CandidateArea(tuple):
+    """Represents a discovered candidate area or composite cluster for gallery page generation.
+
+    Inherits from tuple as (category, name, source_path, is_dir) to maintain
+    unpacking compatibility with 4-element tuples while optionally carrying
+    a custom solver_timeout attribute.
+    """
+
+    category: str
+    name: str
+    source_path: Path | list[Path]
+    is_dir: bool
+    solver_timeout: int | None
+
+    def __new__(
+        cls,
+        category: str,
+        name: str,
+        source_path: Path | list[Path],
+        is_dir: bool,
+        solver_timeout: int | None = None,
+    ):
+        inst = super().__new__(cls, (category, name, source_path, is_dir))
+        inst.category = category
+        inst.name = name
+        inst.source_path = source_path
+        inst.is_dir = is_dir
+        inst.solver_timeout = solver_timeout
+        return inst
+
+
+def resolve_candidate_areas() -> list[CandidateArea]:
     """Discover curated showcase areas and composite clusters for page generation."""
-    candidates: list[tuple[str, str, Path | list[Path], bool]] = []
+    candidates: list[CandidateArea] = []
 
     # Check local fixture areas or external QuickMUD area directory
     sample_dirs = [
@@ -58,13 +90,18 @@ def resolve_candidate_areas() -> list[tuple[str, str, Path | list[Path], bool]]:
                     continue
                 area_file = sdir / name
                 if area_file.is_file():
-                    candidates.append(("ROM 2.4 / QuickMUD", area_file.stem, area_file, False))
+                    candidates.append(CandidateArea("ROM 2.4 / QuickMUD", area_file.stem, area_file, False))
                     found_names.add(name)
             if candidates:
                 break
 
     # Discover composite showcase areas
-    for cat, comp_name, filenames in COMPOSITE_SHOWCASE_AREAS:
+    for item in COMPOSITE_SHOWCASE_AREAS:
+        cat = item[0]
+        comp_name = item[1]
+        filenames = item[2]
+        comp_timeout = item[3] if len(item) > 3 else None
+
         # Check if all constituent files exist within a single directory first
         found_cluster: list[Path] | None = None
         for sdir in sample_dirs:
@@ -74,7 +111,7 @@ def resolve_candidate_areas() -> list[tuple[str, str, Path | list[Path], bool]]:
                     found_cluster = paths
                     break
         if found_cluster is not None:
-            candidates.append((cat, comp_name, found_cluster, False))
+            candidates.append(CandidateArea(cat, comp_name, found_cluster, False, solver_timeout=comp_timeout))
         else:
             resolved_files: list[Path] = []
             for fname in filenames:
@@ -85,7 +122,7 @@ def resolve_candidate_areas() -> list[tuple[str, str, Path | list[Path], bool]]:
                             resolved_files.append(candidate_file)
                             break
             if len(resolved_files) == len(filenames):
-                candidates.append((cat, comp_name, resolved_files, False))
+                candidates.append(CandidateArea(cat, comp_name, resolved_files, False, solver_timeout=comp_timeout))
 
     candidates.sort(key=lambda c: c[1])
     return candidates
@@ -96,9 +133,12 @@ def render_area(
     source_path: Path | Sequence[Path],
     is_dir: bool,
     outdir: Path,
-    solver_timeout: int = 60,
-) -> None:
-    """Invokes romutil to render HTML viewer and SVG vector map in a single pass."""
+    solver_timeout: int = 180,
+) -> float:
+    """Invokes romutil to render HTML viewer and SVG vector map in a single pass.
+
+    Returns the elapsed duration in seconds.
+    """
     outbase = outdir / name
 
     cmd = [
@@ -117,25 +157,43 @@ def render_area(
         "--solver-timeout", str(solver_timeout),
     ])
 
-    log.info(f"Rendering map artifacts for {name}...")
+    log.info(f"Rendering map artifacts for {name} (timeout={solver_timeout}s)...")
+    start_time = time.perf_counter()
     res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True)
+    elapsed = time.perf_counter() - start_time
     if res.returncode != 0:
         log.error(f"Failed to render map artifacts for {name}: {res.stderr}")
         raise RuntimeError(f"Failed to render map artifacts for {name}: {res.stderr}")
+    log.info(f"Rendered {name} in {elapsed:.2f}s")
+    return elapsed
 
 
-def generate_index_html(rendered_areas, outdir):
+def generate_index_html(
+    rendered_areas: Sequence[tuple[str, str] | tuple[str, str, float | str | None]],
+    outdir: Path,
+) -> None:
     """Generates a minimal, clinical index.html landing page."""
     rows = []
-    for category, name in rendered_areas:
+    for item in rendered_areas:
+        category = item[0]
+        name = item[1]
+        solve_time = item[2] if len(item) > 2 else None
+
         html_file = f"{name}.html"
         svg_file = f"{name}0.svg" if (outdir / f"{name}0.svg").exists() else f"{name}.svg"
 
         html_link = f'<a href="{html_file}">Interactive Viewer</a>' if (outdir / html_file).exists() else "N/A"
         svg_link = f'<a href="{svg_file}">SVG Map</a>' if (outdir / svg_file).exists() else "N/A"
 
+        if isinstance(solve_time, (int, float)):
+            time_cell = f"<td><code>{solve_time:.2f}s</code></td>"
+        elif solve_time is not None:
+            time_cell = f"<td><code>{solve_time}</code></td>"
+        else:
+            time_cell = "<td>N/A</td>"
+
         rows.append(
-            f"<tr><td><code>{name}</code></td><td>{category}</td><td>{html_link}</td><td>{svg_link}</td></tr>"
+            f"<tr><td><code>{name}</code></td><td>{category}</td>{time_cell}<td>{html_link}</td><td>{svg_link}</td></tr>"
         )
 
     rows_html = "\n".join(rows)
@@ -190,6 +248,7 @@ def generate_index_html(rendered_areas, outdir):
       <tr>
         <th>Area</th>
         <th>Source</th>
+        <th>Solve Time</th>
         <th>Web Viewer</th>
         <th>Vector SVG</th>
       </tr>
@@ -208,7 +267,18 @@ def generate_index_html(rendered_areas, outdir):
 def main():
     parser = argparse.ArgumentParser(description="Build GitHub Pages site with map viewers")
     parser.add_argument("--outdir", type=Path, default=REPO_ROOT / "_site", help="Output directory")
-    parser.add_argument("--solver-timeout", type=int, default=60, help="CBC solver timeout in seconds (default: 60)")
+    parser.add_argument(
+        "--solver-timeout",
+        type=int,
+        default=180,
+        help="CBC solver timeout in seconds (default: 180)",
+    )
+    parser.add_argument(
+        "--composite-solver-timeout",
+        type=int,
+        default=None,
+        help="CBC solver timeout in seconds for composite clusters (overrides --solver-timeout)",
+    )
     args = parser.parse_args()
 
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -216,9 +286,23 @@ def main():
     log.info(f"Found {len(candidates)} candidate areas for site generation.")
 
     rendered = []
-    for category, name, source_path, is_dir in candidates:
-        render_area(name, source_path, is_dir, args.outdir, solver_timeout=args.solver_timeout)
-        rendered.append((category, name))
+    for cand in candidates:
+        if len(cand) >= 5:
+            category, name, source_path, is_dir, cand_timeout = cand[:5]
+        else:
+            category, name, source_path, is_dir = cand[:4]
+            cand_timeout = getattr(cand, "solver_timeout", None)
+
+        is_composite = isinstance(source_path, Sequence) and not isinstance(source_path, (str, bytes, Path))
+        if is_composite and args.composite_solver_timeout is not None:
+            timeout = args.composite_solver_timeout
+        elif cand_timeout is not None:
+            timeout = cand_timeout
+        else:
+            timeout = args.solver_timeout
+
+        elapsed = render_area(name, source_path, is_dir, args.outdir, solver_timeout=timeout)
+        rendered.append((category, name, elapsed))
 
     generate_index_html(rendered, args.outdir)
     log.info(f"Pages build complete in {args.outdir}")

@@ -163,8 +163,8 @@ class TestGalleryAssetsGeneration:
         assert not is_dir
 
         dummy_rendered = [
-            ("ROM 2.4 / QuickMUD", "smurf"),
-            ("ROM 2.4 / Composite", "midgaard_metropolitan"),
+            ("ROM 2.4 / QuickMUD", "smurf", 1.23),
+            ("ROM 2.4 / Composite", "midgaard_metropolitan", 45.67),
         ]
 
         # Case 1: Asset files do not exist -> verify 'N/A' fallback is emitted
@@ -173,21 +173,27 @@ class TestGalleryAssetsGeneration:
         assert index_file.exists()
         content_missing = index_file.read_text(encoding="utf-8")
         assert "ROMUtil Map Directory" in content_missing
+        assert "<th>Solve Time</th>" in content_missing
         assert "ROM 2.4 / QuickMUD" in content_missing
         assert "ROM 2.4 / Composite" in content_missing
         assert "smurf" in content_missing
         assert "midgaard_metropolitan" in content_missing
+        assert "<td><code>1.23s</code></td>" in content_missing
+        assert "<td><code>45.67s</code></td>" in content_missing
         assert "N/A" in content_missing
         assert '<a href="smurf.html">' not in content_missing
         assert '<a href="midgaard_metropolitan.html">' not in content_missing
 
-        # Case 2: Asset files exist -> verify valid <a href= links and 'N/A' is absent
+        # Case 2: Asset files exist -> verify valid <a href= links, solve times, and 'N/A' is absent
         (tmp_path / "smurf.html").write_text("<!DOCTYPE html><html><body>viewer</body></html>", encoding="utf-8")
         (tmp_path / "smurf0.svg").write_text("<svg></svg>", encoding="utf-8")
         (tmp_path / "midgaard_metropolitan.html").write_text("<!DOCTYPE html><html><body>viewer</body></html>", encoding="utf-8")
         (tmp_path / "midgaard_metropolitan0.svg").write_text("<svg></svg>", encoding="utf-8")
         generate_index_html(dummy_rendered, tmp_path)
         content_present = index_file.read_text(encoding="utf-8")
+        assert "<th>Solve Time</th>" in content_present
+        assert "<td><code>1.23s</code></td>" in content_present
+        assert "<td><code>45.67s</code></td>" in content_present
         assert '<a href="smurf.html">Interactive Viewer</a>' in content_present
         assert '<a href="smurf0.svg">SVG Map</a>' in content_present
         assert '<a href="midgaard_metropolitan.html">Interactive Viewer</a>' in content_present
@@ -201,6 +207,12 @@ class TestGalleryAssetsGeneration:
         content_single_svg = index_file.read_text(encoding="utf-8")
         assert '<a href="smurf.svg">SVG Map</a>' in content_single_svg
         assert "N/A" not in content_single_svg
+
+        # Case 3: Missing solve time emits 'N/A' in timing column
+        dummy_no_time = [("ROM 2.4 / QuickMUD", "smurf")]
+        generate_index_html(dummy_no_time, tmp_path)
+        content_no_time = index_file.read_text(encoding="utf-8")
+        assert "<td>N/A</td>" in content_no_time
 
     def test_showcase_area_discovery_retires_dialect_fixtures(self):
         from scripts.build_pages import resolve_candidate_areas
@@ -247,7 +259,9 @@ class TestGalleryAssetsGeneration:
     def test_render_area_success(self, tmp_path):
         from scripts.build_pages import render_area
         fixture_path = REPO_ROOT / "tests" / "fixtures" / "areas" / "smurf.are"
-        render_area("smurf", fixture_path, is_dir=False, outdir=tmp_path)
+        elapsed = render_area("smurf", fixture_path, is_dir=False, outdir=tmp_path)
+        assert isinstance(elapsed, float)
+        assert elapsed >= 0.0
         assert (tmp_path / "smurf.html").exists()
         assert (tmp_path / "smurf0.svg").exists()
         validate_html_viewer_file(tmp_path / "smurf.html")
@@ -275,7 +289,8 @@ class TestGalleryAssetsGeneration:
         from scripts.build_pages import render_area
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-            render_area("test_area", tmp_path / "test.are", is_dir=False, outdir=tmp_path)
+            elapsed = render_area("test_area", tmp_path / "test.are", is_dir=False, outdir=tmp_path)
+            assert isinstance(elapsed, float)
 
             mock_run.assert_called_once()
             cmd = mock_run.call_args[0][0]
@@ -284,7 +299,7 @@ class TestGalleryAssetsGeneration:
             assert cmd[fmt_idx + 1] == "html,svg"
             assert "--solver-timeout" in cmd
             timeout_idx = cmd.index("--solver-timeout")
-            assert cmd[timeout_idx + 1] == "60"
+            assert cmd[timeout_idx + 1] == "180"
 
     def test_render_area_circle_dir_invokes_cli_with_timeout(self, tmp_path):
         from scripts.build_pages import render_area
@@ -399,6 +414,8 @@ class TestGalleryAssetsGeneration:
         assert "ROMUtil Map Directory" in content
         assert "ROM 2.4 / Composite" in content
         assert "test_composite" in content
+        assert "<th>Solve Time</th>" in content
+        assert re.search(r"<td><code>\d+\.\d{2}s</code></td>", content)
         assert '<a href="test_composite.html">Interactive Viewer</a>' in content
         assert '<a href="test_composite0.svg">SVG Map</a>' in content
         assert "N/A" not in content
@@ -440,11 +457,88 @@ class TestGalleryAssetsGeneration:
         assert "ROMUtil Map Directory" in content
         assert "ROM 2.4 / QuickMUD" in content
         assert "smurf" in content
+        assert "<th>Solve Time</th>" in content
+        assert re.search(r"<td><code>\d+\.\d{2}s</code></td>", content)
         assert '<a href="smurf.html">Interactive Viewer</a>' in content
         assert '<a href="smurf0.svg">SVG Map</a>' in content
         assert "N/A" not in content
         assert (tmp_path / "smurf.html").exists()
         assert (tmp_path / "smurf0.svg").exists()
+
+
+
+    def test_candidate_area_tuple_compatibility_and_timeout(self):
+        from scripts.build_pages import CandidateArea
+        cand = CandidateArea("ROM 2.4 / Composite", "test_slug", [Path("a.are")], False, solver_timeout=300)
+        assert len(cand) == 4
+        cat, name, paths, is_dir = cand
+        assert cat == "ROM 2.4 / Composite"
+        assert name == "test_slug"
+        assert paths == [Path("a.are")]
+        assert is_dir is False
+        assert cand.solver_timeout == 300
+
+    def test_build_pages_cli_timeout_and_composite_timeout(self, tmp_path):
+        from scripts.build_pages import main, CandidateArea
+
+        cand_single = CandidateArea("ROM 2.4 / QuickMUD", "smurf", Path("smurf.are"), False)
+        cand_comp = CandidateArea("ROM 2.4 / Composite", "midgaard_metropolitan", [Path("m.are"), Path("h.are")], False)
+        cand_custom = CandidateArea("ROM 2.4 / Composite", "custom_cluster", [Path("c.are")], False, solver_timeout=250)
+
+        mock_candidates = [cand_single, cand_comp, cand_custom]
+
+        # Case 1: CLI with --composite-solver-timeout overrides composite timeouts
+        with patch("scripts.build_pages.resolve_candidate_areas", return_value=mock_candidates):
+            with patch("scripts.build_pages.render_area", return_value=1.5) as mock_render:
+                with patch("scripts.build_pages.generate_index_html") as mock_gen_idx:
+                    with patch("sys.argv", [
+                        "build_pages.py",
+                        "--outdir", str(tmp_path),
+                        "--solver-timeout", "120",
+                        "--composite-solver-timeout", "240",
+                    ]):
+                        main()
+
+                    assert mock_render.call_count == 3
+                    # single area uses --solver-timeout (120)
+                    assert mock_render.call_args_list[0].kwargs["solver_timeout"] == 120
+                    # composite area uses --composite-solver-timeout (240)
+                    assert mock_render.call_args_list[1].kwargs["solver_timeout"] == 240
+                    # custom cluster composite also overridden by CLI --composite-solver-timeout (240)
+                    assert mock_render.call_args_list[2].kwargs["solver_timeout"] == 240
+
+                    # Verify timing information passed to generate_index_html
+                    mock_gen_idx.assert_called_once()
+                    rendered_list = mock_gen_idx.call_args[0][0]
+                    assert all(len(item) == 3 and item[2] == 1.5 for item in rendered_list)
+
+        # Case 2: Without --composite-solver-timeout, candidate custom timeout is respected
+        with patch("scripts.build_pages.resolve_candidate_areas", return_value=mock_candidates):
+            with patch("scripts.build_pages.render_area", return_value=2.0) as mock_render:
+                with patch("scripts.build_pages.generate_index_html"):
+                    with patch("sys.argv", [
+                        "build_pages.py",
+                        "--outdir", str(tmp_path),
+                    ]):
+                        main()
+
+                    assert mock_render.call_count == 3
+                    # single area defaults to 180
+                    assert mock_render.call_args_list[0].kwargs["solver_timeout"] == 180
+                    # composite area without candidate timeout defaults to 180
+                    assert mock_render.call_args_list[1].kwargs["solver_timeout"] == 180
+                    # custom cluster uses its candidate-level timeout (250)
+                    assert mock_render.call_args_list[2].kwargs["solver_timeout"] == 250
+
+    def test_build_pages_5tuple_candidate_timeout(self, tmp_path):
+        from scripts.build_pages import main
+        cand_5tuple = ("ROM 2.4 / Composite", "five_tuple_comp", [Path("a.are")], False, 210)
+        with patch("scripts.build_pages.resolve_candidate_areas", return_value=[cand_5tuple]):
+            with patch("scripts.build_pages.render_area", return_value=3.14) as mock_render:
+                with patch("scripts.build_pages.generate_index_html"):
+                    with patch("sys.argv", ["build_pages.py", "--outdir", str(tmp_path)]):
+                        main()
+                    assert mock_render.call_args_list[0].kwargs["solver_timeout"] == 210
 
 
 @pytest.mark.slow
