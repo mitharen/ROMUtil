@@ -131,12 +131,41 @@ class TestGalleryAssetsGeneration:
     def test_pages_builder_discovery_and_index_generation(self, tmp_path):
         from scripts.build_pages import resolve_candidate_areas, generate_index_html
         candidates = resolve_candidate_areas()
-        assert len(candidates) == 6
+        assert len(candidates) == 7
         candidate_names = {c[1] for c in candidates}
-        assert candidate_names == {"arachnos", "chapel", "midgaard", "school", "shire", "smurf"}
-        assert all(c[0] == "ROM 2.4 / QuickMUD" for c in candidates)
+        assert candidate_names == {
+            "arachnos",
+            "chapel",
+            "midgaard",
+            "midgaard_metropolitan",
+            "school",
+            "shire",
+            "smurf",
+        }
 
-        dummy_rendered = [("ROM 2.4 / QuickMUD", "smurf")]
+        # Verify individual showcase zones
+        single_candidates = [c for c in candidates if c[0] == "ROM 2.4 / QuickMUD"]
+        assert len(single_candidates) == 6
+        for cat, name, path, is_dir in single_candidates:
+            assert isinstance(path, Path)
+            assert path.is_file()
+            assert not is_dir
+
+        # Verify composite showcase cluster
+        comp_candidates = [c for c in candidates if c[0] == "ROM 2.4 / Composite"]
+        assert len(comp_candidates) == 1
+        cat, name, paths, is_dir = comp_candidates[0]
+        assert name == "midgaard_metropolitan"
+        assert isinstance(paths, list)
+        assert len(paths) == 4
+        assert [p.name for p in paths] == ["midgaard.are", "hood.are", "grave.are", "mobfact.are"]
+        assert all(p.is_file() for p in paths)
+        assert not is_dir
+
+        dummy_rendered = [
+            ("ROM 2.4 / QuickMUD", "smurf"),
+            ("ROM 2.4 / Composite", "midgaard_metropolitan"),
+        ]
 
         # Case 1: Asset files do not exist -> verify 'N/A' fallback is emitted
         generate_index_html(dummy_rendered, tmp_path)
@@ -145,18 +174,24 @@ class TestGalleryAssetsGeneration:
         content_missing = index_file.read_text(encoding="utf-8")
         assert "ROMUtil Map Directory" in content_missing
         assert "ROM 2.4 / QuickMUD" in content_missing
+        assert "ROM 2.4 / Composite" in content_missing
         assert "smurf" in content_missing
+        assert "midgaard_metropolitan" in content_missing
         assert "N/A" in content_missing
         assert '<a href="smurf.html">' not in content_missing
-        assert '<a href="smurf0.svg">' not in content_missing
+        assert '<a href="midgaard_metropolitan.html">' not in content_missing
 
         # Case 2: Asset files exist -> verify valid <a href= links and 'N/A' is absent
         (tmp_path / "smurf.html").write_text("<!DOCTYPE html><html><body>viewer</body></html>", encoding="utf-8")
         (tmp_path / "smurf0.svg").write_text("<svg></svg>", encoding="utf-8")
+        (tmp_path / "midgaard_metropolitan.html").write_text("<!DOCTYPE html><html><body>viewer</body></html>", encoding="utf-8")
+        (tmp_path / "midgaard_metropolitan0.svg").write_text("<svg></svg>", encoding="utf-8")
         generate_index_html(dummy_rendered, tmp_path)
         content_present = index_file.read_text(encoding="utf-8")
         assert '<a href="smurf.html">Interactive Viewer</a>' in content_present
         assert '<a href="smurf0.svg">SVG Map</a>' in content_present
+        assert '<a href="midgaard_metropolitan.html">Interactive Viewer</a>' in content_present
+        assert '<a href="midgaard_metropolitan0.svg">SVG Map</a>' in content_present
         assert "N/A" not in content_present
 
         # Case 2b: Fallback to <name>.svg when <name>0.svg is not present
@@ -174,8 +209,11 @@ class TestGalleryAssetsGeneration:
         retired_fixtures = {"ackmud", "anatolia", "circlemud", "circle_world", "envy20", "merc22", "rom24", "smaug"}
         assert discovered_names.isdisjoint(retired_fixtures)
         for cat, name, path, is_dir in candidates:
-            assert cat == "ROM 2.4 / QuickMUD"
-            assert path.is_file()
+            assert cat in ("ROM 2.4 / QuickMUD", "ROM 2.4 / Composite")
+            if isinstance(path, list):
+                assert all(p.is_file() for p in path)
+            else:
+                assert path.is_file()
             assert not is_dir
 
     def test_curated_showcase_areas_parsing_and_integrity(self):
@@ -263,6 +301,95 @@ class TestGalleryAssetsGeneration:
             assert "--solver-timeout" in cmd
             timeout_idx = cmd.index("--solver-timeout")
             assert cmd[timeout_idx + 1] == "42"
+
+    def test_render_area_multiple_source_files_invokes_cli(self, tmp_path):
+        from scripts.build_pages import render_area
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            source_paths = [
+                tmp_path / "midgaard.are",
+                tmp_path / "hood.are",
+                tmp_path / "grave.are",
+                tmp_path / "mobfact.are",
+            ]
+            render_area(
+                "midgaard_metropolitan",
+                source_paths,
+                is_dir=False,
+                outdir=tmp_path,
+                solver_timeout=90,
+            )
+
+            mock_run.assert_called_once()
+            cmd = mock_run.call_args[0][0]
+            for p in source_paths:
+                assert str(p) in cmd
+            p_indices = [cmd.index(str(p)) for p in source_paths]
+            assert p_indices == sorted(p_indices)
+            assert "-outbase" in cmd
+            assert "--format" in cmd
+            fmt_idx = cmd.index("--format")
+            assert cmd[fmt_idx + 1] == "html,svg"
+            assert "--solver-timeout" in cmd
+            timeout_idx = cmd.index("--solver-timeout")
+            assert cmd[timeout_idx + 1] == "90"
+
+    def test_render_area_multiple_source_files_execution(self, tmp_path):
+        from scripts.build_pages import render_area
+        grave_path = REPO_ROOT / "tests" / "fixtures" / "areas" / "grave.are"
+        mobfact_path = REPO_ROOT / "tests" / "fixtures" / "areas" / "mobfact.are"
+        render_area("test_composite", [grave_path, mobfact_path], is_dir=False, outdir=tmp_path, solver_timeout=15)
+        assert (tmp_path / "test_composite.html").exists()
+        assert (tmp_path / "test_composite0.svg").exists()
+        html_data = validate_html_viewer_file(tmp_path / "test_composite.html")
+        validate_svg_file(tmp_path / "test_composite0.svg")
+        room_vnums = {r["vnum"] for r in html_data["rooms"]}
+        assert any(3600 <= v <= 3699 for v in room_vnums), "Graveyard rooms missing"
+        assert any(9400 <= v <= 9499 for v in room_vnums), "Mob Factory rooms missing"
+
+    def test_build_pages_composite_area_e2e(self, tmp_path):
+        from scripts.build_pages import main
+
+        grave_path = REPO_ROOT / "tests" / "fixtures" / "areas" / "grave.are"
+        mobfact_path = REPO_ROOT / "tests" / "fixtures" / "areas" / "mobfact.are"
+        mock_candidates = [
+            ("ROM 2.4 / Composite", "test_composite", [grave_path, mobfact_path], False)
+        ]
+
+        with patch("scripts.build_pages.resolve_candidate_areas", return_value=mock_candidates):
+            with patch("sys.argv", ["build_pages.py", "--outdir", str(tmp_path), "--solver-timeout", "15"]):
+                main()
+
+        index_file = tmp_path / "index.html"
+        assert index_file.exists()
+        content = index_file.read_text(encoding="utf-8")
+        assert "ROMUtil Map Directory" in content
+        assert "ROM 2.4 / Composite" in content
+        assert "test_composite" in content
+        assert '<a href="test_composite.html">Interactive Viewer</a>' in content
+        assert '<a href="test_composite0.svg">SVG Map</a>' in content
+        assert "N/A" not in content
+
+        assert (tmp_path / "test_composite.html").exists()
+        assert (tmp_path / "test_composite0.svg").exists()
+        html_data = validate_html_viewer_file(tmp_path / "test_composite.html")
+        validate_svg_file(tmp_path / "test_composite0.svg")
+        assert len(html_data["rooms"]) > 0
+
+    def test_composite_showcase_constituents_parsing_and_integrity(self):
+        from romutil.parser import parse_file
+        areas_dir = REPO_ROOT / "tests" / "fixtures" / "areas"
+        expected_counts = {
+            "midgaard.are": 143,
+            "hood.are": 70,
+            "grave.are": 30,
+            "mobfact.are": 25,
+        }
+        for filename, min_rooms in expected_counts.items():
+            area_path = areas_dir / filename
+            assert area_path.is_file(), f"Missing bundled composite constituent: {filename}"
+            area = parse_file(str(area_path))
+            assert len(area.rooms) >= min_rooms, f"{filename} has {len(area.rooms)} rooms, expected >={min_rooms}"
 
     def test_build_pages_main_e2e(self, tmp_path):
         from scripts.build_pages import main

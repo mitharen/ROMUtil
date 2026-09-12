@@ -5,6 +5,7 @@ a static site index for GitHub Pages deployment.
 """
 
 import argparse
+from collections.abc import Sequence
 import logging
 import os
 from pathlib import Path
@@ -26,10 +27,19 @@ SHOWCASE_AREAS = (
     "smurf.are",
 )
 
+# Curated composite showcase clusters (category, name/slug, constituent filenames)
+COMPOSITE_SHOWCASE_AREAS = (
+    (
+        "ROM 2.4 / Composite",
+        "midgaard_metropolitan",
+        ("midgaard.are", "hood.are", "grave.are", "mobfact.are"),
+    ),
+)
 
-def resolve_candidate_areas():
-    """Discover curated showcase areas for page generation."""
-    candidates = []
+
+def resolve_candidate_areas() -> list[tuple[str, str, Path | list[Path], bool]]:
+    """Discover curated showcase areas and composite clusters for page generation."""
+    candidates: list[tuple[str, str, Path | list[Path], bool]] = []
 
     # Check local fixture areas or external QuickMUD area directory
     sample_dirs = [
@@ -53,11 +63,41 @@ def resolve_candidate_areas():
             if candidates:
                 break
 
+    # Discover composite showcase areas
+    for cat, comp_name, filenames in COMPOSITE_SHOWCASE_AREAS:
+        # Check if all constituent files exist within a single directory first
+        found_cluster: list[Path] | None = None
+        for sdir in sample_dirs:
+            if sdir.is_dir():
+                paths = [sdir / fname for fname in filenames]
+                if all(p.is_file() for p in paths):
+                    found_cluster = paths
+                    break
+        if found_cluster is not None:
+            candidates.append((cat, comp_name, found_cluster, False))
+        else:
+            resolved_files: list[Path] = []
+            for fname in filenames:
+                for sdir in sample_dirs:
+                    if sdir.is_dir():
+                        candidate_file = sdir / fname
+                        if candidate_file.is_file():
+                            resolved_files.append(candidate_file)
+                            break
+            if len(resolved_files) == len(filenames):
+                candidates.append((cat, comp_name, resolved_files, False))
+
     candidates.sort(key=lambda c: c[1])
     return candidates
 
 
-def render_area(name, source_path, is_dir, outdir, solver_timeout=60):
+def render_area(
+    name: str,
+    source_path: Path | Sequence[Path],
+    is_dir: bool,
+    outdir: Path,
+    solver_timeout: int = 60,
+) -> None:
     """Invokes romutil to render HTML viewer and SVG vector map in a single pass."""
     outbase = outdir / name
 
@@ -66,6 +106,8 @@ def render_area(name, source_path, is_dir, outdir, solver_timeout=60):
     ]
     if is_dir:
         cmd.extend(["--circle-dir", str(source_path)])
+    elif isinstance(source_path, Sequence) and not isinstance(source_path, (str, bytes, Path)):
+        cmd.extend(str(p) for p in source_path)
     else:
         cmd.append(str(source_path))
 
