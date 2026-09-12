@@ -104,6 +104,9 @@ def build_area_json(
         r_area = getattr(r, 'area_name', None) or (area_name if area_name else None)
         if r_area is not None:
             room_dict['area_name'] = str(r_area)
+        r_file = getattr(r, 'area_file', None) or (area_file if area_file else None)
+        if r_file is not None:
+            room_dict['area_file'] = str(r_file)
 
         rooms_data.append(room_dict)
 

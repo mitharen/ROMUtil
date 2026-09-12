@@ -720,3 +720,132 @@ class TestWebViewerVisualAndUsabilityOptimizations:
         assert "cursor: grab;" in html
         assert "cursor: grabbing;" in html
         assert "#minimap.dragging" in html
+
+
+class TestAreaProvenanceSerialization:
+    """Test area provenance ingestion and serialization in JSON and HTML (Task 10c)."""
+
+    def test_area_provenance_json_serialization_multi_area(self):
+        """Verify area_name and area_file are serialized per room in multi-area databases."""
+        r1 = Room(
+            RoomDef(vnum=100, name="Midgaard Gate", description="Gate", area_name="Midgaard", area_file="midgaard.are")
+        )
+        r1.x, r1.y, r1.z = 0, 0, 0
+        r2 = Room(
+            RoomDef(vnum=200, name="Graveyard Entrance", description="Entrance", area_name="Graveyard", area_file="grave.are")
+        )
+        r2.x, r2.y, r2.z = 1, 0, 0
+
+        header = AreaHeader(
+            filename="composite.are",
+            name="Midgaard Metropolitan",
+            builder="Various",
+            vnum_min=100,
+            vnum_max=200,
+        )
+        data = build_area_json({100: r1, 200: r2}, area_meta=header)
+
+        assert data["area"]["name"] == "Midgaard Metropolitan"
+        assert data["area"]["file"] == "composite.are"
+
+        rooms = {r["vnum"]: r for r in data["rooms"]}
+        assert rooms[100]["area_name"] == "Midgaard"
+        assert rooms[100]["area_file"] == "midgaard.are"
+        assert rooms[200]["area_name"] == "Graveyard"
+        assert rooms[200]["area_file"] == "grave.are"
+
+    def test_area_provenance_json_fallback_to_header(self):
+        """Verify rooms without explicit area provenance fallback to header metadata."""
+        r1 = Room(RoomDef(vnum=10, name="Single Room", description="Desc"))
+        r1.x, r1.y, r1.z = 0, 0, 0
+
+        header = AreaHeader(
+            filename="single.are",
+            name="Single Domain",
+            builder="Solo",
+            vnum_min=10,
+            vnum_max=10,
+        )
+        data = build_area_json({10: r1}, area_meta=header)
+
+        assert len(data["rooms"]) == 1
+        assert data["rooms"][0]["area_name"] == "Single Domain"
+        assert data["rooms"][0]["area_file"] == "single.are"
+
+
+class TestMultiAreaViewerUI:
+    """Test interactive zone/area filtering, legend, styling, and inspector in HTML viewer (Task 10c)."""
+
+    @pytest.fixture
+    def composite_viewer_html(self) -> str:
+        r1 = Room(
+            RoomDef(vnum=100, name="Town Square", description="A lively square.", area_name="Midgaard", area_file="midgaard.are")
+        )
+        r1.x, r1.y, r1.z = 0, 0, 0
+        r2 = Room(
+            RoomDef(vnum=200, name="Cemetery Gate", description="A dark gate.", area_name="Graveyard", area_file="grave.are")
+        )
+        r2.x, r2.y, r2.z = 1, 0, 0
+        r3 = Room(
+            RoomDef(vnum=300, name="Assembly Line", description="Factory machines.", area_name="Mob Factory", area_file="mobfact.are")
+        )
+        r3.x, r3.y, r3.z = 2, 0, 0
+
+        header = AreaHeader(
+            filename="composite.are",
+            name="Midgaard + Graveyard + Mob Factory",
+            builder="Builders",
+            vnum_min=100,
+            vnum_max=300,
+        )
+        data = build_area_json({100: r1, 200: r2, 300: r3}, area_meta=header)
+        return generate_html_viewer(data)
+
+    def test_zone_selector_and_legend_markup_present(self, composite_viewer_html: str):
+        html = composite_viewer_html
+        # Zone selector pill container in header
+        assert 'id="zone-selector"' in html
+        assert 'id="zone-pill-list"' in html
+        assert 'id="btn-zone-all"' in html
+        assert "zone-pill" in html
+
+        # Zone legend card in sidebar
+        assert 'id="card-zone-legend"' in html
+        assert 'id="zone-legend-list"' in html
+        assert 'id="btn-zone-legend-all"' in html
+        assert 'id="btn-color-mode"' in html
+
+    def test_zone_detection_and_palette_logic(self, composite_viewer_html: str):
+        html = composite_viewer_html
+        assert "const distinctAreas = Array.from(" in html
+        assert "const isMultiArea = distinctAreas.length > 1;" in html
+        assert "const zonePalette = [" in html
+        assert "function getZoneColor(areaName)" in html
+        assert "const activeZones = new Set(distinctAreas);" in html
+        assert "function toggleZone(areaName)" in html
+        assert "function toggleAllZones()" in html
+        assert "function highlightZone(areaName)" in html
+        assert "function clearZoneHighlight()" in html
+        assert "function updateRoomVisualStyles()" in html
+
+    def test_room_inspector_area_provenance_display(self, composite_viewer_html: str):
+        html = composite_viewer_html
+        # Room detail card provenance fields
+        assert 'id="card-room-area-row"' in html
+        assert 'id="card-room-area"' in html
+        assert "function showRoomDetails(room)" in html
+        assert "window.showRoomDetails = showRoomDetails;" in html
+        assert "showRoomDetails(room);" in html
+
+        # Meta string and title include area provenance
+        assert "' | Area: ' + room.area_name" in html
+        assert "'Area: ' + room.area_name" in html
+        assert "areaElem.textContent = areaLabel" in html
+
+    def test_zone_stroke_tinting_and_minimap_color_support(self, composite_viewer_html: str):
+        html = composite_viewer_html
+        assert "g.style.setProperty('--zone-color', getZoneColor(r.area_name));" in html
+        assert ".room-group[data-area] .room-box" in html
+        assert "g.setAttribute('data-area', r.area_name);" in html
+        assert "colorMode === 'zone'" in html
+        assert "getZoneColor(r.area_name)" in html

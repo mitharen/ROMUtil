@@ -209,6 +209,74 @@
       flex-shrink: 0;
     }
 
+    .zone-selector {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background-color: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 3px 6px;
+    }
+
+    .zone-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      user-select: none;
+    }
+
+    .zone-pill-list {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      overflow-x: auto;
+      max-width: 320px;
+    }
+
+    .zone-pill {
+      background-color: var(--bg-card);
+      color: var(--text-muted);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .zone-pill:hover {
+      border-color: var(--accent);
+      color: var(--text-main);
+    }
+
+    .zone-pill.active {
+      background-color: var(--accent);
+      color: var(--bg-primary);
+      border-color: var(--accent);
+      font-weight: 700;
+    }
+
+    .zone-pill .zone-swatch {
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+
+    .room-group.zone-highlighted .room-box {
+      stroke: #38bdf8 !important;
+      stroke-width: 3.5px !important;
+      filter: drop-shadow(0 0 10px #38bdf8) !important;
+    }
+
     .legend-item {
       display: flex;
       align-items: center;
@@ -296,6 +364,11 @@
       text-anchor: middle;
       dominant-baseline: central;
       text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+    }
+
+    .room-group[data-area] .room-box {
+      stroke: var(--zone-color, #0f172a);
+      stroke-width: 2.5;
     }
 
     .room-group:hover .room-box {
@@ -657,6 +730,12 @@
       </div>
 
       <div class="controls-section">
+        <div class="zone-selector" id="zone-selector" role="group" aria-label="Zone area filter" style="display: none;">
+          <span class="zone-label">Zone:</span>
+          <div class="zone-pill-list" id="zone-pill-list">
+            <button type="button" class="zone-pill active" id="btn-zone-all" data-area="all" title="Toggle all zones">All</button>
+          </div>
+        </div>
         <div class="floor-selector" id="floor-selector" role="group" aria-label="Elevation floor filter">
           <span class="floor-label">Floor:</span>
           <div class="floor-pill-list" id="floor-pill-list">
@@ -666,6 +745,7 @@
         <select id="floor-filter" style="display: none;">
           <option value="all">All Floors (Z)</option>
         </select>
+        <button id="btn-color-mode" title="Toggle coloring between Floor Z and Zone Area" style="display: none;">Color: Floor</button>
         <button id="btn-zoom-in" title="Zoom In">+</button>
         <button id="btn-zoom-out" title="Zoom Out">&minus;</button>
         <button id="btn-reset-view" title="Reset View">Reset</button>
@@ -705,6 +785,10 @@
         <div class="card" id="room-detail-card">
           <h3 id="card-room-name">Select a Room</h3>
           <div class="tooltip-meta" id="card-room-meta">Click any room on the map to inspect details.</div>
+          <div id="card-room-area-row" style="display: none; margin-top: 6px; font-size: 0.8rem;">
+            <span style="color: var(--text-muted); font-weight: 600; text-transform: uppercase; font-size: 0.75rem;">Area / Zone:</span>
+            <span id="card-room-area" style="font-weight: 600; margin-left: 4px; color: var(--text-main);">-</span>
+          </div>
           <div id="card-room-desc" class="room-desc" style="display:none;"></div>
           <div style="margin-top: 10px;">
             <strong style="font-size: 0.8rem; color: var(--text-muted);">EXITS</strong>
@@ -765,6 +849,17 @@
           <div class="path-step-list" id="path-steps"></div>
         </div>
 
+        <div class="card" id="card-zone-legend" style="display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <h3 style="margin: 0;">Zones / Areas</h3>
+            <button id="btn-zone-legend-all" style="padding: 2px 8px; font-size: 0.75rem;">Toggle All</button>
+          </div>
+          <div class="legend-help" style="font-size: 0.72rem; color: var(--text-muted); margin-bottom: 6px;">
+            Click any zone to toggle visibility &bull; Hover to highlight
+          </div>
+          <div id="zone-legend-list" style="display: flex; flex-direction: column; gap: 6px; margin-top: 6px;"></div>
+        </div>
+
         <div class="card" id="card-elevation-legend">
           <h3>Elevation Legend</h3>
           <div class="legend-help" style="font-size: 0.72rem; color: var(--text-muted); margin-bottom: 6px;">
@@ -804,14 +899,55 @@ __JSON_DATA__
         return floorColors[Math.abs(z) % floorColors.length];
       }
 
-      // Floor filter state: Set of active Z levels (initially all active)
+      // Zone / Area detection & distinct areas
+      const distinctAreas = Array.from(
+        new Set(rooms.map(r => r.area_name).filter(name => Boolean(name && name.trim())))
+      ).sort();
+      const isMultiArea = distinctAreas.length > 1;
+
+      // Deterministic distinct palette for zones / areas
+      const zonePalette = [
+        '#0284c7', // Sky Blue
+        '#7c3aed', // Purple
+        '#ea580c', // Orange
+        '#059669', // Emerald
+        '#e11d48', // Rose
+        '#d97706', // Amber
+        '#0891b2', // Cyan
+        '#9333ea', // Violet
+        '#16a34a', // Green
+        '#db2777', // Pink
+        '#4f46e5', // Indigo
+        '#65a30d', // Lime
+      ];
+      const zoneColors = new Map();
+      distinctAreas.forEach((name, idx) => {
+        zoneColors.set(name, zonePalette[idx % zonePalette.length]);
+      });
+      function getZoneColor(areaName) {
+        if (!areaName) return '#64748b';
+        return zoneColors.get(areaName) || '#64748b';
+      }
+
+      // Filter state: Set of active Z levels and active zones
       const zValues = Array.from(new Set(rooms.map(r => r.coords.z))).sort((a, b) => a - b);
       const activeFloors = new Set(zValues);
+      const activeZones = new Set(distinctAreas);
+      let colorMode = 'floor'; // 'floor' | 'zone'
+      let highlightedZone = null;
 
       const floorPillList = document.getElementById('floor-pill-list');
       const btnFloorAll = document.getElementById('btn-floor-all');
       const floorFilter = document.getElementById('floor-filter');
       const legendList = document.getElementById('legend-list');
+
+      const zoneSelector = document.getElementById('zone-selector');
+      const zonePillList = document.getElementById('zone-pill-list');
+      const btnZoneAll = document.getElementById('btn-zone-all');
+      const cardZoneLegend = document.getElementById('card-zone-legend');
+      const zoneLegendList = document.getElementById('zone-legend-list');
+      const btnZoneLegendAll = document.getElementById('btn-zone-legend-all');
+      const btnColorMode = document.getElementById('btn-color-mode');
 
       // Populate floor pills and interactive elevation legend
       zValues.forEach(z => {
@@ -848,6 +984,63 @@ __JSON_DATA__
         btnFloorAll.addEventListener('click', toggleAllFloors);
       }
 
+      // Initialize zone UI when multiple distinct areas exist
+      if (isMultiArea) {
+        if (zoneSelector) zoneSelector.style.display = 'inline-flex';
+        if (cardZoneLegend) cardZoneLegend.style.display = 'block';
+        if (btnColorMode) {
+          btnColorMode.style.display = 'inline-block';
+          btnColorMode.addEventListener('click', () => {
+            colorMode = colorMode === 'floor' ? 'zone' : 'floor';
+            btnColorMode.textContent = colorMode === 'floor' ? 'Color: Floor' : 'Color: Zone';
+            updateRoomVisualStyles();
+          });
+        }
+
+        const areaCounts = new Map();
+        rooms.forEach(r => {
+          const a = r.area_name || 'Unknown';
+          areaCounts.set(a, (areaCounts.get(a) || 0) + 1);
+        });
+
+        distinctAreas.forEach(areaName => {
+          const count = areaCounts.get(areaName) || 0;
+          const color = getZoneColor(areaName);
+
+          if (zonePillList) {
+            const pill = document.createElement('button');
+            pill.type = 'button';
+            pill.className = 'zone-pill active';
+            pill.setAttribute('data-area', areaName);
+            pill.title = 'Toggle ' + areaName + ' (' + count + ' rooms)';
+            pill.innerHTML = '<span class="zone-swatch" style="background-color: ' + color + ';"></span>' + areaName;
+            pill.addEventListener('click', () => toggleZone(areaName));
+            zonePillList.appendChild(pill);
+          }
+
+          if (zoneLegendList) {
+            const leg = document.createElement('div');
+            leg.className = 'legend-item active';
+            leg.setAttribute('data-area', areaName);
+            leg.title = 'Click to toggle ' + areaName + ' | Hover to highlight';
+            leg.innerHTML = '<span class="legend-swatch" style="background-color: ' + color + ';"></span>' +
+              '<span style="flex:1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + areaName + '</span>' +
+              '<span style="font-size: 0.72rem; color: var(--text-muted);">' + count + '</span>';
+            leg.addEventListener('click', () => toggleZone(areaName));
+            leg.addEventListener('mouseenter', () => highlightZone(areaName));
+            leg.addEventListener('mouseleave', () => clearZoneHighlight());
+            zoneLegendList.appendChild(leg);
+          }
+        });
+
+        if (btnZoneAll) {
+          btnZoneAll.addEventListener('click', toggleAllZones);
+        }
+        if (btnZoneLegendAll) {
+          btnZoneLegendAll.addEventListener('click', toggleAllZones);
+        }
+      }
+
       function toggleFloor(z) {
         if (activeFloors.has(z)) {
           activeFloors.delete(z);
@@ -866,9 +1059,72 @@ __JSON_DATA__
         applyFloorFilter();
       }
 
+      function toggleZone(areaName) {
+        if (activeZones.has(areaName)) {
+          activeZones.delete(areaName);
+        } else {
+          activeZones.add(areaName);
+        }
+        applyFloorFilter();
+      }
+
+      function toggleAllZones() {
+        if (activeZones.size === distinctAreas.length) {
+          activeZones.clear();
+        } else {
+          distinctAreas.forEach(a => activeZones.add(a));
+        }
+        applyFloorFilter();
+      }
+
+      function highlightZone(areaName) {
+        highlightedZone = areaName;
+        roomGroups.forEach((g, vnum) => {
+          const r = roomMap.get(vnum);
+          if (!r) return;
+          if (r.area_name === areaName) {
+            g.classList.add('zone-highlighted');
+          } else {
+            g.classList.remove('zone-highlighted');
+          }
+        });
+      }
+
+      function clearZoneHighlight() {
+        highlightedZone = null;
+        roomGroups.forEach(g => g.classList.remove('zone-highlighted'));
+      }
+
+      function updateRoomVisualStyles() {
+        roomGroups.forEach((g, vnum) => {
+          const r = roomMap.get(vnum);
+          if (!r) return;
+          const rect = g.querySelector('.room-box');
+          if (!rect) return;
+
+          if (isMultiArea) {
+            const zColor = getZoneColor(r.area_name);
+            const fColor = getRoomColor(r.coords.z);
+            if (colorMode === 'zone') {
+              rect.setAttribute('fill', zColor);
+              g.style.setProperty('--zone-color', fColor);
+            } else {
+              rect.setAttribute('fill', fColor);
+              g.style.setProperty('--zone-color', zColor);
+            }
+          } else {
+            rect.setAttribute('fill', getRoomColor(r.coords.z));
+          }
+        });
+        renderMinimap();
+      }
+
       function applyFloorFilter() {
         if (btnFloorAll) {
           btnFloorAll.classList.toggle('active', activeFloors.size === zValues.length);
+        }
+        if (btnZoneAll) {
+          btnZoneAll.classList.toggle('active', activeZones.size === distinctAreas.length);
         }
 
         document.querySelectorAll('.floor-pill[data-z]').forEach(pill => {
@@ -879,9 +1135,23 @@ __JSON_DATA__
           }
         });
 
-        document.querySelectorAll('.legend-item[data-z]').forEach(item => {
+        document.querySelectorAll('#legend-list .legend-item[data-z]').forEach(item => {
           const z = parseInt(item.getAttribute('data-z'), 10);
           const isActive = activeFloors.has(z);
+          item.classList.toggle('active', isActive);
+          item.classList.toggle('dimmed', !isActive);
+        });
+
+        document.querySelectorAll('.zone-pill[data-area]').forEach(pill => {
+          const areaAttr = pill.getAttribute('data-area');
+          if (areaAttr !== 'all') {
+            pill.classList.toggle('active', activeZones.has(areaAttr));
+          }
+        });
+
+        document.querySelectorAll('#zone-legend-list .legend-item[data-area]').forEach(item => {
+          const areaAttr = item.getAttribute('data-area');
+          const isActive = activeZones.has(areaAttr);
           item.classList.toggle('active', isActive);
           item.classList.toggle('dimmed', !isActive);
         });
@@ -893,7 +1163,10 @@ __JSON_DATA__
 
         roomGroups.forEach((g, vnum) => {
           const z = parseInt(g.getAttribute('data-z'), 10);
-          const isVisible = activeFloors.has(z);
+          const r = roomMap.get(vnum);
+          const floorVis = activeFloors.has(z);
+          const zoneVis = !isMultiArea || (r && activeZones.has(r.area_name));
+          const isVisible = floorVis && zoneVis;
           g.classList.toggle('dimmed', !isVisible);
         });
 
@@ -901,7 +1174,14 @@ __JSON_DATA__
         canvasRoot.querySelectorAll('.exit-line').forEach(line => {
           const srcZ = parseInt(line.getAttribute('data-src-z'), 10);
           const dstZ = parseInt(line.getAttribute('data-dst-z'), 10);
-          const isVisible = activeFloors.has(srcZ) || activeFloors.has(dstZ);
+          const srcV = parseInt(line.getAttribute('data-src'), 10);
+          const dstV = parseInt(line.getAttribute('data-dst'), 10);
+          const srcRoom = roomMap.get(srcV);
+          const dstRoom = roomMap.get(dstV);
+
+          const srcZoneVis = !isMultiArea || (srcRoom && activeZones.has(srcRoom.area_name));
+          const dstZoneVis = !isMultiArea || (dstRoom && activeZones.has(dstRoom.area_name));
+          const isVisible = (activeFloors.has(srcZ) || activeFloors.has(dstZ)) && (srcZoneVis || dstZoneVis);
           line.classList.toggle('dimmed', !isVisible);
         });
 
@@ -1178,6 +1458,9 @@ __JSON_DATA__
         g.setAttribute('class', 'room-group');
         g.setAttribute('data-vnum', r.vnum);
         g.setAttribute('data-z', r.coords.z);
+        if (r.area_name) {
+          g.setAttribute('data-area', r.area_name);
+        }
         g.setAttribute('transform', 'translate(' + pt.px + ',' + pt.py + ')');
 
         const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -1187,6 +1470,9 @@ __JSON_DATA__
         rect.setAttribute('height', roomSize);
         rect.setAttribute('fill', getRoomColor(r.coords.z));
         rect.setAttribute('class', 'room-box');
+        if (r.area_name) {
+          g.style.setProperty('--zone-color', getZoneColor(r.area_name));
+        }
 
         const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
         label.setAttribute('class', 'room-label');
@@ -1447,12 +1733,46 @@ __JSON_DATA__
           }
         });
 
+        showRoomDetails(room);
+      }
+
+      function showRoomDetails(room) {
+        if (!room) return;
+        if (typeof room === 'number') {
+          room = roomMap.get(room);
+          if (!room) return;
+        }
+
         let cardTitle = '[' + room.vnum + '] ' + room.name;
         if (room.area_name) {
           cardTitle += ' | Area: ' + room.area_name;
         }
         document.getElementById('card-room-name').textContent = cardTitle;
-        document.getElementById('card-room-meta').textContent = 'Coordinates: (' + room.coords.x + ', ' + room.coords.y + ', ' + room.coords.z + ') | Floor Z = ' + room.coords.z;
+
+        let metaParts = [
+          'Coordinates: (' + room.coords.x + ', ' + room.coords.y + ', ' + room.coords.z + ')',
+          'Floor Z = ' + room.coords.z
+        ];
+        if (room.area_name) {
+          metaParts.push('Area: ' + room.area_name);
+        }
+        document.getElementById('card-room-meta').textContent = metaParts.join(' | ');
+
+        const areaRow = document.getElementById('card-room-area-row');
+        const areaElem = document.getElementById('card-room-area');
+        if (areaRow && areaElem) {
+          if (room.area_name) {
+            let areaLabel = room.area_name;
+            if (room.area_file) {
+              areaLabel += ' (' + room.area_file + ')';
+            }
+            areaElem.textContent = areaLabel;
+            areaRow.style.display = 'block';
+          } else {
+            areaRow.style.display = 'none';
+          }
+        }
+
         const descElem = document.getElementById('card-room-desc');
         descElem.style.display = 'block';
         descElem.textContent = room.desc || 'No description available.';
@@ -1524,9 +1844,12 @@ __JSON_DATA__
         // If pathfind mode open, prefill
         const pfDst = document.getElementById('pf-dst');
         const pfStart = document.getElementById('pf-start');
-        if (!pfStart.value) pfStart.value = vnum;
-        else if (!pfDst.value) pfDst.value = vnum;
+        if (pfStart && pfDst) {
+          if (!pfStart.value) pfStart.value = room.vnum;
+          else if (!pfDst.value) pfDst.value = room.vnum;
+        }
       }
+      window.showRoomDetails = showRoomDetails;
 
       function centerOnRoom(vnum) {
         const room = roomMap.get(vnum);
@@ -1855,8 +2178,14 @@ __JSON_DATA__
           const pt = project(r.coords.x, r.coords.y, r.coords.z);
           const mx = padding + pt.px * scale;
           const my = padding + pt.py * scale;
-          const isActive = activeFloors.has(r.coords.z);
-          miniCtx.fillStyle = isActive ? getRoomColor(r.coords.z) : '#334155';
+          const isFloorActive = activeFloors.has(r.coords.z);
+          const isZoneActive = !isMultiArea || activeZones.has(r.area_name);
+          const isActive = isFloorActive && isZoneActive;
+          if (isActive) {
+            miniCtx.fillStyle = (isMultiArea && colorMode === 'zone') ? getZoneColor(r.area_name) : getRoomColor(r.coords.z);
+          } else {
+            miniCtx.fillStyle = '#334155';
+          }
           miniCtx.fillRect(mx - 1.5, my - 1.5, 3, 3);
         });
 

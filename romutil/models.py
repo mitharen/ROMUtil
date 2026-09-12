@@ -82,6 +82,7 @@ class RoomDef:
     exits: tuple[ExitDef, ...] = ()
     extras: tuple[Any, ...] = ()
     area_name: str | None = None
+    area_file: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.exits, tuple):
@@ -344,6 +345,7 @@ class Room:
         exits: list[Exit] | tuple[ExitDef, ...] | list[ExitDef] | None = None,
         target_vnum: int | None = None,
         area_name: str | None = None,
+        area_file: str | None = None,
     ) -> None:
         self.fixups: list[Any] = []
         self.dummy = False
@@ -352,6 +354,7 @@ class Room:
         self.y: int | None = None
         self.z: int | None = None
         self.area_name: str | None = area_name
+        self.area_file: str | None = area_file
 
         if r is not None:
             if isinstance(r, RoomDef):
@@ -361,6 +364,8 @@ class Room:
                 self.exits = [Exit(e, source=self.vnum) for e in r.exits if e is not None]
                 if self.area_name is None:
                     self.area_name = getattr(r, 'area_name', None)
+                if self.area_file is None:
+                    self.area_file = getattr(r, 'area_file', None)
             elif isinstance(r, Room):
                 self.vnum = r.vnum
                 self.name = r.name
@@ -371,6 +376,8 @@ class Room:
                     self.target_vnum = getattr(r, 'target_vnum', None)
                 if self.area_name is None:
                     self.area_name = getattr(r, 'area_name', None)
+                if self.area_file is None:
+                    self.area_file = getattr(r, 'area_file', None)
                 self.fixups = list(r.fixups)
                 self.x = r.x
                 self.y = r.y
@@ -431,12 +438,14 @@ def merge_areas(areas: Sequence[AreaData], title: str | None = None) -> AreaData
     seen_room_vnums: set[int] = set()
     for area in areas:
         source_area_name = area.header.name if area.header and area.header.name else None
+        source_area_file = area.header.filename if area.header and area.header.filename else None
         for room in area.rooms:
             if room.vnum in seen_room_vnums:
                 continue
             seen_room_vnums.add(room.vnum)
             r_area = room.area_name or source_area_name
-            if room.area_name != r_area:
+            r_file = getattr(room, 'area_file', None) or source_area_file
+            if room.area_name != r_area or getattr(room, 'area_file', None) != r_file:
                 room = RoomDef(
                     vnum=room.vnum,
                     name=room.name,
@@ -446,6 +455,7 @@ def merge_areas(areas: Sequence[AreaData], title: str | None = None) -> AreaData
                     exits=room.exits,
                     extras=room.extras,
                     area_name=r_area,
+                    area_file=r_file,
                 )
             merged_rooms.append(room)
 

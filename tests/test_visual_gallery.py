@@ -347,6 +347,39 @@ class TestGalleryAssetsGeneration:
         assert any(3600 <= v <= 3699 for v in room_vnums), "Graveyard rooms missing"
         assert any(9400 <= v <= 9499 for v in room_vnums), "Mob Factory rooms missing"
 
+    def test_composite_viewer_multi_area_provenance_and_inspector(self, tmp_path):
+        """Verify multi-area provenance serialization, zone controls, and inspector attribution (Task 10c)."""
+        from scripts.build_pages import render_area
+
+        grave_path = REPO_ROOT / "tests" / "fixtures" / "areas" / "grave.are"
+        mobfact_path = REPO_ROOT / "tests" / "fixtures" / "areas" / "mobfact.are"
+        render_area("test_prov", [grave_path, mobfact_path], is_dir=False, outdir=tmp_path, solver_timeout=15)
+
+        html_path = tmp_path / "test_prov.html"
+        assert html_path.exists()
+        html_content = html_path.read_text(encoding="utf-8")
+        html_data = validate_html_viewer_content(html_content)
+
+        # 1. Verify JSON data contains area_name and area_file provenance for every room
+        rooms = html_data["rooms"]
+        assert len(rooms) > 0
+        area_names = {r.get("area_name") for r in rooms}
+        area_files = {r.get("area_file") for r in rooms}
+        assert "Graveyard" in area_names
+        assert "Mob Factory" in area_names
+        assert "grave.are" in area_files
+        assert "mobfact.are" in area_files
+
+        # 2. Verify UI elements for zone filtering & legend
+        assert 'id="zone-selector"' in html_content
+        assert 'id="card-zone-legend"' in html_content
+        assert 'id="btn-color-mode"' in html_content
+        assert 'id="card-room-area-row"' in html_content
+        assert 'id="card-room-area"' in html_content
+        assert "function showRoomDetails(room)" in html_content
+        assert "getZoneColor" in html_content
+        assert "toggleZone" in html_content
+
     def test_build_pages_composite_area_e2e(self, tmp_path):
         from scripts.build_pages import main
 
