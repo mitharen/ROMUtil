@@ -68,10 +68,24 @@ jobs:
         run: uv run --python ${{ matrix.python-version }} mypy romutil
 
       - name: Run fast unit tests
-        run: uv run --python ${{ matrix.python-version }} pytest -v -m "not slow"
+        run: |
+          uv run --python ${{ matrix.python-version }} pytest -v -m "not slow" --tb=short 2>&1 | tee fast_test_output.log || {
+            echo "### Fast Unit Test Failures (Python ${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -n 150 fast_test_output.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          }
 
       - name: Run integration test suite
-        run: uv run --python ${{ matrix.python-version }} pytest -v -m "slow or integration"
+        run: |
+          uv run --python ${{ matrix.python-version }} pytest -v -m "slow or integration" --tb=short 2>&1 | tee integration_test_output.log || {
+            echo "### Integration Test Failures (Python ${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -n 150 integration_test_output.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          }
 
       - name: Run full test suite with coverage enforcement
         run: |
@@ -82,6 +96,13 @@ jobs:
             echo '```' >> $GITHUB_STEP_SUMMARY
             exit 1
           }
+
+      - name: Upload test failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-failure-logs-${{ matrix.python-version }}
+          path: "*.log"
 
   docker:
     name: Docker Container Build & Smoke Test
