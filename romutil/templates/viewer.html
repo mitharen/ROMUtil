@@ -146,6 +146,104 @@
       border-color: var(--accent);
     }
 
+    /* Floor Selector & Pills */
+    .floor-selector {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background-color: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 3px 6px;
+    }
+
+    .floor-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      user-select: none;
+    }
+
+    .floor-pill-list {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      overflow-x: auto;
+      max-width: 260px;
+    }
+
+    .floor-pill {
+      background-color: var(--bg-card);
+      color: var(--text-muted);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .floor-pill:hover {
+      border-color: var(--accent);
+      color: var(--text-main);
+    }
+
+    .floor-pill.active {
+      background-color: var(--accent);
+      color: var(--bg-primary);
+      border-color: var(--accent);
+      font-weight: 700;
+    }
+
+    .floor-pill .floor-swatch {
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.8rem;
+      padding: 5px 8px;
+      border-radius: 4px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      user-select: none;
+      transition: all 0.15s ease;
+    }
+
+    .legend-item:hover {
+      background-color: var(--bg-primary);
+      border-color: var(--border-color);
+    }
+
+    .legend-item.dimmed {
+      opacity: 0.35;
+    }
+
+    .legend-item.active {
+      background-color: rgba(56, 189, 248, 0.12);
+      border-color: rgba(56, 189, 248, 0.3);
+    }
+
+    .legend-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+
     .main-workspace {
       display: flex;
       flex: 1;
@@ -311,10 +409,75 @@
       flex-direction: column;
       height: 100%;
       z-index: 10;
-      transition: transform 0.3s ease;
+      transition: transform 0.3s ease, width 0.3s ease;
       overflow-y: auto;
       padding: 16px;
       gap: 16px;
+    }
+
+    aside.sidebar.collapsed,
+    #app.collapsed aside.sidebar,
+    #app.sidebar-collapsed aside.sidebar {
+      display: none;
+    }
+
+    .sidebar-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .sidebar-heading {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.03em;
+    }
+
+    .btn-collapse-sidebar {
+      background: none;
+      border: 1px solid transparent;
+      color: var(--text-muted);
+      font-size: 1.25rem;
+      line-height: 1;
+      padding: 2px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .btn-collapse-sidebar:hover {
+      background-color: var(--bg-card);
+      border-color: var(--border-color);
+      color: var(--text-main);
+    }
+
+    .btn-sidebar-expand {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      z-index: 18;
+      background-color: var(--bg-secondary);
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+      display: none;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+    }
+
+    .btn-sidebar-expand:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background-color: var(--bg-card);
     }
 
     .card {
@@ -411,11 +574,24 @@
       overflow: hidden;
       box-shadow: 0 4px 12px rgba(0,0,0,0.5);
       z-index: 15;
+      transition: right 0.25s ease;
+    }
+
+    #app.collapsed .minimap-container,
+    #app.sidebar-collapsed .minimap-container,
+    .minimap-container.sidebar-collapsed,
+    .sidebar-collapsed .minimap-container {
+      right: 16px;
     }
 
     #minimap {
       display: block;
-      cursor: crosshair;
+      cursor: grab;
+    }
+
+    #minimap.dragging,
+    #minimap:active {
+      cursor: grabbing;
     }
 
     /* Floating Tooltip */
@@ -481,13 +657,20 @@
       </div>
 
       <div class="controls-section">
-        <select id="floor-filter">
+        <div class="floor-selector" id="floor-selector" role="group" aria-label="Elevation floor filter">
+          <span class="floor-label">Floor:</span>
+          <div class="floor-pill-list" id="floor-pill-list">
+            <button type="button" class="floor-pill active" id="btn-floor-all" data-z="all" title="Toggle all floors">All</button>
+          </div>
+        </div>
+        <select id="floor-filter" style="display: none;">
           <option value="all">All Floors (Z)</option>
         </select>
         <button id="btn-zoom-in" title="Zoom In">+</button>
         <button id="btn-zoom-out" title="Zoom Out">&minus;</button>
         <button id="btn-reset-view" title="Reset View">Reset</button>
         <button id="btn-pathfind" title="Shortest Path Mode">Pathfinder</button>
+        <button id="btn-toggle-sidebar" class="btn-sidebar-toggle" title="Toggle Sidebar Pane" aria-label="Toggle inspector sidebar">Sidebar</button>
       </div>
     </header>
 
@@ -511,9 +694,14 @@
         <div class="minimap-container">
           <canvas id="minimap" width="180" height="135"></canvas>
         </div>
+        <button id="btn-expand-sidebar" class="btn-sidebar-expand" title="Open Inspector Sidebar" aria-label="Open sidebar" style="display: none;">&laquo; Sidebar</button>
       </div>
 
       <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+          <span class="sidebar-heading">Inspector</span>
+          <button id="btn-collapse-sidebar" class="btn-collapse-sidebar" title="Collapse Sidebar" aria-label="Collapse sidebar" aria-expanded="true">&times;</button>
+        </div>
         <div class="card" id="room-detail-card">
           <h3 id="card-room-name">Select a Room</h3>
           <div class="tooltip-meta" id="card-room-meta">Click any room on the map to inspect details.</div>
@@ -577,8 +765,11 @@
           <div class="path-step-list" id="path-steps"></div>
         </div>
 
-        <div class="card">
+        <div class="card" id="card-elevation-legend">
           <h3>Elevation Legend</h3>
+          <div class="legend-help" style="font-size: 0.72rem; color: var(--text-muted); margin-bottom: 6px;">
+            Click any floor to toggle visibility
+          </div>
           <div id="legend-list" style="display: flex; flex-direction: column; gap: 6px; margin-top: 6px;"></div>
         </div>
       </aside>
@@ -613,24 +804,109 @@ __JSON_DATA__
         return floorColors[Math.abs(z) % floorColors.length];
       }
 
-      // Populate Floor filter
+      // Floor filter state: Set of active Z levels (initially all active)
       const zValues = Array.from(new Set(rooms.map(r => r.coords.z))).sort((a, b) => a - b);
+      const activeFloors = new Set(zValues);
+
+      const floorPillList = document.getElementById('floor-pill-list');
+      const btnFloorAll = document.getElementById('btn-floor-all');
       const floorFilter = document.getElementById('floor-filter');
       const legendList = document.getElementById('legend-list');
-      zValues.forEach(z => {
-        const opt = document.createElement('option');
-        opt.value = z;
-        opt.textContent = 'Floor Z = ' + z;
-        floorFilter.appendChild(opt);
 
-        const leg = document.createElement('div');
-        leg.style.display = 'flex';
-        leg.style.alignItems = 'center';
-        leg.style.gap = '8px';
-        leg.style.fontSize = '0.8rem';
-        leg.innerHTML = '<span style="width: 14px; height: 14px; border-radius: 3px; background-color: ' + getRoomColor(z) + ';"></span> Floor Z = ' + z;
-        legendList.appendChild(leg);
+      // Populate floor pills and interactive elevation legend
+      zValues.forEach(z => {
+        if (floorFilter) {
+          const opt = document.createElement('option');
+          opt.value = z;
+          opt.textContent = 'Floor Z = ' + z;
+          floorFilter.appendChild(opt);
+        }
+
+        if (floorPillList) {
+          const pill = document.createElement('button');
+          pill.type = 'button';
+          pill.className = 'floor-pill active';
+          pill.setAttribute('data-z', z);
+          pill.title = 'Toggle Floor Z = ' + z;
+          pill.innerHTML = '<span class="floor-swatch" style="background-color: ' + getRoomColor(z) + ';"></span>Z=' + z;
+          pill.addEventListener('click', () => toggleFloor(z));
+          floorPillList.appendChild(pill);
+        }
+
+        if (legendList) {
+          const leg = document.createElement('div');
+          leg.className = 'legend-item active';
+          leg.setAttribute('data-z', z);
+          leg.title = 'Click to toggle Floor Z = ' + z;
+          leg.innerHTML = '<span class="legend-swatch" style="background-color: ' + getRoomColor(z) + ';"></span><span>Floor Z = ' + z + '</span>';
+          leg.addEventListener('click', () => toggleFloor(z));
+          legendList.appendChild(leg);
+        }
       });
+
+      if (btnFloorAll) {
+        btnFloorAll.addEventListener('click', toggleAllFloors);
+      }
+
+      function toggleFloor(z) {
+        if (activeFloors.has(z)) {
+          activeFloors.delete(z);
+        } else {
+          activeFloors.add(z);
+        }
+        applyFloorFilter();
+      }
+
+      function toggleAllFloors() {
+        if (activeFloors.size === zValues.length) {
+          activeFloors.clear();
+        } else {
+          zValues.forEach(z => activeFloors.add(z));
+        }
+        applyFloorFilter();
+      }
+
+      function applyFloorFilter() {
+        if (btnFloorAll) {
+          btnFloorAll.classList.toggle('active', activeFloors.size === zValues.length);
+        }
+
+        document.querySelectorAll('.floor-pill[data-z]').forEach(pill => {
+          const zAttr = pill.getAttribute('data-z');
+          if (zAttr !== 'all') {
+            const z = parseInt(zAttr, 10);
+            pill.classList.toggle('active', activeFloors.has(z));
+          }
+        });
+
+        document.querySelectorAll('.legend-item[data-z]').forEach(item => {
+          const z = parseInt(item.getAttribute('data-z'), 10);
+          const isActive = activeFloors.has(z);
+          item.classList.toggle('active', isActive);
+          item.classList.toggle('dimmed', !isActive);
+        });
+
+        elevationLayers.forEach(({ layer }, z) => {
+          const isVisible = activeFloors.has(z);
+          layer.classList.toggle('dimmed', !isVisible);
+        });
+
+        roomGroups.forEach((g, vnum) => {
+          const z = parseInt(g.getAttribute('data-z'), 10);
+          const isVisible = activeFloors.has(z);
+          g.classList.toggle('dimmed', !isVisible);
+        });
+
+        // Inclusive inter-floor exit rule: exit is visible if either endpoint is in active floor set
+        canvasRoot.querySelectorAll('.exit-line').forEach(line => {
+          const srcZ = parseInt(line.getAttribute('data-src-z'), 10);
+          const dstZ = parseInt(line.getAttribute('data-dst-z'), 10);
+          const isVisible = activeFloors.has(srcZ) || activeFloors.has(dstZ);
+          line.classList.toggle('dimmed', !isVisible);
+        });
+
+        renderMinimap();
+      }
 
       // Coordinate Projection: Isometric lift
       const lift = 0.28;
@@ -1285,29 +1561,61 @@ __JSON_DATA__
         searchInput.dispatchEvent(new Event('input'));
       });
 
-      // Floor Filter: Inclusive inter-floor exit visibility
-      floorFilter.addEventListener('change', () => {
-        const val = floorFilter.value;
-        const activeZ = (val === 'all' || val === null) ? null : parseInt(val, 10);
-
-        elevationLayers.forEach(({ layer }, z) => {
-          const visible = (activeZ === null || activeZ === 'all' || z === activeZ);
-          layer.classList.toggle('dimmed', !visible);
+      // Programmatic / legacy floorFilter dropdown change handler
+      if (floorFilter) {
+        floorFilter.addEventListener('change', () => {
+          const val = floorFilter.value;
+          if (val === 'all' || val === null) {
+            zValues.forEach(z => activeFloors.add(z));
+          } else {
+            activeFloors.clear();
+            activeFloors.add(parseInt(val, 10));
+          }
+          applyFloorFilter();
         });
+      }
 
-        roomGroups.forEach((g, vnum) => {
-          const z = parseInt(g.getAttribute('data-z'), 10);
-          const visible = (activeZ === null || activeZ === 'all' || z === activeZ);
-          g.classList.toggle('dimmed', !visible);
-        });
+      // Collapsible Sidebar functionality
+      const sidebar = document.getElementById('sidebar');
+      const app = document.getElementById('app');
+      const btnCollapseSidebar = document.getElementById('btn-collapse-sidebar');
+      const btnExpandSidebar = document.getElementById('btn-expand-sidebar');
+      const btnToggleSidebar = document.getElementById('btn-toggle-sidebar');
+      const minimapContainer = document.querySelector('.minimap-container');
 
-        canvasRoot.querySelectorAll('.exit-line').forEach(line => {
-          const srcZ = parseInt(line.getAttribute('data-src-z'), 10);
-          const dstZ = parseInt(line.getAttribute('data-dst-z'), 10);
-          const visible = (activeZ === null || activeZ === 'all' || activeZ === srcZ || activeZ === dstZ);
-          line.classList.toggle('dimmed', !visible);
-        });
-      });
+      function setSidebarCollapsed(collapsed) {
+        sidebar.classList.toggle('collapsed', collapsed);
+        app.classList.toggle('collapsed', collapsed);
+        app.classList.toggle('sidebar-collapsed', collapsed);
+        if (minimapContainer) {
+          minimapContainer.classList.toggle('sidebar-collapsed', collapsed);
+        }
+        if (btnExpandSidebar) {
+          btnExpandSidebar.style.display = collapsed ? 'flex' : 'none';
+        }
+        if (btnCollapseSidebar) {
+          btnCollapseSidebar.setAttribute('aria-expanded', String(!collapsed));
+        }
+        if (btnToggleSidebar) {
+          btnToggleSidebar.classList.toggle('btn-active', !collapsed);
+        }
+        renderMinimap();
+      }
+
+      function toggleSidebar() {
+        const isCollapsed = sidebar.classList.contains('collapsed');
+        setSidebarCollapsed(!isCollapsed);
+      }
+
+      if (btnCollapseSidebar) {
+        btnCollapseSidebar.addEventListener('click', () => setSidebarCollapsed(true));
+      }
+      if (btnExpandSidebar) {
+        btnExpandSidebar.addEventListener('click', () => setSidebarCollapsed(false));
+      }
+      if (btnToggleSidebar) {
+        btnToggleSidebar.addEventListener('click', toggleSidebar);
+      }
 
       function deselectAll() {
         selectedVnum = null;
@@ -1539,7 +1847,8 @@ __JSON_DATA__
           const pt = project(r.coords.x, r.coords.y, r.coords.z);
           const mx = padding + pt.px * scale;
           const my = padding + pt.py * scale;
-          miniCtx.fillStyle = getRoomColor(r.coords.z);
+          const isActive = activeFloors.has(r.coords.z);
+          miniCtx.fillStyle = isActive ? getRoomColor(r.coords.z) : '#334155';
           miniCtx.fillRect(mx - 1.5, my - 1.5, 3, 3);
         });
 
@@ -1554,6 +1863,76 @@ __JSON_DATA__
         miniCtx.lineWidth = 1.5;
         miniCtx.strokeRect(vx1, vy1, vw, vh);
       }
+
+      // Drag-Scroll Navigation on the Minimap
+      let isMinimapDragging = false;
+
+      function panToMinimapCoord(clientX, clientY) {
+        const rect = minimap.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return;
+        const scaleX = minimap.width / rect.width;
+        const scaleY = minimap.height / rect.height;
+        const canvasX = (clientX - rect.left) * scaleX;
+        const canvasY = (clientY - rect.top) * scaleY;
+
+        const w = minimap.width;
+        const h = minimap.height;
+        const padding = 10;
+        const totalWidth = (bounds.max_x - min_x + 1) * gridScale + 160;
+        const totalHeight = (bounds.max_y - min_y + 1) * gridScale + 160;
+        const sx = (w - padding * 2) / totalWidth;
+        const sy = (h - padding * 2) / totalHeight;
+        const scale = Math.min(sx, sy);
+
+        const worldPx = (canvasX - padding) / scale;
+        const worldPy = (canvasY - padding) / scale;
+
+        const vpRect = viewport.getBoundingClientRect();
+        panX = vpRect.width / 2 - worldPx * zoom;
+        panY = vpRect.height / 2 - worldPy * zoom;
+        updateTransform();
+      }
+
+      minimap.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        isMinimapDragging = true;
+        minimap.classList.add('dragging');
+        panToMinimapCoord(e.clientX, e.clientY);
+      });
+
+      minimap.addEventListener('mousemove', (e) => {
+        if (isMinimapDragging) {
+          panToMinimapCoord(e.clientX, e.clientY);
+        }
+      });
+
+      minimap.addEventListener('mouseup', () => {
+        if (isMinimapDragging) {
+          isMinimapDragging = false;
+          minimap.classList.remove('dragging');
+        }
+      });
+
+      minimap.addEventListener('mouseleave', () => {
+        if (isMinimapDragging) {
+          isMinimapDragging = false;
+          minimap.classList.remove('dragging');
+        }
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (isMinimapDragging) {
+          panToMinimapCoord(e.clientX, e.clientY);
+        }
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (isMinimapDragging) {
+          isMinimapDragging = false;
+          minimap.classList.remove('dragging');
+        }
+      });
 
       // Initial fit & render
       resetView();

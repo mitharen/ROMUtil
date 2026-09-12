@@ -505,8 +505,8 @@ class TestWebViewerVisualAndUsabilityOptimizations:
         assert "line.setAttribute('data-src-z', r.coords.z);" in html
         assert "line.setAttribute('data-dst-z', target.coords.z);" in html
 
-        # 2. Verify inclusive floor filter visibility predicate
-        assert "activeZ === null || activeZ === 'all' || activeZ === srcZ || activeZ === dstZ" in html
+        # 2. Verify inclusive floor filter visibility predicate with active floor set
+        assert "activeFloors.has(srcZ) || activeFloors.has(dstZ)" in html
 
     def test_contextual_tooltips_markup_and_explanations(self, multi_floor_rdb):
         """Verify clear, accessible tooltips for one-way red exits and boundary/relaxation warnings."""
@@ -630,9 +630,93 @@ class TestWebViewerVisualAndUsabilityOptimizations:
         # Check all visual & usability optimizations are present in rendered file
         assert "computeIsometricCentroidAndBounds" in content
         assert "linearGradient" in content
-        assert "activeZ === srcZ || activeZ === dstZ" in content
+        assert "activeFloors.has(srcZ) || activeFloors.has(dstZ)" in content
         assert "One-Way Exit: This exit has no reciprocal return path" in content
         assert "incoming-exits-section" in content
         assert "selectEdge" in content
         assert "card-edge-inspector" in content
         assert "connected-neighbor" in content
+        assert "btn-collapse-sidebar" in content
+        assert "btn-expand-sidebar" in content
+        assert "btn-toggle-sidebar" in content
+        assert "floor-pill" in content
+        assert "panToMinimapCoord" in content
+
+    def test_arbitrary_multi_floor_selection(self, multi_floor_rdb):
+        """Verify multi-floor level selection controls, active floor set, and legend toggling (Task 9h)."""
+        rdb, header = multi_floor_rdb
+        data = build_area_json(rdb, area_meta=header)
+        html = generate_html_viewer(data)
+
+        # 1. Verify floor selector container and pills markup
+        assert 'id="floor-selector"' in html
+        assert 'id="floor-pill-list"' in html
+        assert 'id="btn-floor-all"' in html
+        assert "floor-pill" in html
+        assert "data-z=" in html
+
+        # 2. Verify active floor tracking and toggle functions
+        assert "const activeFloors = new Set(zValues);" in html
+        assert "function toggleFloor(z)" in html
+        assert "function toggleAllFloors()" in html
+        assert "function applyFloorFilter()" in html
+
+        # 3. Verify inclusive inter-floor predicate and dimming
+        assert "activeFloors.has(srcZ) || activeFloors.has(dstZ)" in html
+        assert "line.classList.toggle('dimmed', !isVisible);" in html
+        assert "g.classList.toggle('dimmed', !isVisible);" in html
+
+        # 4. Verify elevation legend interactivity
+        assert 'id="card-elevation-legend"' in html
+        assert "legend-item" in html
+        assert "leg.addEventListener('click', () => toggleFloor(z));" in html
+
+    def test_collapsible_sidebar_controls_and_layout(self, multi_floor_rdb):
+        """Verify collapsible sidebar toggle button, expand tab, and collapsed CSS layout (Task 9h)."""
+        rdb, header = multi_floor_rdb
+        data = build_area_json(rdb, area_meta=header)
+        html = generate_html_viewer(data)
+
+        # 1. Verify toggle/collapse/expand button markup and accessibility attributes
+        assert 'id="btn-collapse-sidebar"' in html
+        assert 'aria-label="Collapse sidebar"' in html
+        assert 'id="btn-expand-sidebar"' in html
+        assert 'aria-label="Open sidebar"' in html
+        assert 'id="btn-toggle-sidebar"' in html
+
+        # 2. Verify collapsed sidebar and minimap repositioning CSS
+        assert "aside.sidebar.collapsed" in html
+        assert "#app.collapsed aside.sidebar" in html
+        assert "#app.collapsed .minimap-container" in html
+        assert "right: 16px;" in html
+        assert "right: 360px;" in html
+
+        # 3. Verify sidebar toggle state handling in script
+        assert "function setSidebarCollapsed(collapsed)" in html
+        assert "function toggleSidebar()" in html
+        assert "sidebar.classList.toggle('collapsed', collapsed);" in html
+
+    def test_minimap_drag_navigation_and_cursors(self, multi_floor_rdb):
+        """Verify minimap drag-scroll event listeners, coordinate mapping math, and cursor styles (Task 9h)."""
+        rdb, header = multi_floor_rdb
+        data = build_area_json(rdb, area_meta=header)
+        html = generate_html_viewer(data)
+
+        # 1. Verify interactive mousedown, mousemove, mouseup, mouseleave listeners on minimap
+        assert "minimap.addEventListener('mousedown'," in html
+        assert "minimap.addEventListener('mousemove'," in html
+        assert "minimap.addEventListener('mouseup'," in html
+        assert "minimap.addEventListener('mouseleave'," in html
+
+        # 2. Verify coordinate mapping and viewport centering math
+        assert "function panToMinimapCoord(clientX, clientY)" in html
+        assert "worldPx = (canvasX - padding) / scale;" in html
+        assert "worldPy = (canvasY - padding) / scale;" in html
+        assert "panX = vpRect.width / 2 - worldPx * zoom;" in html
+        assert "panY = vpRect.height / 2 - worldPy * zoom;" in html
+        assert "updateTransform();" in html
+
+        # 3. Verify responsive cursor CSS styles
+        assert "cursor: grab;" in html
+        assert "cursor: grabbing;" in html
+        assert "#minimap.dragging" in html

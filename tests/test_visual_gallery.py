@@ -328,6 +328,40 @@ class TestHtmlAssetIntegrity:
         for html_file in sample_gallery_artifacts.glob("*.html"):
             validate_html_viewer_file(html_file)
 
+    def test_html_viewer_interactive_ux_enhancements(self, sample_gallery_artifacts):
+        """Verify multi-floor controls, collapsible sidebar, and minimap drag navigation (Task 9h)."""
+        html_files = list(sample_gallery_artifacts.glob("*.html"))
+        assert len(html_files) >= 1
+        for html_file in html_files:
+            content = html_file.read_text(encoding="utf-8")
+
+            # 1. Multi-floor selection controls
+            assert 'id="floor-selector"' in content
+            assert 'id="floor-pill-list"' in content
+            assert 'id="btn-floor-all"' in content
+            assert "floor-pill" in content
+            assert "toggleFloor" in content
+            assert "toggleAllFloors" in content
+            assert "activeFloors.has(srcZ) || activeFloors.has(dstZ)" in content
+
+            # 2. Collapsible sidebar
+            assert 'id="btn-collapse-sidebar"' in content
+            assert 'id="btn-expand-sidebar"' in content
+            assert 'id="btn-toggle-sidebar"' in content
+            assert "aside.sidebar.collapsed" in content
+            assert "#app.collapsed aside.sidebar" in content
+            assert "#app.collapsed .minimap-container" in content
+            assert "setSidebarCollapsed" in content
+
+            # 3. Minimap drag navigation
+            assert "panToMinimapCoord" in content
+            assert "minimap.addEventListener('mousedown'" in content
+            assert "minimap.addEventListener('mousemove'" in content
+            assert "minimap.addEventListener('mouseup'" in content
+            assert "minimap.addEventListener('mouseleave'" in content
+            assert "cursor: grab;" in content
+            assert "cursor: grabbing;" in content
+
 
 class TestNegativeAndBoundaryCases:
     """Negative tests for asset validation, corruption detection, and broken link handling."""
