@@ -616,6 +616,13 @@ class TestHtmlAssetIntegrity:
             assert "cursor: grab;" in content
             assert "cursor: grabbing;" in content
 
+            # 4. Mobile touch navigation & pinch-to-zoom (Task 9i)
+            assert "touch-action: none;" in content
+            assert "#map-container" in content
+            assert "mapContainer.addEventListener('touchstart'" in content
+            assert "minimap.addEventListener('touchstart'" in content
+            assert "Math.hypot(x2 - x1, y2 - y1)" in content
+
 
 class TestNegativeAndBoundaryCases:
     """Negative tests for asset validation, corruption detection, and broken link handling."""

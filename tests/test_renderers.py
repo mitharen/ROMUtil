@@ -721,6 +721,55 @@ class TestWebViewerVisualAndUsabilityOptimizations:
         assert "cursor: grabbing;" in html
         assert "#minimap.dragging" in html
 
+    def test_mobile_touch_gestures_and_pinch_zoom(self, multi_floor_rdb):
+        """Verify mobile touch drag-to-pan, minimap touch navigation, and pinch-to-zoom (Task 9i)."""
+        rdb, header = multi_floor_rdb
+        data = build_area_json(rdb, area_meta=header)
+        html = generate_html_viewer(data)
+
+        # 1. Verify touch-action: none is present in CSS styling for #map-container, #map-svg, and #minimap
+        assert "touch-action: none;" in html
+        assert "#map-container" in html
+        assert "#minimap" in html
+        assert "#map-svg" in html
+
+        # Verify touch-action: none is specifically defined in #map-container and #minimap CSS rule blocks
+        assert "#map-container" in html and "touch-action: none;" in html
+        assert "#minimap" in html and "touch-action: none;" in html
+
+        # 2. Verify single-finger touch drag-to-pan on main container / SVG
+        assert "mapContainer.addEventListener('touchstart'," in html
+        assert "mapContainer.addEventListener('touchmove'," in html
+        assert "mapContainer.addEventListener('touchend'," in html
+        assert "mapContainer.addEventListener('touchcancel'," in html
+        assert "panX = t.clientX - touchStartX;" in html
+        assert "panY = t.clientY - touchStartY;" in html
+
+        # 3. Verify minimap touch event listeners for real-time panning
+        assert "minimap.addEventListener('touchstart'," in html
+        assert "minimap.addEventListener('touchmove'," in html
+        assert "minimap.addEventListener('touchend'," in html
+        assert "minimap.addEventListener('touchcancel'," in html
+        assert "handleMinimapTouch" in html
+        assert "panToMinimapCoord(touch.clientX, touch.clientY);" in html
+
+        # 4. Verify two-finger pinch-to-zoom Euclidean distance and midpoint centering math
+        assert "Math.hypot(x2 - x1, y2 - y1)" in html
+        assert "const factor = currentDist / lastPinchDist;" in html
+        assert "panX = midX - (midX - panX) * (newZoom / zoom);" in html
+        assert "panY = midY - (midY - panY) * (newZoom / zoom);" in html
+
+    def test_mobile_touch_empty_area_support(self):
+        """Verify touch listeners and touch-action CSS are present even on empty room databases."""
+        data = build_area_json({})
+        html = generate_html_viewer(data)
+        assert "touch-action: none;" in html
+        assert "#map-container" in html
+        assert "#minimap" in html
+        assert "mapContainer.addEventListener('touchstart'," in html
+        assert "minimap.addEventListener('touchstart'," in html
+        assert "Math.hypot(x2 - x1, y2 - y1)" in html
+
 
 class TestAreaProvenanceSerialization:
     """Test area provenance ingestion and serialization in JSON and HTML (Task 10c)."""

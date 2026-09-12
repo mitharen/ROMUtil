@@ -320,6 +320,8 @@
       overflow: hidden;
     }
 
+    #map-container,
+    #viewport-container,
     .viewport-container {
       flex: 1;
       height: 100%;
@@ -328,8 +330,11 @@
       user-select: none;
       background-image: radial-gradient(#1e293b 1px, transparent 1px);
       background-size: 24px 24px;
+      touch-action: none;
     }
 
+    #map-container:active,
+    #viewport-container:active,
     .viewport-container:active {
       cursor: grabbing;
     }
@@ -338,6 +343,7 @@
       width: 100%;
       height: 100%;
       display: block;
+      touch-action: none;
     }
 
     /* Room Styling */
@@ -648,6 +654,7 @@
       box-shadow: 0 4px 12px rgba(0,0,0,0.5);
       z-index: 15;
       transition: right 0.25s ease;
+      touch-action: none;
     }
 
     #app.collapsed .minimap-container,
@@ -660,6 +667,7 @@
     #minimap {
       display: block;
       cursor: grab;
+      touch-action: none;
     }
 
     #minimap.dragging,
@@ -1500,6 +1508,7 @@ __JSON_DATA__
           hideTooltip();
         });
         g.addEventListener('click', (e) => {
+          if (wasDragging) return;
           e.stopPropagation();
           selectRoom(r.vnum);
         });
@@ -1990,6 +1999,104 @@ __JSON_DATA__
         startY = e.clientY - panY;
       });
 
+      // Mobile Touch Drag-to-Pan & Two-Finger Pinch-to-Zoom (Task 9i)
+      const mapContainer = viewport;
+      let isTouchPanning = false;
+      let isPinching = false;
+      let touchStartX = 0;
+      let touchStartY = 0;
+      let lastPinchDist = 0;
+      let lastMidX = 0;
+      let lastMidY = 0;
+
+      mapContainer.addEventListener('touchstart', (e) => {
+        if (e.target && e.target.closest && e.target.closest('.minimap-container')) return;
+        if (e.touches.length === 1) {
+          isTouchPanning = true;
+          isPinching = false;
+          wasDragging = false;
+          const t = e.touches[0];
+          touchStartX = t.clientX - panX;
+          touchStartY = t.clientY - panY;
+        } else if (e.touches.length === 2) {
+          isTouchPanning = false;
+          isPinching = true;
+          wasDragging = true;
+          const t1 = e.touches[0];
+          const t2 = e.touches[1];
+          const x1 = t1.clientX;
+          const y1 = t1.clientY;
+          const x2 = t2.clientX;
+          const y2 = t2.clientY;
+          lastPinchDist = Math.hypot(x2 - x1, y2 - y1);
+          const rect = mapContainer.getBoundingClientRect();
+          lastMidX = ((x1 + x2) / 2) - rect.left;
+          lastMidY = ((y1 + y2) / 2) - rect.top;
+        }
+      }, { passive: false });
+
+      mapContainer.addEventListener('touchmove', (e) => {
+        if (e.target && e.target.closest && e.target.closest('.minimap-container')) return;
+        if (e.touches.length === 1 && isTouchPanning) {
+          e.preventDefault();
+          const t = e.touches[0];
+          if (Math.abs(t.clientX - (touchStartX + panX)) > 4 || Math.abs(t.clientY - (touchStartY + panY)) > 4) {
+            wasDragging = true;
+          }
+          panX = t.clientX - touchStartX;
+          panY = t.clientY - touchStartY;
+          updateTransform();
+        } else if (e.touches.length === 2 && isPinching) {
+          e.preventDefault();
+          wasDragging = true;
+          const t1 = e.touches[0];
+          const t2 = e.touches[1];
+          const x1 = t1.clientX;
+          const y1 = t1.clientY;
+          const x2 = t2.clientX;
+          const y2 = t2.clientY;
+          const currentDist = Math.hypot(x2 - x1, y2 - y1);
+          const rect = mapContainer.getBoundingClientRect();
+          const midX = ((x1 + x2) / 2) - rect.left;
+          const midY = ((y1 + y2) / 2) - rect.top;
+
+          if (lastPinchDist > 0 && currentDist > 0) {
+            // Pan delta from touch midpoint motion
+            panX += (midX - lastMidX);
+            panY += (midY - lastMidY);
+
+            // Zoom scale adjustment centered around current pinch midpoint
+            const factor = currentDist / lastPinchDist;
+            const newZoom = Math.min(Math.max(zoom * factor, 0.15), 5.0);
+            panX = midX - (midX - panX) * (newZoom / zoom);
+            panY = midY - (midY - panY) * (newZoom / zoom);
+            zoom = newZoom;
+            updateTransform();
+          }
+
+          lastPinchDist = currentDist;
+          lastMidX = midX;
+          lastMidY = midY;
+        }
+      }, { passive: false });
+
+      function handleTouchEnd(e) {
+        if (e.touches.length === 0) {
+          isTouchPanning = false;
+          isPinching = false;
+        } else if (e.touches.length === 1) {
+          isPinching = false;
+          isTouchPanning = true;
+          const t = e.touches[0];
+          touchStartX = t.clientX - panX;
+          touchStartY = t.clientY - panY;
+        }
+      }
+
+      mapContainer.addEventListener('touchend', handleTouchEnd);
+      mapContainer.addEventListener('touchcancel', handleTouchEnd);
+      window.addEventListener('touchcancel', handleTouchEnd);
+
       window.addEventListener('mousemove', (e) => {
         if (!isPanning) return;
         if (Math.abs(e.clientX - (startX + panX)) > 4 || Math.abs(e.clientY - (startY + panY)) > 4) {
@@ -2256,6 +2363,42 @@ __JSON_DATA__
           isMinimapDragging = false;
           minimap.classList.remove('dragging');
         }
+      });
+
+      // Minimap Touch Drag & Tap Navigation (Task 9i)
+      function handleMinimapTouch(e) {
+        if (!e.touches || e.touches.length === 0) return;
+        const touch = e.touches[0];
+        panToMinimapCoord(touch.clientX, touch.clientY);
+      }
+
+      minimap.addEventListener('touchstart', (e) => {
+        if (e.touches.length > 1) return;
+        e.preventDefault();
+        e.stopPropagation();
+        isMinimapDragging = true;
+        minimap.classList.add('dragging');
+        handleMinimapTouch(e);
+      }, { passive: false });
+
+      minimap.addEventListener('touchmove', (e) => {
+        if (isMinimapDragging && e.touches.length === 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          handleMinimapTouch(e);
+        }
+      }, { passive: false });
+
+      minimap.addEventListener('touchend', (e) => {
+        if (e.touches.length === 0) {
+          isMinimapDragging = false;
+          minimap.classList.remove('dragging');
+        }
+      });
+
+      minimap.addEventListener('touchcancel', () => {
+        isMinimapDragging = false;
+        minimap.classList.remove('dragging');
       });
 
       window.addEventListener('mousemove', (e) => {
