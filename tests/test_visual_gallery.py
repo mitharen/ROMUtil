@@ -91,8 +91,6 @@ def validate_html_viewer_content(content: str) -> dict:
     return data
 
 
-
-
 # ---------------------------------------------------------------------------
 # Test Suites
 # ---------------------------------------------------------------------------
@@ -101,8 +99,8 @@ def validate_html_viewer_content(content: str) -> dict:
 def sample_gallery_artifacts(tmp_path_factory):
     """Dynamically generates sample SVG maps and HTML viewer into an ephemeral directory."""
     out_dir = tmp_path_factory.mktemp("gallery")
-    fixture_area = REPO_ROOT / "tests" / "fixtures" / "dialects" / "rom24.are"
-    outbase = out_dir / "rom24"
+    fixture_area = REPO_ROOT / "tests" / "fixtures" / "areas" / "smurf.are"
+    outbase = out_dir / "smurf"
 
     # Generate split-level SVGs
     subprocess.run(
@@ -127,14 +125,18 @@ class TestGalleryAssetsGeneration:
     """Verifies that map and viewer artifacts are dynamically generated with correct outputs."""
 
     def test_dynamic_generation_creates_expected_files(self, sample_gallery_artifacts):
-        assert (sample_gallery_artifacts / "rom24_z0.svg").exists()
-        assert (sample_gallery_artifacts / "rom24.html").exists()
+        assert (sample_gallery_artifacts / "smurf_z0.svg").exists()
+        assert (sample_gallery_artifacts / "smurf.html").exists()
 
     def test_pages_builder_discovery_and_index_generation(self, tmp_path):
         from scripts.build_pages import resolve_candidate_areas, generate_index_html
         candidates = resolve_candidate_areas()
-        assert len(candidates) >= 1
-        dummy_rendered = [("fixture", "rom24")]
+        assert len(candidates) == 6
+        candidate_names = {c[1] for c in candidates}
+        assert candidate_names == {"arachnos", "chapel", "midgaard", "school", "shire", "smurf"}
+        assert all(c[0] == "ROM 2.4 / QuickMUD" for c in candidates)
+
+        dummy_rendered = [("ROM 2.4 / QuickMUD", "smurf")]
 
         # Case 1: Asset files do not exist -> verify 'N/A' fallback is emitted
         generate_index_html(dummy_rendered, tmp_path)
@@ -142,36 +144,76 @@ class TestGalleryAssetsGeneration:
         assert index_file.exists()
         content_missing = index_file.read_text(encoding="utf-8")
         assert "ROMUtil Map Directory" in content_missing
-        assert "rom24" in content_missing
+        assert "ROM 2.4 / QuickMUD" in content_missing
+        assert "smurf" in content_missing
         assert "N/A" in content_missing
-        assert '<a href="rom24.html">' not in content_missing
-        assert '<a href="rom240.svg">' not in content_missing
+        assert '<a href="smurf.html">' not in content_missing
+        assert '<a href="smurf0.svg">' not in content_missing
 
         # Case 2: Asset files exist -> verify valid <a href= links and 'N/A' is absent
-        (tmp_path / "rom24.html").write_text("<!DOCTYPE html><html><body>viewer</body></html>", encoding="utf-8")
-        (tmp_path / "rom240.svg").write_text("<svg></svg>", encoding="utf-8")
+        (tmp_path / "smurf.html").write_text("<!DOCTYPE html><html><body>viewer</body></html>", encoding="utf-8")
+        (tmp_path / "smurf0.svg").write_text("<svg></svg>", encoding="utf-8")
         generate_index_html(dummy_rendered, tmp_path)
         content_present = index_file.read_text(encoding="utf-8")
-        assert '<a href="rom24.html">Interactive Viewer</a>' in content_present
-        assert '<a href="rom240.svg">SVG Map</a>' in content_present
+        assert '<a href="smurf.html">Interactive Viewer</a>' in content_present
+        assert '<a href="smurf0.svg">SVG Map</a>' in content_present
         assert "N/A" not in content_present
 
         # Case 2b: Fallback to <name>.svg when <name>0.svg is not present
-        (tmp_path / "rom240.svg").unlink()
-        (tmp_path / "rom24.svg").write_text("<svg></svg>", encoding="utf-8")
+        (tmp_path / "smurf0.svg").unlink()
+        (tmp_path / "smurf.svg").write_text("<svg></svg>", encoding="utf-8")
         generate_index_html(dummy_rendered, tmp_path)
         content_single_svg = index_file.read_text(encoding="utf-8")
-        assert '<a href="rom24.svg">SVG Map</a>' in content_single_svg
+        assert '<a href="smurf.svg">SVG Map</a>' in content_single_svg
         assert "N/A" not in content_single_svg
+
+    def test_showcase_area_discovery_retires_dialect_fixtures(self):
+        from scripts.build_pages import resolve_candidate_areas
+        candidates = resolve_candidate_areas()
+        discovered_names = {c[1] for c in candidates}
+        retired_fixtures = {"ackmud", "anatolia", "circlemud", "circle_world", "envy20", "merc22", "rom24", "smaug"}
+        assert discovered_names.isdisjoint(retired_fixtures)
+        for cat, name, path, is_dir in candidates:
+            assert cat == "ROM 2.4 / QuickMUD"
+            assert path.is_file()
+            assert not is_dir
+
+    def test_curated_showcase_areas_parsing_and_integrity(self):
+        from romutil.parser import parse_file
+        areas_dir = REPO_ROOT / "tests" / "fixtures" / "areas"
+        expected_counts = {
+            "arachnos.are": 56,
+            "chapel.are": 67,
+            "midgaard.are": 143,
+            "school.are": 59,
+            "shire.are": 58,
+            "smurf.are": 29,
+        }
+        for filename, min_rooms in expected_counts.items():
+            area_path = areas_dir / filename
+            assert area_path.is_file(), f"Missing bundled showcase area: {filename}"
+            area = parse_file(str(area_path))
+            assert len(area.rooms) >= min_rooms, f"{filename} has {len(area.rooms)} rooms, expected >={min_rooms}"
+
+    def test_quickmud_env_override(self, tmp_path, monkeypatch):
+        from scripts.build_pages import resolve_candidate_areas
+        custom_dir = tmp_path / "custom_qm"
+        custom_dir.mkdir()
+        smurf_src = REPO_ROOT / "tests" / "fixtures" / "areas" / "smurf.are"
+        (custom_dir / "smurf.are").write_text(smurf_src.read_text(encoding="utf-8"), encoding="utf-8")
+
+        monkeypatch.setenv("QUICKMUD_AREA_DIR", str(custom_dir))
+        candidates = resolve_candidate_areas()
+        assert any(c[1] == "smurf" and c[2].parent == custom_dir for c in candidates)
 
     def test_render_area_success(self, tmp_path):
         from scripts.build_pages import render_area
-        fixture_path = REPO_ROOT / "tests" / "fixtures" / "dialects" / "rom24.are"
-        render_area("rom24", fixture_path, is_dir=False, outdir=tmp_path)
-        assert (tmp_path / "rom24.html").exists()
-        assert (tmp_path / "rom240.svg").exists()
-        validate_html_viewer_file(tmp_path / "rom24.html")
-        validate_svg_file(tmp_path / "rom240.svg")
+        fixture_path = REPO_ROOT / "tests" / "fixtures" / "areas" / "smurf.are"
+        render_area("smurf", fixture_path, is_dir=False, outdir=tmp_path)
+        assert (tmp_path / "smurf.html").exists()
+        assert (tmp_path / "smurf0.svg").exists()
+        validate_html_viewer_file(tmp_path / "smurf.html")
+        validate_svg_file(tmp_path / "smurf0.svg")
 
     def test_render_area_failure_raises(self, tmp_path):
         from scripts.build_pages import render_area
@@ -225,8 +267,8 @@ class TestGalleryAssetsGeneration:
     def test_build_pages_main_e2e(self, tmp_path):
         from scripts.build_pages import main
 
-        fixture_area = REPO_ROOT / "tests" / "fixtures" / "dialects" / "rom24.are"
-        mock_candidates = [("fixture", "rom24", fixture_area, False)]
+        fixture_area = REPO_ROOT / "tests" / "fixtures" / "areas" / "smurf.are"
+        mock_candidates = [("ROM 2.4 / QuickMUD", "smurf", fixture_area, False)]
 
         with patch("scripts.build_pages.resolve_candidate_areas", return_value=mock_candidates):
             with patch("sys.argv", ["build_pages.py", "--outdir", str(tmp_path)]):
@@ -236,12 +278,13 @@ class TestGalleryAssetsGeneration:
         assert index_file.exists()
         content = index_file.read_text(encoding="utf-8")
         assert "ROMUtil Map Directory" in content
-        assert "rom24" in content
-        assert '<a href="rom24.html">Interactive Viewer</a>' in content
-        assert '<a href="rom240.svg">SVG Map</a>' in content
+        assert "ROM 2.4 / QuickMUD" in content
+        assert "smurf" in content
+        assert '<a href="smurf.html">Interactive Viewer</a>' in content
+        assert '<a href="smurf0.svg">SVG Map</a>' in content
         assert "N/A" not in content
-        assert (tmp_path / "rom24.html").exists()
-        assert (tmp_path / "rom240.svg").exists()
+        assert (tmp_path / "smurf.html").exists()
+        assert (tmp_path / "smurf0.svg").exists()
 
 
 @pytest.mark.slow
@@ -284,8 +327,6 @@ class TestHtmlAssetIntegrity:
     def test_html_zero_external_dependencies(self, sample_gallery_artifacts):
         for html_file in sample_gallery_artifacts.glob("*.html"):
             validate_html_viewer_file(html_file)
-
-
 
 
 class TestNegativeAndBoundaryCases:
@@ -356,7 +397,6 @@ class TestNegativeAndBoundaryCases:
         )
         with pytest.raises(ValueError, match="Forbidden external stylesheet"):
             validate_html_viewer_content(bad_html)
-
 
     def test_nonexistent_file_path_raises_file_not_found(self, tmp_path):
         nonexistent = tmp_path / "phantom.svg"

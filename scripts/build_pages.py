@@ -16,12 +16,22 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger("build_pages")
 
+# Curated authentic showcase areas bundled in tests/fixtures/areas/
+SHOWCASE_AREAS = (
+    "arachnos.are",
+    "chapel.are",
+    "midgaard.are",
+    "school.are",
+    "shire.are",
+    "smurf.are",
+)
+
 
 def resolve_candidate_areas():
-    """Discover available sample and fixture areas for page generation."""
+    """Discover curated showcase areas for page generation."""
     candidates = []
 
-    # 1. Check local fixture areas or external QuickMUD area directory
+    # Check local fixture areas or external QuickMUD area directory
     sample_dirs = [
         REPO_ROOT / "tests" / "fixtures" / "areas",
     ]
@@ -30,24 +40,20 @@ def resolve_candidate_areas():
         sample_dirs.insert(0, Path(quickmud_env))
     sample_dirs.append(REPO_ROOT.parent / "QuickMUD" / "area")
 
+    found_names = set()
     for sdir in sample_dirs:
         if sdir.is_dir():
-            for name in ("school.are", "midgaard.are"):
+            for name in SHOWCASE_AREAS:
+                if name in found_names:
+                    continue
                 area_file = sdir / name
                 if area_file.is_file():
-                    candidates.append(("quickmud", area_file.stem, area_file, False))
+                    candidates.append(("ROM 2.4 / QuickMUD", area_file.stem, area_file, False))
+                    found_names.add(name)
             if candidates:
                 break
 
-    # 2. Add local repository dialect test fixtures
-    dialects_dir = REPO_ROOT / "tests" / "fixtures" / "dialects"
-    if dialects_dir.is_dir():
-        for are_file in sorted(dialects_dir.glob("*.are")):
-            candidates.append(("fixture", are_file.stem, are_file, False))
-        circle_world = dialects_dir / "circle_world"
-        if circle_world.is_dir():
-            candidates.append(("fixture", "circle_world", circle_world, True))
-
+    candidates.sort(key=lambda c: c[1])
     return candidates
 
 

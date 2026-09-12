@@ -957,6 +957,12 @@ def solve(rdb, area_exits, timeout=None):
             return m, result
 
         for vnum in non_dummy_rooms:
+            if hasattr(m, 'x') and vnum in m.x and m.x[vnum].value is None:
+                m.x[vnum].set_value(0)
+            if hasattr(m, 'y') and vnum in m.y and m.y[vnum].value is None:
+                m.y[vnum].set_value(0)
+            if hasattr(m, 'z') and vnum in m.z and m.z[vnum].value is None:
+                m.z[vnum].set_value(0)
             room = rdb[vnum]
             room.x = m.x[vnum].value if m.x[vnum].value is not None else 0
             room.y = m.y[vnum].value if m.y[vnum].value is not None else 0
