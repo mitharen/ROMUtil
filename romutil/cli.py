@@ -9,7 +9,7 @@ from typing import Any, Sequence
 import networkx as nx
 import pyomo.common.config
 
-from romutil.models import Room, Exit, AreaData, AreaHeader
+from romutil.models import Room, Exit, AreaData, AreaHeader, merge_areas
 from romutil.parser import Parser, parse_circlemud_directory
 from romutil.graph import graph, solve_layout
 from romutil.renderers import RENDERERS, get_renderer, render_map
@@ -48,8 +48,7 @@ def main(
             seen.add(f)
             formats.append(f)
 
-    rdb = {}
-    area_meta = None
+    parsed_areas: list[AreaData] = []
     first_file_name = "area.are"
 
     if circle_dir is not None:
@@ -57,10 +56,7 @@ def main(
         area = parse_circlemud_directory(circle_dir)
         if not isinstance(area, AreaData):
             raise TypeError(f"Expected AreaData from parser, got {type(area).__name__}")
-        if area.header:
-            area_meta = area.header
-        rooms = list(area.rooms)
-        rdb.update({r.vnum: Room(r) for r in rooms})
+        parsed_areas.append(area)
 
     for area_file in area_files:
         if isinstance(area_file, (str, Path)) and Path(area_file).is_dir():
@@ -68,10 +64,7 @@ def main(
             area = parse_circlemud_directory(area_file)
             if not isinstance(area, AreaData):
                 raise TypeError(f"Expected AreaData from parser, got {type(area).__name__}")
-            if area.header:
-                area_meta = area.header
-            rooms = list(area.rooms)
-            rdb.update({r.vnum: Room(r) for r in rooms})
+            parsed_areas.append(area)
             continue
 
         # Support both open file objects and Path / string paths
@@ -92,14 +85,19 @@ def main(
 
         if not isinstance(area, AreaData):
             raise TypeError(f"Expected AreaData from parser, got {type(area).__name__}")
+        parsed_areas.append(area)
 
-        area_meta = area.header
-        rooms = list(area.rooms)
-        rdb.update({r.vnum: Room(r) for r in rooms})
-
-    if not rdb:
+    if not parsed_areas or not any(a.rooms for a in parsed_areas):
         log.error('No rooms to plot.')
         sys.exit(0)
+
+    if len(parsed_areas) == 1:
+        composite_area = parsed_areas[0]
+    else:
+        composite_area = merge_areas(parsed_areas)
+
+    area_meta = composite_area.header
+    rdb = {r.vnum: Room(r) for r in composite_area.rooms}
 
     # Provide fallback area metadata if none was in the file
     if area_meta is None and rdb:

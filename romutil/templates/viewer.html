@@ -1220,7 +1220,11 @@ __JSON_DATA__
       });
 
       function showTooltip(room, e) {
-        document.getElementById('tt-name').textContent = '[' + room.vnum + '] ' + room.name;
+        let ttTitle = '[' + room.vnum + '] ' + room.name;
+        if (room.area_name) {
+          ttTitle += ' | Area: ' + room.area_name;
+        }
+        document.getElementById('tt-name').textContent = ttTitle;
         document.getElementById('tt-meta').textContent = 'Floor Z: ' + room.coords.z + ' | Coords: (' + room.coords.x + ', ' + room.coords.y + ', ' + room.coords.z + ')';
 
         const exitItems = (room.exits || []).map(ex => {
@@ -1443,7 +1447,11 @@ __JSON_DATA__
           }
         });
 
-        document.getElementById('card-room-name').textContent = '[' + room.vnum + '] ' + room.name;
+        let cardTitle = '[' + room.vnum + '] ' + room.name;
+        if (room.area_name) {
+          cardTitle += ' | Area: ' + room.area_name;
+        }
+        document.getElementById('card-room-name').textContent = cardTitle;
         document.getElementById('card-room-meta').textContent = 'Coordinates: (' + room.coords.x + ', ' + room.coords.y + ', ' + room.coords.z + ') | Floor Z = ' + room.coords.z;
         const descElem = document.getElementById('card-room-desc');
         descElem.style.display = 'block';

@@ -90,7 +90,7 @@ def build_area_json(
                 exit_dict['target_vnum'] = int(target)
             exits_data.append(exit_dict)
 
-        rooms_data.append({
+        room_dict: dict[str, Any] = {
             'vnum': int(r.vnum),
             'name': str(r.name),
             'desc': str(r.desc),
@@ -100,7 +100,12 @@ def build_area_json(
                 'z': z_val,
             },
             'exits': exits_data,
-        })
+        }
+        r_area = getattr(r, 'area_name', None) or (area_name if area_name else None)
+        if r_area is not None:
+            room_dict['area_name'] = str(r_area)
+
+        rooms_data.append(room_dict)
 
     return {
         'area': {

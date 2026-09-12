@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import enum
-from typing import Any
+from typing import Any, Sequence
 
 
 class Direction(enum.IntEnum):
@@ -81,6 +81,7 @@ class RoomDef:
     sector: int = 0
     exits: tuple[ExitDef, ...] = ()
     extras: tuple[Any, ...] = ()
+    area_name: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.exits, tuple):
@@ -342,6 +343,7 @@ class Room:
         description: str | None = None,
         exits: list[Exit] | tuple[ExitDef, ...] | list[ExitDef] | None = None,
         target_vnum: int | None = None,
+        area_name: str | None = None,
     ) -> None:
         self.fixups: list[Any] = []
         self.dummy = False
@@ -349,6 +351,7 @@ class Room:
         self.x: int | None = None
         self.y: int | None = None
         self.z: int | None = None
+        self.area_name: str | None = area_name
 
         if r is not None:
             if isinstance(r, RoomDef):
@@ -356,6 +359,8 @@ class Room:
                 self.name = r.name
                 self.desc = r.description
                 self.exits = [Exit(e, source=self.vnum) for e in r.exits if e is not None]
+                if self.area_name is None:
+                    self.area_name = getattr(r, 'area_name', None)
             elif isinstance(r, Room):
                 self.vnum = r.vnum
                 self.name = r.name
@@ -364,6 +369,8 @@ class Room:
                 self.dummy = r.dummy
                 if self.target_vnum is None:
                     self.target_vnum = getattr(r, 'target_vnum', None)
+                if self.area_name is None:
+                    self.area_name = getattr(r, 'area_name', None)
                 self.fixups = list(r.fixups)
                 self.x = r.x
                 self.y = r.y
@@ -394,3 +401,130 @@ class Room:
 
     def __repr__(self) -> str:
         return f"[{self.vnum}: {self.name}] {{{self.exits}}}"
+
+
+def merge_areas(areas: Sequence[AreaData], title: str | None = None) -> AreaData:
+    """Merge multiple AreaData containers into a unified composite AreaData.
+
+    Combines rooms, mobiles, objects, resets, shops, specials, helps, and socials,
+    while tagging each RoomDef with its originating area provenance (area_name).
+    """
+    if not areas:
+        header = AreaHeader(
+            filename="composite.are",
+            name=title or "Composite Area",
+            builder="",
+            vnum_min=0,
+            vnum_max=0,
+        )
+        return AreaData(header=header)
+
+    area_names = [a.header.name for a in areas if a.header and a.header.name]
+    filenames = [a.header.filename for a in areas if a.header and a.header.filename]
+    builders = sorted(set(a.header.builder for a in areas if a.header and a.header.builder))
+
+    merged_title = title or (" + ".join(area_names) if area_names else "Composite Area")
+    merged_filename = filenames[0] if filenames else "composite.are"
+    merged_builder = ", ".join(builders)
+
+    merged_rooms: list[RoomDef] = []
+    seen_room_vnums: set[int] = set()
+    for area in areas:
+        source_area_name = area.header.name if area.header and area.header.name else None
+        for room in area.rooms:
+            if room.vnum in seen_room_vnums:
+                continue
+            seen_room_vnums.add(room.vnum)
+            r_area = room.area_name or source_area_name
+            if room.area_name != r_area:
+                room = RoomDef(
+                    vnum=room.vnum,
+                    name=room.name,
+                    description=room.description,
+                    room_flags=room.room_flags,
+                    sector=room.sector,
+                    exits=room.exits,
+                    extras=room.extras,
+                    area_name=r_area,
+                )
+            merged_rooms.append(room)
+
+    merged_mobiles: list[MobileDef] = []
+    seen_mob_vnums: set[int] = set()
+    for area in areas:
+        for mob in area.mobiles:
+            if mob.vnum not in seen_mob_vnums:
+                seen_mob_vnums.add(mob.vnum)
+                merged_mobiles.append(mob)
+
+    merged_objects: list[ObjectDef] = []
+    seen_obj_vnums: set[int] = set()
+    for area in areas:
+        for obj in area.objects:
+            if obj.vnum not in seen_obj_vnums:
+                seen_obj_vnums.add(obj.vnum)
+                merged_objects.append(obj)
+
+    merged_resets: list[ResetDef] = []
+    for area in areas:
+        merged_resets.extend(area.resets)
+
+    merged_shops: list[ShopDef] = []
+    seen_shop_keepers: set[int] = set()
+    for area in areas:
+        for shop in area.shops:
+            if shop.keeper not in seen_shop_keepers:
+                seen_shop_keepers.add(shop.keeper)
+                merged_shops.append(shop)
+
+    merged_specials: list[SpecialDef] = []
+    for area in areas:
+        merged_specials.extend(area.specials)
+
+    merged_helps: list[HelpDef] = []
+    for area in areas:
+        merged_helps.extend(area.helps)
+
+    merged_socials: list[SocialDef] = []
+    seen_social_names: set[str] = set()
+    for area in areas:
+        for soc in area.socials:
+            if soc.name not in seen_social_names:
+                seen_social_names.add(soc.name)
+                merged_socials.append(soc)
+
+    reset_message = next((a.reset_message for a in areas if a.reset_message), None)
+    flag = next((a.flag for a in areas if a.flag), None)
+
+    headers_with_bounds = [a.header for a in areas if a.header and a.header.vnum_max > 0]
+    if headers_with_bounds:
+        v_min = min(h.vnum_min for h in headers_with_bounds)
+        v_max = max(h.vnum_max for h in headers_with_bounds)
+    elif merged_rooms:
+        v_min = min(r.vnum for r in merged_rooms)
+        v_max = max(r.vnum for r in merged_rooms)
+    else:
+        v_min = 0
+        v_max = 0
+
+    header = AreaHeader(
+        filename=merged_filename,
+        name=merged_title,
+        builder=merged_builder,
+        vnum_min=v_min,
+        vnum_max=v_max,
+    )
+
+    return AreaData(
+        header=header,
+        rooms=tuple(merged_rooms),
+        mobiles=tuple(merged_mobiles),
+        objects=tuple(merged_objects),
+        resets=tuple(merged_resets),
+        shops=tuple(merged_shops),
+        specials=tuple(merged_specials),
+        helps=tuple(merged_helps),
+        socials=tuple(merged_socials),
+        reset_message=reset_message,
+        flag=flag,
+    )

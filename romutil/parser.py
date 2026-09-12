@@ -18,6 +18,7 @@ from romutil.models import (
     ShopDef,
     SocialDef,
     SpecialDef,
+    merge_areas,
 )
 
 log = logging.getLogger('AreaParser')
@@ -607,6 +608,21 @@ class Parser:
                     reset_message = data
                 elif tag == '#FLAG':
                     flag = data
+
+        if header and header.name:
+            rooms = [
+                RoomDef(
+                    vnum=r.vnum,
+                    name=r.name,
+                    description=r.description,
+                    room_flags=r.room_flags,
+                    sector=r.sector,
+                    exits=r.exits,
+                    extras=r.extras,
+                    area_name=r.area_name or header.name,
+                )
+                for r in rooms
+            ]
 
         p[0] = AreaData(
             header=header,
@@ -1310,6 +1326,21 @@ def parse_circlemud_directory(directory_path: str | Path) -> AreaData:
             vnum_min=all_rooms[0].vnum,
             vnum_max=all_rooms[-1].vnum,
         )
+
+    if combined_header and combined_header.name:
+        all_rooms = [
+            RoomDef(
+                vnum=r.vnum,
+                name=r.name,
+                description=r.description,
+                room_flags=r.room_flags,
+                sector=r.sector,
+                exits=r.exits,
+                extras=r.extras,
+                area_name=r.area_name or combined_header.name,
+            )
+            for r in all_rooms
+        ]
 
     return AreaData(
         header=combined_header,

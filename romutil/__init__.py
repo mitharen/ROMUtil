@@ -14,6 +14,7 @@ from romutil.models import (
     ShopDef,
     SocialDef,
     SpecialDef,
+    merge_areas,
 )
 from romutil.parser import Parser, parse_file, parse_circlemud_directory, parse_circlemud_zone_file, normalize_dialect_buffer, sanitize_ackmud_colour
 from romutil.solver import solve, non_euler, find_overlap_candidates, get_cbc_solver
@@ -51,6 +52,7 @@ __all__ = [
     'ShopDef',
     'SocialDef',
     'SpecialDef',
+    'merge_areas',
     'Parser',
     'parse_file',
     'parse_circlemud_directory',
