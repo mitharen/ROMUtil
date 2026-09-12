@@ -16,7 +16,7 @@ import pyomo.opt
 import pytest
 
 from romutil.models import Room, RoomDef, Exit, ExitDef, AreaHeader, AreaData
-from romutil.solver import solve
+from romutil.solver import solve, compute_dynamic_solver_timeout
 from romutil.graph import solve_layout, graph, _has_feasible_coordinates
 from romutil.cli import cli, main
 
@@ -43,7 +43,7 @@ class TestSolverTimeoutParameterization:
     """Unit tests for solve() timeout parameterization and loop termination."""
 
     def test_solve_default_timeout_used(self, monkeypatch):
-        """When timeout is None, CBC solver option 'sec' defaults to 30."""
+        """When timeout is None, CBC solver option 'sec' dynamically scales with room count."""
         r1 = Room(RoomDef(vnum=1, name="R1", description="Desc", exits=(ExitDef(direction=1, dst_vnum=2),)))
         r2 = Room(RoomDef(vnum=2, name="R2", description="Desc", exits=(ExitDef(direction=3, dst_vnum=1),)))
         rdb = {1: r1, 2: r2}
@@ -64,7 +64,8 @@ class TestSolverTimeoutParameterization:
 
         monkeypatch.setattr(solver_mod, "SolverFactory", mock_factory)
         model, result = solve(rdb, exits)
-        assert 30 in recorded_sec
+        expected_timeout = compute_dynamic_solver_timeout(len(rdb))
+        assert expected_timeout in recorded_sec
 
     def test_solve_custom_timeout_passed(self, monkeypatch):
         """When timeout is explicitly provided, CBC solver option 'sec' matches."""

@@ -29,7 +29,8 @@ import pytest
 from romutil.graph import solve_layout
 from romutil.models import Direction, Exit, ExitDef, Room, RoomDef
 from romutil.parser import Parser, parse_circlemud_directory
-from romutil.solver import get_cbc_solver, non_euler, solve
+import logging
+from romutil.solver import compute_dynamic_solver_timeout, get_cbc_solver, non_euler, solve
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -223,3 +224,302 @@ class TestStandardFixturesLayoutSolving:
         rdb = {r.vnum: Room(r) for r in area.rooms}
         solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
         self._verify_coordinates(solved_rdb)
+
+
+
+class TestDynamicSolverTimeout:
+    """Unit tests for dynamic room-scaled solver timeout computation and plumbing."""
+
+    def test_compute_dynamic_solver_timeout_boundary_cases(self):
+        """Verify dynamic timeout scaling across standard room count boundary cases."""
+        # 0 rooms: floored to min_timeout (30s)
+        assert compute_dynamic_solver_timeout(0) == 30
+        # Negative room count floored to min_timeout
+        assert compute_dynamic_solver_timeout(-10) == 30
+
+        # Benchmark reference points from design specification:
+        # 10 rooms: round(30 + 0.8 * 10) = 38s
+        assert compute_dynamic_solver_timeout(10) == 38
+        # 20 rooms: round(30 + 0.8 * 20) = 46s
+        assert compute_dynamic_solver_timeout(20) == 46
+        # 60 rooms: round(30 + 0.8 * 60) = 78s
+        assert compute_dynamic_solver_timeout(60) == 78
+        # 100 rooms: round(30 + 0.8 * 100) = 110s
+        assert compute_dynamic_solver_timeout(100) == 110
+        # 110 rooms: round(30 + 0.8 * 110) = 118s
+        assert compute_dynamic_solver_timeout(110) == 118
+        # 230 rooms: round(30 + 0.8 * 230) = 214s
+        assert compute_dynamic_solver_timeout(230) == 214
+        # 250 rooms: round(30 + 0.8 * 250) = 230s
+        assert compute_dynamic_solver_timeout(250) == 230
+        # 350 rooms: round(30 + 0.8 * 350) = 310s -> capped at max_timeout (300s)
+        assert compute_dynamic_solver_timeout(350) == 300
+        # 1000 rooms: round(30 + 0.8 * 1000) = 830s -> capped at max_timeout (300s)
+        assert compute_dynamic_solver_timeout(1000) == 300
+
+    def test_compute_dynamic_solver_timeout_custom_min_max(self):
+        """Verify dynamic timeout with custom min_timeout and max_timeout limits."""
+        # Custom bounds: min=50, max=200
+        assert compute_dynamic_solver_timeout(0, min_timeout=50, max_timeout=200) == 50
+        assert compute_dynamic_solver_timeout(10, min_timeout=50, max_timeout=200) == 50
+        assert compute_dynamic_solver_timeout(100, min_timeout=50, max_timeout=200) == 110
+        assert compute_dynamic_solver_timeout(250, min_timeout=50, max_timeout=200) == 200
+        assert compute_dynamic_solver_timeout(1000, min_timeout=50, max_timeout=200) == 200
+
+        # Custom bounds: min=10, max=40
+        assert compute_dynamic_solver_timeout(0, min_timeout=10, max_timeout=40) == 30
+        assert compute_dynamic_solver_timeout(20, min_timeout=10, max_timeout=40) == 40
+
+        # Invalid bounds where min_timeout > max_timeout
+        with pytest.raises(ValueError, match="cannot exceed max_timeout"):
+            compute_dynamic_solver_timeout(50, min_timeout=100, max_timeout=50)
+
+    def test_solve_dynamic_timeout_applied_when_none(self, monkeypatch):
+        """solve() computes and applies dynamic room-scaled timeout when solver_timeout is None."""
+        captured_options = []
+        import romutil.solver as solver_mod
+        orig_get_cbc = solver_mod.get_cbc_solver
+
+        def spy_get_cbc(timeout=None, **kwargs):
+            s = orig_get_cbc(timeout=timeout, **kwargs)
+            captured_options.append(dict(s.options))
+            return s
+
+        monkeypatch.setattr(solver_mod, "get_cbc_solver", spy_get_cbc)
+
+        r1 = Room(RoomDef(vnum=1, name="R1", description="D", exits=(ExitDef(direction=1, dst_vnum=2),)))
+        r2 = Room(RoomDef(vnum=2, name="R2", description="D", exits=(ExitDef(direction=3, dst_vnum=1),)))
+        rdb = {1: r1, 2: r2}
+        exits = [r1.exits[0], r2.exits[0]]
+
+        # Call with solver_timeout=None
+        model, results = solve(rdb, exits, solver_timeout=None)
+        assert results is not None
+        expected_sec = compute_dynamic_solver_timeout(2)  # 32s
+        assert expected_sec == 32
+        solve_opts = captured_options[-1]
+        assert solve_opts.get("seconds") == 32
+        assert solve_opts.get("sec") == 32
+
+    def test_solve_dynamic_timeout_applied_when_zero_or_negative(self, monkeypatch):
+        """solve() applies dynamic timeout when solver_timeout <= 0."""
+        captured_options = []
+        import romutil.solver as solver_mod
+        orig_get_cbc = solver_mod.get_cbc_solver
+
+        def spy_get_cbc(timeout=None, **kwargs):
+            s = orig_get_cbc(timeout=timeout, **kwargs)
+            captured_options.append(dict(s.options))
+            return s
+
+        monkeypatch.setattr(solver_mod, "get_cbc_solver", spy_get_cbc)
+
+        r1 = Room(RoomDef(vnum=1, name="R1", description="D", exits=(ExitDef(direction=1, dst_vnum=2),)))
+        r2 = Room(RoomDef(vnum=2, name="R2", description="D", exits=(ExitDef(direction=3, dst_vnum=1),)))
+        rdb = {1: r1, 2: r2}
+        exits = [r1.exits[0], r2.exits[0]]
+
+        # solver_timeout = 0
+        solve(rdb, exits, solver_timeout=0)
+        assert captured_options[-1].get("seconds") == 32
+
+        # solver_timeout = -15
+        solve(rdb, exits, solver_timeout=-15)
+        assert captured_options[-1].get("seconds") == 32
+
+    def test_solve_explicit_timeout_strictly_preserved(self, monkeypatch):
+        """Explicit positive timeout is preserved by solve()."""
+        captured_options = []
+        import romutil.solver as solver_mod
+        orig_get_cbc = solver_mod.get_cbc_solver
+
+        def spy_get_cbc(timeout=None, **kwargs):
+            s = orig_get_cbc(timeout=timeout, **kwargs)
+            captured_options.append(dict(s.options))
+            return s
+
+        monkeypatch.setattr(solver_mod, "get_cbc_solver", spy_get_cbc)
+
+        r1 = Room(RoomDef(vnum=1, name="R1", description="D", exits=(ExitDef(direction=1, dst_vnum=2),)))
+        r2 = Room(RoomDef(vnum=2, name="R2", description="D", exits=(ExitDef(direction=3, dst_vnum=1),)))
+        rdb = {1: r1, 2: r2}
+        exits = [r1.exits[0], r2.exits[0]]
+
+        # Explicit solver_timeout=15
+        solve(rdb, exits, solver_timeout=15)
+        assert captured_options[-1].get("seconds") == 15
+
+        # Explicit solver_timeout takes precedence over legacy timeout
+        solve(rdb, exits, timeout=10, solver_timeout=25)
+        assert captured_options[-1].get("seconds") == 25
+
+
+class TestCliDynamicTimeoutIntegration:
+    """Tests for CLI integration with dynamic solver timeout."""
+
+    def test_main_computes_dynamic_timeout_and_logs(self, tmp_path, monkeypatch, caplog):
+        """When solver_timeout is None, main() logs and forwards dynamic timeout."""
+        import sys
+        from romutil.models import AreaData, AreaHeader
+        from romutil.parser import Parser
+
+        are_file = tmp_path / "test.are"
+        are_file.write_text("dummy")
+
+        mock_area = AreaData(
+            header=AreaHeader("test.are", "TestArea", "Builder", 1, 3),
+            rooms=[
+                RoomDef(1, "R1", "D1", exits=(ExitDef(direction=1, dst_vnum=2),)),
+                RoomDef(2, "R2", "D2", exits=(ExitDef(direction=3, dst_vnum=1), ExitDef(direction=1, dst_vnum=3))),
+                RoomDef(3, "R3", "D3", exits=(ExitDef(direction=3, dst_vnum=2),)),
+            ],
+        )
+        monkeypatch.setattr(Parser, "parse", lambda self, text: mock_area)
+
+        passed_timeouts = []
+        def mock_solve_layout(rdb, area=None, solver_timeout=None):
+            passed_timeouts.append(solver_timeout)
+            for r in rdb.values():
+                r.x = 0
+                r.y = 0
+                r.z = 0
+            return rdb, []
+
+        cli_mod = sys.modules["romutil.cli"]
+        monkeypatch.setattr(cli_mod, "solve_layout", mock_solve_layout)
+
+        with caplog.at_level(logging.INFO, logger="Mapper"):
+            try:
+                cli_mod.main([are_file], str(tmp_path / "out"), fmt="json", solver_timeout=None)
+            except SystemExit:
+                pass
+
+        expected_timeout = compute_dynamic_solver_timeout(3)  # round(30 + 0.8 * 3) = 32
+        assert expected_timeout == 32
+        assert passed_timeouts == [32]
+        assert "Using dynamic solver timeout of 32s for 3 rooms" in caplog.text
+
+    def test_main_preserves_explicit_timeout_without_dynamic_log(self, tmp_path, monkeypatch, caplog):
+        """When solver_timeout is explicitly provided, main() forwards it without dynamic timeout log."""
+        import sys
+        from romutil.models import AreaData, AreaHeader
+        from romutil.parser import Parser
+
+        are_file = tmp_path / "test.are"
+        are_file.write_text("dummy")
+
+        mock_area = AreaData(
+            header=AreaHeader("test.are", "TestArea", "Builder", 1, 2),
+            rooms=[
+                RoomDef(1, "R1", "D1", exits=(ExitDef(direction=1, dst_vnum=2),)),
+                RoomDef(2, "R2", "D2", exits=(ExitDef(direction=3, dst_vnum=1),)),
+            ],
+        )
+        monkeypatch.setattr(Parser, "parse", lambda self, text: mock_area)
+
+        passed_timeouts = []
+        def mock_solve_layout(rdb, area=None, solver_timeout=None):
+            passed_timeouts.append(solver_timeout)
+            for r in rdb.values():
+                r.x = 0
+                r.y = 0
+                r.z = 0
+            return rdb, []
+
+        cli_mod = sys.modules["romutil.cli"]
+        monkeypatch.setattr(cli_mod, "solve_layout", mock_solve_layout)
+
+        with caplog.at_level(logging.INFO, logger="Mapper"):
+            try:
+                cli_mod.main([are_file], str(tmp_path / "out"), fmt="json", solver_timeout=80)
+            except SystemExit:
+                pass
+
+        assert passed_timeouts == [80]
+        assert "Using dynamic solver timeout" not in caplog.text
+
+    def test_cli_invoked_omitted_timeout_uses_dynamic(self, tmp_path, monkeypatch, caplog):
+        """CLI invocation without --solver-timeout computes dynamic timeout."""
+        import sys
+        from romutil.models import AreaData, AreaHeader
+        from romutil.parser import Parser
+
+        are_file = tmp_path / "cli_test.are"
+        are_file.write_text("dummy")
+
+        # Create 10 connected rooms in a line (10->11->...->19)
+        rooms = []
+        for i in range(10, 20):
+            exits = (ExitDef(direction=1, dst_vnum=i+1),) if i < 19 else (ExitDef(direction=3, dst_vnum=i-1),)
+            rooms.append(RoomDef(i, f"R{i}", f"D{i}", exits=exits))
+        mock_area = AreaData(
+            header=AreaHeader("cli_test.are", "CliTest", "Builder", 10, 19),
+            rooms=rooms,
+        )
+        monkeypatch.setattr(Parser, "parse", lambda self, text: mock_area)
+
+        passed_timeouts = []
+        def mock_solve_layout(rdb, area=None, solver_timeout=None):
+            passed_timeouts.append(solver_timeout)
+            for r in rdb.values():
+                r.x = 0
+                r.y = 0
+                r.z = 0
+            return rdb, []
+
+        cli_mod = sys.modules["romutil.cli"]
+        monkeypatch.setattr(cli_mod, "solve_layout", mock_solve_layout)
+        monkeypatch.setattr("sys.argv", ["romutil", str(are_file), "-f", "json"])
+
+        with caplog.at_level(logging.INFO, logger="Mapper"):
+            try:
+                cli_mod.cli()
+            except SystemExit:
+                pass
+
+        expected_timeout = compute_dynamic_solver_timeout(10)  # 38s
+        assert expected_timeout == 38
+        assert passed_timeouts == [38]
+        assert "Using dynamic solver timeout of 38s for 10 rooms" in caplog.text
+
+    def test_cli_invoked_explicit_timeout_strictly_preserved(self, tmp_path, monkeypatch, caplog):
+        """CLI invocation with explicit --solver-timeout preserves that timeout."""
+        import sys
+        from romutil.models import AreaData, AreaHeader
+        from romutil.parser import Parser
+
+        are_file = tmp_path / "cli_test.are"
+        are_file.write_text("dummy")
+
+        # Create 5 connected rooms in a line (1->2->...->5)
+        rooms = []
+        for i in range(1, 6):
+            exits = (ExitDef(direction=1, dst_vnum=i+1),) if i < 5 else (ExitDef(direction=3, dst_vnum=i-1),)
+            rooms.append(RoomDef(i, f"R{i}", f"D{i}", exits=exits))
+        mock_area = AreaData(
+            header=AreaHeader("cli_test.are", "CliTest", "Builder", 1, 5),
+            rooms=rooms,
+        )
+        monkeypatch.setattr(Parser, "parse", lambda self, text: mock_area)
+
+        passed_timeouts = []
+        def mock_solve_layout(rdb, area=None, solver_timeout=None):
+            passed_timeouts.append(solver_timeout)
+            for r in rdb.values():
+                r.x = 0
+                r.y = 0
+                r.z = 0
+            return rdb, []
+
+        cli_mod = sys.modules["romutil.cli"]
+        monkeypatch.setattr(cli_mod, "solve_layout", mock_solve_layout)
+        monkeypatch.setattr("sys.argv", ["romutil", str(are_file), "--solver-timeout", "95", "-f", "json"])
+
+        with caplog.at_level(logging.INFO, logger="Mapper"):
+            try:
+                cli_mod.cli()
+            except SystemExit:
+                pass
+
+        assert passed_timeouts == [95]
+        assert "Using dynamic solver timeout" not in caplog.text

@@ -546,6 +546,39 @@ def add_dummy_separation_constraint(
     return relations + 1
 
 
+def compute_dynamic_solver_timeout(
+    room_count: int,
+    min_timeout: int = 30,
+    max_timeout: int = 300,
+) -> int:
+    """
+    Compute dynamically scaled CBC solver timeout limit based on room count.
+
+    Applies clamped linear scaling:
+        effective_timeout = max(min_timeout, min(max_timeout, round(30 + 0.8 * room_count)))
+
+    Benchmark room-scaled targets:
+        - 10 rooms: 38s (floored to >= 30s)
+        - 60 rooms: 78s
+        - 110 rooms: 118s
+        - 230 rooms: 214s
+        - 350 rooms: 300s (capped at <= 300s)
+
+    Args:
+        room_count: Number of rooms in the graph or component.
+        min_timeout: Minimum timeout floor in seconds (default: 30).
+        max_timeout: Maximum timeout ceiling in seconds (default: 300).
+
+    Returns:
+        Effective solver timeout in seconds.
+    """
+    if min_timeout > max_timeout:
+        raise ValueError(f"min_timeout ({min_timeout}) cannot exceed max_timeout ({max_timeout})")
+    effective_rooms = max(0, room_count)
+    raw_timeout = round(30 + 0.8 * effective_rooms)
+    return max(min_timeout, min(max_timeout, raw_timeout))
+
+
 def get_cbc_solver(timeout: Optional[int] = None, **custom_options: Any) -> Any:
     """
     Instantiate and configure the Coin-OR CBC MILP solver with tuned options.
@@ -675,7 +708,7 @@ def non_euler(rdb, exits):
     solver.solve(m, tee=False)
     return m
 
-def solve(rdb, area_exits, timeout=None):
+def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | None = None):
     exits = [e for e in area_exits if e.src != e.dst]
 
     m = non_euler(rdb, exits)
@@ -924,8 +957,14 @@ def solve(rdb, area_exits, timeout=None):
     relations = 0
     log.info(f'{len(non_incidents)} possible overlaps.')
 
-    timeout_sec = 30 if timeout is None else int(timeout)
-    solver = get_cbc_solver(timeout=timeout_sec)
+    target_timeout = solver_timeout if solver_timeout is not None else timeout
+    if target_timeout is None or target_timeout <= 0:
+        room_count = len(non_dummy_rooms or rdb)
+        effective_timeout = compute_dynamic_solver_timeout(room_count)
+    else:
+        effective_timeout = int(target_timeout)
+
+    solver = get_cbc_solver(timeout=effective_timeout)
     constrained_dummy_collisions: set[tuple[int, int]] = set()
 
     while True:
