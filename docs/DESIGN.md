@@ -308,12 +308,14 @@ Solver instantiation via [`get_cbc_solver()`](../romutil/solver.py) standardizes
 - **Relative Optimality Gap (`ratioGap = 0.05`)**: Halts branch-and-bound when the gap between the best integer solution and the lower bound is within 5%. This prevents exponential tailing off on dense topologies while guaranteeing visually indistinguishable optimal layouts.
 - **Presolve & Cuts**: Enables CBC presolve reduction (`presolve = 'on'`) and cutting plane generation (`cuts = 'on'`) to tighten the LP relaxation polytope at the root node.
 - **Primal Heuristics**: Enables CBC heuristic search (`heuristics = 'on'`) to locate integer-feasible bounds rapidly during tree traversal.
-- **Timeout Management**: Propagates execution timeout (`seconds` and backward-compatible `sec`) to prevent unbounded stalls on degenerate graphs.
+- **Dynamic Solver Timeout Scaling**: Propagates execution timeout (`seconds` and backward-compatible `sec`) computed via [`compute_dynamic_solver_timeout()`](../romutil/solver.py). The dynamic timeout factors in both room count $ and exit density /V$:
+  1248215T_{\text{effective}} = \max(T_{\min}, \min(T_{\max}, \text{round}(30 + 0.8 \cdot V \cdot \max(1.0, E / V))))1248215
+  bounded between {\min} = 30\text{s}$ and {\max} = 600\text{s}$. This maintains snappy execution (~30-40s) on small planar areas while dynamically scaling up to 300-600s for large composite clusters with high cyclic density (e.g. 270+ rooms and 380+ exits).
 
-#### Solver Termination & Feasible Solution Recovery:
-The CBC optimization execution is bounded by an optional per-subgraph time limit (`seconds` / `sec`, defaulting to 300 seconds). During branch-and-cut:
+#### Solver Termination & Collision Failure Reporting:
+The CBC optimization execution is bounded by an optional per-subgraph time limit. During branch-and-cut:
 - **Optimal Completion**: When branch-and-cut proves optimality (or satisfies the 5% MIP relative gap tolerance), coordinates are stored and collision constraints are iteratively generated until spatial crossings converge.
-- **Time Limit with Feasible Solution (`maxTimeLimit`)**: If the execution time limit is reached but CBC has discovered one or more integer-feasible candidate solutions, the solver terminates the iteration loop and yields the model containing the best feasible coordinates, preventing premature layout collapse.
+- **Time Limit with Feasible Solution (`maxTimeLimit`)**: If the execution time limit is reached, CBC yields the model containing the best feasible coordinates found so far. The layout engine then scans the resulting spatial configuration for unresolved room collisions, collinear exit-room penetrations, and intersecting exit segments. If unresolved collisions remain due to the timeout cutoff, the solver records a `timeout_collision_failure` status on the model and solver results, and emits explicit diagnostic error logs detailing the count and classification of remaining unresolved collisions.
 - **Infeasible Status**: If the problem is mathematically unsatisfiable, the solver terminates immediately to enable fallback handling.
 
 ---
@@ -414,7 +416,7 @@ The unified renderer architecture provides an extensible, polymorphic pipeline f
 - Registered console script entry point: `romutil` (via `uv run romutil`).
 - Multi-format output support (`--format` / `-f`): `svg` (default), `json`, and `html`.
 - Elevation plane splitting (`--split-levels`): Generates separate SVG files for each distinct elevation level (`<outbase>_z{z}.svg`).
-- Configurable solver timeout (`--solver-timeout`): Configures the CBC branch-and-cut execution time limit in seconds (default: 300s), bounding runtime on complex topological layouts while recovering the best feasible solution.
+- Configurable solver timeout (`--solver-timeout`): Configures the CBC branch-and-cut execution time limit in seconds. When omitted (default: `None`), automatic dynamic room- and exit-density-scaled timeout scaling is active across all components.
 - Enforces strict vertical painter's algorithm depth sorting across both vector SVG outputs and standalone HTML viewers.
 - Usage:
   ```bash

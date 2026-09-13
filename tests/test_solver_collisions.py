@@ -994,3 +994,206 @@ def test_collinear_exit_penetration_batch_capping() -> None:
     assert_no_room_collisions(rooms)
     solved_coords = {v: (r.x, r.y, r.z) for v, r in rooms.items()}
     assert find_collinear_exit_room_penetrations(exits, solved_coords, rooms=list(rooms.keys())) == []
+
+
+class TestTimeoutCollisionFailureReporting:
+    """Tests for detecting and reporting unresolved collisions when the solver hits maxTimeLimit."""
+
+    def test_solve_timeout_with_room_collisions_detected(self, monkeypatch, caplog):
+        """When solve() hits maxTimeLimit and rooms still collide, timeout_collision_failure is flagged."""
+        import logging
+        import pyomo.opt
+        import romutil.solver as solver_mod
+
+        r1 = Room(RoomDef(1, "R1", "D1", exits=()))
+        r2 = Room(RoomDef(2, "R2", "D2", exits=()))
+        rdb = {1: r1, 2: r2}
+        exits = []
+
+        class MockSolver:
+            def solve(self, model, tee=False):
+                model.x[1].set_value(0)
+                model.y[1].set_value(0)
+                model.z[1].set_value(0)
+                model.x[2].set_value(0)
+                model.y[2].set_value(0)
+                model.z[2].set_value(0)
+                res = pyomo.opt.SolverResults()
+                res.solver.termination_condition = pyomo.opt.TerminationCondition.maxTimeLimit
+                return res
+
+        monkeypatch.setattr(solver_mod, "get_cbc_solver", lambda **kwargs: MockSolver())
+
+        with caplog.at_level(logging.ERROR, logger="Mapper.solver"):
+            model, results = solver_mod.solve(rdb, exits, solver_timeout=10)
+
+        assert getattr(model, "timeout_collision_failure", False) is True
+        assert getattr(results, "timeout_collision_failure", False) is True
+        unresolved = getattr(model, "unresolved_collisions", {})
+        assert unresolved.get("room_collisions") == 1
+        assert unresolved.get("total") == 1
+        assert "Layout solve failed to find a collision-free layout due to solver timeout" in caplog.text
+        assert "room collisions: 1" in caplog.text
+
+    def test_solve_timeout_without_collisions_success(self, monkeypatch, caplog):
+        """When solve() hits maxTimeLimit but all rooms are separated, timeout_collision_failure is False."""
+        import logging
+        import pyomo.opt
+        import romutil.solver as solver_mod
+
+        r1 = Room(RoomDef(1, "R1", "D1", exits=()))
+        r2 = Room(RoomDef(2, "R2", "D2", exits=()))
+        rdb = {1: r1, 2: r2}
+        exits = []
+
+        class MockSolver:
+            def solve(self, model, tee=False):
+                model.x[1].set_value(0)
+                model.y[1].set_value(0)
+                model.z[1].set_value(0)
+                model.x[2].set_value(5)
+                model.y[2].set_value(5)
+                model.z[2].set_value(0)
+                res = pyomo.opt.SolverResults()
+                res.solver.termination_condition = pyomo.opt.TerminationCondition.maxTimeLimit
+                return res
+
+        monkeypatch.setattr(solver_mod, "get_cbc_solver", lambda **kwargs: MockSolver())
+
+        with caplog.at_level(logging.ERROR, logger="Mapper.solver"):
+            model, results = solver_mod.solve(rdb, exits, solver_timeout=10)
+
+        assert getattr(model, "timeout_collision_failure", False) is False
+        assert getattr(results, "timeout_collision_failure", False) is False
+        assert "Layout solve failed to find a collision-free layout" not in caplog.text
+
+    def test_solve_timeout_with_collinear_penetration(self, monkeypatch, caplog):
+        """When solve() hits maxTimeLimit and an exit penetrates a room, failure is reported."""
+        import logging
+        import pyomo.opt
+        import romutil.solver as solver_mod
+
+        r1 = Room(RoomDef(1, "R1", "D1", exits=()))
+        r2 = Room(RoomDef(2, "R2", "D2", exits=()))
+        r3 = Room(RoomDef(3, "R3", "D3", exits=()))
+        e12 = Exit(direction=Direction.east, src=1, dst=2, distance=4)
+        e21 = Exit(direction=Direction.west, src=2, dst=1, distance=4)
+        r1.exits = [e12]
+        r2.exits = [e21]
+        rdb = {1: r1, 2: r2, 3: r3}
+        exits = [e12, e21]
+
+        class MockSolver:
+            def solve(self, model, tee=False):
+                model.x[1].set_value(0)
+                model.y[1].set_value(0)
+                model.z[1].set_value(0)
+                model.x[2].set_value(4)
+                model.y[2].set_value(0)
+                model.z[2].set_value(0)
+                model.x[3].set_value(2)
+                model.y[3].set_value(0)
+                model.z[3].set_value(0)
+                model.cut[0].set_value(0)
+                model.cut[1].set_value(0)
+                res = pyomo.opt.SolverResults()
+                res.solver.termination_condition = pyomo.opt.TerminationCondition.maxTimeLimit
+                return res
+
+        monkeypatch.setattr(solver_mod, "get_cbc_solver", lambda **kwargs: MockSolver())
+
+        with caplog.at_level(logging.ERROR, logger="Mapper.solver"):
+            model, results = solver_mod.solve(rdb, exits, solver_timeout=10)
+
+        assert getattr(model, "timeout_collision_failure", False) is True
+        unresolved = getattr(model, "unresolved_collisions", {})
+        assert unresolved.get("collinear_penetrations", 0) >= 1
+        assert "collinear penetrations:" in caplog.text
+
+    def test_solve_layout_propagates_timeout_collision_failure(self, monkeypatch, caplog):
+        """solve_layout sets last_timeout_collision_failure and logs error when solve times out with collisions."""
+        import logging
+        import pyomo.opt
+        import sys
+        import romutil.graph
+        graph_mod = sys.modules["romutil.graph"]
+
+        r1 = Room(RoomDef(1, "R1", "D1", exits=()))
+        r2 = Room(RoomDef(2, "R2", "D2", exits=()))
+        e12 = Exit(direction=Direction.east, src=1, dst=2)
+        e21 = Exit(direction=Direction.west, src=2, dst=1)
+        r1.exits = [e12]
+        r2.exits = [e21]
+        rdb = {1: r1, 2: r2}
+
+        def mock_solve(rdb_i, exits_i, **kwargs):
+            m = ConcreteModel()
+            m.x = Var([1, 2], initialize=0)
+            m.y = Var([1, 2], initialize=0)
+            m.z = Var([1, 2], initialize=0)
+            m.timeout_collision_failure = True
+            m.unresolved_collisions = {
+                "room_collisions": 1,
+                "collinear_penetrations": 0,
+                "overlapping_pairs": 0,
+                "total": 1,
+            }
+            res = pyomo.opt.SolverResults()
+            res.solver.termination_condition = pyomo.opt.TerminationCondition.maxTimeLimit
+            return m, res
+
+        monkeypatch.setattr(graph_mod, "solve", mock_solve)
+
+        with caplog.at_level(logging.ERROR, logger="Mapper.graph"):
+            graph_mod.solve_layout(rdb, solver_timeout=10)
+
+        assert getattr(graph_mod.solve_layout, "last_timeout_collision_failure", False) is True
+        assert "Layout solve failed to find a collision-free layout due to solver timeout" in caplog.text
+
+    def test_cli_main_reports_timeout_collision_failure(self, tmp_path, monkeypatch, caplog):
+        """CLI logs error when a layout suffers timeout collision failure."""
+        import logging
+        from romutil.models import AreaData, AreaHeader, ExitDef
+        from romutil.parser import Parser
+        import sys
+        import romutil.cli
+        import romutil.graph
+        cli_mod = sys.modules["romutil.cli"]
+        graph_mod = sys.modules["romutil.graph"]
+
+        are_file = tmp_path / "fail.are"
+        are_file.write_text("dummy")
+
+        mock_area = AreaData(
+            header=AreaHeader("fail.are", "FailArea", "Builder", 1, 2),
+            rooms=[
+                RoomDef(1, "R1", "D1", exits=(ExitDef(direction=1, dst_vnum=2),)),
+                RoomDef(2, "R2", "D2", exits=(ExitDef(direction=3, dst_vnum=1),)),
+            ],
+        )
+        monkeypatch.setattr(Parser, "parse", lambda self, text: mock_area)
+
+        def mock_solve_layout(rdb, area=None, solver_timeout=None):
+            graph_mod.solve_layout.last_timeout_collision_failure = True
+            graph_mod.solve_layout.last_unresolved_collisions = {
+                "total": 2,
+                "room_collisions": 2,
+                "collinear_penetrations": 0,
+                "overlapping_pairs": 0,
+            }
+            for r in rdb.values():
+                r.x = 0
+                r.y = 0
+                r.z = 0
+            return rdb, []
+
+        monkeypatch.setattr(cli_mod, "solve_layout", mock_solve_layout)
+
+        with caplog.at_level(logging.ERROR, logger="Mapper"):
+            try:
+                cli_mod.main([are_file], str(tmp_path / "out"), fmt="json")
+            except SystemExit:
+                pass
+
+        assert "Layout solve failed to find a collision-free layout due to solver timeout" in caplog.text
+        assert "2 unresolved collision(s) remaining" in caplog.text

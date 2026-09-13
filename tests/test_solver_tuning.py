@@ -253,10 +253,42 @@ class TestDynamicSolverTimeout:
         assert compute_dynamic_solver_timeout(230) == 214
         # 250 rooms: round(30 + 0.8 * 250) = 230s
         assert compute_dynamic_solver_timeout(250) == 230
-        # 350 rooms: round(30 + 0.8 * 350) = 310s -> capped at max_timeout (300s)
-        assert compute_dynamic_solver_timeout(350) == 300
-        # 1000 rooms: round(30 + 0.8 * 1000) = 830s -> capped at max_timeout (300s)
-        assert compute_dynamic_solver_timeout(1000) == 300
+        # 350 rooms: round(30 + 0.8 * 350) = 310s (within default max_timeout 600s)
+        assert compute_dynamic_solver_timeout(350) == 310
+        # 1000 rooms: round(30 + 0.8 * 1000) = 830s -> capped at max_timeout (600s)
+        assert compute_dynamic_solver_timeout(1000) == 600
+        assert compute_dynamic_solver_timeout(350, max_timeout=300) == 300
+
+    def test_compute_dynamic_solver_timeout_exit_density_scaling(self):
+        """Verify dynamic timeout scales based on both room count and exit density E/V."""
+        # Small planar areas: density <= 1.0 -> no cyclic density penalty
+        assert compute_dynamic_solver_timeout(2, exit_count=1) == 32    # density = 0.50
+        assert compute_dynamic_solver_timeout(10, exit_count=9) == 38   # density = 0.90
+        assert compute_dynamic_solver_timeout(10, exit_count=10) == 38  # density = 1.00
+
+        # Medium areas: density > 1.0 scales time limit within 60-120s
+        assert compute_dynamic_solver_timeout(50, exit_count=75) == 90   # density = 1.50
+        assert compute_dynamic_solver_timeout(60, exit_count=90) == 102  # density = 1.50
+        assert compute_dynamic_solver_timeout(80, exit_count=120) == 126 # density = 1.50
+
+        # Large dense macro-clusters: 270+ rooms, 380+ exits scale into 300-600s
+        assert compute_dynamic_solver_timeout(270, exit_count=384) == 337  # density = 1.42
+        assert compute_dynamic_solver_timeout(270, exit_count=540) == 462  # density = 2.00
+        assert compute_dynamic_solver_timeout(330, exit_count=813) == 600  # density = 2.46 (capped at max 600)
+        assert compute_dynamic_solver_timeout(500, exit_count=1500) == 600 # capped at max 600
+
+    def test_compute_dynamic_solver_timeout_density_edge_cases(self):
+        """Verify boundary and clamp handling for room/exit counts."""
+        # Negative or 0 exit count
+        assert compute_dynamic_solver_timeout(10, exit_count=-5) == 38
+        assert compute_dynamic_solver_timeout(10, exit_count=0) == 38
+
+        # 0 rooms with positive exits
+        assert compute_dynamic_solver_timeout(0, exit_count=10) == 30
+
+        # Custom bounds with exit count
+        assert compute_dynamic_solver_timeout(270, exit_count=384, max_timeout=300) == 300
+        assert compute_dynamic_solver_timeout(10, exit_count=9, min_timeout=50) == 50
 
     def test_compute_dynamic_solver_timeout_custom_min_max(self):
         """Verify dynamic timeout with custom min_timeout and max_timeout limits."""
@@ -396,7 +428,7 @@ class TestCliDynamicTimeoutIntegration:
                 pass
 
         assert passed_timeouts == [None]
-        assert "Dynamic solver timeout scaling enabled across 1 component(s)" in caplog.text
+        assert "Automatic dynamic solver timeout scaling active across 1 component(s)" in caplog.text
 
     def test_main_preserves_explicit_timeout_without_dynamic_log(self, tmp_path, monkeypatch, caplog):
         """When solver_timeout is explicitly provided, main() forwards it without dynamic timeout log."""
@@ -435,7 +467,7 @@ class TestCliDynamicTimeoutIntegration:
                 pass
 
         assert passed_timeouts == [80]
-        assert "Dynamic solver timeout scaling enabled" not in caplog.text
+        assert "Automatic dynamic solver timeout scaling active" not in caplog.text
         assert "Using user-specified fixed solver timeout of 80s across components" in caplog.text
 
     def test_cli_invoked_omitted_timeout_uses_dynamic(self, tmp_path, monkeypatch, caplog):
@@ -478,7 +510,7 @@ class TestCliDynamicTimeoutIntegration:
                 pass
 
         assert passed_timeouts == [None]
-        assert "Dynamic solver timeout scaling enabled across 1 component(s)" in caplog.text
+        assert "Automatic dynamic solver timeout scaling active across 1 component(s)" in caplog.text
 
     def test_cli_invoked_explicit_timeout_strictly_preserved(self, tmp_path, monkeypatch, caplog):
         """CLI invocation with explicit --solver-timeout preserves that timeout."""
@@ -520,7 +552,7 @@ class TestCliDynamicTimeoutIntegration:
                 pass
 
         assert passed_timeouts == [95]
-        assert "Dynamic solver timeout scaling enabled" not in caplog.text
+        assert "Automatic dynamic solver timeout scaling active" not in caplog.text
         assert "Using user-specified fixed solver timeout of 95s across components" in caplog.text
 
 
@@ -608,8 +640,8 @@ class TestComponentLevelDynamicTimeoutScaling:
         assert 40 not in captured_cbc_timeouts
 
         # Verify logging captured dynamic component timeouts
-        assert "Component 1/2: solving for 1 exits across 2 rooms (dynamic timeout 32s)..." in caplog.text
-        assert "Component 2/2: solving for 9 exits across 10 rooms (dynamic timeout 38s)..." in caplog.text
+        assert "Component 1/2: solving for 1 exits across 2 rooms (density 0.50, dynamic timeout 32s)..." in caplog.text
+        assert "Component 2/2: solving for 9 exits across 10 rooms (density 0.90, dynamic timeout 38s)..." in caplog.text
 
         # Verify all rooms solved have valid coordinates
         for v, r in solved_rdb.items():
@@ -684,7 +716,7 @@ class TestComponentLevelDynamicTimeoutScaling:
             solve_layout(copy.deepcopy(rdb), solver_timeout=None)
         assert captured_timeouts[-1] is None
         assert captured_cbc_timeouts[-1] == 32
-        assert "dynamic timeout 32s" in caplog.text
+        assert "(density 0.67, dynamic timeout 32s)..." in caplog.text
 
         # 2. solver_timeout is 65 -> fixed timeout = 65s
         caplog.clear()
@@ -746,7 +778,7 @@ class TestComponentLevelDynamicTimeoutScaling:
         assert passed_timeouts == [None, None]
         assert [1, 2] in passed_sub_rdbs
         assert [10, 11] in passed_sub_rdbs
-        assert "Dynamic solver timeout scaling enabled across 2 component(s)" in caplog.text
+        assert "Automatic dynamic solver timeout scaling active across 2 component(s)" in caplog.text
 
         # Case 2: explicit solver_timeout=75 -> passes 75 to each component
         caplog.clear()

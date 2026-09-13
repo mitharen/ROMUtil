@@ -133,7 +133,7 @@ def render_area(
     source_path: Path | Sequence[Path],
     is_dir: bool,
     outdir: Path,
-    solver_timeout: int = 180,
+    solver_timeout: int | None = None,
 ) -> float:
     """Invokes romutil to render HTML viewer and SVG vector map in a single pass.
 
@@ -154,10 +154,14 @@ def render_area(
     cmd.extend([
         "-outbase", str(outbase),
         "--format", "html,svg",
-        "--solver-timeout", str(solver_timeout),
     ])
+    if solver_timeout is not None:
+        cmd.extend(["--solver-timeout", str(solver_timeout)])
 
-    log.info(f"Rendering map artifacts for {name} (timeout={solver_timeout}s)...")
+    if solver_timeout is not None:
+        log.info(f"Rendering map artifacts for {name} (timeout={solver_timeout}s)...")
+    else:
+        log.info(f"Rendering map artifacts for {name} (automatic dynamic timeout)...")
     start_time = time.perf_counter()
     res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True)
     elapsed = time.perf_counter() - start_time
@@ -270,8 +274,8 @@ def main():
     parser.add_argument(
         "--solver-timeout",
         type=int,
-        default=180,
-        help="CBC solver timeout in seconds (default: 180)",
+        default=None,
+        help="CBC solver timeout in seconds (default: automatic dynamic room/exit-scaled timeout)",
     )
     parser.add_argument(
         "--composite-solver-timeout",

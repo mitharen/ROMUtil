@@ -140,6 +140,10 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
     """
     area_name = area.name if hasattr(area, 'name') else (area[1] if isinstance(area, (list, tuple)) and len(area) > 1 else str(area or 'Area'))
 
+    solve_layout.last_timeout_collision_failure = False
+    solve_layout.last_unresolved_collisions = {}
+
+
     # Save original exits for complete export preservation
     original_exits = {vnum: copy.deepcopy(r.exits) for vnum, r in rdb.items()}
 
@@ -233,8 +237,9 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
             log.info(f'{area_name} Solving for {len(exits)} exits across {len(non_dummy_vnums)} rooms (fixed timeout {solver_timeout}s)...')
             model, results = solve(rdb, exits, timeout=solver_timeout)
         else:
-            comp_timeout = compute_dynamic_solver_timeout(len(non_dummy_vnums))
-            log.info(f'{area_name} Solving for {len(exits)} exits across {len(non_dummy_vnums)} rooms (dynamic timeout {comp_timeout}s)...')
+            comp_timeout = compute_dynamic_solver_timeout(len(non_dummy_vnums), len(exits))
+            density = (len(exits) / len(non_dummy_vnums)) if non_dummy_vnums else 0.0
+            log.info(f'{area_name} Solving for {len(exits)} exits across {len(non_dummy_vnums)} rooms (density {density:.2f}, dynamic timeout {comp_timeout}s)...')
             model, results = solve(rdb, exits)
 
         tc = getattr(getattr(results, 'solver', None), 'termination_condition', None)
@@ -247,6 +252,25 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
                 pyomo.opt.TerminationCondition.feasible,
             )
         )
+
+        has_timeout_collision = bool(
+            getattr(model, 'timeout_collision_failure', False)
+            or getattr(results, 'timeout_collision_failure', False)
+        )
+
+        if has_timeout_collision:
+            details = getattr(model, 'unresolved_collisions', {}) or getattr(results, 'unresolved_collisions', {})
+            r_c = details.get('room_collisions', 0)
+            c_p = details.get('collinear_penetrations', 0)
+            o_p = details.get('overlapping_pairs', 0)
+            log.error(
+                f"{area_name} Layout solve failed to find a collision-free layout due to solver timeout: "
+                f"unresolved collisions (room collisions: {r_c}, collinear penetrations: {c_p}, overlapping pairs: {o_p})"
+            )
+
+        solve_layout.last_timeout_collision_failure = has_timeout_collision
+        solve_layout.last_unresolved_collisions = getattr(model, 'unresolved_collisions', {})
+
 
         if is_optimal and has_valid_coords:
             log.info(f'{area_name} Solve completed.')
@@ -290,6 +314,7 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
                 r.x -= x_min
                 r.y -= y_min
                 r.z -= z_min
+
     else:
         pad = int(component_padding) if component_padding is not None else 2
         if pad < 2:
@@ -299,6 +324,8 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
         log.info(f'{area_name} Decomposed into {len(components)} independent components.')
 
         current_x_offset = 0
+        any_timeout_collision = False
+        all_unresolved_details = []
 
         for i, comp_vnums in enumerate(components):
             exits_i = [
@@ -331,8 +358,9 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
                     log.info(f'{area_name} Component {i+1}/{len(components)}: solving for {len(exits_i)} exits across {len(comp_vnums)} rooms (fixed timeout {solver_timeout}s)...')
                     model_i, results_i = solve(rdb_i, exits_i, timeout=solver_timeout)
                 else:
-                    comp_timeout = compute_dynamic_solver_timeout(len(comp_vnums))
-                    log.info(f'{area_name} Component {i+1}/{len(components)}: solving for {len(exits_i)} exits across {len(comp_vnums)} rooms (dynamic timeout {comp_timeout}s)...')
+                    comp_timeout = compute_dynamic_solver_timeout(len(comp_vnums), len(exits_i))
+                    density = (len(exits_i) / len(comp_vnums)) if comp_vnums else 0.0
+                    log.info(f'{area_name} Component {i+1}/{len(components)}: solving for {len(exits_i)} exits across {len(comp_vnums)} rooms (density {density:.2f}, dynamic timeout {comp_timeout}s)...')
                     model_i, results_i = solve(rdb_i, exits_i)
 
             tc_i = getattr(getattr(results_i, 'solver', None), 'termination_condition', None) if results_i else None
@@ -345,6 +373,22 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
                     pyomo.opt.TerminationCondition.feasible,
                 )
             )
+
+            has_comp_timeout_collision = bool(
+                getattr(model_i, 'timeout_collision_failure', False)
+                or getattr(results_i, 'timeout_collision_failure', False)
+            )
+            if has_comp_timeout_collision:
+                any_timeout_collision = True
+                details_i = getattr(model_i, 'unresolved_collisions', {}) or getattr(results_i, 'unresolved_collisions', {})
+                all_unresolved_details.append(details_i)
+                r_c = details_i.get('room_collisions', 0)
+                c_p = details_i.get('collinear_penetrations', 0)
+                o_p = details_i.get('overlapping_pairs', 0)
+                log.error(
+                    f"{area_name} Component {i+1} layout solve failed to find a collision-free layout due to solver timeout: "
+                    f"unresolved collisions (room collisions: {r_c}, collinear penetrations: {c_p}, overlapping pairs: {o_p})"
+                )
 
             restored_rooms_i = []
 
@@ -430,6 +474,12 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
                 r.x -= x_min
                 r.y -= y_min
                 r.z -= z_min
+
+        solve_layout.last_timeout_collision_failure = any_timeout_collision
+        solve_layout.last_unresolved_collisions = {
+            'components': all_unresolved_details,
+            'total': sum(d.get('total', 0) for d in all_unresolved_details),
+        }
 
     # Restore original exits for all non-dummy rooms
     for vnum, orig_ex in original_exits.items():

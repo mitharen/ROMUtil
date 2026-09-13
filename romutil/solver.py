@@ -782,26 +782,38 @@ add_exit_room_clearance_constraint = add_collinear_separation_constraint
 
 def compute_dynamic_solver_timeout(
     room_count: int,
+    exit_count: int | None = None,
     min_timeout: int = 30,
-    max_timeout: int = 300,
+    max_timeout: int = 600,
 ) -> int:
     """
-    Compute dynamically scaled CBC solver timeout limit based on room count.
+    Compute dynamically scaled CBC solver timeout limit based on room count and exit density.
 
-    Applies clamped linear scaling:
-        effective_timeout = max(min_timeout, min(max_timeout, round(30 + 0.8 * room_count)))
+    Factors in both room count and exit density (or exit count) to allocate adequate
+    branch-and-cut solve time for dense or cyclic macro-clusters while keeping small
+    planar graphs snappy.
 
-    Benchmark room-scaled targets:
-        - 10 rooms: 38s (floored to >= 30s)
-        - 60 rooms: 78s
-        - 110 rooms: 118s
-        - 230 rooms: 214s
-        - 350 rooms: 300s (capped at <= 300s)
+    Scaling formula:
+        effective_rooms = max(0, room_count)
+        if exit_count is None:
+            raw_timeout = round(30 + 0.8 * effective_rooms)
+        else:
+            effective_exits = max(0, exit_count)
+            density = effective_exits / effective_rooms if effective_rooms > 0 else 0.0
+            density_factor = max(1.0, density)
+            raw_timeout = round(30 + 0.8 * effective_rooms * density_factor)
+        effective_timeout = max(min_timeout, min(max_timeout, raw_timeout))
+
+    Benchmark targets:
+        - Small planar areas (e.g. 2-10 rooms): 30-40s
+        - Medium areas (e.g. 50-80 rooms): 60-120s
+        - Large/dense clusters (e.g. 270+ rooms, 380+ exits): 300-600s
 
     Args:
         room_count: Number of rooms in the graph or component.
+        exit_count: Number of exits in the graph or component (optional).
         min_timeout: Minimum timeout floor in seconds (default: 30).
-        max_timeout: Maximum timeout ceiling in seconds (default: 300).
+        max_timeout: Maximum timeout ceiling in seconds (default: 600).
 
     Returns:
         Effective solver timeout in seconds.
@@ -809,8 +821,21 @@ def compute_dynamic_solver_timeout(
     if min_timeout > max_timeout:
         raise ValueError(f"min_timeout ({min_timeout}) cannot exceed max_timeout ({max_timeout})")
     effective_rooms = max(0, room_count)
-    raw_timeout = round(30 + 0.8 * effective_rooms)
-    return max(min_timeout, min(max_timeout, raw_timeout))
+    if exit_count is None:
+        raw_timeout = round(30 + 0.8 * effective_rooms)
+        density_str = "N/A"
+    else:
+        effective_exits = max(0, exit_count)
+        density = effective_exits / effective_rooms if effective_rooms > 0 else 0.0
+        density_factor = max(1.0, density)
+        raw_timeout = round(30 + 0.8 * effective_rooms * density_factor)
+        density_str = f"{density:.2f}"
+    effective_timeout = max(min_timeout, min(max_timeout, raw_timeout))
+    log.debug(
+        f"Computed dynamic solver timeout: {effective_timeout}s "
+        f"(rooms={effective_rooms}, exits={exit_count}, density={density_str})"
+    )
+    return effective_timeout
 
 
 def get_cbc_solver(timeout: Optional[int] = None, **custom_options: Any) -> Any:
@@ -1353,7 +1378,7 @@ def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | Non
     target_timeout = solver_timeout if solver_timeout is not None else timeout
     if target_timeout is None or target_timeout <= 0:
         room_count = len(non_dummy_rooms or rdb)
-        effective_timeout = compute_dynamic_solver_timeout(room_count)
+        effective_timeout = compute_dynamic_solver_timeout(room_count, exit_count=len(exits))
     else:
         effective_timeout = int(target_timeout)
 
@@ -1365,6 +1390,10 @@ def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | Non
     while True:
         result = solver.solve(m, tee=False)
         if result.solver.termination_condition == pyomo.opt.TerminationCondition.infeasible:
+            m.timeout_collision_failure = False
+            m.unresolved_collisions = {}
+            setattr(result, 'timeout_collision_failure', False)
+            setattr(result, 'unresolved_collisions', {})
             return m, result
 
         if result.solver.termination_condition in (
@@ -1388,6 +1417,82 @@ def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | Non
                     room.z = m.z[vnum].value if m.z[vnum].value is not None else 0
                 position_dummy_rooms(rdb, exits)
                 Plotter('progress.svg', rdb, exits).plot()
+
+            if result.solver.termination_condition == pyomo.opt.TerminationCondition.maxTimeLimit:
+                coords = {
+                    vnum: (room.x, room.y, room.z)
+                    for vnum, room in rdb.items()
+                    if room.x is not None and room.y is not None and room.z is not None
+                }
+                cut_values = [
+                    bool(m.cut[i].value) if hasattr(m, 'cut') and m.cut[i].value is not None else False
+                    for i in range(len(exits))
+                ]
+                coords_buckets = build_spatial_coordinate_buckets(non_dummy_rooms, coords)
+                unresolved_rc = find_spatial_room_collisions(coords_buckets)
+
+                unresolved_dc: list[tuple[int, int]] = []
+                for dv, anchor in dummy_anchors.items():
+                    src_vnum, dx, dy, dz = anchor
+                    if src_vnum not in m.Rooms:
+                        continue
+                    d_pos = _get_coords(coords, dv)
+                    if d_pos is None or d_pos not in coords_buckets:
+                        continue
+                    for vnum in coords_buckets[d_pos]:
+                        if vnum != src_vnum:
+                            unresolved_dc.append((vnum, dv))
+
+                unresolved_cp = find_collinear_exit_room_penetrations(
+                    exits,
+                    coords,
+                    cuts=cut_values,
+                    rooms=non_dummy_rooms,
+                    coords_buckets=coords_buckets,
+                )
+
+                unresolved_op = find_overlap_candidates(
+                    exits,
+                    coords,
+                    cuts=cut_values,
+                    candidate_pairs=non_incidents,
+                )
+
+                total_unresolved = len(unresolved_rc) + len(unresolved_dc) + len(unresolved_cp) + len(unresolved_op)
+                if total_unresolved > 0 or not has_feasible:
+                    m.timeout_collision_failure = True
+                    m.unresolved_collisions = {
+                        'room_collisions': len(unresolved_rc) + len(unresolved_dc),
+                        'collinear_penetrations': len(unresolved_cp),
+                        'overlapping_pairs': len(unresolved_op),
+                        'total': total_unresolved,
+                        'no_feasible_solution': not has_feasible,
+                        'details': {
+                            'room_collisions': unresolved_rc + unresolved_dc,
+                            'collinear_penetrations': unresolved_cp,
+                            'overlapping_pairs': unresolved_op,
+                        },
+                    }
+                    setattr(result, 'timeout_collision_failure', True)
+                    setattr(result, 'unresolved_collisions', m.unresolved_collisions)
+                    log.error(
+                        f"Layout solve failed to find a collision-free layout due to solver timeout: "
+                        f"{total_unresolved} unresolved collision(s) "
+                        f"(room collisions: {len(unresolved_rc) + len(unresolved_dc)}, "
+                        f"collinear penetrations: {len(unresolved_cp)}, "
+                        f"overlapping pairs: {len(unresolved_op)})"
+                    )
+                else:
+                    m.timeout_collision_failure = False
+                    m.unresolved_collisions = {}
+                    setattr(result, 'timeout_collision_failure', False)
+                    setattr(result, 'unresolved_collisions', {})
+            else:
+                m.timeout_collision_failure = False
+                m.unresolved_collisions = {}
+                setattr(result, 'timeout_collision_failure', False)
+                setattr(result, 'unresolved_collisions', {})
+
             return m, result
 
         for vnum in non_dummy_rooms:
@@ -1546,4 +1651,8 @@ def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | Non
     log.debug(f'cut {cut_sum} exits')
     log.debug(f'{relations}/{len(non_incidents)} overlaps converted into constraints.')
     position_dummy_rooms(rdb, exits)
+    m.timeout_collision_failure = False
+    m.unresolved_collisions = {}
+    setattr(result, 'timeout_collision_failure', False)
+    setattr(result, 'unresolved_collisions', {})
     return m, result

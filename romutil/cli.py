@@ -130,13 +130,29 @@ def main(
     offset_x = 0
 
     if solver_timeout is None:
-        log.info(f"Dynamic solver timeout scaling enabled across {len(connected_comps)} component(s)")
+        log.info(f"Automatic dynamic solver timeout scaling active across {len(connected_comps)} component(s)")
     else:
         log.info(f"Using user-specified fixed solver timeout of {solver_timeout}s across components")
+
+    has_any_collision_failure = False
+    collision_details_list = []
 
     for i, sub_graph in enumerate(connected_comps):
         sub_rdb = {node: rdb[node] for node in sub_graph}
         solved_sub, solved_exits = solve_layout(sub_rdb, area_meta, solver_timeout=solver_timeout)
+        graph_solve_layout = getattr(sys.modules.get('romutil.graph', None), 'solve_layout', None)
+        failed = (
+            getattr(solve_layout, 'last_timeout_collision_failure', False)
+            or getattr(graph_solve_layout, 'last_timeout_collision_failure', False)
+        )
+        if failed:
+            has_any_collision_failure = True
+            det = (
+                getattr(solve_layout, 'last_unresolved_collisions', None)
+                or getattr(graph_solve_layout, 'last_unresolved_collisions', None)
+                or {}
+            )
+            collision_details_list.append(det)
         non_dummy = [r for r in solved_sub.values() if not getattr(r, 'dummy', False)]
         if non_dummy:
             if offset_x > 0:
@@ -149,6 +165,17 @@ def main(
                 offset_x = max_x + 3
         all_solved_rooms.update({r.vnum: r for r in non_dummy})
         all_exits.extend(solved_exits)
+
+    if has_any_collision_failure:
+        total_coll = sum(d.get('total', 0) for d in collision_details_list)
+        total_rc = sum(d.get('room_collisions', 0) for d in collision_details_list)
+        total_cp = sum(d.get('collinear_penetrations', 0) for d in collision_details_list)
+        total_op = sum(d.get('overlapping_pairs', 0) for d in collision_details_list)
+        log.error(
+            f"Layout solve failed to find a collision-free layout due to solver timeout: "
+            f"{total_coll} unresolved collision(s) remaining "
+            f"(room collisions: {total_rc}, collinear penetrations: {total_cp}, overlapping pairs: {total_op})"
+        )
 
     # Clean base name (strip known renderer extensions if present)
     clean_base = outbase

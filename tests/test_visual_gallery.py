@@ -285,7 +285,7 @@ class TestGalleryAssetsGeneration:
             with pytest.raises(RuntimeError, match="Failed to render"):
                 render_area("mock_area", tmp_path / "mock.are", is_dir=False, outdir=tmp_path)
 
-    def test_render_area_invokes_cli_single_solve_with_timeout(self, tmp_path):
+    def test_render_area_invokes_cli_default_dynamic_timeout(self, tmp_path):
         from scripts.build_pages import render_area
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
@@ -297,6 +297,18 @@ class TestGalleryAssetsGeneration:
             assert "--format" in cmd
             fmt_idx = cmd.index("--format")
             assert cmd[fmt_idx + 1] == "html,svg"
+            # Default solver_timeout is None, omitting --solver-timeout to allow CLI dynamic scaling
+            assert "--solver-timeout" not in cmd
+
+    def test_render_area_invokes_cli_explicit_timeout(self, tmp_path):
+        from scripts.build_pages import render_area
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            elapsed = render_area("test_area", tmp_path / "test.are", is_dir=False, outdir=tmp_path, solver_timeout=180)
+            assert isinstance(elapsed, float)
+
+            mock_run.assert_called_once()
+            cmd = mock_run.call_args[0][0]
             assert "--solver-timeout" in cmd
             timeout_idx = cmd.index("--solver-timeout")
             assert cmd[timeout_idx + 1] == "180"
@@ -618,10 +630,10 @@ class TestGalleryAssetsGeneration:
                         main()
 
                     assert mock_render.call_count == 3
-                    # single area defaults to 180
-                    assert mock_render.call_args_list[0].kwargs["solver_timeout"] == 180
-                    # composite area without candidate timeout defaults to 180
-                    assert mock_render.call_args_list[1].kwargs["solver_timeout"] == 180
+                    # single area defaults to None (automatic dynamic scaling)
+                    assert mock_render.call_args_list[0].kwargs["solver_timeout"] is None
+                    # composite area without candidate timeout defaults to None (automatic dynamic scaling)
+                    assert mock_render.call_args_list[1].kwargs["solver_timeout"] is None
                     # custom cluster uses its candidate-level timeout (250)
                     assert mock_render.call_args_list[2].kwargs["solver_timeout"] == 250
 
