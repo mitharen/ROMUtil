@@ -19,6 +19,8 @@ Validates:
      and DikuMUD Alfa (dikumud_alfa.wld).
 """
 
+import copy
+import logging
 import os
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -27,9 +29,8 @@ import pyomo.environ as pyo
 import pytest
 
 from romutil.graph import solve_layout
-from romutil.models import Direction, Exit, ExitDef, Room, RoomDef
+from romutil.models import AreaData, AreaHeader, Direction, Exit, ExitDef, Room, RoomDef
 from romutil.parser import Parser, parse_circlemud_directory
-import logging
 from romutil.solver import compute_dynamic_solver_timeout, get_cbc_solver, non_euler, solve
 
 
@@ -358,7 +359,7 @@ class TestCliDynamicTimeoutIntegration:
     """Tests for CLI integration with dynamic solver timeout."""
 
     def test_main_computes_dynamic_timeout_and_logs(self, tmp_path, monkeypatch, caplog):
-        """When solver_timeout is None, main() logs and forwards dynamic timeout."""
+        """When solver_timeout is None, main() logs dynamic component scaling and passes None to solve_layout."""
         import sys
         from romutil.models import AreaData, AreaHeader
         from romutil.parser import Parser
@@ -394,10 +395,8 @@ class TestCliDynamicTimeoutIntegration:
             except SystemExit:
                 pass
 
-        expected_timeout = compute_dynamic_solver_timeout(3)  # round(30 + 0.8 * 3) = 32
-        assert expected_timeout == 32
-        assert passed_timeouts == [32]
-        assert "Using dynamic solver timeout of 32s for 3 rooms" in caplog.text
+        assert passed_timeouts == [None]
+        assert "Dynamic solver timeout scaling enabled across 1 component(s)" in caplog.text
 
     def test_main_preserves_explicit_timeout_without_dynamic_log(self, tmp_path, monkeypatch, caplog):
         """When solver_timeout is explicitly provided, main() forwards it without dynamic timeout log."""
@@ -436,10 +435,11 @@ class TestCliDynamicTimeoutIntegration:
                 pass
 
         assert passed_timeouts == [80]
-        assert "Using dynamic solver timeout" not in caplog.text
+        assert "Dynamic solver timeout scaling enabled" not in caplog.text
+        assert "Using user-specified fixed solver timeout of 80s across components" in caplog.text
 
     def test_cli_invoked_omitted_timeout_uses_dynamic(self, tmp_path, monkeypatch, caplog):
-        """CLI invocation without --solver-timeout computes dynamic timeout."""
+        """CLI invocation without --solver-timeout forwards solver_timeout=None for dynamic scaling."""
         import sys
         from romutil.models import AreaData, AreaHeader
         from romutil.parser import Parser
@@ -477,10 +477,8 @@ class TestCliDynamicTimeoutIntegration:
             except SystemExit:
                 pass
 
-        expected_timeout = compute_dynamic_solver_timeout(10)  # 38s
-        assert expected_timeout == 38
-        assert passed_timeouts == [38]
-        assert "Using dynamic solver timeout of 38s for 10 rooms" in caplog.text
+        assert passed_timeouts == [None]
+        assert "Dynamic solver timeout scaling enabled across 1 component(s)" in caplog.text
 
     def test_cli_invoked_explicit_timeout_strictly_preserved(self, tmp_path, monkeypatch, caplog):
         """CLI invocation with explicit --solver-timeout preserves that timeout."""
@@ -522,4 +520,246 @@ class TestCliDynamicTimeoutIntegration:
                 pass
 
         assert passed_timeouts == [95]
-        assert "Using dynamic solver timeout" not in caplog.text
+        assert "Dynamic solver timeout scaling enabled" not in caplog.text
+        assert "Using user-specified fixed solver timeout of 95s across components" in caplog.text
+
+
+class TestComponentLevelDynamicTimeoutScaling:
+    """Unit and integration tests for component-level dynamic solver timeout scaling (Task 1o).
+
+    Verifies:
+    1. Component-level dynamic scaling: When solver_timeout is None, disconnected components
+       receive dynamic timeouts scaled to their respective room counts (len(sub_rdb)) rather
+       than the global area room count.
+    2. Explicit override: When solver_timeout is explicitly specified (e.g. 45s), that fixed
+       timeout is applied to each component.
+    3. CLI integration: CLI parsing and multi-component dispatch respects explicit vs None solver_timeout.
+    """
+
+    def test_solve_layout_component_level_dynamic_scaling(self, monkeypatch, caplog):
+        """When solver_timeout is None, disconnected components receive timeouts scaled to each component."""
+        # Component 1: 2 rooms (101 <-> 102) -> expected timeout = compute_dynamic_solver_timeout(2) = 32s
+        # Component 2: 10 rooms (201 <-> 202 <-> ... <-> 210) -> expected timeout = compute_dynamic_solver_timeout(10) = 38s
+        # Total rooms in area = 12 rooms -> global timeout would be compute_dynamic_solver_timeout(12) = 40s
+        rooms_c1 = [
+            Room(RoomDef(101, "C1_1", "D", exits=(ExitDef(direction=1, dst_vnum=102),))),
+            Room(RoomDef(102, "C1_2", "D", exits=(ExitDef(direction=3, dst_vnum=101),))),
+        ]
+        # Alternating East (1) and North (0) so straight hallway collapse does not trim intermediate rooms
+        rooms_c2 = [
+            Room(RoomDef(201, "C2_201", "D", exits=(ExitDef(direction=1, dst_vnum=202),))),
+            Room(RoomDef(202, "C2_202", "D", exits=(ExitDef(direction=3, dst_vnum=201), ExitDef(direction=0, dst_vnum=203)))),
+            Room(RoomDef(203, "C2_203", "D", exits=(ExitDef(direction=2, dst_vnum=202), ExitDef(direction=1, dst_vnum=204)))),
+            Room(RoomDef(204, "C2_204", "D", exits=(ExitDef(direction=3, dst_vnum=203), ExitDef(direction=0, dst_vnum=205)))),
+            Room(RoomDef(205, "C2_205", "D", exits=(ExitDef(direction=2, dst_vnum=204), ExitDef(direction=1, dst_vnum=206)))),
+            Room(RoomDef(206, "C2_206", "D", exits=(ExitDef(direction=3, dst_vnum=205), ExitDef(direction=0, dst_vnum=207)))),
+            Room(RoomDef(207, "C2_207", "D", exits=(ExitDef(direction=2, dst_vnum=206), ExitDef(direction=1, dst_vnum=208)))),
+            Room(RoomDef(208, "C2_208", "D", exits=(ExitDef(direction=3, dst_vnum=207), ExitDef(direction=0, dst_vnum=209)))),
+            Room(RoomDef(209, "C2_209", "D", exits=(ExitDef(direction=2, dst_vnum=208), ExitDef(direction=1, dst_vnum=210)))),
+            Room(RoomDef(210, "C2_210", "D", exits=(ExitDef(direction=3, dst_vnum=209),))),
+        ]
+
+        rdb = {r.vnum: r for r in rooms_c1 + rooms_c2}
+        assert len(rdb) == 12
+
+        captured_solve_calls = []
+        captured_cbc_timeouts = []
+
+        import sys; graph_mod = sys.modules["romutil.graph"]
+        import romutil.solver as solver_mod
+
+        orig_solve = graph_mod.solve
+        orig_get_cbc = solver_mod.get_cbc_solver
+
+        def spy_solve(rdb_i, exits_i, timeout=None, **kwargs):
+            captured_solve_calls.append({
+                "room_count": len(rdb_i),
+                "timeout": timeout,
+                "vnums": set(rdb_i.keys()),
+            })
+            return orig_solve(rdb_i, exits_i, timeout=timeout, **kwargs)
+
+        def spy_get_cbc(timeout=None, **kwargs):
+            captured_cbc_timeouts.append(timeout)
+            return orig_get_cbc(timeout=timeout, **kwargs)
+
+        monkeypatch.setattr(graph_mod, "solve", spy_solve)
+        monkeypatch.setattr(solver_mod, "get_cbc_solver", spy_get_cbc)
+
+        with caplog.at_level(logging.INFO, logger="Mapper.graph"):
+            solved_rdb, solved_exits = solve_layout(
+                rdb,
+                area=AreaHeader("multi.are", "MultiComp", "Builder", 101, 210),
+                solver_timeout=None,
+            )
+
+        assert len(captured_solve_calls) == 2
+        # Both calls to solve() were invoked with timeout=None so solve() computes dynamic component timeout
+        call_c1 = [c for c in captured_solve_calls if 101 in c["vnums"]][0]
+        call_c2 = [c for c in captured_solve_calls if 201 in c["vnums"]][0]
+
+        assert call_c1["timeout"] is None
+        assert call_c2["timeout"] is None
+
+        # Verify get_cbc_solver was configured with 32s (2 rooms) and 38s (10 rooms), NOT global 40s (12 rooms)
+        assert len(captured_cbc_timeouts) >= 2
+        assert 32 in captured_cbc_timeouts
+        assert 38 in captured_cbc_timeouts
+        assert 40 not in captured_cbc_timeouts
+
+        # Verify logging captured dynamic component timeouts
+        assert "Component 1/2: solving for 1 exits across 2 rooms (dynamic timeout 32s)..." in caplog.text
+        assert "Component 2/2: solving for 9 exits across 10 rooms (dynamic timeout 38s)..." in caplog.text
+
+        # Verify all rooms solved have valid coordinates
+        for v, r in solved_rdb.items():
+            assert r.x is not None and r.y is not None and r.z is not None
+
+    def test_solve_layout_explicit_timeout_override_all_components(self, monkeypatch, caplog):
+        """When solver_timeout is explicitly provided, each component uses the fixed timeout."""
+        rooms_c1 = [
+            Room(RoomDef(101, "C1_1", "D", exits=(ExitDef(direction=1, dst_vnum=102),))),
+            Room(RoomDef(102, "C1_2", "D", exits=(ExitDef(direction=3, dst_vnum=101),))),
+        ]
+        rooms_c2 = [
+            Room(RoomDef(201, "C2_1", "D", exits=(ExitDef(direction=0, dst_vnum=202),))),
+            Room(RoomDef(202, "C2_2", "D", exits=(ExitDef(direction=2, dst_vnum=201),))),
+        ]
+        rdb = {r.vnum: r for r in rooms_c1 + rooms_c2}
+
+        captured_timeouts = []
+        import sys; graph_mod = sys.modules["romutil.graph"]
+        orig_solve = graph_mod.solve
+
+        def spy_solve(rdb_i, exits_i, timeout=None, **kwargs):
+            captured_timeouts.append(timeout)
+            return orig_solve(rdb_i, exits_i, timeout=timeout, **kwargs)
+
+        monkeypatch.setattr(graph_mod, "solve", spy_solve)
+
+        with caplog.at_level(logging.INFO, logger="Mapper.graph"):
+            solved_rdb, solved_exits = solve_layout(
+                rdb,
+                area=AreaHeader("multi.are", "MultiComp", "Builder", 101, 202),
+                solver_timeout=45,
+            )
+
+        assert captured_timeouts == [45, 45]
+        assert "fixed timeout 45s" in caplog.text
+        assert "dynamic timeout" not in caplog.text
+
+    def test_solve_layout_single_component_dynamic_vs_explicit(self, monkeypatch, caplog):
+        """Single component area dynamically scales when None, uses fixed when provided."""
+        rooms = [
+            Room(RoomDef(1, "R1", "D", exits=(ExitDef(direction=1, dst_vnum=2),))),
+            Room(RoomDef(2, "R2", "D", exits=(ExitDef(direction=3, dst_vnum=1), ExitDef(direction=0, dst_vnum=3)))),
+            Room(RoomDef(3, "R3", "D", exits=(ExitDef(direction=2, dst_vnum=2),))),
+        ]
+        rdb = {r.vnum: r for r in rooms}
+
+        captured_timeouts = []
+        captured_cbc_timeouts = []
+
+        import sys; graph_mod = sys.modules["romutil.graph"]
+        import romutil.solver as solver_mod
+
+        orig_solve = graph_mod.solve
+        orig_get_cbc = solver_mod.get_cbc_solver
+
+        def spy_solve(rdb_i, exits_i, timeout=None, **kwargs):
+            captured_timeouts.append(timeout)
+            return orig_solve(rdb_i, exits_i, timeout=timeout, **kwargs)
+
+        def spy_get_cbc(timeout=None, **kwargs):
+            captured_cbc_timeouts.append(timeout)
+            return orig_get_cbc(timeout=timeout, **kwargs)
+
+        monkeypatch.setattr(graph_mod, "solve", spy_solve)
+        monkeypatch.setattr(solver_mod, "get_cbc_solver", spy_get_cbc)
+
+        # 1. solver_timeout is None -> dynamic timeout = 32s (3 rooms)
+        caplog.clear()
+        captured_cbc_timeouts.clear()
+        with caplog.at_level(logging.INFO, logger="Mapper.graph"):
+            solve_layout(copy.deepcopy(rdb), solver_timeout=None)
+        assert captured_timeouts[-1] is None
+        assert captured_cbc_timeouts[-1] == 32
+        assert "dynamic timeout 32s" in caplog.text
+
+        # 2. solver_timeout is 65 -> fixed timeout = 65s
+        caplog.clear()
+        captured_cbc_timeouts.clear()
+        with caplog.at_level(logging.INFO, logger="Mapper.graph"):
+            solve_layout(copy.deepcopy(rdb), solver_timeout=65)
+        assert captured_timeouts[-1] == 65
+        assert captured_cbc_timeouts[-1] == 65
+        assert "fixed timeout 65s" in caplog.text
+
+    def test_cli_multi_component_dispatch_dynamic_vs_explicit(self, tmp_path, monkeypatch, caplog):
+        """CLI correctly dispatches solver_timeout=None or explicit value across multi-component areas."""
+        import sys
+        from romutil.models import AreaData, AreaHeader
+        from romutil.parser import Parser
+
+        are_file = tmp_path / "multi_cli.are"
+        are_file.write_text("dummy")
+
+        # Two disconnected components in the area:
+        # C1: 1 <-> 2
+        # C2: 10 <-> 11
+        mock_area = AreaData(
+            header=AreaHeader("multi_cli.are", "MultiCLI", "Builder", 1, 11),
+            rooms=[
+                RoomDef(1, "R1", "D1", exits=(ExitDef(direction=1, dst_vnum=2),)),
+                RoomDef(2, "R2", "D2", exits=(ExitDef(direction=3, dst_vnum=1),)),
+                RoomDef(10, "R10", "D10", exits=(ExitDef(direction=1, dst_vnum=11),)),
+                RoomDef(11, "R11", "D11", exits=(ExitDef(direction=3, dst_vnum=10),)),
+            ],
+        )
+        monkeypatch.setattr(Parser, "parse", lambda self, text: mock_area)
+
+        passed_timeouts = []
+        passed_sub_rdbs = []
+        def mock_solve_layout(rdb, area=None, solver_timeout=None):
+            passed_timeouts.append(solver_timeout)
+            passed_sub_rdbs.append(sorted(rdb.keys()))
+            for r in rdb.values():
+                r.x = 0
+                r.y = 0
+                r.z = 0
+            return rdb, []
+
+        cli_mod = sys.modules["romutil.cli"]
+        monkeypatch.setattr(cli_mod, "solve_layout", mock_solve_layout)
+
+        # Case 1: solver_timeout=None -> passes solver_timeout=None to each component
+        caplog.clear()
+        passed_timeouts.clear()
+        passed_sub_rdbs.clear()
+        with caplog.at_level(logging.INFO, logger="Mapper"):
+            try:
+                cli_mod.main([are_file], str(tmp_path / "out1"), fmt="json", solver_timeout=None)
+            except SystemExit:
+                pass
+
+        assert len(passed_timeouts) == 2
+        assert passed_timeouts == [None, None]
+        assert [1, 2] in passed_sub_rdbs
+        assert [10, 11] in passed_sub_rdbs
+        assert "Dynamic solver timeout scaling enabled across 2 component(s)" in caplog.text
+
+        # Case 2: explicit solver_timeout=75 -> passes 75 to each component
+        caplog.clear()
+        passed_timeouts.clear()
+        passed_sub_rdbs.clear()
+        with caplog.at_level(logging.INFO, logger="Mapper"):
+            try:
+                cli_mod.main([are_file], str(tmp_path / "out2"), fmt="json", solver_timeout=75)
+            except SystemExit:
+                pass
+
+        assert len(passed_timeouts) == 2
+        assert passed_timeouts == [75, 75]
+        assert [1, 2] in passed_sub_rdbs
+        assert [10, 11] in passed_sub_rdbs
+        assert "Using user-specified fixed solver timeout of 75s across components" in caplog.text

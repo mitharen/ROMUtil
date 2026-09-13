@@ -12,7 +12,6 @@ import pyomo.common.config
 from romutil.models import Room, Exit, AreaData, AreaHeader, merge_areas
 from romutil.parser import Parser, parse_circlemud_directory
 from romutil.graph import graph, solve_layout
-from romutil.solver import compute_dynamic_solver_timeout
 from romutil.renderers import RENDERERS, get_renderer, render_map
 
 logging.basicConfig()
@@ -131,14 +130,13 @@ def main(
     offset_x = 0
 
     if solver_timeout is None:
-        effective_timeout = compute_dynamic_solver_timeout(len(rdb))
-        log.info(f"Using dynamic solver timeout of {effective_timeout}s for {len(rdb)} rooms")
+        log.info(f"Dynamic solver timeout scaling enabled across {len(connected_comps)} component(s)")
     else:
-        effective_timeout = solver_timeout
+        log.info(f"Using user-specified fixed solver timeout of {solver_timeout}s across components")
 
     for i, sub_graph in enumerate(connected_comps):
         sub_rdb = {node: rdb[node] for node in sub_graph}
-        solved_sub, solved_exits = solve_layout(sub_rdb, area_meta, solver_timeout=effective_timeout)
+        solved_sub, solved_exits = solve_layout(sub_rdb, area_meta, solver_timeout=solver_timeout)
         non_dummy = [r for r in solved_sub.values() if not getattr(r, 'dummy', False)]
         if non_dummy:
             if offset_x > 0:

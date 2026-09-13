@@ -11,7 +11,7 @@ from pyomo.environ import ConcreteModel, RangeSet, Param, Var, Objective, Constr
 from romutil.models import Direction, Room, Exit, RoomDef
 from romutil.renderers.svg import SVGRenderer as Plotter
 from romutil.renderers import SVGRenderer, render_map
-from romutil.solver import position_dummy_rooms, solve
+from romutil.solver import compute_dynamic_solver_timeout, position_dummy_rooms, solve
 
 log = logging.getLogger('Mapper.graph')
 
@@ -228,10 +228,13 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
     components = decompose_components(rdb, exits)
 
     if len(components) <= 1:
-        log.info(f'{area_name} Solving for {len(exits)} exits...')
+        non_dummy_vnums = [v for v, r in rdb.items() if not getattr(r, 'dummy', False)] or list(rdb.keys())
         if solver_timeout is not None:
+            log.info(f'{area_name} Solving for {len(exits)} exits across {len(non_dummy_vnums)} rooms (fixed timeout {solver_timeout}s)...')
             model, results = solve(rdb, exits, timeout=solver_timeout)
         else:
+            comp_timeout = compute_dynamic_solver_timeout(len(non_dummy_vnums))
+            log.info(f'{area_name} Solving for {len(exits)} exits across {len(non_dummy_vnums)} rooms (dynamic timeout {comp_timeout}s)...')
             model, results = solve(rdb, exits)
 
         tc = getattr(getattr(results, 'solver', None), 'termination_condition', None)
@@ -324,10 +327,12 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
                 model_i = None
                 results_i = None
             else:
-                log.info(f'{area_name} Component {i+1}/{len(components)}: solving for {len(exits_i)} exits across {len(comp_vnums)} rooms...')
                 if solver_timeout is not None:
+                    log.info(f'{area_name} Component {i+1}/{len(components)}: solving for {len(exits_i)} exits across {len(comp_vnums)} rooms (fixed timeout {solver_timeout}s)...')
                     model_i, results_i = solve(rdb_i, exits_i, timeout=solver_timeout)
                 else:
+                    comp_timeout = compute_dynamic_solver_timeout(len(comp_vnums))
+                    log.info(f'{area_name} Component {i+1}/{len(components)}: solving for {len(exits_i)} exits across {len(comp_vnums)} rooms (dynamic timeout {comp_timeout}s)...')
                     model_i, results_i = solve(rdb_i, exits_i)
 
             tc_i = getattr(getattr(results_i, 'solver', None), 'termination_condition', None) if results_i else None
