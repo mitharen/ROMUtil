@@ -546,6 +546,101 @@ def add_dummy_separation_constraint(
     return relations + 1
 
 
+def add_room_separation_constraint(
+    m: ConcreteModel,
+    u: int,
+    v: int,
+    relations: int,
+    coords: Optional[Mapping[int, Any]] = None,
+    has_vertical_exits: bool = True,
+) -> int:
+    """
+    Add disjunctive spatial separation constraints between core rooms u and v.
+
+    Enforces that core rooms u and v are separated by at least 1 unit along
+    at least one axis without introducing new integer variables:
+      East:  x_v - x_u + big_mx * (1 - relation[Direction.east]) >= 1
+      West:  x_u - x_v + big_mx * (1 - relation[Direction.west]) >= 1
+      North: y_v - y_u + big_my * (1 - relation[Direction.north]) >= 1
+      South: y_u - y_v + big_my * (1 - relation[Direction.south]) >= 1
+      Up:    z_v - z_u + big_mz * (1 - relation[Direction.up]) >= 1
+      Down:  z_u - z_v + big_mz * (1 - relation[Direction.down]) >= 1
+
+    Returns:
+        int: The next relation index (relations + 1).
+    """
+    z_match = False
+    if coords is not None:
+        p_u = _get_coords(coords, u)
+        p_v = _get_coords(coords, v)
+        if p_u is not None and p_v is not None:
+            z_match = (p_u[2] == p_v[2])
+
+    is_planar = not has_vertical_exits
+
+    if is_planar:
+        active_dirs = [Direction.north, Direction.east, Direction.south, Direction.west]
+    else:
+        active_dirs = [
+            Direction.north,
+            Direction.east,
+            Direction.up,
+            Direction.south,
+            Direction.west,
+            Direction.down,
+        ]
+
+    relation = Var(active_dirs, within=Boolean)
+    m.add_component(f'room_rel_{relations}', relation)
+    m.crossings.add(sum(relation[d] for d in active_dirs) >= 1)
+
+    mx = getattr(m, 'Mx', getattr(m, 'M', 100))
+    my = getattr(m, 'My', getattr(m, 'M', 100))
+    mz = getattr(m, 'Mz', getattr(m, 'M', 100))
+
+    big_mx = 2 * mx + 4
+    big_my = 2 * my + 4
+    big_mz = 2 * mz + 4
+
+    # East: x_v - x_u + big_mx * (1 - relation[Direction.east]) >= 1
+    if Direction.east in active_dirs:
+        m.crossings.add(
+            m.x[v] - m.x[u] + big_mx * (1 - relation[Direction.east]) >= 1
+        )
+
+    # West: x_u - x_v + big_mx * (1 - relation[Direction.west]) >= 1
+    if Direction.west in active_dirs:
+        m.crossings.add(
+            m.x[u] - m.x[v] + big_mx * (1 - relation[Direction.west]) >= 1
+        )
+
+    # North: y_v - y_u + big_my * (1 - relation[Direction.north]) >= 1
+    if Direction.north in active_dirs:
+        m.crossings.add(
+            m.y[v] - m.y[u] + big_my * (1 - relation[Direction.north]) >= 1
+        )
+
+    # South: y_u - y_v + big_my * (1 - relation[Direction.south]) >= 1
+    if Direction.south in active_dirs:
+        m.crossings.add(
+            m.y[u] - m.y[v] + big_my * (1 - relation[Direction.south]) >= 1
+        )
+
+    # Up: z_v - z_u + big_mz * (1 - relation[Direction.up]) >= 1
+    if Direction.up in active_dirs:
+        m.crossings.add(
+            m.z[v] - m.z[u] + big_mz * (1 - relation[Direction.up]) >= 1
+        )
+
+    # Down: z_u - z_v + big_mz * (1 - relation[Direction.down]) >= 1
+    if Direction.down in active_dirs:
+        m.crossings.add(
+            m.z[u] - m.z[v] + big_mz * (1 - relation[Direction.down]) >= 1
+        )
+
+    return relations + 1
+
+
 def compute_dynamic_solver_timeout(
     room_count: int,
     min_timeout: int = 30,
@@ -966,6 +1061,7 @@ def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | Non
 
     solver = get_cbc_solver(timeout=effective_timeout)
     constrained_dummy_collisions: set[tuple[int, int]] = set()
+    constrained_room_collisions: set[tuple[int, int]] = set()
 
     while True:
         result = solver.solve(m, tee=False)
@@ -1019,6 +1115,32 @@ def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | Non
         }
         cut_values = [bool(m.cut[i].value) for i in range(len(exits))]
 
+        # Check for core room pairwise point collisions
+        room_collisions: list[tuple[int, int]] = []
+        sorted_non_dummy = sorted(non_dummy_rooms)
+        for u, v in itertools.combinations(sorted_non_dummy, 2):
+            if (u, v) not in constrained_room_collisions:
+                if u in coords and v in coords and coords[u] == coords[v]:
+                    room_collisions.append((u, v))
+
+        room_batch_target = get_candidate_batch_cap(len(room_collisions))
+        for u, v in room_collisions:
+            constrained_room_collisions.add((u, v))
+            relations = add_room_separation_constraint(
+                m,
+                u,
+                v,
+                relations,
+                coords=coords,
+                has_vertical_exits=has_vertical_exits,
+            )
+            added_constraints += 1
+            log.info(
+                f'Separated colliding core rooms {u} and {v} at coordinates {coords[u]}'
+            )
+            if added_constraints >= room_batch_target:
+                break
+
         # Check for room-to-dummy point collisions
         for dv, anchor in dummy_anchors.items():
             src_vnum, dx, dy, dz = anchor
@@ -1061,6 +1183,8 @@ def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | Non
         batch_target = get_candidate_batch_cap(len(overlapping_pairs))
 
         for left, right in tqdm.tqdm(overlapping_pairs, desc='Finding Overlaps'):
+            if added_constraints >= batch_target:
+                break
             ex, nx = (exits[left], exits[right])
             def _endpoint_valid(v: int) -> bool:
                 return v in m.Rooms or (v in dummy_anchors and dummy_anchors[v][0] in m.Rooms)

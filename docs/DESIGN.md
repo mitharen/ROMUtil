@@ -213,6 +213,16 @@ To eliminate unconstrained floating rooms in $[-M_x, M_x] \times [-M_y, M_y] \ti
    $$z_s - z_v \ge 1 - dz - M_{\text{sep}} (1 - \text{relation}_{-z})$$
    $$\sum_{d \in \mathcal{D}_{\text{active}}} \text{relation}_d \ge 1, \quad \text{relation}_d \in \{0, 1\}$$
    where safe bounds $M_{\text{sep}} = 2 M_d + 4$ prevent infeasibility and guarantee zero spatial collisions between core rooms and dummy stubs without introducing integer decision variables for the dummy stubs.
+5. **Disjunctive Core Room Point Collision Avoidance**:
+   In layouts containing parallel topological paths, converging exit funnels, or disconnected graph components, distinct core rooms $u, v \in V_{\text{core}}$ ($u < v$) can occupy identical integer coordinates ($\mathbf{x}_u = \mathbf{x}_v$) in intermediate solver relaxations. During iterative collision detection in `solve()`, coincident core rooms are identified and separated by generating pairwise disjunctive separation constraints:
+   $$x_v - x_u + M_{\text{sep}}^x (1 - \text{relation}_{\text{east}}) \ge 1$$
+   $$x_u - x_v + M_{\text{sep}}^x (1 - \text{relation}_{\text{west}}) \ge 1$$
+   $$y_v - y_u + M_{\text{sep}}^y (1 - \text{relation}_{\text{north}}) \ge 1$$
+   $$y_u - y_v + M_{\text{sep}}^y (1 - \text{relation}_{\text{south}}) \ge 1$$
+   $$z_v - z_u + M_{\text{sep}}^z (1 - \text{relation}_{\text{up}}) \ge 1$$
+   $$z_u - z_v + M_{\text{sep}}^z (1 - \text{relation}_{\text{down}}) \ge 1$$
+   $$\sum_{d \in \mathcal{D}_{\text{active}}} \text{relation}_d \ge 1, \quad \text{relation}_d \in \{0, 1\}$$
+   where safe bounds $M_{\text{sep}}^d = 2 M_d + 4$ prevent infeasibility. When the layout is planar ($\text{has\_vertical\_exits} = \text{False}$), $\mathcal{D}_{\text{active}} = \{\text{North}, \text{East}, \text{South}, \text{West}\}$, maintaining planar projection without instantiating extraneous vertical decision variables. In 3D topologies ($\text{has\_vertical\_exits} = \text{True}$), $\mathcal{D}_{\text{active}}$ spans all 6 spatial directions to permit vertical floor separation. Separations are generated iteratively up to candidate batch caps alongside dummy separation and segment crossing constraints to ensure bounded branch-and-cut solve times.
 
 #### Dynamic Dimension-Specific Big-M Bounds ($M_x, M_y, M_z$):
 Dimension-specific upper bounds are derived from directional exit components:

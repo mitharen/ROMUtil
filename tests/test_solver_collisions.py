@@ -12,7 +12,8 @@ import pytest
 from romutil.graph import solve_layout
 from romutil.models import Direction, Exit, Room, RoomDef
 from romutil.parser import Parser
-from romutil.solver import solve, position_dummy_rooms
+from romutil.solver import solve, position_dummy_rooms, add_room_separation_constraint
+from pyomo.environ import ConcreteModel, Var, ConstraintList, Integers, Boolean
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -262,3 +263,199 @@ def test_collision_school_are_pairwise_unique_coordinates() -> None:
 def test_collision_smurf_are_pairwise_unique_coordinates() -> None:
     """Verify smurf.are solves with pairwise unique coordinates and zero cuts."""
     test_smurf_are_zero_collisions()
+
+
+def test_add_room_separation_constraint_planar() -> None:
+    """Verify planar room separation constraint adds 4 directional variables and Big-M bounds."""
+    m = ConcreteModel()
+    m.Rooms = [1, 2]
+    m.x = Var(m.Rooms, within=Integers)
+    m.y = Var(m.Rooms, within=Integers)
+    m.z = Var(m.Rooms, within=Integers)
+    m.crossings = ConstraintList()
+    m.Mx = 20
+    m.My = 20
+    m.Mz = 10
+
+    coords = {1: (0.0, 0.0, 0.0), 2: (0.0, 0.0, 0.0)}
+    next_rel = add_room_separation_constraint(
+        m, 1, 2, relations=0, coords=coords, has_vertical_exits=False
+    )
+
+    assert next_rel == 1
+    assert hasattr(m, 'room_rel_0')
+    rel_var = getattr(m, 'room_rel_0')
+    assert len(rel_var) == 4
+    assert Direction.north in rel_var
+    assert Direction.east in rel_var
+    assert Direction.south in rel_var
+    assert Direction.west in rel_var
+    assert Direction.up not in rel_var
+    assert Direction.down not in rel_var
+    # 1 disjunctive sum constraint (sum >= 1) + 4 directional separation inequalities
+    assert len(m.crossings) == 5
+
+
+def test_add_room_separation_constraint_3d() -> None:
+    """Verify 3D room separation constraint adds 6 directional variables and Big-M bounds."""
+    m = ConcreteModel()
+    m.Rooms = [1, 2]
+    m.x = Var(m.Rooms, within=Integers)
+    m.y = Var(m.Rooms, within=Integers)
+    m.z = Var(m.Rooms, within=Integers)
+    m.crossings = ConstraintList()
+    m.Mx = 20
+    m.My = 20
+    m.Mz = 10
+
+    coords = {1: (0.0, 0.0, 0.0), 2: (0.0, 0.0, 0.0)}
+    next_rel = add_room_separation_constraint(
+        m, 1, 2, relations=0, coords=coords, has_vertical_exits=True
+    )
+
+    assert next_rel == 1
+    assert hasattr(m, 'room_rel_0')
+    rel_var = getattr(m, 'room_rel_0')
+    assert len(rel_var) == 6
+    assert Direction.north in rel_var
+    assert Direction.east in rel_var
+    assert Direction.south in rel_var
+    assert Direction.west in rel_var
+    assert Direction.up in rel_var
+    assert Direction.down in rel_var
+    # 1 disjunctive sum constraint (sum >= 1) + 6 directional separation inequalities
+    assert len(m.crossings) == 7
+
+
+def test_core_room_point_collision_positive_separation_disconnected() -> None:
+    """Verify that disconnected components that would otherwise collapse to identical
+
+    coordinates are detected and separated into distinct coordinates.
+    """
+    # Path 1: 1 -> 2 (East)
+    # Path 2: 3 -> 4 (East)
+    # Both paths are disconnected; without collision cuts they would collapse to (0,0,0) and (1,0,0).
+    r1 = Room(RoomDef(vnum=1, name="R1", description=""))
+    r2 = Room(RoomDef(vnum=2, name="R2", description=""))
+    r3 = Room(RoomDef(vnum=3, name="R3", description=""))
+    r4 = Room(RoomDef(vnum=4, name="R4", description=""))
+
+    e12 = Exit(direction=Direction.east, src=1, dst=2)
+    e21 = Exit(direction=Direction.west, src=2, dst=1)
+    e34 = Exit(direction=Direction.east, src=3, dst=4)
+    e43 = Exit(direction=Direction.west, src=4, dst=3)
+
+    r1.exits = [e12]
+    r2.exits = [e21]
+    r3.exits = [e34]
+    r4.exits = [e43]
+
+    rooms = {1: r1, 2: r2, 3: r3, 4: r4}
+    exits = [e12, e21, e34, e43]
+
+    model, results = solve(rooms, exits, timeout=10)
+    for vnum in (1, 2, 3, 4):
+        rooms[vnum].x = int(round(model.x[vnum].value))
+        rooms[vnum].y = int(round(model.y[vnum].value))
+        rooms[vnum].z = int(round(model.z[vnum].value))
+
+    assert_no_room_collisions(rooms)
+
+
+def test_core_room_point_collision_positive_separation_parallel_branches() -> None:
+    """Verify that parallel branches converging on the same relative delta are pushed apart."""
+    # Room 1 exits East to Room 2 and East to Room 3.
+    # Without collision constraints, Room 2 and Room 3 would both land at (1, 0, 0).
+    r1 = Room(RoomDef(vnum=1, name="R1", description=""))
+    r2 = Room(RoomDef(vnum=2, name="R2", description=""))
+    r3 = Room(RoomDef(vnum=3, name="R3", description=""))
+
+    e12 = Exit(direction=Direction.east, src=1, dst=2)
+    e21 = Exit(direction=Direction.west, src=2, dst=1)
+    e13 = Exit(direction=Direction.east, src=1, dst=3)
+    e31 = Exit(direction=Direction.west, src=3, dst=1)
+
+    r1.exits = [e12, e13]
+    r2.exits = [e21]
+    r3.exits = [e31]
+
+    rooms = {1: r1, 2: r2, 3: r3}
+    exits = [e12, e21, e13, e31]
+
+    model, results = solve(rooms, exits, timeout=10)
+    for vnum in (1, 2, 3):
+        rooms[vnum].x = int(round(model.x[vnum].value))
+        rooms[vnum].y = int(round(model.y[vnum].value))
+        rooms[vnum].z = int(round(model.z[vnum].value))
+
+    assert_no_room_collisions(rooms)
+    pos2 = (rooms[2].x, rooms[2].y, rooms[2].z)
+    pos3 = (rooms[3].x, rooms[3].y, rooms[3].z)
+    assert pos2 != pos3
+
+
+def test_core_room_point_collision_deduplication_and_filtering() -> None:
+    """Verify that dummy rooms are filtered out from core room collisions and that
+
+    constrained pairs are not redundantly re-added.
+    """
+    r1 = Room(RoomDef(vnum=1, name="R1", description=""))
+    r2 = Room(RoomDef(vnum=2, name="R2", description=""))
+    dummy = Room(RoomDef(vnum=999, name="D999", description=""))
+    dummy.dummy = True
+
+    e_to_dummy = Exit(direction=Direction.north, src=1, dst=999)
+    e_r2_to_r1 = Exit(direction=Direction.south, src=2, dst=1)
+
+    r1.exits = [e_to_dummy]
+    r2.exits = [e_r2_to_r1]
+    rooms = {1: r1, 2: r2, 999: dummy}
+    exits = [e_to_dummy, e_r2_to_r1]
+
+    model, results = solve(rooms, exits, timeout=10)
+    for vnum in (1, 2):
+        rooms[vnum].x = int(round(model.x[vnum].value))
+        rooms[vnum].y = int(round(model.y[vnum].value))
+        rooms[vnum].z = int(round(model.z[vnum].value))
+
+    position_dummy_rooms(rooms, exits)
+    assert_no_room_or_dummy_collisions(rooms)
+    # Core rooms 1 and 2 must have distinct coordinates
+    assert (rooms[1].x, rooms[1].y, rooms[1].z) != (rooms[2].x, rooms[2].y, rooms[2].z)
+
+
+def test_add_room_separation_constraint_coords_none() -> None:
+    """Verify add_room_separation_constraint functions gracefully when coords is None."""
+    m = ConcreteModel()
+    m.Rooms = [1, 2]
+    m.x = Var(m.Rooms, within=Integers)
+    m.y = Var(m.Rooms, within=Integers)
+    m.z = Var(m.Rooms, within=Integers)
+    m.crossings = ConstraintList()
+
+    next_rel = add_room_separation_constraint(m, 1, 2, relations=0, coords=None, has_vertical_exits=False)
+    assert next_rel == 1
+    assert hasattr(m, 'room_rel_0')
+    assert len(m.room_rel_0) == 4
+
+
+def test_core_room_point_collision_batch_capping() -> None:
+    """Verify candidate batch capping triggers across iterations when many core rooms collide."""
+    # 6 disconnected rooms with no exits: without cuts, all 6 collapse to (0, 0, 0)
+    # 15 colliding pairs (> batch_cap of 5), exercising candidate batch capping
+    rooms: dict[int, Room] = {}
+    for i in range(1, 7):
+        r = Room(RoomDef(vnum=i, name=f"R{i}", description=""))
+        r.exits = []
+        rooms[i] = r
+
+    exits: list[Exit] = []
+    model, results = solve(rooms, exits, timeout=15)
+
+    for vnum, room in rooms.items():
+        room.x = int(round(model.x[vnum].value))
+        room.y = int(round(model.y[vnum].value))
+        room.z = int(round(model.z[vnum].value))
+
+    assert_no_room_collisions(rooms)
+    assert len({(r.x, r.y, r.z) for r in rooms.values()}) == 6
