@@ -308,9 +308,9 @@ Solver instantiation via [`get_cbc_solver()`](../romutil/solver.py) standardizes
 - **Relative Optimality Gap (`ratioGap = 0.05`)**: Halts branch-and-bound when the gap between the best integer solution and the lower bound is within 5%. This prevents exponential tailing off on dense topologies while guaranteeing visually indistinguishable optimal layouts.
 - **Presolve & Cuts**: Enables CBC presolve reduction (`presolve = 'on'`) and cutting plane generation (`cuts = 'on'`) to tighten the LP relaxation polytope at the root node.
 - **Primal Heuristics**: Enables CBC heuristic search (`heuristics = 'on'`) to locate integer-feasible bounds rapidly during tree traversal.
-- **Dynamic Solver Timeout Scaling**: Propagates execution timeout (`seconds` and backward-compatible `sec`) computed via [`compute_dynamic_solver_timeout()`](../romutil/solver.py). The dynamic timeout factors in both room count $ and exit density /V$:
-  1248215T_{\text{effective}} = \max(T_{\min}, \min(T_{\max}, \text{round}(30 + 0.8 \cdot V \cdot \max(1.0, E / V))))1248215
-  bounded between {\min} = 30\text{s}$ and {\max} = 600\text{s}$. This maintains snappy execution (~30-40s) on small planar areas while dynamically scaling up to 300-600s for large composite clusters with high cyclic density (e.g. 270+ rooms and 380+ exits).
+- **Dynamic Solver Timeout Scaling**: Propagates execution timeout (`seconds` and backward-compatible `sec`) computed via [`compute_dynamic_solver_timeout()`](../romutil/solver.py). The dynamic timeout factors in both room count $V$ and exit density $E / V$:
+  $$T_{\text{effective}} = \max(T_{\min}, \min(T_{\max}, \text{round}(30 + 0.8 \cdot V \cdot \max(1.0, E / V))))$$
+  bounded between $T_{\min} = 30\text{s}$ and $T_{\max} = 600\text{s}$. This maintains snappy execution (~30-40s) on small planar areas while dynamically scaling up to 300-600s for large composite clusters with high cyclic density (e.g. 270+ rooms and 380+ exits).
 
 #### Solver Termination & Collision Failure Reporting:
 The CBC optimization execution is bounded by an optional per-subgraph time limit. During branch-and-cut:
