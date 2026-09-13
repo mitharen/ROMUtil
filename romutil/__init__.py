@@ -17,7 +17,7 @@ from romutil.models import (
     merge_areas,
 )
 from romutil.parser import Parser, parse_file, parse_circlemud_directory, parse_circlemud_zone_file, normalize_dialect_buffer, sanitize_ackmud_colour
-from romutil.solver import solve, non_euler, find_overlap_candidates, get_cbc_solver, compute_dynamic_solver_timeout, add_room_separation_constraint
+from romutil.solver import solve, non_euler, find_overlap_candidates, get_cbc_solver, compute_dynamic_solver_timeout, add_room_separation_constraint, build_spatial_coordinate_buckets, find_spatial_room_collisions
 from romutil.graph import graph, solve_layout, restore_rooms, mfas, compute_bounding_box, decompose_components
 from romutil.cli import main, cli
 from romutil.renderers import (
@@ -66,6 +66,8 @@ __all__ = [
     'get_cbc_solver',
     'compute_dynamic_solver_timeout',
     'add_room_separation_constraint',
+    'build_spatial_coordinate_buckets',
+    'find_spatial_room_collisions',
     'graph',
     'solve_layout',
     'restore_rooms',

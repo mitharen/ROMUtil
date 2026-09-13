@@ -12,7 +12,7 @@ import pytest
 from romutil.graph import solve_layout
 from romutil.models import Direction, Exit, Room, RoomDef
 from romutil.parser import Parser
-from romutil.solver import solve, position_dummy_rooms, add_room_separation_constraint
+from romutil.solver import solve, position_dummy_rooms, add_room_separation_constraint, build_spatial_coordinate_buckets, find_spatial_room_collisions
 from pyomo.environ import ConcreteModel, Var, ConstraintList, Integers, Boolean
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -459,3 +459,192 @@ def test_core_room_point_collision_batch_capping() -> None:
 
     assert_no_room_collisions(rooms)
     assert len({(r.x, r.y, r.z) for r in rooms.values()}) == 6
+
+
+def test_spatial_hash_room_collisions_single_and_multi_room_buckets() -> None:
+    """Verify O(V) spatial hash bucketing accurately detects collisions across single
+
+    and multi-room buckets (including 3+ coincident rooms generating all pairwise cuts).
+    """
+    # 1. Direct unit verification of build_spatial_coordinate_buckets
+    # Coordinates with:
+    # - Bucket at (0, 0, 0): 3 coincident rooms (101, 102, 103)
+    # - Bucket at (5, 5, 0): 2 coincident rooms (201, 202)
+    # - Bucket at (10, 10, 0): 1 isolated room (301)
+    # - Room with None coordinates: room 401
+    coords = {
+        101: (0.0, 0.0, 0.0),
+        102: (0.0, 0.0, 0.0),
+        103: (0.0, 0.0, 0.0),
+        201: (5.0, 5.0, 0.0),
+        202: (5.0, 5.0, 0.0),
+        301: (10.0, 10.0, 0.0),
+        401: None,
+    }
+    rooms = [101, 102, 103, 201, 202, 301, 401]
+    buckets = build_spatial_coordinate_buckets(rooms, coords)
+
+    assert len(buckets) == 3
+    assert buckets[(0.0, 0.0, 0.0)] == [101, 102, 103]
+    assert buckets[(5.0, 5.0, 0.0)] == [201, 202]
+    assert buckets[(10.0, 10.0, 0.0)] == [301]
+    assert 401 not in [v for vnums in buckets.values() for v in vnums]
+
+    # 2. Direct unit verification of find_spatial_room_collisions
+    collisions = find_spatial_room_collisions(buckets)
+    # 3 coincident rooms produce 3 pairs: (101, 102), (101, 103), (102, 103)
+    # 2 coincident rooms produce 1 pair: (201, 202)
+    # Single room bucket produces 0 pairs
+    expected_collisions = [(101, 102), (101, 103), (102, 103), (201, 202)]
+    assert collisions == expected_collisions
+
+    # Verify filtering of already-constrained pairs
+    constrained = {(101, 102), (201, 202)}
+    filtered_collisions = find_spatial_room_collisions(buckets, constrained_room_collisions=constrained)
+    assert filtered_collisions == [(101, 103), (102, 103)]
+
+    # 3. Test 4 coincident rooms generating all 6 pairwise combinations
+    coords_4 = {1: (1.0, 2.0, 3.0), 2: (1.0, 2.0, 3.0), 3: (1.0, 2.0, 3.0), 4: (1.0, 2.0, 3.0)}
+    buckets_4 = build_spatial_coordinate_buckets([1, 2, 3, 4], coords_4)
+    collisions_4 = find_spatial_room_collisions(buckets_4)
+    assert collisions_4 == [(1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)]
+
+    # 4. End-to-end solver integration: 3 disconnected rooms with no exits
+    # All 3 rooms start at (0, 0, 0) and must be separated by pairwise cuts to unique coordinates
+    solve_rooms: dict[int, Room] = {}
+    for i in (1, 2, 3):
+        r = Room(RoomDef(vnum=i, name=f"Room {i}", description=""))
+        r.exits = []
+        solve_rooms[i] = r
+
+    model, results = solve(solve_rooms, [], timeout=10)
+    for vnum, room in solve_rooms.items():
+        room.x = int(round(model.x[vnum].value))
+        room.y = int(round(model.y[vnum].value))
+        room.z = int(round(model.z[vnum].value))
+
+    assert_no_room_collisions(solve_rooms)
+    assert len({(r.x, r.y, r.z) for r in solve_rooms.values()}) == 3
+
+
+def test_spatial_hash_dummy_stub_collision_detection() -> None:
+    """Verify O(D) spatial hash lookup detects dummy stub collisions and respects source room exclusions."""
+    # 1. Direct unit verification of spatial hash lookup mechanics
+    coords = {
+        1: (0.0, 0.0, 0.0),
+        2: (1.0, 0.0, 0.0),
+        3: (0.0, 2.0, 0.0),
+        999: (1.0, 0.0, 0.0),  # Dummy stub positioned at room 2's coordinates
+        998: (0.0, 0.0, 0.0),  # Dummy stub positioned at anchor room 1's coordinates
+        997: (10.0, 10.0, 0.0),  # Dummy stub at unoccupied coordinate
+    }
+    non_dummy = [1, 2, 3]
+    buckets = build_spatial_coordinate_buckets(non_dummy, coords)
+
+    dummy_anchors = {
+        999: (1, 1, 0, 0),    # Anchored to 1 with offset East (+1, 0, 0) => pos (1, 0, 0)
+        998: (1, 0, 0, 0),    # Anchored to 1 with offset (0, 0, 0) => pos (0, 0, 0)
+        997: (1, 10, 10, 0),  # Anchored to 1 with offset (+10, +10, 0) => pos (10, 10, 0)
+    }
+
+    # Simulate solver dummy loop logic using spatial hash lookup
+    detected_dummy_collisions: list[tuple[int, int]] = []
+    for dv, anchor in dummy_anchors.items():
+        src_vnum, dx, dy, dz = anchor
+        d_pos = coords[dv]
+        if d_pos is None or d_pos not in buckets:
+            continue
+        for vnum in buckets[d_pos]:
+            if vnum == src_vnum:
+                continue
+            detected_dummy_collisions.append((vnum, dv))
+
+    # Core room 2 collides with dummy 999: (2, 999) detected
+    # Core room 1 at (0, 0, 0) is the anchor for dummy 998: correctly skipped by vnum == src_vnum
+    # Dummy 997 is at unoccupied coordinate: correctly skipped by d_pos not in buckets
+    assert detected_dummy_collisions == [(2, 999)]
+
+    # 2. End-to-end solve with 2 core rooms and 1 dummy stub
+    r1 = Room(RoomDef(vnum=1, name="R1", description=""))
+    r2 = Room(RoomDef(vnum=2, name="R2", description=""))
+    dummy = Room(RoomDef(vnum=999, name="D999", description=""))
+    dummy.dummy = True
+
+    e_to_dummy = Exit(direction=Direction.east, src=1, dst=999)
+    e_r2_to_r1 = Exit(direction=Direction.west, src=2, dst=1)
+    r1.exits = [e_to_dummy]
+    r2.exits = [e_r2_to_r1]
+
+    rooms = {1: r1, 2: r2, 999: dummy}
+    exits = [e_to_dummy, e_r2_to_r1]
+
+    model, results = solve(rooms, exits, timeout=10)
+    for vnum in (1, 2):
+        rooms[vnum].x = int(round(model.x[vnum].value))
+        rooms[vnum].y = int(round(model.y[vnum].value))
+        rooms[vnum].z = int(round(model.z[vnum].value))
+
+    position_dummy_rooms(rooms, exits)
+    assert_no_room_or_dummy_collisions(rooms)
+    assert (rooms[2].x, rooms[2].y, rooms[2].z) != (dummy.x, dummy.y, dummy.z)
+
+
+def test_spatial_hash_negative_disjoint_rooms_zero_cuts() -> None:
+    """Verify that disjoint layouts produce single-room buckets, zero collisions, and zero cuts."""
+    # 1. Direct unit verification: distinct coordinates yield empty collision pairs
+    coords = {
+        1: (0.0, 0.0, 0.0),
+        2: (1.0, 0.0, 0.0),
+        3: (2.0, 0.0, 0.0),
+        4: (0.0, 1.0, 0.0),
+    }
+    rooms = [1, 2, 3, 4]
+    buckets = build_spatial_coordinate_buckets(rooms, coords)
+    assert len(buckets) == 4
+    for pt, vnums in buckets.items():
+        assert len(vnums) == 1
+
+    collisions = find_spatial_room_collisions(buckets)
+    assert collisions == []
+
+    # Empty buckets verification
+    empty_buckets: dict[tuple[float, float, float], list[int]] = {}
+    assert find_spatial_room_collisions(empty_buckets) == []
+
+    # Empty rooms sequence
+    assert build_spatial_coordinate_buckets([], coords) == {}
+
+    # 2. End-to-end solve with 3-room linear chain (1 <-> 2 <-> 3)
+    r1 = Room(RoomDef(vnum=1, name="R1", description=""))
+    r2 = Room(RoomDef(vnum=2, name="R2", description=""))
+    r3 = Room(RoomDef(vnum=3, name="R3", description=""))
+
+    e12 = Exit(direction=Direction.east, src=1, dst=2)
+    e21 = Exit(direction=Direction.west, src=2, dst=1)
+    e23 = Exit(direction=Direction.east, src=2, dst=3)
+    e32 = Exit(direction=Direction.west, src=3, dst=2)
+
+    r1.exits = [e12]
+    r2.exits = [e21, e23]
+    r3.exits = [e32]
+
+    chain_rooms = {1: r1, 2: r2, 3: r3}
+    chain_exits = [e12, e21, e23, e32]
+
+    model, results = solve(chain_rooms, chain_exits, timeout=10)
+    for vnum, room in chain_rooms.items():
+        room.x = int(round(model.x[vnum].value))
+        room.y = int(round(model.y[vnum].value))
+        room.z = int(round(model.z[vnum].value))
+
+    assert_no_room_collisions(chain_rooms)
+    cuts = sum(int(model.cut[i].value) for i in range(len(chain_exits)))
+    assert cuts == 0
+    # Coordinates must be strictly collinear and separated by exactly 1 unit along East/West
+    assert chain_rooms[1].x is not None and chain_rooms[2].x is not None and chain_rooms[3].x is not None
+    assert chain_rooms[1].y is not None and chain_rooms[2].y is not None and chain_rooms[3].y is not None
+    assert chain_rooms[1].z is not None and chain_rooms[2].z is not None and chain_rooms[3].z is not None
+    assert chain_rooms[2].x - chain_rooms[1].x == 1
+    assert chain_rooms[3].x - chain_rooms[2].x == 1
+    assert chain_rooms[1].y == chain_rooms[2].y == chain_rooms[3].y
+    assert chain_rooms[1].z == chain_rooms[2].z == chain_rooms[3].z

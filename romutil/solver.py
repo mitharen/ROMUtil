@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 import itertools
 import logging
 from math import sqrt
@@ -803,6 +804,54 @@ def non_euler(rdb, exits):
     solver.solve(m, tee=False)
     return m
 
+def build_spatial_coordinate_buckets(
+    rooms: Sequence[int],
+    coords: Any,
+) -> dict[tuple[float, float, float], list[int]]:
+    """Group room vnums into spatial coordinate buckets in O(V) time.
+
+    Args:
+        rooms: Sequence of room vnums to bucket.
+        coords: Mapping or model providing room coordinates.
+
+    Returns:
+        Dictionary mapping (x, y, z) coordinate tuples to lists of room vnums at that position.
+    """
+    coords_buckets: dict[tuple[float, float, float], list[int]] = defaultdict(list)
+    for vnum in rooms:
+        pos = _get_coords(coords, vnum)
+        if pos is not None:
+            coords_buckets[pos].append(vnum)
+    return coords_buckets
+
+
+def find_spatial_room_collisions(
+    coords_buckets: Mapping[Any, Sequence[int]],
+    constrained_room_collisions: Optional[TypingSet[Tuple[int, int]]] = None,
+) -> list[tuple[int, int]]:
+    """Identify pairwise room collisions within buckets containing multiple rooms.
+
+    Only evaluates pairwise combinations within buckets with len(vnums) > 1,
+    reducing candidate collision generation from O(V^2) to O(V) average time.
+
+    Args:
+        coords_buckets: Mapping from coordinate tuples to room vnum sequences.
+        constrained_room_collisions: Optional set of already-constrained (u, v) pairs to skip.
+
+    Returns:
+        Sorted list of unique (u, v) pairs with u < v that are colliding and unconstrained.
+    """
+    room_collisions: list[tuple[int, int]] = []
+    constrained = constrained_room_collisions if constrained_room_collisions is not None else set()
+    for pt, vnums in coords_buckets.items():
+        if len(vnums) > 1:
+            for u, v in itertools.combinations(sorted(vnums), 2):
+                if (u, v) not in constrained:
+                    room_collisions.append((u, v))
+    room_collisions.sort()
+    return room_collisions
+
+
 def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | None = None):
     exits = [e for e in area_exits if e.src != e.dst]
 
@@ -1115,13 +1164,12 @@ def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | Non
         }
         cut_values = [bool(m.cut[i].value) for i in range(len(exits))]
 
+        coords_buckets = build_spatial_coordinate_buckets(non_dummy_rooms, coords)
+
         # Check for core room pairwise point collisions
-        room_collisions: list[tuple[int, int]] = []
-        sorted_non_dummy = sorted(non_dummy_rooms)
-        for u, v in itertools.combinations(sorted_non_dummy, 2):
-            if (u, v) not in constrained_room_collisions:
-                if u in coords and v in coords and coords[u] == coords[v]:
-                    room_collisions.append((u, v))
+        room_collisions = find_spatial_room_collisions(
+            coords_buckets, constrained_room_collisions=constrained_room_collisions
+        )
 
         room_batch_target = get_candidate_batch_cap(len(room_collisions))
         for u, v in room_collisions:
@@ -1147,31 +1195,29 @@ def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | Non
             if src_vnum not in m.Rooms:
                 continue
             d_pos = _get_coords(coords, dv)
-            if d_pos is None:
+            if d_pos is None or d_pos not in coords_buckets:
                 continue
-            for vnum in non_dummy_rooms:
+            for vnum in coords_buckets[d_pos]:
                 if vnum == src_vnum:
                     continue
-                v_pos = _get_coords(coords, vnum)
-                if v_pos is not None and v_pos == d_pos:
-                    if (vnum, dv) not in constrained_dummy_collisions:
-                        constrained_dummy_collisions.add((vnum, dv))
-                        relations = add_dummy_separation_constraint(
-                            m,
-                            vnum,
-                            src_vnum,
-                            dx,
-                            dy,
-                            dz,
-                            relations,
-                            coords=coords,
-                            has_vertical_exits=has_vertical_exits,
-                        )
-                        added_constraints += 1
-                        log.info(
-                            f'Separated core room {vnum} from colliding dummy stub {dv} '
-                            f'(anchored to {src_vnum} with offset {(dx, dy, dz)})'
-                        )
+                if (vnum, dv) not in constrained_dummy_collisions:
+                    constrained_dummy_collisions.add((vnum, dv))
+                    relations = add_dummy_separation_constraint(
+                        m,
+                        vnum,
+                        src_vnum,
+                        dx,
+                        dy,
+                        dz,
+                        relations,
+                        coords=coords,
+                        has_vertical_exits=has_vertical_exits,
+                    )
+                    added_constraints += 1
+                    log.info(
+                        f'Separated core room {vnum} from colliding dummy stub {dv} '
+                        f'(anchored to {src_vnum} with offset {(dx, dy, dz)})'
+                    )
 
         overlapping_pairs = find_overlap_candidates(
             exits,
