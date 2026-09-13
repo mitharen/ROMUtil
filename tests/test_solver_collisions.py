@@ -12,7 +12,7 @@ import pytest
 from romutil.graph import solve_layout
 from romutil.models import Direction, Exit, Room, RoomDef
 from romutil.parser import Parser
-from romutil.solver import solve, position_dummy_rooms, add_room_separation_constraint, build_spatial_coordinate_buckets, find_spatial_room_collisions
+from romutil.solver import solve, position_dummy_rooms, add_room_separation_constraint, build_spatial_coordinate_buckets, find_spatial_room_collisions, find_collinear_exit_room_penetrations, add_collinear_separation_constraint, add_exit_room_clearance_constraint
 from pyomo.environ import ConcreteModel, Var, ConstraintList, Integers, Boolean
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -648,3 +648,349 @@ def test_spatial_hash_negative_disjoint_rooms_zero_cuts() -> None:
     assert chain_rooms[3].x - chain_rooms[2].x == 1
     assert chain_rooms[1].y == chain_rooms[2].y == chain_rooms[3].y
     assert chain_rooms[1].z == chain_rooms[2].z == chain_rooms[3].z
+
+
+def test_find_collinear_exit_room_penetrations_cardinal_and_vertical() -> None:
+    """Verify detection of collinear penetrations across East/West, North/South, and Up/Down."""
+    # 1. East/West elongated exit: 1 <-> 2 (distance 4)
+    # Room 1 at (0, 0, 0), Room 2 at (4, 0, 0)
+    # Room 3 at (1, 0, 0), Room 4 at (2, 0, 0) penetrate
+    e12 = Exit(direction=Direction.east, src=1, dst=2, distance=4)
+    e21 = Exit(direction=Direction.west, src=2, dst=1, distance=4)
+    exits = [e12, e21]
+    coords = {
+        1: (0.0, 0.0, 0.0),
+        2: (4.0, 0.0, 0.0),
+        3: (1.0, 0.0, 0.0),
+        4: (2.0, 0.0, 0.0),
+    }
+    rooms = [1, 2, 3, 4]
+    penetrations = find_collinear_exit_room_penetrations(exits, coords, rooms=rooms)
+    # Both exits 0 and 1 penetrate rooms 3 and 4:
+    assert (0, 3) in penetrations
+    assert (0, 4) in penetrations
+    assert (1, 3) in penetrations
+    assert (1, 4) in penetrations
+    # Endpoints themselves (1 and 2) must not be reported:
+    assert not any(w in (1, 2) for _, w in penetrations)
+
+    # Test filtering with constrained_penetrations
+    constrained = {(0, 3), (1, 3)}
+    filtered = find_collinear_exit_room_penetrations(
+        exits, coords, rooms=rooms, constrained_penetrations=constrained
+    )
+    assert (0, 3) not in filtered
+    assert (1, 3) not in filtered
+    assert (0, 4) in filtered
+    assert (1, 4) in filtered
+
+    # Test cut relaxation: exit 0 cut
+    cuts = [True, False]
+    cut_pen = find_collinear_exit_room_penetrations(exits, coords, cuts=cuts, rooms=rooms)
+    assert not any(ex_idx == 0 for ex_idx, _ in cut_pen)
+    assert (1, 3) in cut_pen
+    assert (1, 4) in cut_pen
+
+    # 2. North/South elongated exit: 10 <-> 20 (distance 3)
+    # 10 at (0, 0, 0), 20 at (0, 3, 0), intermediate 30 at (0, 1, 0)
+    e_ns = Exit(direction=Direction.north, src=10, dst=20, distance=3)
+    coords_ns = {10: (0.0, 0.0, 0.0), 20: (0.0, 3.0, 0.0), 30: (0.0, 1.0, 0.0)}
+    pen_ns = find_collinear_exit_room_penetrations([e_ns], coords_ns, rooms=[10, 20, 30])
+    assert pen_ns == [(0, 30)]
+
+    # 3. Up/Down vertical elongated exit: 100 <-> 200 (distance 3)
+    # 100 at (2, 2, 0), 200 at (2, 2, 3), intermediate 300 at (2, 2, 2)
+    e_vert = Exit(direction=Direction.up, src=100, dst=200, distance=3)
+    coords_vert = {100: (2.0, 2.0, 0.0), 200: (2.0, 2.0, 3.0), 300: (2.0, 2.0, 2.0)}
+    pen_vert = find_collinear_exit_room_penetrations([e_vert], coords_vert, rooms=[100, 200, 300])
+    assert pen_vert == [(0, 300)]
+
+
+def test_find_collinear_exit_room_penetrations_negative() -> None:
+    """Verify non-penetrating rooms (adjacent, perpendicular, or outside segment) generate zero constraints."""
+    # Exit 1 -> 2 along East from (0, 0, 0) to (3, 0, 0)
+    e12 = Exit(direction=Direction.east, src=1, dst=2, distance=3)
+    coords = {
+        1: (0.0, 0.0, 0.0),
+        2: (3.0, 0.0, 0.0),
+        # Perpendicularly adjacent to room 1:
+        10: (0.0, 1.0, 0.0),
+        # Perpendicular to intermediate coordinate (1, 0, 0):
+        11: (1.0, 1.0, 0.0),
+        # Collinear but beyond room 2:
+        12: (4.0, 0.0, 0.0),
+        # Collinear but before room 1:
+        13: (-1.0, 0.0, 0.0),
+        # Collinear in X/Y projection but at different elevation Z:
+        14: (1.0, 0.0, 1.0),
+        # Diagonal non-collinear:
+        15: (2.0, 2.0, 0.0),
+    }
+    rooms = [1, 2, 10, 11, 12, 13, 14, 15]
+    penetrations = find_collinear_exit_room_penetrations([e12], coords, rooms=rooms)
+    assert penetrations == []
+
+    # Distance 1 exit: no integer room can be between (0,0,0) and (1,0,0)
+    e_short = Exit(direction=Direction.east, src=1, dst=2, distance=1)
+    coords_short = {1: (0.0, 0.0, 0.0), 2: (1.0, 0.0, 0.0), 3: (0.5, 0.0, 0.0)}
+    assert find_collinear_exit_room_penetrations([e_short], coords_short, rooms=[1, 2, 3]) == []
+
+    # Empty exits or None coords
+    assert find_collinear_exit_room_penetrations([], coords) == []
+    assert find_collinear_exit_room_penetrations([e12], None) == []
+
+    # Exit with None room coordinates
+    coords_none = {1: (0.0, 0.0, 0.0), 2: None}
+    assert find_collinear_exit_room_penetrations([e12], coords_none) == []
+
+
+def test_add_collinear_separation_constraint_planar_and_3d() -> None:
+    """Verify add_collinear_separation_constraint adds correct direction variables and Big-M bounds."""
+    # 1. Planar model (has_vertical_exits=False)
+    m = ConcreteModel()
+    m.Rooms = [1, 2, 3]
+    m.Exits = [0]
+    m.x = Var(m.Rooms, within=Integers)
+    m.y = Var(m.Rooms, within=Integers)
+    m.z = Var(m.Rooms, within=Integers)
+    m.cut = Var(m.Exits, within=Boolean)
+    m.crossings = ConstraintList()
+    m.Mx = 20
+    m.My = 20
+    m.Mz = 10
+
+    ex = Exit(direction=Direction.east, src=1, dst=2, distance=3)
+    coords = {1: (0.0, 0.0, 0.0), 2: (3.0, 0.0, 0.0), 3: (1.0, 0.0, 0.0)}
+    next_rel = add_collinear_separation_constraint(
+        m, exit_idx=0, w=3, relations=0, ex=ex, coords=coords, has_vertical_exits=False
+    )
+    assert next_rel == 1
+    assert hasattr(m, 'collinear_rel_0')
+    rel_var = getattr(m, 'collinear_rel_0')
+    assert len(rel_var) == 4
+    assert Direction.north in rel_var
+    assert Direction.east in rel_var
+    assert Direction.south in rel_var
+    assert Direction.west in rel_var
+    assert Direction.up not in rel_var
+    assert Direction.down not in rel_var
+    # 1 sum constraint + (2 endpoints * 4 directions) = 9 constraints
+    assert len(m.crossings) == 9
+
+    # 2. 3D model (has_vertical_exits=True)
+    m_3d = ConcreteModel()
+    m_3d.Rooms = [1, 2, 3]
+    m_3d.Exits = [0]
+    m_3d.x = Var(m_3d.Rooms, within=Integers)
+    m_3d.y = Var(m_3d.Rooms, within=Integers)
+    m_3d.z = Var(m_3d.Rooms, within=Integers)
+    m_3d.cut = Var(m_3d.Exits, within=Boolean)
+    m_3d.crossings = ConstraintList()
+    m_3d.Mx = 20
+    m_3d.My = 20
+    m_3d.Mz = 10
+
+    next_rel_3d = add_collinear_separation_constraint(
+        m_3d, exit_idx=0, w=3, relations=0, ex=ex, coords=None, has_vertical_exits=True
+    )
+    assert next_rel_3d == 1
+    assert hasattr(m_3d, 'collinear_rel_0')
+    rel_var_3d = getattr(m_3d, 'collinear_rel_0')
+    assert len(rel_var_3d) == 6
+    assert Direction.up in rel_var_3d
+    assert Direction.down in rel_var_3d
+    # 1 sum constraint + (2 endpoints * 6 directions) = 13 constraints
+    assert len(m_3d.crossings) == 13
+
+    # Alias check
+    assert add_exit_room_clearance_constraint is add_collinear_separation_constraint
+
+
+def test_collinear_exit_penetration_synthetic_planar_solve() -> None:
+    """Verify solver resolves elongated exit piercing an intermediate room with 0 cuts and clean clearance."""
+    # Room 1 <-> Room 2 connected by elongated East/West corridor of distance 3.
+    # Parallel path: 1 -> 3 (North), 3 -> 4 (East), 4 -> 5 (South).
+    # If 5 has distance 1, Room 5 would land at (1, 0, 0), piercing the 1 <-> 2 corridor!
+    r1 = Room(RoomDef(vnum=1, name="R1", description=""))
+    r2 = Room(RoomDef(vnum=2, name="R2", description=""))
+    r3 = Room(RoomDef(vnum=3, name="R3", description=""))
+    r4 = Room(RoomDef(vnum=4, name="R4", description=""))
+    r5 = Room(RoomDef(vnum=5, name="R5", description=""))
+
+    e12 = Exit(direction=Direction.east, src=1, dst=2, distance=3)
+    e21 = Exit(direction=Direction.west, src=2, dst=1, distance=3)
+
+    e13 = Exit(direction=Direction.north, src=1, dst=3)
+    e31 = Exit(direction=Direction.south, src=3, dst=1)
+    e34 = Exit(direction=Direction.east, src=3, dst=4)
+    e43 = Exit(direction=Direction.west, src=4, dst=3)
+    e45 = Exit(direction=Direction.south, src=4, dst=5)
+    e54 = Exit(direction=Direction.north, src=5, dst=4)
+
+    r1.exits = [e12, e13]
+    r2.exits = [e21]
+    r3.exits = [e31, e34]
+    r4.exits = [e43, e45]
+    r5.exits = [e54]
+
+    rooms = {1: r1, 2: r2, 3: r3, 4: r4, 5: r5}
+    exits = [e12, e21, e13, e31, e34, e43, e45, e54]
+
+    model, results = solve(rooms, exits, timeout=15)
+    for vnum, room in rooms.items():
+        room.x = int(round(model.x[vnum].value))
+        room.y = int(round(model.y[vnum].value))
+        room.z = int(round(model.z[vnum].value))
+
+    assert_no_room_collisions(rooms)
+    cuts = sum(int(model.cut[i].value) for i in range(len(exits)))
+    assert cuts == 0, f"Expected 0 cuts, got {cuts}"
+
+    coords = {v: (r.x, r.y, r.z) for v, r in rooms.items()}
+    # Collinear penetration check must be completely empty!
+    pen = find_collinear_exit_room_penetrations(exits, coords, rooms=list(rooms.keys()))
+    assert pen == [], f"Expected 0 collinear penetrations, got {pen}"
+
+
+def test_collinear_exit_penetration_synthetic_3d_solve() -> None:
+    """Verify solver resolves vertical elongated exit piercing an intermediate room in 3D."""
+    # Room 1 <-> Room 2 connected by vertical Up/Down corridor of distance 3.
+    # Path: 1 -> 3 (East), 3 -> 4 (Up), 4 -> 5 (West).
+    # Room 5 lands at (0, 0, 1) piercing vertical corridor 1 <-> 2.
+    r1 = Room(RoomDef(vnum=1, name="R1", description=""))
+    r2 = Room(RoomDef(vnum=2, name="R2", description=""))
+    r3 = Room(RoomDef(vnum=3, name="R3", description=""))
+    r4 = Room(RoomDef(vnum=4, name="R4", description=""))
+    r5 = Room(RoomDef(vnum=5, name="R5", description=""))
+
+    e12 = Exit(direction=Direction.up, src=1, dst=2, distance=3)
+    e21 = Exit(direction=Direction.down, src=2, dst=1, distance=3)
+
+    e13 = Exit(direction=Direction.east, src=1, dst=3)
+    e31 = Exit(direction=Direction.west, src=3, dst=1)
+    e34 = Exit(direction=Direction.up, src=3, dst=4)
+    e43 = Exit(direction=Direction.down, src=4, dst=3)
+    e45 = Exit(direction=Direction.west, src=4, dst=5)
+    e54 = Exit(direction=Direction.east, src=5, dst=4)
+
+    r1.exits = [e12, e13]
+    r2.exits = [e21]
+    r3.exits = [e31, e34]
+    r4.exits = [e43, e45]
+    r5.exits = [e54]
+
+    rooms = {1: r1, 2: r2, 3: r3, 4: r4, 5: r5}
+    exits = [e12, e21, e13, e31, e34, e43, e45, e54]
+
+    model, results = solve(rooms, exits, timeout=15)
+    for vnum, room in rooms.items():
+        room.x = int(round(model.x[vnum].value))
+        room.y = int(round(model.y[vnum].value))
+        room.z = int(round(model.z[vnum].value))
+
+    assert_no_room_collisions(rooms)
+    cuts = sum(int(model.cut[i].value) for i in range(len(exits)))
+    assert cuts == 0
+
+    coords = {v: (r.x, r.y, r.z) for v, r in rooms.items()}
+    pen = find_collinear_exit_room_penetrations(exits, coords, rooms=list(rooms.keys()))
+    assert pen == []
+
+
+def test_add_collinear_separation_constraint_with_dummy_anchors() -> None:
+    """Verify add_collinear_separation_constraint resolves dummy anchor offsets."""
+    m = ConcreteModel()
+    m.Rooms = [1, 3]  # Room 2 is a dummy room, not in m.Rooms
+    m.Exits = [0]
+    m.x = Var(m.Rooms, within=Integers)
+    m.y = Var(m.Rooms, within=Integers)
+    m.z = Var(m.Rooms, within=Integers)
+    m.cut = Var(m.Exits, within=Boolean)
+    m.crossings = ConstraintList()
+    m.Mx = 20
+    m.My = 20
+    m.Mz = 10
+
+    ex = Exit(direction=Direction.east, src=1, dst=2, distance=3)
+    dummy_anchors = {2: (1, 3, 0, 0)}  # Anchor room 2 to room 1 with (+3, 0, 0)
+    next_rel = add_collinear_separation_constraint(
+        m, exit_idx=0, w=3, relations=0, ex=ex, dummy_anchors=dummy_anchors, has_vertical_exits=True
+    )
+    assert next_rel == 1
+    assert len(m.crossings) == 13
+
+
+def test_find_collinear_exit_room_penetrations_branches() -> None:
+    """Verify edge cases: model coords, Pyomo cut variables, non-integer coords, empty vnums."""
+    # 1. Pyomo model with Rooms attribute
+    m = ConcreteModel()
+    m.Rooms = [1, 2, 3]
+    m.x = Var(m.Rooms, within=Integers)
+    m.y = Var(m.Rooms, within=Integers)
+    m.z = Var(m.Rooms, within=Integers)
+    m.Exits = [0]
+    m.cut = Var(m.Exits, within=Boolean)
+    m.x[1].set_value(0)
+    m.y[1].set_value(0)
+    m.z[1].set_value(0)
+    m.x[2].set_value(3)
+    m.y[2].set_value(0)
+    m.z[2].set_value(0)
+    m.x[3].set_value(1)
+    m.y[3].set_value(0)
+    m.z[3].set_value(0)
+    m.cut[0].set_value(0)
+
+    ex = Exit(direction=Direction.east, src=1, dst=2, distance=3)
+    pen = find_collinear_exit_room_penetrations([ex], m, cuts=m.cut)
+    assert pen == [(0, 3)]
+
+    # Cut is 1 with Pyomo Var
+    m.cut[0].set_value(1)
+    assert find_collinear_exit_room_penetrations([ex], m, cuts=m.cut) == []
+
+    # 2. Non-integer floating point coordinates deviation > 1e-4
+    coords_float = {1: (0.0, 0.0, 0.0), 2: (3.05, 0.0, 0.0), 3: (1.0, 0.0, 0.0)}
+    assert find_collinear_exit_room_penetrations([ex], coords_float) == []
+
+    # 3. Object without Rooms or keys
+    assert find_collinear_exit_room_penetrations([ex], "invalid_coords_object") == []
+
+
+def test_collinear_exit_penetration_batch_capping() -> None:
+    """Verify candidate batch capping triggers when many rooms penetrate an elongated corridor."""
+    # Elongated Corridor 1 <-> 2 with distance 10
+    r1 = Room(RoomDef(vnum=1, name="R1", description=""))
+    r2 = Room(RoomDef(vnum=2, name="R2", description=""))
+    e12 = Exit(direction=Direction.east, src=1, dst=2, distance=10)
+    e21 = Exit(direction=Direction.west, src=2, dst=1, distance=10)
+    r1.exits = [e12]
+    r2.exits = [e21]
+
+    rooms = {1: r1, 2: r2}
+    exits = [e12, e21]
+
+    # Create a parallel chain of 7 rooms 10..16: 1 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16
+    # Each separated by 1 unit East, naturally landing at (1,0,0)..(7,0,0) collinear with 1<->2!
+    prev = 1
+    for i in range(10, 17):
+        r = Room(RoomDef(vnum=i, name=f"R{i}", description=""))
+        r.exits = []
+        rooms[i] = r
+        ef = Exit(direction=Direction.east, src=prev, dst=i, distance=1)
+        er = Exit(direction=Direction.west, src=i, dst=prev, distance=1)
+        rooms[prev].exits.append(ef)
+        rooms[i].exits.append(er)
+        exits.extend([ef, er])
+        prev = i
+
+    # Solve end-to-end: batch capping triggers because 7 rooms penetrate 1<->2, capped at 5 per batch
+    model, results = solve(rooms, exits, timeout=20)
+    for vnum, room in rooms.items():
+        room.x = int(round(model.x[vnum].value))
+        room.y = int(round(model.y[vnum].value))
+        room.z = int(round(model.z[vnum].value))
+
+    assert_no_room_collisions(rooms)
+    solved_coords = {v: (r.x, r.y, r.z) for v, r in rooms.items()}
+    assert find_collinear_exit_room_penetrations(exits, solved_coords, rooms=list(rooms.keys())) == []

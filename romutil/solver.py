@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 import itertools
 import logging
-from math import sqrt
+from math import gcd, sqrt
 import os
 from typing import Any, Mapping, Optional, Sequence, Set as TypingSet, Tuple
 
@@ -642,6 +642,144 @@ def add_room_separation_constraint(
     return relations + 1
 
 
+def add_collinear_separation_constraint(
+    m: ConcreteModel,
+    exit_idx: int,
+    w: int,
+    relations: int,
+    ex: Exit,
+    coords: Optional[Mapping[int, Any]] = None,
+    has_vertical_exits: bool = True,
+    dummy_anchors: Optional[Mapping[int, tuple[int, int, int, int]]] = None,
+) -> int:
+    """
+    Add disjunctive spatial separation constraints between an elongated exit segment
+    e = (ex.src, ex.dst) and a third-party core room w penetrating the corridor.
+
+    Forces either perpendicular displacement of room w relative to the exit segment
+    or longitudinal clearance outside the segment bounding interval:
+      East:  x_p - x_w >= 1 for all p in {src, dst}  (room w is West of corridor)
+      West:  x_w - x_p >= 1 for all p in {src, dst}  (room w is East of corridor)
+      North: y_p - y_w >= 1 for all p in {src, dst}  (room w is South of corridor)
+      South: y_w - y_p >= 1 for all p in {src, dst}  (room w is North of corridor)
+      Up:    z_p - z_w >= 1 for all p in {src, dst}  (room w is Down from corridor)
+      Down:  z_w - z_p >= 1 for all p in {src, dst}  (room w is Up from corridor)
+
+    Constraints are relaxed when the exit is cut (m.cut[exit_idx] == 1).
+    Disjunctive Big-M constraints use dimension-specific bounds (2 * Mx + 4, etc.).
+
+    Returns:
+        int: The next relation index (relations + 1).
+    """
+    z_match = False
+    if coords is not None:
+        p1 = _get_coords(coords, ex.src)
+        p2 = _get_coords(coords, ex.dst)
+        pw = _get_coords(coords, w)
+        if p1 is not None and p2 is not None and pw is not None:
+            z_match = (p1[2] == p2[2] == pw[2])
+
+    is_planar = not has_vertical_exits
+
+    if is_planar:
+        active_dirs = [Direction.north, Direction.east, Direction.south, Direction.west]
+    else:
+        active_dirs = [
+            Direction.north,
+            Direction.east,
+            Direction.up,
+            Direction.south,
+            Direction.west,
+            Direction.down,
+        ]
+
+    relation = Var(active_dirs, within=Boolean)
+    m.add_component(f'collinear_rel_{relations}', relation)
+    m.crossings.add(sum(relation[d] for d in active_dirs) >= 1)
+
+    mx = getattr(m, 'Mx', getattr(m, 'M', 100))
+    my = getattr(m, 'My', getattr(m, 'M', 100))
+    mz = getattr(m, 'Mz', getattr(m, 'M', 100))
+    d_min = getattr(m, 'd_min', 1)
+
+    def _get_var_x(v: int):
+        if v in m.Rooms:
+            return m.x[v]
+        if dummy_anchors and v in dummy_anchors:
+            s, dx, _, _ = dummy_anchors[v]
+            if s in m.Rooms:
+                return m.x[s] + dx
+        return 0
+
+    def _get_var_y(v: int):
+        if v in m.Rooms:
+            return m.y[v]
+        if dummy_anchors and v in dummy_anchors:
+            s, _, dy, _ = dummy_anchors[v]
+            if s in m.Rooms:
+                return m.y[s] + dy
+        return 0
+
+    def _get_var_z(v: int):
+        if v in m.Rooms:
+            return m.z[v]
+        if dummy_anchors and v in dummy_anchors:
+            s, _, _, dz = dummy_anchors[v]
+            if s in m.Rooms:
+                return m.z[s] + dz
+        return 0
+
+    endpoints = [ex.src, ex.dst]
+    cut_var = m.cut[exit_idx]
+
+    # East: x_p - x_w >= d_min  (all endpoints East of room w)
+    if Direction.east in active_dirs:
+        for p in endpoints:
+            m.crossings.add(
+                _get_var_x(p) - _get_var_x(w) + (2 * mx + 4) * ((1 - relation[Direction.east]) + cut_var) >= d_min
+            )
+
+    # West: x_w - x_p >= d_min  (all endpoints West of room w)
+    if Direction.west in active_dirs:
+        for p in endpoints:
+            m.crossings.add(
+                _get_var_x(w) - _get_var_x(p) + (2 * mx + 4) * ((1 - relation[Direction.west]) + cut_var) >= d_min
+            )
+
+    # North: y_p - y_w >= d_min  (all endpoints North of room w)
+    if Direction.north in active_dirs:
+        for p in endpoints:
+            m.crossings.add(
+                _get_var_y(p) - _get_var_y(w) + (2 * my + 4) * ((1 - relation[Direction.north]) + cut_var) >= d_min
+            )
+
+    # South: y_w - y_p >= d_min  (all endpoints South of room w)
+    if Direction.south in active_dirs:
+        for p in endpoints:
+            m.crossings.add(
+                _get_var_y(w) - _get_var_y(p) + (2 * my + 4) * ((1 - relation[Direction.south]) + cut_var) >= d_min
+            )
+
+    # Up: z_p - z_w >= d_min  (all endpoints Up from room w)
+    if Direction.up in active_dirs:
+        for p in endpoints:
+            m.crossings.add(
+                _get_var_z(p) - _get_var_z(w) + (2 * mz + 4) * ((1 - relation[Direction.up]) + cut_var) >= d_min
+            )
+
+    # Down: z_w - z_p >= d_min  (all endpoints Down from room w)
+    if Direction.down in active_dirs:
+        for p in endpoints:
+            m.crossings.add(
+                _get_var_z(w) - _get_var_z(p) + (2 * mz + 4) * ((1 - relation[Direction.down]) + cut_var) >= d_min
+            )
+
+    return relations + 1
+
+
+add_exit_room_clearance_constraint = add_collinear_separation_constraint
+
+
 def compute_dynamic_solver_timeout(
     room_count: int,
     min_timeout: int = 30,
@@ -850,6 +988,117 @@ def find_spatial_room_collisions(
                     room_collisions.append((u, v))
     room_collisions.sort()
     return room_collisions
+
+
+def find_collinear_exit_room_penetrations(
+    exits: Sequence[Exit],
+    coords: Any,
+    cuts: Optional[Sequence[Any]] = None,
+    rooms: Optional[Sequence[int]] = None,
+    coords_buckets: Optional[Mapping[Tuple[float, float, float], Sequence[int]]] = None,
+    constrained_penetrations: Optional[TypingSet[Tuple[int, int]]] = None,
+) -> list[tuple[int, int]]:
+    """
+    Identify exit segments that collinear-penetrate intermediate core rooms.
+
+    An elongated exit segment e = (u, v) penetrates an intermediate third-party
+    room w (w not in {u, v}) if room w lies strictly along the line segment
+    between u and v in 3D grid space:
+        p_w = p_u + t * (p_v - p_u),  with t in (0, 1).
+
+    Uses coordinate bucketing and rasterized integer candidate evaluation in
+    O(E) time using greatest common divisor step resolution along segment vectors.
+
+    Args:
+        exits: Sequence of Exit objects.
+        coords: Mapping of room vnum to (x, y, z) coordinates, or room dict, or Pyomo model.
+        cuts: Optional sequence of cut statuses (booleans or Pyomo binary variables).
+        rooms: Optional sequence of room vnums to check for penetration.
+        coords_buckets: Optional mapping from (x, y, z) coordinate tuples to room vnum sequences.
+        constrained_penetrations: Optional set of already-constrained (exit_idx, room_vnum) pairs.
+
+    Returns:
+        List of (exit_idx, room_vnum) tuples indicating unconstrained penetrations.
+    """
+    if not exits or coords is None:
+        return []
+
+    constrained = constrained_penetrations if constrained_penetrations is not None else set()
+
+    if coords_buckets is None:
+        if rooms is not None:
+            vnums_to_bucket = list(rooms)
+        elif hasattr(coords, 'Rooms'):
+            vnums_to_bucket = list(coords.Rooms)
+        elif hasattr(coords, 'keys'):
+            vnums_to_bucket = list(coords.keys())
+        else:
+            vnums_to_bucket = []
+        coords_buckets = build_spatial_coordinate_buckets(vnums_to_bucket, coords)
+
+    penetrations: list[tuple[int, int]] = []
+
+    for i, ex in enumerate(exits):
+        if getattr(ex, 'one_way', False):
+            continue
+        if cuts is not None and i < len(cuts):
+            c_val = cuts[i]
+            if hasattr(c_val, 'value'):
+                c_val = c_val.value
+            if c_val:
+                continue
+
+        p1 = _get_coords(coords, ex.src)
+        p2 = _get_coords(coords, ex.dst)
+        if p1 is None or p2 is None:
+            continue
+
+        x1, y1, z1 = p1
+        x2, y2, z2 = p2
+
+        dx_int = int(round(x2 - x1))
+        dy_int = int(round(y2 - y1))
+        dz_int = int(round(z2 - z1))
+
+        # Ensure endpoints conform closely to integer coordinates
+        if (
+            abs(x2 - x1 - dx_int) > 1e-4
+            or abs(y2 - y1 - dy_int) > 1e-4
+            or abs(z2 - z1 - dz_int) > 1e-4
+        ):
+            continue
+
+        g = gcd(abs(dx_int), gcd(abs(dy_int), abs(dz_int)))
+        if g <= 1:
+            continue
+
+        step_x = dx_int // g
+        step_y = dy_int // g
+        step_z = dz_int // g
+
+        x1_int = int(round(x1))
+        y1_int = int(round(y1))
+        z1_int = int(round(z1))
+
+        for k in range(1, g):
+            inter_pos = (
+                float(x1_int + k * step_x),
+                float(y1_int + k * step_y),
+                float(z1_int + k * step_z),
+            )
+            matching_rooms = coords_buckets.get(inter_pos)
+            if not matching_rooms:
+                matching_rooms = coords_buckets.get(
+                    (int(inter_pos[0]), int(inter_pos[1]), int(inter_pos[2]))
+                )
+            if matching_rooms:
+                for w in matching_rooms:
+                    if w != ex.src and w != ex.dst:
+                        pair = (i, w)
+                        if pair not in constrained:
+                            penetrations.append(pair)
+
+    return penetrations
 
 
 def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | None = None):
@@ -1111,6 +1360,7 @@ def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | Non
     solver = get_cbc_solver(timeout=effective_timeout)
     constrained_dummy_collisions: set[tuple[int, int]] = set()
     constrained_room_collisions: set[tuple[int, int]] = set()
+    constrained_exit_room_penetrations: set[tuple[int, int]] = set()
 
     while True:
         result = solver.solve(m, tee=False)
@@ -1218,6 +1468,39 @@ def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | Non
                         f'Separated core room {vnum} from colliding dummy stub {dv} '
                         f'(anchored to {src_vnum} with offset {(dx, dy, dz)})'
                     )
+
+        # Check for collinear exit-room penetrations
+        collinear_penetrations = find_collinear_exit_room_penetrations(
+            exits,
+            coords,
+            cuts=cut_values,
+            rooms=non_dummy_rooms,
+            coords_buckets=coords_buckets,
+            constrained_penetrations=constrained_exit_room_penetrations,
+        )
+
+        collinear_batch_target = get_candidate_batch_cap(len(collinear_penetrations))
+        collinear_added = 0
+        for exit_idx, w in collinear_penetrations:
+            constrained_exit_room_penetrations.add((exit_idx, w))
+            relations = add_collinear_separation_constraint(
+                m,
+                exit_idx,
+                w,
+                relations,
+                exits[exit_idx],
+                coords=coords,
+                has_vertical_exits=has_vertical_exits,
+                dummy_anchors=dummy_anchors,
+            )
+            collinear_added += 1
+            added_constraints += 1
+            log.info(
+                f'Separated collinear exit {exit_idx} ({exits[exit_idx].src} -> {exits[exit_idx].dst}) '
+                f'from penetrating core room {w}'
+            )
+            if collinear_added >= collinear_batch_target:
+                break
 
         overlapping_pairs = find_overlap_candidates(
             exits,
