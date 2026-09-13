@@ -140,8 +140,8 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
     """
     area_name = area.name if hasattr(area, 'name') else (area[1] if isinstance(area, (list, tuple)) and len(area) > 1 else str(area or 'Area'))
 
-    solve_layout.last_timeout_collision_failure = False
-    solve_layout.last_unresolved_collisions = {}
+    setattr(solve_layout, 'last_timeout_collision_failure', False)
+    setattr(solve_layout, 'last_unresolved_collisions', {})
 
 
     # Save original exits for complete export preservation
@@ -268,8 +268,8 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
                 f"unresolved collisions (room collisions: {r_c}, collinear penetrations: {c_p}, overlapping pairs: {o_p})"
             )
 
-        solve_layout.last_timeout_collision_failure = has_timeout_collision
-        solve_layout.last_unresolved_collisions = getattr(model, 'unresolved_collisions', {})
+        setattr(solve_layout, 'last_timeout_collision_failure', has_timeout_collision)
+        setattr(solve_layout, 'last_unresolved_collisions', getattr(model, 'unresolved_collisions', {}))
 
 
         if is_optimal and has_valid_coords:
@@ -475,11 +475,15 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
                 r.y -= y_min
                 r.z -= z_min
 
-        solve_layout.last_timeout_collision_failure = any_timeout_collision
-        solve_layout.last_unresolved_collisions = {
-            'components': all_unresolved_details,
-            'total': sum(d.get('total', 0) for d in all_unresolved_details),
-        }
+        setattr(solve_layout, 'last_timeout_collision_failure', any_timeout_collision)
+        setattr(
+            solve_layout,
+            'last_unresolved_collisions',
+            {
+                'components': all_unresolved_details,
+                'total': sum(d.get('total', 0) for d in all_unresolved_details),
+            },
+        )
 
     # Restore original exits for all non-dummy rooms
     for vnum, orig_ex in original_exits.items():
