@@ -25,7 +25,7 @@ flowchart TD
     A[".are Area File(s)"] --> B["romutil/parser.py (PLY Lexer & Parser)"]
     B --> C["romutil/models.py (Room Database & Exit Graph)"]
     D --> E["romutil/solver.py: non_euler() (Cycle Cut Minimization)"]
-    C --> D["romutil/graph.py: graph() (Corridor Collapse & Boundary Prep)"]
+    C --> D["romutil/graph.py: solve_layout() (Corridor Collapse & Boundary Prep)"]
     E --> F1["romutil/graph.py: decompose_components() (Component Partitioning)"]
     F1 --> F2["romutil/solver.py: solve() (MILP Subproblem Coordinate Solver)"]
     F2 -->|Sweep-Line Collision Resolution| F2
@@ -155,9 +155,9 @@ The domain models define the spatial and topological primitives used throughout 
 
 Before invoking the mathematical optimization engine, the area graph is simplified and partitioned to minimize combinatorial complexity:
 
-1. **Hallway Condensation (`graph`)**:
-   Rooms with in-degree/out-degree 2 and collinear opposing exits (e.g., East and West) form straight corridors. `graph()` trims intermediate rooms, links the boundary endpoints with a single aggregate edge spanning the combined distance, and registers collapsed room sequences into `parent.fixups`. This contracts the active vertex count by 30–60% on typical MUD topologies prior to MILP formulation.
-2. **External Boundary Dummy Decoupling & Preparation (`graph`)**:
+1. **Hallway Condensation (`solve_layout`)**:
+   Rooms with in-degree/out-degree 2 and collinear opposing exits (e.g., East and West) form straight corridors. `solve_layout()` trims intermediate rooms, links the boundary endpoints with a single aggregate edge spanning the combined distance, and registers collapsed room sequences into `parent.fixups`. This contracts the active vertex count by 30–60% on typical MUD topologies prior to MILP formulation.
+2. **External Boundary Dummy Decoupling & Preparation (`solve_layout`)**:
    - **Multi-Source External Exit Decoupling**: When multiple rooms in an area file feature exits leading to the same external target VNUM (e.g. `school.are` rooms 3700 and 3760 exiting to external room 3001), each exit is decoupled into a dedicated synthetic dummy stub instance (`room.dummy = True`) assigned unique synthetic negative VNUMs while preserving `target_vnum`. This prevents multi-source external exits from anchoring to a single shared spatial point and eliminates long diagonal cross-map edge stretching or zero-length collapse across the layout.
    - **Unresolved Exit Stubbing**: Exits pointing to unresolved destinations (`dst == -1`) receive dedicated synthetic dummy stubs (`room.dummy = True`).
    - Boundary dummy rooms are excluded from the Pyomo decision space, eliminating unconstrained floating variables during branch-and-cut exploration.
@@ -324,7 +324,7 @@ The CBC optimization execution is bounded by an optional per-subgraph time limit
    Converts 3D coordinates $(x, y, z)$ into 2D SVG canvas points using an oblique lift factor ($\text{lift} = 0.15$):
    $$X' = 2 + x + \text{lift} \cdot z$$
    $$Y' = 2 + \text{lift} \cdot z_{\max} + (y_{\max} - y) - \text{lift} \cdot z$$
-2. **SVG Generation (`SVGRenderer` & `Plotter`) & Multi-Layer Elevation**:
+2. **SVG Generation (`SVGRenderer`) & Multi-Layer Elevation**:
    - **Painter's Algorithm Depth Sorting**: SVG layer group generation stacks `<g id="elevation-{z}" class="elevation-layer" data-z="{z}">` layers in strict ascending elevation order ($Z_{\text{lower}} < Z_{\text{higher}}$). Within each elevation layer, rooms are sorted by isometric screen depth ($Y$ descending, then $X$ ascending) before executing SVG draw commands.
    - **Inter-Floor Exit Layering & Occlusion**: Vertical transitions (`up`/`down` exits) connecting floors $Z_1$ and $Z_2$ are attributed to the higher elevation layer $\max(Z_1, Z_2)$ and drawn before the upper floor's room geometry, ensuring ascending stairways naturally overlay lower stories while being cleanly occluded by upper-story room rectangles.
    - **Interactive Layer Controls**: Embedded `<style>` and JavaScript within the SVG `<defs>` provide clickable toggle buttons (`<g id="elevation-controls">`) with visual active/inactive states, allowing users to toggle individual floor levels on/off to prevent vertical visual occlusion.
@@ -332,7 +332,7 @@ The CBC optimization execution is bounded by an optional per-subgraph time limit
    - Bidirectional exits are drawn as black lines; one-way exits as red lines.
    - External exits are rendered as stub arrows pointing off-map.
    - Interactive `<set>` triggers display floating tooltips on mouseover showing room names, full descriptions, and exit directions.
-   - **Canonical Implementation**: Implemented by [`SVGRenderer`](../romutil/renderers/svg.py) (aliased to `Plotter` for backward compatibility) and `_DynamicPalette` within [`romutil/renderers/svg.py`](../romutil/renderers/svg.py).
+   - **Canonical Implementation**: Implemented by [`SVGRenderer`](../romutil/renderers/svg.py) and `_DynamicPalette` within [`romutil/renderers/svg.py`](../romutil/renderers/svg.py).
 
 ---
 
@@ -401,7 +401,7 @@ The unified renderer architecture provides an extensible, polymorphic pipeline f
    - Embedded interactive radar minimap canvas for orientation and rapid viewport panning.
 
 4. **Canonical Rendering Subsystem Exports ([`romutil/renderers/`](../romutil/renderers/))**:
-   - **Vector SVG**: [`SVGRenderer`](../romutil/renderers/svg.py), `Plotter`, and `_DynamicPalette`.
+   - **Vector SVG**: [`SVGRenderer`](../romutil/renderers/svg.py) and `_DynamicPalette`.
    - **Structured JSON**: [`JSONRenderer`](../romutil/renderers/json.py), `build_area_json`, and `export_json`.
    - **Interactive HTML**: [`HTMLRenderer`](../romutil/renderers/html.py), `generate_html_viewer`, `export_html`, and `HTML_TEMPLATE`.
    - **Dispatcher & Registry**: `render_map`, `get_renderer`, `BaseRenderer`, and `RENDERERS`.

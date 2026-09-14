@@ -17,7 +17,7 @@ import pytest
 
 from romutil.models import Room, RoomDef, Exit, ExitDef, AreaHeader, AreaData
 from romutil.solver import solve, compute_dynamic_solver_timeout
-from romutil.graph import solve_layout, graph, _has_feasible_coordinates
+from romutil.graph import solve_layout, _has_feasible_coordinates
 from romutil.cli import cli, main
 
 
@@ -309,22 +309,6 @@ class TestSolverRecoveryInGraph:
         solve_layout(rdb, solver_timeout=77)
         assert passed_timeout == [77]
 
-    def test_graph_timeout_passed_to_solve_layout(self, monkeypatch):
-        """solver_timeout is forwarded from graph() to solve_layout()."""
-        r1 = Room(RoomDef(vnum=1, name="R1", description="Desc", exits=(ExitDef(direction=1, dst_vnum=2),)))
-        rdb = {1: r1}
-
-        passed_timeout = []
-        def mock_solve_layout(rdb, area=None, solver_timeout=None):
-            passed_timeout.append(solver_timeout)
-            return rdb, []
-
-        graph_mod = sys.modules["romutil.graph"]
-        monkeypatch.setattr(graph_mod, "solve_layout", mock_solve_layout)
-        graph(rdb, "out.svg", None, solver_timeout=99)
-        assert passed_timeout == [99]
-
-
 class TestCliSolverTimeout:
     """Unit and integration tests for --solver-timeout CLI flag."""
 
@@ -355,8 +339,8 @@ class TestCliSolverTimeout:
         cli()
         assert captured_args == [None]
 
-    def test_main_svg_passes_solver_timeout_to_graph(self, tmp_path, monkeypatch):
-        """main() forwards solver_timeout to graph() for SVG format."""
+    def test_main_svg_passes_solver_timeout_to_solve_layout(self, tmp_path, monkeypatch):
+        """main() forwards solver_timeout to solve_layout() for SVG format."""
         are_file = tmp_path / "dummy.are"
         are_file.write_text("dummy")
 

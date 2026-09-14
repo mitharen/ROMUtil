@@ -16,8 +16,8 @@ import pytest
 import json
 from romutil.models import AreaData, AreaHeader, Room, Exit, RoomDef, ExitDef, Direction
 from romutil.parser import Parser, normalize_dialect_buffer, eval_flags, sanitize_ackmud_colour
-from romutil.renderers import SVGRenderer, HTMLRenderer, JSONRenderer
-from romutil.graph import graph, solve_layout
+from romutil.renderers import SVGRenderer, HTMLRenderer, JSONRenderer, render_map
+from romutil.graph import solve_layout
 from romutil.cli import cli, main
 
 
@@ -342,7 +342,8 @@ class TestDialectLayoutSolver:
         assert len(rdb) == expected_room_count
 
         out_svg = tmp_path / f"{fixture_name}.svg"
-        graph(rdb, str(out_svg), area.header)
+        solved_rdb, exits = solve_layout(rdb, area.header)
+        render_map(solved_rdb, str(out_svg), fmt="svg", header=area.header, exits=exits)
 
         assert out_svg.exists()
         assert out_svg.stat().st_size > 0

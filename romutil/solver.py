@@ -776,9 +776,6 @@ def add_collinear_separation_constraint(
     return relations + 1
 
 
-add_exit_room_clearance_constraint = add_collinear_separation_constraint
-
-
 def compute_dynamic_solver_timeout(
     room_count: int,
     exit_count: int | None = None,

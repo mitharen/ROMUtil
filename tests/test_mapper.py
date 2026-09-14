@@ -4,9 +4,10 @@ import pytest
 import xml.etree.ElementTree as ET
 
 from romutil.models import Direction, Room, Exit, RoomDef, ExitDef, AreaHeader
-from romutil.renderers.svg import SVGRenderer as Plotter
+from romutil.renderers.svg import SVGRenderer
+from romutil.renderers import render_map
 from romutil.solver import non_euler, solve
-from romutil.graph import restore_rooms, graph
+from romutil.graph import restore_rooms, solve_layout
 from romutil.cli import main, cli
 
 from tests.conftest import SAMPLE_AREAS_DIR
@@ -160,7 +161,7 @@ class TestRestoreRooms:
         assert (r_d.x, r_d.y, r_d.z) == (10, 10, 8)
 
 
-class TestPlotter:
+class TestSVGRenderer:
     """Tests for SVG map generation and coordinate projections."""
 
     def test_plotter_projections(self):
@@ -171,7 +172,7 @@ class TestPlotter:
         ex = r1.exits[0]
 
         rdb = {1: r1, 2: r2}
-        plotter = Plotter("dummy.svg", rdb, [ex])
+        plotter = SVGRenderer("dummy.svg", rdb, [ex])
         plotter.x_max = 1
         plotter.y_max = 0
         plotter.z_max = 0
@@ -189,7 +190,7 @@ class TestPlotter:
     def test_plotter_proj_exit_external_directions(self):
         r1 = Room(RoomDef(vnum=1, name="Room 1", description="Desc 1", exits=()))
         r1.x, r1.y, r1.z = 0, 0, 0
-        plotter = Plotter("dummy.svg", {1: r1}, [])
+        plotter = SVGRenderer("dummy.svg", {1: r1}, [])
         plotter.x_max = 0
         plotter.y_max = 0
         plotter.z_max = 0
@@ -203,7 +204,7 @@ class TestPlotter:
     def test_plotter_projection_with_none_coords(self):
         r1 = Room(RoomDef(vnum=1, name="Room 1", description="Desc", exits=()))
         r1.x, r1.y, r1.z = None, 0, 0
-        plotter = Plotter("dummy.svg", {1: r1}, [])
+        plotter = SVGRenderer("dummy.svg", {1: r1}, [])
         assert plotter.proj_room(r1) is None
 
     def test_plotter_plot_generates_valid_svg(self, tmp_path):
@@ -214,7 +215,7 @@ class TestPlotter:
         r2.x, r2.y, r2.z = 2, 0, 0
         ex = r1.exits[0]
 
-        plotter = Plotter(out_svg, {1: r1, 2: r2}, [ex])
+        plotter = SVGRenderer(out_svg, {1: r1, 2: r2}, [ex])
         plotter.plot()
 
         assert os.path.exists(out_svg)
@@ -238,9 +239,11 @@ class TestGraphAndCorridorCollapse:
         rdb = {1: r1, 2: r2, 3: r3}
 
         out_svg = str(tmp_path / "corridor.svg")
-        graph(rdb, out_svg, AreaHeader(filename="test.are", name="Test Corridor", builder="", vnum_min=1, vnum_max=3))
+        header = AreaHeader(filename="test.are", name="Test Corridor", builder="", vnum_min=1, vnum_max=3)
+        solved_rdb, exits = solve_layout(rdb, header)
+        render_map(solved_rdb, out_svg, fmt="svg", header=header, exits=exits)
 
-        # After graph() solve, room 2 was collapsed and restored, all 3 rooms exist with coordinates
+        # After solve_layout() solve, room 2 was collapsed and restored, all 3 rooms exist with coordinates
         assert 1 in rdb
         assert 2 in rdb
         assert 3 in rdb
@@ -250,7 +253,7 @@ class TestGraphAndCorridorCollapse:
     def test_disconnected_room_handled(self, caplog):
         # Room with no exits
         r1 = Room(RoomDef(vnum=1, name="Isolated", description="No exits", exits=()))
-        graph({1: r1}, "dummy.svg", AreaHeader(filename="test.are", name="Test", builder="", vnum_min=1, vnum_max=1))
+        solve_layout({1: r1}, AreaHeader(filename="test.are", name="Test", builder="", vnum_min=1, vnum_max=1))
         assert "Ignoring disconnected room" in caplog.text
 
 
@@ -304,7 +307,9 @@ class TestMapperIntegration:
         r1 = Room(RoomDef(vnum=10, name="Incomplete", description="Desc", exits=(ExitDef(direction=0, dst_vnum=-1),)))
         rdb = {10: r1}
         out_svg = str(tmp_path / "minus_one.svg")
-        graph(rdb, out_svg, AreaHeader(filename="test.are", name="Test Incomplete", builder="", vnum_min=10, vnum_max=10))
+        header = AreaHeader(filename="test.are", name="Test Incomplete", builder="", vnum_min=10, vnum_max=10)
+        solved_rdb, exits = solve_layout(rdb, header)
+        render_map(solved_rdb, out_svg, fmt="svg", header=header, exits=exits)
         assert os.path.exists(out_svg)
 
     @pytest.mark.slow

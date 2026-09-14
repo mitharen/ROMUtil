@@ -7,7 +7,6 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 import networkx as nx
 import pyomo.opt
 from romutil.models import Direction, Room, Exit, RoomDef
-from romutil.renderers import render_map
 from romutil.solver import compute_dynamic_solver_timeout, position_dummy_rooms, solve
 
 log = logging.getLogger('Mapper.graph')
@@ -512,23 +511,3 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
             e.one_way = not has_return
 
     return rdb, exits
-
-def graph(rdb, name, area, split_levels=False, outbase=None, solver_timeout=None, hierarchical=True, **kwargs):
-    if not hierarchical:
-        rdb, exits = solve_layout(rdb, area, solver_timeout=solver_timeout, hierarchical=False, **kwargs)
-    elif kwargs:
-        rdb, exits = solve_layout(rdb, area, solver_timeout=solver_timeout, **kwargs)
-    else:
-        rdb, exits = solve_layout(rdb, area, solver_timeout=solver_timeout)
-    if not len(exits) and not len(rdb):
-        return
-
-    render_map(
-        rdb,
-        name,
-        fmt="svg",
-        header=area,
-        exits=exits,
-        split_levels=split_levels,
-        outbase=outbase,
-    )

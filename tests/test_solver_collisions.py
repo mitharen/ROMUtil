@@ -12,7 +12,7 @@ import pytest
 from romutil.graph import solve_layout
 from romutil.models import Direction, Exit, Room, RoomDef
 from romutil.parser import Parser
-from romutil.solver import solve, position_dummy_rooms, add_room_separation_constraint, build_spatial_coordinate_buckets, find_spatial_room_collisions, find_collinear_exit_room_penetrations, add_collinear_separation_constraint, add_exit_room_clearance_constraint
+from romutil.solver import solve, position_dummy_rooms, add_room_separation_constraint, build_spatial_coordinate_buckets, find_spatial_room_collisions, find_collinear_exit_room_penetrations, add_collinear_separation_constraint
 from pyomo.environ import ConcreteModel, Var, ConstraintList, Integers, Boolean
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -802,8 +802,6 @@ def test_add_collinear_separation_constraint_planar_and_3d() -> None:
     # 1 sum constraint + (2 endpoints * 6 directions) = 13 constraints
     assert len(m_3d.crossings) == 13
 
-    # Alias check
-    assert add_exit_room_clearance_constraint is add_collinear_separation_constraint
 
 
 def test_collinear_exit_penetration_synthetic_planar_solve() -> None:

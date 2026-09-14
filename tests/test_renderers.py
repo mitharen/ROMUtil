@@ -8,7 +8,6 @@ from unittest.mock import patch
 import pytest
 
 import romutil
-from romutil.graph import graph
 from romutil.models import AreaHeader, Direction, Exit, ExitDef, Room, RoomDef
 from romutil.renderers import (
     HTML_TEMPLATE,
@@ -16,7 +15,6 @@ from romutil.renderers import (
     BaseRenderer,
     HTMLRenderer,
     JSONRenderer,
-    Plotter,
     SVGRenderer,
     _DynamicPalette,
     build_area_json,
@@ -360,37 +358,38 @@ class TestPackageRootExports:
         assert romutil.get_renderer is get_renderer
         assert romutil.RENDERERS is RENDERERS
         assert romutil.HTML_TEMPLATE == HTML_TEMPLATE
-        assert romutil.Plotter is Plotter
         assert romutil.build_area_json is build_area_json
         assert romutil.export_json is export_json
         assert romutil.generate_html_viewer is generate_html_viewer
         assert romutil.export_html is export_html
 
 
-class TestGraphPresentationDecoupling:
-    """Test that graph() delegates presentation rendering cleanly."""
+class TestSVGRendererDelegation:
+    """Test that render_map delegates presentation rendering cleanly."""
 
-    def test_graph_delegates_to_svg_renderer(self, sample_rdb, tmp_path):
+    def test_render_map_delegates_to_svg_renderer(self, sample_rdb, tmp_path):
         rdb, header = sample_rdb
         out = tmp_path / "graph_output.svg"
-        graph(rdb, str(out), header)
+        render_map(rdb, out, fmt="svg", header=header)
         assert out.exists()
         content = out.read_text(encoding="utf-8")
         assert "<svg" in content
         assert "elevation-0" in content
 
-    def test_graph_split_levels(self, sample_rdb, tmp_path):
+    def test_render_map_split_levels(self, sample_rdb, tmp_path):
         rdb, header = sample_rdb
         out = tmp_path / "graph_split.svg"
-        graph(rdb, str(out), header, split_levels=True)
+        render_map(rdb, out, fmt="svg", header=header, split_levels=True)
         z0 = tmp_path / "graph_split_z0.svg"
         z1 = tmp_path / "graph_split_z1.svg"
         assert z0.exists()
         assert z1.exists()
 
-    def test_graph_empty_returns_early(self):
-        # Empty rdb and no exits should return early without error
-        assert graph({}, "dummy.svg", None) is None
+    def test_render_map_empty_svg(self, tmp_path):
+        # Empty rdb should render empty SVG
+        out = tmp_path / "empty.svg"
+        render_map({}, out, fmt="svg")
+        assert out.exists()
 
 
 class TestWebViewerVisualAndUsabilityOptimizations:

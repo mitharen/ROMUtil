@@ -20,8 +20,8 @@ from romutil.parser import (
     parse_circlemud_directory,
     parse_circlemud_zone_file,
 )
-from romutil.graph import solve_layout, graph
-from romutil.renderers import build_area_json, export_json, export_html
+from romutil.graph import solve_layout
+from romutil.renderers import build_area_json, export_json, export_html, render_map
 from romutil.cli import cli, main
 
 
@@ -219,7 +219,8 @@ class TestCircleMudLayoutAndExport:
         rdb = {r.vnum: Room(r) for r in area.rooms}
 
         svg_path = tmp_path / "circle_midgaard.svg"
-        graph(rdb, str(svg_path), area.header, split_levels=False)
+        solved_rdb, exits = solve_layout(rdb, area.header)
+        render_map(solved_rdb, str(svg_path), fmt="svg", header=area.header, exits=exits, split_levels=False)
 
         assert svg_path.exists()
         content = svg_path.read_text(encoding="utf-8")

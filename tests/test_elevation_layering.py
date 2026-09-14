@@ -10,9 +10,10 @@ import pytest
 import pyomo.opt
 
 from romutil.models import Direction, Room, Exit, RoomDef, ExitDef, AreaHeader, AreaData
-from romutil.renderers.svg import SVGRenderer as Plotter, _DynamicPalette
+from romutil.renderers.svg import SVGRenderer, _DynamicPalette
+from romutil.renderers import render_map
 from romutil.parser import Parser
-from romutil.graph import graph
+from romutil.graph import solve_layout
 from romutil.cli import cli, main
 
 SAMPLE_TOWER_ARE = """#AREA
@@ -76,7 +77,9 @@ class TestSvgElevationGrouping:
         rooms = [s[1] for s in parsed if s and s[0] == "#ROOMS"][0]
         rdb = {r.vnum: Room(r) for r in rooms}
 
-        graph(rdb, out_svg, AreaHeader(filename="tower.are", name="Tower", builder="", vnum_min=100, vnum_max=102), split_levels=False)
+        header = AreaHeader(filename="tower.are", name="Tower", builder="", vnum_min=100, vnum_max=102)
+        solved_rdb, exits = solve_layout(rdb, header)
+        render_map(solved_rdb, out_svg, fmt="svg", header=header, exits=exits, split_levels=False)
 
         assert os.path.exists(out_svg)
         tree = ET.parse(out_svg)
@@ -105,7 +108,7 @@ class TestSvgElevationGrouping:
         r1.x, r1.y, r1.z = 1, 0, 1
         rdb = {1: r0, 2: r1}
 
-        plotter = Plotter(out_svg, rdb, [])
+        plotter = SVGRenderer(out_svg, rdb, [])
         plotter.plot()
 
         tree = ET.parse(out_svg)
@@ -134,7 +137,7 @@ class TestSvgElevationGrouping:
         out_svg = str(tmp_path / "single.svg")
         r0 = Room(RoomDef(vnum=1, name="Single Room", description="Alone"))
         r0.x, r0.y, r0.z = 0, 0, 0
-        plotter = Plotter(out_svg, {1: r0}, [])
+        plotter = SVGRenderer(out_svg, {1: r0}, [])
         plotter.plot()
 
         tree = ET.parse(out_svg)
@@ -200,8 +203,10 @@ class TestMultiPlaneExport:
         outbase = str(tmp_path / "multi_comp")
         are_meta = AreaHeader(filename="test.are", name="MultiComp", builder="", vnum_min=10, vnum_max=21)
 
-        graph({10: r1, 11: r2}, f"{outbase}0.svg", are_meta, split_levels=True, outbase=f"{outbase}0")
-        graph({20: r3, 21: r4}, f"{outbase}1.svg", are_meta, split_levels=True, outbase=f"{outbase}1")
+        solved0, exits0 = solve_layout({10: r1, 11: r2}, are_meta)
+        render_map(solved0, f"{outbase}0.svg", fmt="svg", header=are_meta, exits=exits0, split_levels=True, outbase=f"{outbase}0")
+        solved1, exits1 = solve_layout({20: r3, 21: r4}, are_meta)
+        render_map(solved1, f"{outbase}1.svg", fmt="svg", header=are_meta, exits=exits1, split_levels=True, outbase=f"{outbase}1")
 
         comp0_files = list(tmp_path.glob("multi_comp0_z*.svg"))
         comp1_files = list(tmp_path.glob("multi_comp1_z*.svg"))
@@ -225,7 +230,7 @@ class TestDynamicColorPalette:
                 ex = Exit(ExitDef(direction=Direction.up.value, dst_vnum=vnum), source=vnum - 1)
                 exits.append(ex)
 
-        plotter = Plotter(out_svg, rdb, exits)
+        plotter = SVGRenderer(out_svg, rdb, exits)
         # Should not raise IndexError
         plotter.plot()
 
@@ -254,7 +259,7 @@ class TestDynamicColorPalette:
             r.x, r.y, r.z = 0, 0, z
             rdb[100 + z] = r
 
-        plotter = Plotter("dummy.svg", rdb, [])
+        plotter = SVGRenderer("dummy.svg", rdb, [])
         palette = plotter.colors
         assert len(palette) == 10
         assert palette[0] == "hsl(0.0, 75%, 50%)"
@@ -266,24 +271,24 @@ class TestDynamicColorPalette:
 
     def test_get_color_edge_cases(self):
         # Empty rdb
-        plotter_empty = Plotter("dummy.svg", {}, [])
+        plotter_empty = SVGRenderer("dummy.svg", {}, [])
         assert plotter_empty.get_color(0) == "hsl(0, 75%, 50%)"
         assert plotter_empty.get_unique_elevations() == [0]
 
         # Single elevation
         r0 = Room(RoomDef(vnum=1, name="R", description=""))
         r0.x, r0.y, r0.z = 0, 0, 0
-        plotter_single = Plotter("dummy.svg", {1: r0}, [])
+        plotter_single = SVGRenderer("dummy.svg", {1: r0}, [])
         assert plotter_single.get_color(0) == "hsl(0, 75%, 50%)"
 
 
-class TestPlotterEdgeCases:
-    """Coverage and regression tests for Plotter projection edge cases."""
+class TestSVGRendererEdgeCases:
+    """Coverage and regression tests for SVGRenderer projection edge cases."""
 
     def test_proj_exit_missing_src_or_none_coords(self):
         r1 = Room(RoomDef(vnum=1, name="R1", description=""))
         r1.x, r1.y, r1.z = 0, 0, 0
-        plotter = Plotter("dummy.svg", {1: r1}, [])
+        plotter = SVGRenderer("dummy.svg", {1: r1}, [])
 
         # ex.src not in rdb
         ex_unknown = Exit(ExitDef(direction=0, dst_vnum=1), source=999)
@@ -303,7 +308,7 @@ class TestPlotterEdgeCases:
     def test_proj_exit_unhandled_direction(self):
         r1 = Room(RoomDef(vnum=1, name="R1", description=""))
         r1.x, r1.y, r1.z = 0, 0, 0
-        plotter = Plotter("dummy.svg", {1: r1}, [])
+        plotter = SVGRenderer("dummy.svg", {1: r1}, [])
 
         # Direction that is not N, E, S, W, U, D
         ex_fake_dir = Exit(ExitDef(direction=0, dst_vnum=999), source=1)
@@ -317,7 +322,7 @@ class TestPlotterEdgeCases:
         out_svg = str(tmp_path / "empty.svg")
         r_none = Room(RoomDef(vnum=1, name="Void", description=""))
         r_none.x, r_none.y, r_none.z = None, None, None
-        plotter = Plotter(out_svg, {1: r_none}, [])
+        plotter = SVGRenderer(out_svg, {1: r_none}, [])
         plotter.plot()
         assert os.path.exists(out_svg)
 
@@ -330,7 +335,7 @@ class TestPlotterEdgeCases:
         ex = r1.exits[0]
 
         # Plot level 0 specifically
-        plotter = Plotter(out_svg, {1: r1, 2: r2}, [ex], target_z=0)
+        plotter = SVGRenderer(out_svg, {1: r1, 2: r2}, [ex], target_z=0)
         plotter.plot()
 
         tree = ET.parse(out_svg)
@@ -343,7 +348,7 @@ class TestPlotterEdgeCases:
 class TestGraphAndCliEdgeCases:
     """Coverage and regression tests for graph and CLI edge cases."""
 
-    def test_graph_solver_failure_branch(self, monkeypatch, caplog):
+    def test_solve_layout_solver_failure_branch(self, monkeypatch, caplog):
         r1 = Room(RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=Direction.east.value, dst_vnum=2),)))
         r2 = Room(RoomDef(vnum=2, name="R2", description="", exits=(ExitDef(direction=Direction.west.value, dst_vnum=1),)))
         rdb = {1: r1, 2: r2}
@@ -354,7 +359,7 @@ class TestGraphAndCliEdgeCases:
         graph_module = sys.modules["romutil.graph"]
         monkeypatch.setattr(graph_module, "solve", lambda r, e: (None, fake_results))
 
-        graph(rdb, "dummy.svg", AreaHeader(filename="test.are", name="Fail", builder="", vnum_min=1, vnum_max=2))
+        solve_layout(rdb, AreaHeader(filename="test.are", name="Fail", builder="", vnum_min=1, vnum_max=2))
         assert "Solver failed!" in caplog.text
 
     def test_cli_debug_flag(self, tmp_path, monkeypatch):
@@ -378,11 +383,11 @@ class TestGraphAndCliEdgeCases:
         r2.x, r2.y, r2.z = None, None, None
         ex = r1.exits[0]
 
-        plotter = Plotter(out_svg, {1: r1, 2: r2}, [ex])
+        plotter = SVGRenderer(out_svg, {1: r1, 2: r2}, [ex])
         plotter.plot()
         assert os.path.exists(out_svg)
 
-    def test_graph_hallway_asymmetric_exit(self, tmp_path):
+    def test_solve_layout_hallway_asymmetric_exit(self, tmp_path):
         # Room 2 has 2 exits, but destination doesn't have reciprocal exit
         r1 = Room(RoomDef(vnum=1, name="R1", description=""))
         r2 = Room(RoomDef(vnum=2, name="R2", description="", exits=(ExitDef(direction=Direction.east.value, dst_vnum=3), ExitDef(direction=Direction.west.value, dst_vnum=1))))
@@ -390,7 +395,9 @@ class TestGraphAndCliEdgeCases:
         rdb = {1: r1, 2: r2, 3: r3}
         out_svg = str(tmp_path / "asym.svg")
         # Should not crash on hallway collapse check
-        graph(rdb, out_svg, AreaHeader(filename="test.are", name="Asym", builder="", vnum_min=1, vnum_max=3))
+        header = AreaHeader(filename="test.are", name="Asym", builder="", vnum_min=1, vnum_max=3)
+        solved_rdb, exits = solve_layout(rdb, header)
+        render_map(solved_rdb, out_svg, fmt="svg", header=header, exits=exits)
 
     def test_cli_empty_sections_handled(self, tmp_path, monkeypatch):
         fake_parser = MagicMock()
@@ -420,7 +427,7 @@ class TestElevationPaintersLayering:
             r.x, r.y, r.z = 0, 0, z
             rdb[vnum] = r
 
-        plotter = Plotter(out_svg, rdb, [])
+        plotter = SVGRenderer(out_svg, rdb, [])
         plotter.plot()
 
         tree = ET.parse(out_svg)
@@ -445,7 +452,7 @@ class TestElevationPaintersLayering:
 
         # Insert out of order: B, C, A
         rdb = {20: rB, 30: rC, 10: rA}
-        plotter = Plotter(out_svg, rdb, [])
+        plotter = SVGRenderer(out_svg, rdb, [])
         plotter.plot()
 
         tree = ET.parse(out_svg)
@@ -468,7 +475,7 @@ class TestElevationPaintersLayering:
         r1.x, r1.y, r1.z = 0, 0, 1
         ex = r0.exits[0]
 
-        plotter = Plotter(out_svg, {1: r0, 2: r1}, [ex])
+        plotter = SVGRenderer(out_svg, {1: r0, 2: r1}, [ex])
         plotter.plot()
 
         tree = ET.parse(out_svg)

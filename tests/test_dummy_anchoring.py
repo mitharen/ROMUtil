@@ -20,7 +20,7 @@ Verifies:
      circlemud.are, dikumud_alfa.wld).
    - All rooms (non-dummy and dummy) receive valid, non-None integer coordinates.
 4. Renderer Compatibility:
-   - SVGRenderer and Plotter render external exit stubs at exact 1-unit length in nominal exit direction.
+   - SVGRenderer renders external exit stubs at exact 1-unit length in nominal exit direction.
    - JSON and HTML exports function without errors and omit dummy rooms from room entity sets.
 """
 
@@ -32,7 +32,7 @@ from romutil.models import Direction, Exit, Room, RoomDef
 from romutil.parser import Parser, parse_circlemud_directory
 from romutil.graph import solve_layout
 from romutil.solver import position_dummy_rooms, solve, non_euler
-from romutil.renderers import SVGRenderer, Plotter, render_map
+from romutil.renderers import SVGRenderer, render_map
 from romutil.renderers.json import build_area_json
 
 
@@ -359,7 +359,7 @@ class TestRendererExternalExitStubs:
         ],
     )
     def test_plotter_external_exit_stubs_cardinal(self, direction, expected_dx, expected_dy):
-        """Plotter projects external exit stubs at exact 1.0 unit length for dummy target rooms."""
+        """SVGRenderer projects external exit stubs at exact 1.0 unit length for dummy target rooms."""
         src = Room(RoomDef(vnum=10, name="R10", description="", exits=()))
         src.x, src.y, src.z = 5, 5, 0
 
@@ -371,7 +371,7 @@ class TestRendererExternalExitStubs:
         src.exits = [ex]
 
         rdb = {10: src, 20: dummy}
-        plotter = Plotter("test", rdb, [ex])
+        plotter = SVGRenderer("test", rdb, [ex])
         coords = plotter.proj_exit(ex)
 
         assert coords is not None
@@ -380,7 +380,7 @@ class TestRendererExternalExitStubs:
         assert end[1] == pytest.approx(start[1] + expected_dy)
 
     def test_plotter_external_exit_stubs_vertical(self):
-        """Plotter projects vertical external exit stubs using elevation lift."""
+        """SVGRenderer projects vertical external exit stubs using elevation lift."""
         src = Room(RoomDef(vnum=10, name="R10", description="", exits=()))
         src.x, src.y, src.z = 2, 2, 0
 
@@ -392,7 +392,7 @@ class TestRendererExternalExitStubs:
         src.exits = [ex_up]
 
         rdb = {10: src, 20: dummy_up}
-        plotter = Plotter("test", rdb, [ex_up])
+        plotter = SVGRenderer("test", rdb, [ex_up])
         start, end = plotter.proj_exit(ex_up)
         assert end[0] == pytest.approx(start[0] + plotter.lift)
         assert end[1] == pytest.approx(start[1] - plotter.lift)
@@ -405,7 +405,7 @@ class TestRendererExternalExitStubs:
         src.exits.append(ex_down)
         rdb[30] = dummy_down
 
-        plotter = Plotter("test", rdb, [ex_down])
+        plotter = SVGRenderer("test", rdb, [ex_down])
         start, end = plotter.proj_exit(ex_down)
         assert end[0] == pytest.approx(start[0] - plotter.lift)
         assert end[1] == pytest.approx(start[1] + plotter.lift)

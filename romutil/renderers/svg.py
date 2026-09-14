@@ -15,30 +15,32 @@ from romutil.renderers.base import BaseRenderer
 class _DynamicPalette:
     """Dynamic palette mapping Z index to an HSL color for backward compatibility."""
 
-    def __init__(self, plotter: Any) -> None:
-        self._plotter = plotter
+    def __init__(self, renderer: SVGRenderer) -> None:
+        self._renderer: SVGRenderer = renderer
 
     def __getitem__(self, idx: int) -> str:
-        return self._plotter.get_color(idx)
+        return self._renderer.get_color(idx)
 
     def __len__(self) -> int:
-        return len(self._plotter.get_unique_elevations())
+        return len(self._renderer.get_unique_elevations())
 
 
-class _Plotter:
+class SVGRenderer(BaseRenderer):
+    """Renderer generating 2D/3D isometric SVG vector maps conforming to BaseRenderer."""
+
     lift: float = 0.15
     colors: Any = ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet']
 
     def __init__(
         self,
-        name: str | Path,
-        rdb: Dict[int, Room],
-        exits: List[Exit],
+        name: str | Path = "",
+        rdb: Dict[int, Room] | None = None,
+        exits: List[Exit] | None = None,
         target_z: Optional[int] = None,
     ) -> None:
         self.name: str = str(name)
-        self.rdb: Dict[int, Room] = rdb
-        self.exits: List[Exit] = exits
+        self.rdb: Dict[int, Room] = rdb if rdb is not None else {}
+        self.exits: List[Exit] = exits if exits is not None else []
         self.target_z: Optional[int] = target_z
         self.x_max: float = 0.0
         self.y_max: float = 0.0
@@ -336,23 +338,6 @@ function toggleElevation(z) {
         dwg.save()
 
 
-class SVGRenderer(_Plotter):
-    """Renderer generating 2D/3D isometric SVG vector maps conforming to BaseRenderer."""
-
-    def __init__(
-        self,
-        name: str | Path = "",
-        rdb: Dict[int, Room] | None = None,
-        exits: List[Exit] | None = None,
-        target_z: Optional[int] = None,
-    ) -> None:
-        super().__init__(
-            name=name,
-            rdb=rdb if rdb is not None else {},
-            exits=exits if exits is not None else [],
-            target_z=target_z,
-        )
-
     def render(
         self,
         rdb: dict[int, Room],
@@ -389,19 +374,16 @@ class SVGRenderer(_Plotter):
             base = outbase if outbase else (str(out_path)[:-4] if str(out_path).endswith('.svg') else str(out_path))
             for z in unique_zs:
                 level_name = f"{base}_z{z}.svg"
-                plotter = SVGRenderer(level_name, rdb, exits, target_z=z)
-                plotter.plot()
+                renderer = SVGRenderer(level_name, rdb, exits, target_z=z)
+                renderer.plot()
             return out_path
         else:
-            plotter = SVGRenderer(str(out_path), rdb, exits, target_z=target_z)
-            plotter.plot()
+            renderer = SVGRenderer(str(out_path), rdb, exits, target_z=target_z)
+            renderer.plot()
             return out_path
 
-
-Plotter = SVGRenderer
 
 __all__ = [
     "SVGRenderer",
-    "Plotter",
     "_DynamicPalette",
 ]

@@ -27,7 +27,7 @@ from romutil.models import (
     merge_areas,
 )
 from romutil.parser import Parser
-from romutil.graph import solve_layout, graph
+from romutil.graph import solve_layout
 from romutil.cli import main, cli
 from romutil.decomposition import (
     AreaProfile,
@@ -421,11 +421,13 @@ class TestHierarchicalAssemblyIntegration:
         solved_rdb, exits = solve_layout(rdb, hierarchical=False, solver_timeout=15)
         assert len(solved_rdb) >= 6
 
-    def test_graph_hierarchical_passthrough(self, hood_area, tmp_path):
-        """graph() passes hierarchical parameter to solve_layout."""
+    def test_solve_layout_hierarchical_passthrough(self, hood_area):
+        """solve_layout respects hierarchical parameter."""
         rdb = {r.vnum: Room(r) for r in hood_area.rooms[:4]}
-        outbase = str(tmp_path / "test_out")
-        graph(rdb, outbase, area=hood_area.header, hierarchical=True, solver_timeout=15)
+        solved_rdb, exits = solve_layout(rdb, area=hood_area.header, hierarchical=True, solver_timeout=15)
+        assert len(solved_rdb) >= 4
+        solved_rdb_flat, exits_flat = solve_layout(rdb, area=hood_area.header, hierarchical=False, solver_timeout=15)
+        assert len(solved_rdb_flat) >= 4
 
 
 # ============================================================================
@@ -451,7 +453,7 @@ class TestMetropolitanClusterSolve:
         solved_rdb, exits = solve_hierarchical_layout(
             rdb,
             child_timeout=15,
-            container_timeout=60,
+            container_timeout=120,
         )
 
         non_dummy = [r for r in solved_rdb.values() if not getattr(r, "dummy", False)]

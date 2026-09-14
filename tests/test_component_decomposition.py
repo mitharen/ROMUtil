@@ -30,10 +30,10 @@ import pytest
 from romutil.graph import (
     compute_bounding_box,
     decompose_components,
-    graph,
     solve_layout,
     _has_feasible_coordinates,
 )
+from romutil.renderers import render_map
 from romutil.models import AreaHeader, Direction, Exit, ExitDef, Room, RoomDef
 from romutil.solver import solve
 
@@ -415,11 +415,11 @@ class TestSolverRecoveryAndFallbackInComponents:
         assert solved_rdb[11].x == 5
 
 
-class TestGraphRenderingIntegration:
-    """Integration test for graph() map rendering with decomposed components."""
+class TestComponentRenderingIntegration:
+    """Integration test for solve_layout() and render_map() with decomposed components."""
 
-    def test_graph_multi_component_svg_render(self, tmp_path):
-        """graph() renders an SVG containing all decomposed components."""
+    def test_multi_component_svg_render(self, tmp_path):
+        """solve_layout() and render_map() render an SVG containing all decomposed components."""
         r1 = Room(RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=1, dst_vnum=2),)))
         r2 = Room(RoomDef(vnum=2, name="R2", description="", exits=(ExitDef(direction=3, dst_vnum=1),)))
         r10 = Room(RoomDef(vnum=10, name="R10", description="", exits=(ExitDef(direction=1, dst_vnum=11),)))
@@ -428,7 +428,8 @@ class TestGraphRenderingIntegration:
         rdb = {1: r1, 2: r2, 10: r10, 11: r11}
         out_svg = tmp_path / "multi_comp.svg"
 
-        graph(rdb, str(out_svg), "MultiCompArea", solver_timeout=10, component_padding=3)
+        solved_rdb, exits = solve_layout(rdb, "MultiCompArea", solver_timeout=10, component_padding=3)
+        render_map(solved_rdb, out_svg, fmt="svg", header="MultiCompArea", exits=exits)
         assert out_svg.exists()
         content = out_svg.read_text(encoding="utf-8")
         assert "<svg" in content
@@ -489,6 +490,8 @@ class TestGraphRenderingIntegration:
         assert solved_rdb[2].y == 0
         assert solved_rdb[2].z == 0
 
-    def test_graph_empty_rdb_early_exit(self):
-        """graph() exits cleanly without rendering if rdb and exits are empty."""
-        assert graph({}, "empty.svg", None) is None
+    def test_solve_layout_empty_rdb(self):
+        """solve_layout() exits cleanly with empty rdb and exits."""
+        solved_rdb, exits = solve_layout({}, None)
+        assert solved_rdb == {}
+        assert exits == []
