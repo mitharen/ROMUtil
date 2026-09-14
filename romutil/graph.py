@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import logging
-from typing import Iterable, Mapping, Optional, Sequence
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 import networkx as nx
 import pyomo.opt
@@ -128,7 +128,7 @@ def _has_feasible_coordinates(model, rdb) -> bool:
     except (KeyError, AttributeError, TypeError):
         return False
 
-def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2):
+def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2, extra_constraints_hook: Optional[Callable[[Any], None]] = None, hierarchical: bool = True):
     """
     Solves 3D coordinates for rooms using Pyomo MILP optimization.
     Simplifies straight hallways, resolves boundary dummies, restores hallways,
@@ -142,6 +142,22 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
 
     setattr(solve_layout, 'last_timeout_collision_failure', False)
     setattr(solve_layout, 'last_unresolved_collisions', {})
+
+    if hierarchical:
+        non_dummy = [r for r in rdb.values() if not getattr(r, 'dummy', False)]
+        distinct_areas = {
+            getattr(r, 'area_name', None) or getattr(r, 'area_file', None)
+            for r in non_dummy
+        }
+        distinct_areas.discard(None)
+        if len(distinct_areas) > 1 and len(non_dummy) > 2:
+            from romutil.decomposition import solve_hierarchical_layout
+            return solve_hierarchical_layout(
+                rdb,
+                area=area,
+                solver_timeout=solver_timeout,
+                component_padding=component_padding,
+            )
 
 
     # Save original exits for complete export preservation
@@ -235,12 +251,18 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
         non_dummy_vnums = [v for v, r in rdb.items() if not getattr(r, 'dummy', False)] or list(rdb.keys())
         if solver_timeout is not None:
             log.info(f'{area_name} Solving for {len(exits)} exits across {len(non_dummy_vnums)} rooms (fixed timeout {solver_timeout}s)...')
-            model, results = solve(rdb, exits, timeout=solver_timeout)
+            if extra_constraints_hook is not None:
+                model, results = solve(rdb, exits, timeout=solver_timeout, extra_constraints_hook=extra_constraints_hook)
+            else:
+                model, results = solve(rdb, exits, timeout=solver_timeout)
         else:
             comp_timeout = compute_dynamic_solver_timeout(len(non_dummy_vnums), len(exits))
             density = (len(exits) / len(non_dummy_vnums)) if non_dummy_vnums else 0.0
             log.info(f'{area_name} Solving for {len(exits)} exits across {len(non_dummy_vnums)} rooms (density {density:.2f}, dynamic timeout {comp_timeout}s)...')
-            model, results = solve(rdb, exits)
+            if extra_constraints_hook is not None:
+                model, results = solve(rdb, exits, extra_constraints_hook=extra_constraints_hook)
+            else:
+                model, results = solve(rdb, exits)
 
         tc = getattr(getattr(results, 'solver', None), 'termination_condition', None)
         has_valid_coords = _has_feasible_coordinates(model, rdb)
@@ -356,12 +378,18 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
             else:
                 if solver_timeout is not None:
                     log.info(f'{area_name} Component {i+1}/{len(components)}: solving for {len(exits_i)} exits across {len(comp_vnums)} rooms (fixed timeout {solver_timeout}s)...')
-                    model_i, results_i = solve(rdb_i, exits_i, timeout=solver_timeout)
+                    if extra_constraints_hook is not None:
+                        model_i, results_i = solve(rdb_i, exits_i, timeout=solver_timeout, extra_constraints_hook=extra_constraints_hook)
+                    else:
+                        model_i, results_i = solve(rdb_i, exits_i, timeout=solver_timeout)
                 else:
                     comp_timeout = compute_dynamic_solver_timeout(len(comp_vnums), len(exits_i))
                     density = (len(exits_i) / len(comp_vnums)) if comp_vnums else 0.0
                     log.info(f'{area_name} Component {i+1}/{len(components)}: solving for {len(exits_i)} exits across {len(comp_vnums)} rooms (density {density:.2f}, dynamic timeout {comp_timeout}s)...')
-                    model_i, results_i = solve(rdb_i, exits_i)
+                    if extra_constraints_hook is not None:
+                        model_i, results_i = solve(rdb_i, exits_i, extra_constraints_hook=extra_constraints_hook)
+                    else:
+                        model_i, results_i = solve(rdb_i, exits_i)
 
             tc_i = getattr(getattr(results_i, 'solver', None), 'termination_condition', None) if results_i else None
             has_valid_coords_i = _has_feasible_coordinates(model_i, rdb_i) if model_i else False
@@ -513,8 +541,10 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
 
     return rdb, exits
 
-def graph(rdb, name, area, split_levels=False, outbase=None, solver_timeout=None, **kwargs):
-    if kwargs:
+def graph(rdb, name, area, split_levels=False, outbase=None, solver_timeout=None, hierarchical=True, **kwargs):
+    if not hierarchical:
+        rdb, exits = solve_layout(rdb, area, solver_timeout=solver_timeout, hierarchical=False, **kwargs)
+    elif kwargs:
         rdb, exits = solve_layout(rdb, area, solver_timeout=solver_timeout, **kwargs)
     else:
         rdb, exits = solve_layout(rdb, area, solver_timeout=solver_timeout)

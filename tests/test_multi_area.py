@@ -44,6 +44,7 @@ from romutil.models import (
 )
 from romutil.parser import Parser
 from romutil.graph import solve_layout
+from romutil.solver import build_spatial_coordinate_buckets, find_spatial_room_collisions
 from romutil.renderers.json import build_area_json
 from romutil.renderers.html import generate_html_viewer
 from romutil.cli import main
@@ -483,3 +484,12 @@ class TestSolverCompositeInvariants:
             assert r.x is not None
             assert r.y is not None
             assert r.z is not None
+
+        coords = {r.vnum: (r.x, r.y, r.z) for r in non_dummy if r.x is not None and r.y is not None and r.z is not None}
+        buckets = build_spatial_coordinate_buckets(list(coords.keys()), coords)
+        collisions = find_spatial_room_collisions(buckets)
+        inter_area_collisions = [
+            (u, v) for u, v in collisions
+            if solved_rdb[u].area_name != solved_rdb[v].area_name
+        ]
+        assert len(inter_area_collisions) == 0, f"Expected 0 inter-area collisions, found {inter_area_collisions}"

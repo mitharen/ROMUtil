@@ -65,6 +65,7 @@ ROMUtil/
 ├── romutil/                     # Core Python package
 │   ├── __init__.py              # Package public API exports
 │   ├── cli.py                   # Unified CLI entry point & multi-format options
+│   ├── decomposition.py         # Hierarchical multi-area graph decomposition & macro-assembly
 │   ├── graph.py                 # Corridor collapsing, restoration, and mfas
 │   ├── models.py                # Direction, Room, and Exit domain models
 │   ├── parser.py                # PLY Lexer & LALR Parser with resilient encoding
@@ -489,6 +490,79 @@ To verify parser robustness, multi-dialect compatibility, and grammar resilience
 
 5. **Continuous Integration Workflow ([`.github/workflows/validate_corpus.yml`](../.github/workflows/validate_corpus.yml))**:
    An on-demand GitHub Actions workflow provides manual triggering via `workflow_dispatch` with configurable inputs (`repo`, `dialect`, `limit`). The workflow executes in Ubuntu Linux with `uv`, runs the validation harness, and uploads `corpus_summary.json` as a build artifact for regression inspection.
+
+### 4.10. Hierarchical Multi-Area Graph Decomposition & Macro-Assembly — [`romutil/decomposition.py`](../romutil/decomposition.py)
+
+#### 4.10.1. Topological Root Cause & The Combinatorial Limits of Flat Solves
+When mapping large interconnected multi-area clusters (e.g. the canonical *Midgaard Metropolitan* cluster comprising Midgaard, The Hood, Graveyard, Mob Factory, and MUD School across 369 rooms), monolithic flat solves attempt to formulate a single joint MILP decision space. In a monolithic formulation, pairwise disjunctive Big-$M$ cuts accumulate monotonically across iterations, causing exponential branch-and-bound tree growth, timeouts (>94 minutes), and unresolved inter-area overlap deadlocks.
+
+The underlying root cause is topological:
+- Child areas (such as The Hood `hood.are`, Graveyard `grave.are`, and Mob Factory `mobfact.are`) are *encircled* within the interior streets or bounding perimeter of the container area (Midgaard).
+- In standalone single-area mode, container streets sit only 1 unit apart (e.g. Emerald Avenue and Elm Street in Midgaard), while an enclosed child like The Hood requires an 11-unit port separation ($\\Delta Y = 11$) and a volumetric bounding box cavity of $W \\times H = 8 \\times 12$.
+- Without advance cavity reservation, container perimeter structures (such as Midgaard's Concourse rooms 3272 and 3273) collapse directly on top of the child zone's required footprint.
+
+#### 4.10.2. The Three-Pass Hierarchical Macro-Assembly Pipeline
+ROMUtil resolves this combinatorial complexity through a leaf-up hierarchical decomposition pipeline implemented in [`romutil/decomposition.py`](../romutil/decomposition.py):
+
+```mermaid
+flowchart TD
+    subgraph Pass 1: Independent Geometric Profiling
+        P1["Leaf Zones (Hood, Grave, Mob Factory, School)"] --> P2["solve_layout() in Isolation (< 2s)"]
+        P2 --> P3["Extract AreaProfile & Port Vectors (W, H, D, ΔP)"]
+    end
+
+    subgraph Hierarchy & Enclosure Detection
+        P3 --> C1{"Topological Classification"}
+        C1 -->|Cardinal Wrap-Around / Multi-Port| C2["ENCLOSED Child (Hood, Grave, Mob Factory)"]
+        C1 -->|Vertical Up/Down Exits| C3["EXTERNAL_SATELLITE (MUD School)"]
+        C2 --> C4["Construct MacroCavityContract (Clearance & Displacements)"]
+        C3 --> C4
+    end
+
+    subgraph Pass 2: Container Solve with Macro-Cavity Reservation
+        C4 --> S1["Formulate Container MILP (Midgaard)"]
+        S1 --> S2["Inject Macro-Constraints: Port Invariants & Clearance Inequalities"]
+        S2 --> S3["Solve Container with Reserved Cavities"]
+    end
+
+    subgraph Pass 3: Leaf-Up Macro-Assembly
+        S3 --> A1["Position Container at Origin Reference Frame"]
+        A1 --> A2["Rigid Affine Translation: x_global = x_local + T_child"]
+        A2 --> A3["Satellite Layering: Z_sat ≥ max(Z_cont) + 1"]
+        A3 --> A4["Exit Restoration & Spatial Collision Invariant Verification"]
+    end
+```
+
+1. **Pass 1 (Independent Geometric Profiling)**:
+   - Partitions the multi-area room graph into per-area subproblems based on room provenance (`area_name` / `area_file`).
+   - Solves each leaf area independently in isolation using [`solve_layout()`](../romutil/graph.py). Because child subproblems contain no cross-area constraints, CBC solves each leaf area in sub-second time (<2s total).
+   - Generates an `AreaProfile` recording 3D axis-aligned bounding extents $[x_{\\min}, x_{\\max}] \\times [y_{\\min}, y_{\\max}] \\times [z_{\\min}, z_{\\max}]$, dimensions $(W, H, D)$, and exact local coordinates for all boundary gateway port rooms.
+
+2. **Hierarchy & Enclosure Classification**:
+   - Constructs an undirected area connectivity multigraph $G_{\\text{area}} = (V_{\\text{area}}, E_{\\text{inter}})$.
+   - Evaluates degree centrality and room density to designate the root container host (e.g. Midgaard) vs. child zones.
+   - Evaluates boundary exit vectors against topological hulls:
+     - **`ENCLOSED` Child**: Zones attached via cardinal or diagonal boundary ports extending into the container's spatial span. Multi-port zones (such as The Hood with ports 2101 and 2160) rigidly bind displacement vectors between container gateway rooms.
+     - **`EXTERNAL_SATELLITE` Zone**: Zones connected via vertical exits (`Direction.up` or `Direction.down`, such as MUD School 3700 connected Up from Midgaard Temple 3001) or outer boundary pins.
+
+3. **Pass 2 (Container Solve with Macro-Cavity Reservation)**:
+   - For each child zone, constructs a `MacroCavityContract` encoding linear constraints:
+     - **Multi-Port Relative Displacement Invariants**: For port pairs $(u_1, v_1, d_1)$ and $(u_2, v_2, d_2)$, enforces container gateway room separation matching the child's internal vector $\\Delta \\mathbf{P}_{12} = \\mathbf{p}_{v1} - \\mathbf{p}_{v2}$:
+       $$\\mathbf{x}_{u1} - \\mathbf{x}_{u2} = \\Delta \\mathbf{P}_{12} + \\mathbf{d}_2 - \\mathbf{d}_1$$
+       For The Hood, this enforces $y_{3119} - y_{3144} \\ge 11$ and $x_{3119} == x_{3144}$.
+     - **Bounding Clearance Inequalities**: Pushes container perimeter rooms downstream of gateway exits outside the child's bounding envelope:
+       $$x_w \\ge x_u + W_{\\text{child}} + 2 \\quad (\\text{for Eastward child cavity})$$
+       $$y_u - y_w \\ge H_{\\text{child}} + 2 \\quad (\\text{for Southward child cavity})$$
+       For Midgaard, Concourse rooms (3272, 3273) are pushed East of The Hood, Mage's Guild rooms (3018, 3019) East of Mob Factory, and southern wall rooms (3130, 3127) South of Graveyard.
+   - Solves the container zone using CBC via Pyomo constraint injection hook `create_macro_cavity_hook()`.
+
+4. **Pass 3 (Leaf-Up Macro-Assembly)**:
+   - Embeds container rooms into the composite world frame as the reference coordinate system.
+   - Translates enclosed child blocks into their reserved cavities via rigid affine translations:
+     $$\\mathbf{x}_{\\text{global}} = \\mathbf{x}_{\\text{local}} + \\mathbf{T}$$
+     where $\\mathbf{T} = (\\mathbf{x}_u + \\mathbf{d}) - \\mathbf{p}_v$.
+   - Layers satellite zones onto dedicated vertical elevation planes ($Z_{\\text{sat}} \\ge Z_{\\max}^{\\text{container}} + 1$), preserving cardinal alignment with gateway stubs while avoiding ground-plane collisions.
+   - Restores original inter-area exit topologies, normalizes minimum coordinates to $(0, 0, 0)$, and verifies spatial coordinate non-overlap invariants.
 
 ---
 

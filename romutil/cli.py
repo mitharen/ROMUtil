@@ -24,6 +24,7 @@ def main(
     fmt: str | Sequence[str] = "svg",
     circle_dir: Path | str | None = None,
     solver_timeout: int | None = None,
+    hierarchical: bool = True,
 ) -> None:
     if isinstance(fmt, str):
         format_list = [f.strip().lower() for f in fmt.split(',') if f.strip()]
@@ -139,7 +140,10 @@ def main(
 
     for i, sub_graph in enumerate(connected_comps):
         sub_rdb = {node: rdb[node] for node in sub_graph}
-        solved_sub, solved_exits = solve_layout(sub_rdb, area_meta, solver_timeout=solver_timeout)
+        if not hierarchical:
+            solved_sub, solved_exits = solve_layout(sub_rdb, area_meta, solver_timeout=solver_timeout, hierarchical=False)
+        else:
+            solved_sub, solved_exits = solve_layout(sub_rdb, area_meta, solver_timeout=solver_timeout)
         graph_solve_layout = getattr(sys.modules.get('romutil.graph', None), 'solve_layout', None)
         failed = (
             getattr(solve_layout, 'last_timeout_collision_failure', False)
@@ -241,6 +245,12 @@ def cli():
         default=None,
         help='CBC solver timeout limit in seconds (default: dynamic room-scaled timeout)',
     )
+    parser.add_argument(
+        '--hierarchical',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Enable hierarchical decomposition for multi-area solves (default: True)',
+    )
     args = parser.parse_args()
 
     if args.areas and str(args.areas[0]).lower() == "map" and not args.areas[0].exists():
@@ -277,6 +287,7 @@ def cli():
         fmt=format_list,
         circle_dir=args.circle_dir,
         solver_timeout=args.solver_timeout,
+        hierarchical=args.hierarchical,
     )
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ import itertools
 import logging
 from math import gcd, sqrt
 import os
-from typing import Any, Mapping, Optional, Sequence, Set as TypingSet, Tuple
+from typing import Any, Callable, Mapping, Optional, Sequence, Set as TypingSet, Tuple
 
 import pyomo.opt
 from pyomo.environ import (
@@ -1126,7 +1126,7 @@ def find_collinear_exit_room_penetrations(
     return penetrations
 
 
-def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | None = None):
+def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | None = None, extra_constraints_hook: Callable[[Any], None] | None = None):
     exits = [e for e in area_exits if e.src != e.dst]
 
     m = non_euler(rdb, exits)
@@ -1386,6 +1386,9 @@ def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | Non
     constrained_dummy_collisions: set[tuple[int, int]] = set()
     constrained_room_collisions: set[tuple[int, int]] = set()
     constrained_exit_room_penetrations: set[tuple[int, int]] = set()
+
+    if extra_constraints_hook is not None:
+        extra_constraints_hook(m)
 
     while True:
         result = solver.solve(m, tee=False)
