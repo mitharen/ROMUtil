@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from romutil.models import Direction, Room, Exit, RoomDef, ExitDef, AreaHeader
 from romutil.renderers.svg import SVGRenderer as Plotter
 from romutil.solver import non_euler, solve
-from romutil.graph import restore_rooms, mfas, graph
+from romutil.graph import restore_rooms, graph
 from romutil.cli import main, cli
 
 from tests.conftest import SAMPLE_AREAS_DIR
@@ -255,15 +255,7 @@ class TestGraphAndCorridorCollapse:
 
 
 class TestSolver:
-    """Tests for MILP optimization solver and feedback arc set."""
-
-    def test_mfas_acyclic_and_cyclic(self):
-        # Cyclic graph: 1 -> 2 -> 3 -> 1
-        edges = [(1, 2), (2, 3), (3, 1)]
-        cuts = mfas(edges)
-        # Should cut at least 1 edge to break cycle
-        assert len(cuts) >= 1
-        assert any(e in edges for e in cuts)
+    """Tests for MILP optimization solver."""
 
     def test_solve_simple_layout(self):
         # 2 rooms connected bidirectionally

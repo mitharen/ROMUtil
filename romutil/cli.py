@@ -1,6 +1,5 @@
 import argparse
 import logging
-import os
 from pathlib import Path
 import shutil
 import sys
@@ -11,7 +10,7 @@ import pyomo.common.config
 
 from romutil.models import Room, Exit, AreaData, AreaHeader, merge_areas
 from romutil.parser import Parser, parse_circlemud_directory
-from romutil.graph import graph, solve_layout
+from romutil.graph import solve_layout
 from romutil.renderers import RENDERERS, get_renderer, render_map
 
 logging.basicConfig()

@@ -401,12 +401,5 @@ S
         test_file = tmp_path / "legacy.are"
         test_file.write_text("dummy")
 
-        # Mock graph to verify it gets called with the room
-        called = {}
-        def mock_graph(rdb, outbase, meta, *args, **kwargs):
-            called["rdb"] = rdb
-            called["meta"] = meta
-        monkeypatch.setattr(cli_module, "graph", mock_graph)
-
         with pytest.raises(TypeError, match="Expected AreaData"):
             cli_module.main([test_file], str(tmp_path / "out"))

@@ -6,11 +6,8 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 import networkx as nx
 import pyomo.opt
-from pyomo.environ import ConcreteModel, RangeSet, Param, Var, Objective, ConstraintList, Binary, NonNegativeIntegers, SolverFactory
-
 from romutil.models import Direction, Room, Exit, RoomDef
-from romutil.renderers.svg import SVGRenderer as Plotter
-from romutil.renderers import SVGRenderer, render_map
+from romutil.renderers import render_map
 from romutil.solver import compute_dynamic_solver_timeout, position_dummy_rooms, solve
 
 log = logging.getLogger('Mapper.graph')
@@ -47,31 +44,6 @@ def restore_rooms(room):
         rooms += restore_rooms(r)
     return rooms
 
-def mfas(edges):
-    """
-    minimum feedback arc set for a graph
-    """
-    graph_obj = nx.DiGraph(edges)
-    labels = {u: v for u, v in zip(graph_obj.nodes, range(graph_obj.order()))}
-    nx.relabel.relabel_nodes(graph_obj, labels, copy=False)
-    nx.drawing.nx_pydot.to_pydot(graph_obj).write_svg('test.svg')
-
-    model = ConcreteModel()
-    model.Nodes = RangeSet(0, graph_obj.order())
-    model.N = Param(initialize=graph_obj.order())
-    model.b = Var(model.Nodes, model.Nodes, within=Binary)
-    model.p = Var(model.Nodes, within=NonNegativeIntegers, bounds=(0, model.N))
-    model.order = ConstraintList()
-
-    for u, v in graph_obj.edges:
-        model.order.add((model.p[v] - model.p[u]) + (model.N * model.b[u, v]) >= 1)
-
-    model.obj = Objective(expr=sum([model.b[u, v] for u, v in graph_obj.edges]))
-
-    solver = SolverFactory('cbc')
-    solver.options['threads'] = 8
-    solver.solve(model, tee=False)
-    return [(u, v) for u, v in edges if model.b[labels[u], labels[v]].value]
 
 def compute_bounding_box(rooms: Iterable[Room]) -> tuple[int, int, int, int, int, int]:
     """

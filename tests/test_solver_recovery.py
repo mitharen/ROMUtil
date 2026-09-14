@@ -117,14 +117,11 @@ class TestSolverTimeoutParameterization:
         mock_solver.options = {}
         monkeypatch.setattr(solver_mod, "SolverFactory", lambda name, **kwargs: mock_solver)
 
-        mock_plot = MagicMock()
-        monkeypatch.setattr(solver_mod.Plotter, "plot", mock_plot)
-
         m, res = solve(rdb, exits, timeout=15)
         assert res.solver.termination_condition == pyomo.opt.TerminationCondition.maxTimeLimit
         assert rdb[1].x == 10
         assert rdb[2].x == 20
-        mock_plot.assert_called()
+        assert not Path("progress.svg").exists()
 
     def test_solve_maxtimelimit_without_feasible_solution(self, monkeypatch):
         """Solver loop returns (m, result) without plotting when coordinates are None."""
@@ -148,12 +145,9 @@ class TestSolverTimeoutParameterization:
         mock_solver.options = {}
         monkeypatch.setattr(solver_mod, "SolverFactory", lambda name, **kwargs: mock_solver)
 
-        mock_plot = MagicMock()
-        monkeypatch.setattr(solver_mod.Plotter, "plot", mock_plot)
-
         m, res = solve(rdb, exits, timeout=10)
         assert res.solver.termination_condition == pyomo.opt.TerminationCondition.maxTimeLimit
-        mock_plot.assert_not_called()
+        assert not Path("progress.svg").exists()
 
     def test_solve_infeasible_terminates_immediately(self, monkeypatch):
         """Solver terminates immediately on infeasible result."""

@@ -1901,19 +1901,6 @@ __JSON_DATA__
         searchInput.dispatchEvent(new Event('input'));
       });
 
-      // Programmatic / legacy floorFilter dropdown change handler
-      if (floorFilter) {
-        floorFilter.addEventListener('change', () => {
-          const val = floorFilter.value;
-          if (val === 'all' || val === null) {
-            zValues.forEach(z => activeFloors.add(z));
-          } else {
-            activeFloors.clear();
-            activeFloors.add(parseInt(val, 10));
-          }
-          applyFloorFilter();
-        });
-      }
 
       // Collapsible Sidebar functionality
       const sidebar = document.getElementById('sidebar');

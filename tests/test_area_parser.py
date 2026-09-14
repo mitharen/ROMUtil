@@ -1,6 +1,6 @@
 import os
 import pytest
-from romutil.parser import Lexer, Parser, parse_file, main
+from romutil.parser import Lexer, Parser, parse_file
 
 from tests.conftest import SAMPLE_AREAS_DIR
 
@@ -136,12 +136,6 @@ class TestLexer:
         lexer_obj.lex_file(str(test_file))
         captured = capsys.readouterr().out
         assert "LexToken(AREA" in captured
-
-    def test_parser_main(self, tmp_path, monkeypatch):
-        test_file = tmp_path / "test_main.are"
-        test_file.write_text(MINIMAL_VALID_AREA)
-        monkeypatch.setattr("sys.argv", ["romutil.parser", str(test_file)])
-        main()
 
     def test_parser_room_with_regen_and_owner(self):
         area_text = """#AREA

@@ -1,7 +1,6 @@
 import logging
 from pathlib import Path
 import re
-import sys
 from typing import Any
 import ply.lex as lex
 import ply.yacc as yacc
@@ -1351,11 +1350,3 @@ def parse_circlemud_directory(directory_path: str | Path) -> AreaData:
 def parse_file(filepath):
     with open(filepath, 'r', encoding='latin-1', errors='replace') as f:
         return Parser().parse(f.read())
-
-def main():
-    if len(sys.argv) > 1:
-        parse_file(sys.argv[1])
-
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.DEBUG)
-    main()

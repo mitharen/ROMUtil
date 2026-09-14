@@ -66,7 +66,7 @@ ROMUtil/
 │   ├── __init__.py              # Package public API exports
 │   ├── cli.py                   # Unified CLI entry point & multi-format options
 │   ├── decomposition.py         # Hierarchical multi-area graph decomposition & macro-assembly
-│   ├── graph.py                 # Corridor collapsing, restoration, and mfas
+│   ├── graph.py                 # Corridor collapsing, restoration, and component decomposition
 │   ├── models.py                # Direction, Room, and Exit domain models
 │   ├── parser.py                # PLY Lexer & LALR Parser with resilient encoding
 │   ├── renderers/               # Unified map renderer architecture
@@ -178,8 +178,6 @@ Before invoking the mathematical optimization engine, the area graph is simplifi
    Ensures consistent geometric placement for external exit stubs in SVG, JSON, and HTML renderers without solver overhead.
 7. **Corridor Expansion & Coordinate Interpolation (`restore_rooms`)**:
    Traverses `fixups` on surviving rooms and calculates exact integer coordinates for collapsed corridor rooms via linear interpolation between corridor endpoints.
-8. **Minimal Feedback Arc Set (`mfas`)**:
-   Computes minimal feedback arc sets to identify directional cycle cuts and orient directed acyclic graph projections.
 
 ---
 
@@ -300,8 +298,7 @@ To avoid instantiating $O(E^2)$ crossing constraints up front, collision avoidan
    - **Dimension-Specific Separation Bounds**: Disjunctive Big-M bounds use axis-specific $2 \cdot M_d$ (e.g., $2 M_x$ for East/West, $2 M_y$ for North/South, $2 M_z$ for Up/Down) rather than monolithic $2 M$.
 7. **Constraint Batch Capping**:
    Candidate batches added per solver iteration are dynamically capped to $\min(15, \max(5, \text{int}(\sqrt{|\text{candidates}|})))$ to prevent combinatorial explosion in CBC.
-8. Generates an intermediate `progress.svg` snapshot after each solver iteration.
-9. The solver iterates until no crossings remain or constraints converge.
+8. The solver iterates until no crossings remain or constraints converge.
 
 #### CBC Solver Tuning & Multithreaded Execution:
 Solver instantiation via [`get_cbc_solver()`](../romutil/solver.py) standardizes tuned parameters across both `non_euler()` cycle relaxation and iterative `solve()` collision resolution:

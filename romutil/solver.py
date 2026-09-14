@@ -16,7 +16,6 @@ from pyomo.environ import (
 import tqdm
 
 from romutil.models import Direction, Exit, ExitDef
-from romutil.renderers.svg import SVGRenderer as Plotter
 
 log = logging.getLogger('Mapper.solver')
 
@@ -1419,7 +1418,6 @@ def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | Non
                     room.y = m.y[vnum].value if m.y[vnum].value is not None else 0
                     room.z = m.z[vnum].value if m.z[vnum].value is not None else 0
                 position_dummy_rooms(rdb, exits)
-                Plotter('progress.svg', rdb, exits).plot()
 
             if result.solver.termination_condition == pyomo.opt.TerminationCondition.maxTimeLimit:
                 coords = {
@@ -1510,7 +1508,6 @@ def solve(rdb, area_exits, timeout: int | None = None, solver_timeout: int | Non
             room.y = m.y[vnum].value if m.y[vnum].value is not None else 0
             room.z = m.z[vnum].value if m.z[vnum].value is not None else 0
         position_dummy_rooms(rdb, exits)
-        Plotter('progress.svg', rdb, exits).plot()
 
         has_vertical_exits = any(e.direction in (Direction.up, Direction.down) for e in exits)
         added_constraints = 0
