@@ -311,6 +311,51 @@ def get_candidate_batch_cap(num_candidates: int) -> int:
     return min(15, max(5, int(sqrt(num_candidates))))
 
 
+def _add_disjunctive_vars(
+    m: ConcreteModel,
+    relations: int,
+    prefix: str,
+    active_dirs: Sequence[Direction],
+) -> tuple[Var, int, int, int]:
+    """Create Boolean relation variables, register a sum>=1 crossing constraint, and compute Big-M bounds.
+
+    This private helper consolidates the repeated pattern shared by all four
+    disjunctive spatial-separation constraint builders:
+
+    1. Instantiates a ``Var(active_dirs, within=Boolean)`` Pyomo component named
+       ``f'{prefix}{relations}'`` and attaches it to the model.
+    2. Adds ``sum(relation[d] for d in active_dirs) >= 1`` to ``m.crossings``.
+    3. Reads dimension-specific bound parameters ``Mx``, ``My``, ``Mz`` (falling
+       back to ``M`` then ``100``) and returns the pre-multiplied Big-M values
+       ``big_mx = 2 * Mx + 4``, ``big_my = 2 * My + 4``, ``big_mz = 2 * Mz + 4``.
+
+    Args:
+        m: The Pyomo ``ConcreteModel`` being constructed.
+        relations: Current relation index counter (used for component naming).
+        prefix: Name prefix for the Pyomo component (e.g. ``'relation'``,
+            ``'dummy_rel_'``, ``'room_rel_'``, ``'collinear_rel_'``).
+        active_dirs: Ordered sequence of ``Direction`` values that will index
+            the Boolean variable.
+
+    Returns:
+        A 4-tuple ``(relation, big_mx, big_my, big_mz)`` where *relation* is
+        the newly created ``Var`` component and the three integers are the
+        dimension-specific Big-M multipliers ready for use in constraints.
+    """
+    relation = Var(active_dirs, within=Boolean)
+    m.add_component(f'{prefix}{relations}', relation)
+    m.crossings.add(sum(relation[d] for d in active_dirs) >= 1)
+
+    mx = getattr(m, 'Mx', getattr(m, 'M', 100))
+    my = getattr(m, 'My', getattr(m, 'M', 100))
+    mz = getattr(m, 'Mz', getattr(m, 'M', 100))
+
+    big_mx: int = 2 * mx + 4
+    big_my: int = 2 * my + 4
+    big_mz: int = 2 * mz + 4
+
+    return relation, big_mx, big_my, big_mz
+
 def add_overlap_constraint(
     m: ConcreteModel,
     ex: Exit,
@@ -364,13 +409,9 @@ def add_overlap_constraint(
             Direction.down,
         ]
 
-    relation = Var(active_dirs, within=Boolean)
-    m.add_component(f'relation{relations}', relation)
-    m.crossings.add(sum(relation[d] for d in active_dirs) >= 1)
-
-    mx = getattr(m, 'Mx', getattr(m, 'M', 100))
-    my = getattr(m, 'My', getattr(m, 'M', 100))
-    mz = getattr(m, 'Mz', getattr(m, 'M', 100))
+    relation, big_mx, big_my, big_mz = _add_disjunctive_vars(
+        m, relations, 'relation', active_dirs
+    )
     d_min = getattr(m, 'd_min', 1)
 
     def _get_var_x(v: int):
@@ -406,42 +447,42 @@ def add_overlap_constraint(
     if Direction.east in active_dirs:
         for p, q in prod:
             m.crossings.add(
-                _get_var_x(p) - _get_var_x(q) + (2 * mx + 4) * ((1 - relation[Direction.east]) + m.cut[left] + m.cut[right]) >= d_min
+                _get_var_x(p) - _get_var_x(q) + big_mx * ((1 - relation[Direction.east]) + m.cut[left] + m.cut[right]) >= d_min
             )
 
     # West: x[q] - x[p] >= d_min
     if Direction.west in active_dirs:
         for p, q in prod:
             m.crossings.add(
-                _get_var_x(q) - _get_var_x(p) + (2 * mx + 4) * ((1 - relation[Direction.west]) + m.cut[left] + m.cut[right]) >= d_min
+                _get_var_x(q) - _get_var_x(p) + big_mx * ((1 - relation[Direction.west]) + m.cut[left] + m.cut[right]) >= d_min
             )
 
     # North: y[p] - y[q] >= d_min
     if Direction.north in active_dirs:
         for p, q in prod:
             m.crossings.add(
-                _get_var_y(p) - _get_var_y(q) + (2 * my + 4) * ((1 - relation[Direction.north]) + m.cut[left] + m.cut[right]) >= d_min
+                _get_var_y(p) - _get_var_y(q) + big_my * ((1 - relation[Direction.north]) + m.cut[left] + m.cut[right]) >= d_min
             )
 
     # South: y[q] - y[p] >= d_min
     if Direction.south in active_dirs:
         for p, q in prod:
             m.crossings.add(
-                _get_var_y(q) - _get_var_y(p) + (2 * my + 4) * ((1 - relation[Direction.south]) + m.cut[left] + m.cut[right]) >= d_min
+                _get_var_y(q) - _get_var_y(p) + big_my * ((1 - relation[Direction.south]) + m.cut[left] + m.cut[right]) >= d_min
             )
 
     # Up: z[p] - z[q] >= d_min
     if Direction.up in active_dirs:
         for p, q in prod:
             m.crossings.add(
-                _get_var_z(p) - _get_var_z(q) + (2 * mz + 4) * ((1 - relation[Direction.up]) + m.cut[left] + m.cut[right]) >= d_min
+                _get_var_z(p) - _get_var_z(q) + big_mz * ((1 - relation[Direction.up]) + m.cut[left] + m.cut[right]) >= d_min
             )
 
     # Down: z[q] - z[p] >= d_min
     if Direction.down in active_dirs:
         for p, q in prod:
             m.crossings.add(
-                _get_var_z(q) - _get_var_z(p) + (2 * mz + 4) * ((1 - relation[Direction.down]) + m.cut[left] + m.cut[right]) >= d_min
+                _get_var_z(q) - _get_var_z(p) + big_mz * ((1 - relation[Direction.down]) + m.cut[left] + m.cut[right]) >= d_min
             )
 
     return relations + 1
@@ -495,17 +536,9 @@ def add_dummy_separation_constraint(
             Direction.down,
         ]
 
-    relation = Var(active_dirs, within=Boolean)
-    m.add_component(f'dummy_rel_{relations}', relation)
-    m.crossings.add(sum(relation[d] for d in active_dirs) >= 1)
-
-    mx = getattr(m, 'Mx', getattr(m, 'M', 100))
-    my = getattr(m, 'My', getattr(m, 'M', 100))
-    mz = getattr(m, 'Mz', getattr(m, 'M', 100))
-
-    big_mx = 2 * mx + 4
-    big_my = 2 * my + 4
-    big_mz = 2 * mz + 4
+    relation, big_mx, big_my, big_mz = _add_disjunctive_vars(
+        m, relations, 'dummy_rel_', active_dirs
+    )
 
     # East: x_v - x_s >= 1 + dx
     if Direction.east in active_dirs:
@@ -590,17 +623,9 @@ def add_room_separation_constraint(
             Direction.down,
         ]
 
-    relation = Var(active_dirs, within=Boolean)
-    m.add_component(f'room_rel_{relations}', relation)
-    m.crossings.add(sum(relation[d] for d in active_dirs) >= 1)
-
-    mx = getattr(m, 'Mx', getattr(m, 'M', 100))
-    my = getattr(m, 'My', getattr(m, 'M', 100))
-    mz = getattr(m, 'Mz', getattr(m, 'M', 100))
-
-    big_mx = 2 * mx + 4
-    big_my = 2 * my + 4
-    big_mz = 2 * mz + 4
+    relation, big_mx, big_my, big_mz = _add_disjunctive_vars(
+        m, relations, 'room_rel_', active_dirs
+    )
 
     # East: x_v - x_u + big_mx * (1 - relation[Direction.east]) >= 1
     if Direction.east in active_dirs:
@@ -692,13 +717,9 @@ def add_collinear_separation_constraint(
             Direction.down,
         ]
 
-    relation = Var(active_dirs, within=Boolean)
-    m.add_component(f'collinear_rel_{relations}', relation)
-    m.crossings.add(sum(relation[d] for d in active_dirs) >= 1)
-
-    mx = getattr(m, 'Mx', getattr(m, 'M', 100))
-    my = getattr(m, 'My', getattr(m, 'M', 100))
-    mz = getattr(m, 'Mz', getattr(m, 'M', 100))
+    relation, big_mx, big_my, big_mz = _add_disjunctive_vars(
+        m, relations, 'collinear_rel_', active_dirs
+    )
     d_min = getattr(m, 'd_min', 1)
 
     def _get_var_x(v: int):
@@ -735,42 +756,42 @@ def add_collinear_separation_constraint(
     if Direction.east in active_dirs:
         for p in endpoints:
             m.crossings.add(
-                _get_var_x(p) - _get_var_x(w) + (2 * mx + 4) * ((1 - relation[Direction.east]) + cut_var) >= d_min
+                _get_var_x(p) - _get_var_x(w) + big_mx * ((1 - relation[Direction.east]) + cut_var) >= d_min
             )
 
     # West: x_w - x_p >= d_min  (all endpoints West of room w)
     if Direction.west in active_dirs:
         for p in endpoints:
             m.crossings.add(
-                _get_var_x(w) - _get_var_x(p) + (2 * mx + 4) * ((1 - relation[Direction.west]) + cut_var) >= d_min
+                _get_var_x(w) - _get_var_x(p) + big_mx * ((1 - relation[Direction.west]) + cut_var) >= d_min
             )
 
     # North: y_p - y_w >= d_min  (all endpoints North of room w)
     if Direction.north in active_dirs:
         for p in endpoints:
             m.crossings.add(
-                _get_var_y(p) - _get_var_y(w) + (2 * my + 4) * ((1 - relation[Direction.north]) + cut_var) >= d_min
+                _get_var_y(p) - _get_var_y(w) + big_my * ((1 - relation[Direction.north]) + cut_var) >= d_min
             )
 
     # South: y_w - y_p >= d_min  (all endpoints South of room w)
     if Direction.south in active_dirs:
         for p in endpoints:
             m.crossings.add(
-                _get_var_y(w) - _get_var_y(p) + (2 * my + 4) * ((1 - relation[Direction.south]) + cut_var) >= d_min
+                _get_var_y(w) - _get_var_y(p) + big_my * ((1 - relation[Direction.south]) + cut_var) >= d_min
             )
 
     # Up: z_p - z_w >= d_min  (all endpoints Up from room w)
     if Direction.up in active_dirs:
         for p in endpoints:
             m.crossings.add(
-                _get_var_z(p) - _get_var_z(w) + (2 * mz + 4) * ((1 - relation[Direction.up]) + cut_var) >= d_min
+                _get_var_z(p) - _get_var_z(w) + big_mz * ((1 - relation[Direction.up]) + cut_var) >= d_min
             )
 
     # Down: z_w - z_p >= d_min  (all endpoints Down from room w)
     if Direction.down in active_dirs:
         for p in endpoints:
             m.crossings.add(
-                _get_var_z(w) - _get_var_z(p) + (2 * mz + 4) * ((1 - relation[Direction.down]) + cut_var) >= d_min
+                _get_var_z(w) - _get_var_z(p) + big_mz * ((1 - relation[Direction.down]) + cut_var) >= d_min
             )
 
     return relations + 1
