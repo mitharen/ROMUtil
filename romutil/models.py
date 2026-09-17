@@ -8,9 +8,9 @@ from typing import Any, Sequence
 class Direction(enum.IntEnum):
     north = 0
     east = 1
-    up = 2
-    south = 3
-    west = 4
+    south = 2
+    west = 3
+    up = 4
     down = 5
     northeast = 6
     northwest = 7
@@ -33,6 +33,7 @@ class Direction(enum.IntEnum):
         return inverses[self]
 
 
+# Legacy mapping list retained as deprecated alias for backward compatibility.
 direction_matrix = [
     Direction.north,
     Direction.east,
@@ -223,44 +224,7 @@ class AreaData:
             if not isinstance(val, tuple):
                 object.__setattr__(self, field_name, tuple(val) if val is not None else ())
 
-    def __iter__(self) -> Any:
-        yield ("#AREA", self.header)
-        yield ("#ROOMS", self.rooms)
-        yield ("#MOBILES", self.mobiles)
-        yield ("#OBJECTS", self.objects)
-        yield ("#RESETS", self.resets)
-        yield ("#SHOPS", self.shops)
-        yield ("#SPECIALS", self.specials)
-        yield ("#HELPS", self.helps)
-        yield ("#SOCIALS", self.socials)
-        if self.reset_message is not None:
-            yield ("#RESETMESSAGE", self.reset_message)
-        if self.flag is not None:
-            yield ("#FLAG", self.flag)
 
-    def __len__(self) -> int:
-        return len(self.rooms) if self.rooms else 9
-
-    def __getitem__(self, key: Any) -> Any:
-        if isinstance(key, int):
-            return list(self)[key]
-        if isinstance(key, str):
-            mapping = {
-                "#AREA": self.header,
-                "#ROOMS": self.rooms,
-                "#MOBILES": self.mobiles,
-                "#OBJECTS": self.objects,
-                "#RESETS": self.resets,
-                "#SHOPS": self.shops,
-                "#SPECIALS": self.specials,
-                "#HELPS": self.helps,
-                "#SOCIALS": self.socials,
-                "#RESETMESSAGE": self.reset_message,
-                "#FLAG": self.flag,
-            }
-            if key in mapping:
-                return mapping[key]
-        raise KeyError(key)
 
 
 class Exit:
@@ -287,7 +251,7 @@ class Exit:
         if e is not None:
             if isinstance(e, ExitDef):
                 self.dst = e.dst_vnum
-                self.direction = Direction(direction_matrix[e.direction])
+                self.direction = Direction(e.direction)
                 if self.target_vnum is None:
                     self.target_vnum = e.dst_vnum
             elif isinstance(e, Exit):
@@ -305,10 +269,7 @@ class Exit:
             self.dst = dst
             if self.target_vnum is None:
                 self.target_vnum = dst
-            if isinstance(direction, Direction):
-                self.direction = direction
-            else:
-                self.direction = Direction(direction_matrix[direction])
+            self.direction = Direction(direction)
         else:
             raise TypeError("Exit requires an ExitDef, Exit, or explicit keyword arguments (dst, direction, source)")
 
@@ -355,12 +316,13 @@ class Room:
         self.z: int | None = None
         self.area_name: str | None = area_name
         self.area_file: str | None = area_file
+        self.description: str = ""
 
         if r is not None:
             if isinstance(r, RoomDef):
                 self.vnum = r.vnum
                 self.name = r.name
-                self.desc = r.description
+                self.description = r.description
                 self.exits = [Exit(e, source=self.vnum) for e in r.exits if e is not None]
                 if self.area_name is None:
                     self.area_name = getattr(r, 'area_name', None)
@@ -369,7 +331,7 @@ class Room:
             elif isinstance(r, Room):
                 self.vnum = r.vnum
                 self.name = r.name
-                self.desc = r.desc
+                self.description = r.description
                 self.exits = list(r.exits)
                 self.dummy = r.dummy
                 if self.target_vnum is None:
@@ -387,7 +349,7 @@ class Room:
         elif vnum is not None:
             self.vnum = vnum
             self.name = name
-            self.desc = description if description is not None else desc
+            self.description = description if description is not None else desc
             self.exits = []
             if exits is not None:
                 for e in exits:
@@ -399,6 +361,14 @@ class Room:
                         raise TypeError(f"Expected Exit or ExitDef in exits, got {type(e).__name__}")
         else:
             raise TypeError("Room requires a RoomDef, Room, or keyword arguments (vnum=...)")
+
+    @property
+    def desc(self) -> str:
+        return self.description
+
+    @desc.setter
+    def desc(self, value: str) -> None:
+        self.description = value
 
     def replace_exit(self, orig: int, replacement: int, distance: int) -> None:
         for e in self.exits:

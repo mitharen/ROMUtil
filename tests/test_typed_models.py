@@ -221,25 +221,23 @@ class TestTypedDataClasses:
         assert area.header == header
         assert isinstance(area.rooms, tuple)
         assert len(area.rooms) == 2
-        assert len(area) == 2
+        assert area.mobiles == ()
+        assert area.objects == ()
+        assert area.resets == ()
+        assert area.shops == ()
+        assert area.specials == ()
+        assert area.helps == ()
+        assert area.socials == ()
+        assert area.reset_message is None
+        assert area.flag is None
 
-        # Iteration
-        sections = dict(list(area))
-        assert sections["#AREA"] == header
-        assert sections["#ROOMS"] == (r1, r2)
-        assert sections["#MOBILES"] == ()
-
-        # Key indexing
-        assert area["#AREA"] == header
-        assert area["#ROOMS"] == (r1, r2)
-        assert area[0] == ("#AREA", header)
-
-        with pytest.raises(KeyError):
-            _ = area["#NONEXISTENT"]
-
-        # Empty rooms length fallback
-        empty_area = AreaData()
-        assert len(empty_area) == 9
+        # Verify legacy sequence/dict emulation methods are removed
+        with pytest.raises(TypeError):
+            _ = len(area)  # type: ignore
+        with pytest.raises(TypeError):
+            _ = area[0]  # type: ignore
+        with pytest.raises(TypeError):
+            _ = iter(area)  # type: ignore
 
     def test_room_and_exit_models_compatibility(self):
         # Room from RoomDef
@@ -248,7 +246,13 @@ class TestTypedDataClasses:
         room = Room(r_def)
         assert room.vnum == 1
         assert room.name == "Room 1"
+        assert room.description == "Desc 1"
         assert room.desc == "Desc 1"
+        # Test backward-compatible desc property setter
+        room.desc = "Updated Desc"
+        assert room.description == "Updated Desc"
+        assert room.desc == "Updated Desc"
+        room.description = "Desc 1"
         assert len(room.exits) == 1
         assert room.exits[0].dst == 2
         assert room.exits[0].direction == Direction.east
@@ -257,8 +261,10 @@ class TestTypedDataClasses:
         room_copy = Room(room)
         assert room_copy.vnum == 1
         assert room_copy.name == "Room 1"
+        assert room_copy.description == "Desc 1"
+        assert room_copy.desc == "Desc 1"
 
-        # Room from keyword arguments
+        # Room from keyword arguments (testing both desc and description kwargs)
         room_kwargs = Room(
             vnum=99,
             name="Custom",
@@ -267,8 +273,18 @@ class TestTypedDataClasses:
         )
         assert room_kwargs.vnum == 99
         assert room_kwargs.name == "Custom"
+        assert room_kwargs.description == "Custom Desc"
+        assert room_kwargs.desc == "Custom Desc"
         assert len(room_kwargs.exits) == 1
         assert room_kwargs.exits[0].dst == 100
+
+        room_desc_kw = Room(
+            vnum=101,
+            name="Canonical Desc Room",
+            description="Explicit Description",
+        )
+        assert room_desc_kw.description == "Explicit Description"
+        assert room_desc_kw.desc == "Explicit Description"
 
         # Exit from Exit
         exit_orig = room.exits[0]
@@ -285,6 +301,26 @@ class TestTypedDataClasses:
         assert exit_int_dir.direction == Direction.west
         assert exit_kwargs == exit_int_dir
         assert exit_kwargs != "not an exit"
+
+        # All 10 standard Diku/ROM directions mapping
+        expected_dirs = [
+            (0, Direction.north),
+            (1, Direction.east),
+            (2, Direction.south),
+            (3, Direction.west),
+            (4, Direction.up),
+            (5, Direction.down),
+            (6, Direction.northeast),
+            (7, Direction.northwest),
+            (8, Direction.southeast),
+            (9, Direction.southwest),
+        ]
+        for dir_val, expected_enum in expected_dirs:
+            assert Direction(dir_val) == expected_enum
+            e_test = Exit(dst=200, direction=dir_val, source=1)
+            assert e_test.direction == expected_enum
+            e_def_test = Exit(ExitDef(direction=dir_val, dst_vnum=200), source=1)
+            assert e_def_test.direction == expected_enum
 
         # Exit distance copy
         exit_dist2 = Exit(ExitDef(direction=0, dst_vnum=2), source=1, distance=3)

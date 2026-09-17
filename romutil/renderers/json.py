@@ -93,7 +93,8 @@ def build_area_json(
         room_dict: dict[str, Any] = {
             'vnum': int(r.vnum),
             'name': str(r.name),
-            'desc': str(r.desc),
+            'description': str(r.description),
+            'desc': str(r.description),
             'coords': {
                 'x': x_val,
                 'y': y_val,

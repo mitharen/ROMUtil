@@ -1784,7 +1784,7 @@ __JSON_DATA__
 
         const descElem = document.getElementById('card-room-desc');
         descElem.style.display = 'block';
-        descElem.textContent = room.desc || 'No description available.';
+        descElem.textContent = room.description || room.desc || 'No description available.';
 
         const exitsElem = document.getElementById('card-room-exits');
         exitsElem.innerHTML = '';

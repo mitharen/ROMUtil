@@ -294,8 +294,6 @@ class TestDialectParserPositive:
         # Custom ANATOLIA 3.0 top-level attributes
         assert area.reset_message == "The cold wind howls across the Anatolian plains."
         assert area.flag == "reset_before arena"
-        assert area["#RESETMESSAGE"] == "The cold wind howls across the Anatolian plains."
-        assert area["#FLAG"] == "reset_before arena"
 
         # Rooms and exits
         assert len(area.rooms) == 5
@@ -1114,14 +1112,6 @@ S
         area = Parser().parse(text_reordered)
         assert area.flag == "arena"
         assert area.reset_message == "An ominous thunder rumbles."
-        assert area["#FLAG"] == "arena"
-        assert area["#RESETMESSAGE"] == "An ominous thunder rumbles."
-
-        # Iteration yields custom sections
-        section_dict = dict(list(area))
-        assert section_dict["#RESETMESSAGE"] == "An ominous thunder rumbles."
-        assert section_dict["#FLAG"] == "arena"
-        assert len(section_dict) == 11
 
     def test_anatolia_negative_malformed_sections(self):
         """Verify that malformed sections or missing terminations raise exceptions."""
@@ -1166,9 +1156,9 @@ class TestSmaugCompatibility:
         # Value assertions
         assert Direction.north == 0
         assert Direction.east == 1
-        assert Direction.up == 2
-        assert Direction.south == 3
-        assert Direction.west == 4
+        assert Direction.south == 2
+        assert Direction.west == 3
+        assert Direction.up == 4
         assert Direction.down == 5
         assert Direction.northeast == 6
         assert Direction.northwest == 7

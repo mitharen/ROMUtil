@@ -159,9 +159,8 @@ S
         parser = Parser()
         result = parser.parse(area_text)
         assert result is not None
-        sections = {s[0]: s[1] for s in result if s}
-        assert '#ROOMS' in sections
-        assert sections['#ROOMS'][0].vnum == 100
+        assert len(result.rooms) == 1
+        assert result.rooms[0].vnum == 100
 
     def test_lexer_illegal_character(self, caplog):
         lexer_obj = Lexer()
@@ -187,16 +186,13 @@ class TestParserPositive:
         result = parser.parse(MINIMAL_VALID_AREA)
         assert result is not None
 
-        sections = {s[0]: s[1] for s in result if s}
-        assert '#AREA' in sections
-        assert '#ROOMS' in sections
-
-        area_meta = sections['#AREA']
+        assert result.header is not None
+        area_meta = result.header
         assert area_meta.filename == 'test.are'
         assert area_meta.name == 'Test Area'
         assert (area_meta.vnum_min, area_meta.vnum_max) == (100, 199)
 
-        rooms = sections['#ROOMS']
+        rooms = result.rooms
         assert len(rooms) == 2
         # Room 100
         assert rooms[0].vnum == 100
@@ -213,9 +209,7 @@ class TestParserPositive:
         parser = Parser()
         result = parser.parse(HELPS_VALID_AREA)
         assert result is not None
-        sections = {s[0]: s[1] for s in result if s}
-        assert '#HELPS' in sections
-        helps = sections['#HELPS']
+        helps = result.helps
         assert len(helps) >= 1
         assert 'TEST KEYWORD' in helps[0].keywords
 
@@ -223,9 +217,7 @@ class TestParserPositive:
         parser = Parser()
         result = parser.parse(SOCIALS_VALID_AREA)
         assert result is not None
-        sections = {s[0]: s[1] for s in result if s}
-        assert '#SOCIALS' in sections
-        socials = sections['#SOCIALS']
+        socials = result.socials
         assert len(socials) >= 1
         assert socials[0].name == 'wave'
 
@@ -238,7 +230,12 @@ class TestParserPositive:
             content = f.read()
         result = parser.parse(content)
         assert result is not None
-        assert len(result) > 0
+        assert (
+            result.header is not None
+            or len(result.rooms) > 0
+            or len(result.helps) > 0
+            or len(result.socials) > 0
+        )
 
 
 class TestParserNegative:

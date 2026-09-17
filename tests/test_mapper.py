@@ -19,9 +19,9 @@ class TestDirection:
     def test_direction_values(self):
         assert Direction.north == 0
         assert Direction.east == 1
-        assert Direction.up == 2
-        assert Direction.south == 3
-        assert Direction.west == 4
+        assert Direction.south == 2
+        assert Direction.west == 3
+        assert Direction.up == 4
         assert Direction.down == 5
 
     def test_direction_inversion(self):
@@ -49,6 +49,7 @@ class TestRoomAndExitModels:
         room = Room(r_def)
         assert room.vnum == 100
         assert room.name == "Temple"
+        assert room.description == "A grand temple."
         assert room.desc == "A grand temple."
         assert len(room.exits) == 2
         assert room.exits[0].src == 100

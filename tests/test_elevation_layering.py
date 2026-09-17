@@ -74,7 +74,7 @@ class TestSvgElevationGrouping:
     def test_svg_elevation_grouping_tags_for_all_unique_z(self, tmp_path):
         out_svg = str(tmp_path / "tower.svg")
         parsed = Parser().parse(SAMPLE_TOWER_ARE)
-        rooms = [s[1] for s in parsed if s and s[0] == "#ROOMS"][0]
+        rooms = parsed.rooms
         rdb = {r.vnum: Room(r) for r in rooms}
 
         header = AreaHeader(filename="tower.are", name="Tower", builder="", vnum_min=100, vnum_max=102)

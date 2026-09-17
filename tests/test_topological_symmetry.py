@@ -439,7 +439,7 @@ class TestFixtureZeroRegressions:
         assert smurf_file.exists(), "smurf.are fixture must exist"
 
         parsed = Parser().parse(smurf_file.read_text(encoding="utf-8"))
-        rooms = [s[1] for s in parsed if s and s[0] == "#ROOMS"][0]
+        rooms = parsed.rooms
         rdb = {r.vnum: Room(r) for r in rooms}
         header = AreaHeader(filename="smurf.are", name="Smurf", builder="", vnum_min=100, vnum_max=199)
 
@@ -456,7 +456,7 @@ class TestFixtureZeroRegressions:
         assert school_file.exists(), "school.are fixture must exist"
 
         parsed = Parser().parse(school_file.read_text(encoding="utf-8"))
-        rooms = [s[1] for s in parsed if s and s[0] == "#ROOMS"][0]
+        rooms = parsed.rooms
         rdb = {r.vnum: Room(r) for r in rooms}
         header = AreaHeader(filename="school.are", name="School", builder="", vnum_min=3700, vnum_max=3799)
 
@@ -470,7 +470,7 @@ class TestFixtureZeroRegressions:
     def test_tower_are_solves(self):
         """tower.are solves cleanly with multiple elevation layers."""
         parsed = Parser().parse(SAMPLE_TOWER_ARE)
-        rooms = [s[1] for s in parsed if s and s[0] == "#ROOMS"][0]
+        rooms = parsed.rooms
         rdb = {r.vnum: Room(r) for r in rooms}
         header = AreaHeader(filename="tower.are", name="Tower", builder="", vnum_min=100, vnum_max=102)
 
@@ -487,7 +487,7 @@ class TestFixtureZeroRegressions:
         assert midgaard_file.exists(), "midgaard.are fixture must exist"
 
         parsed = Parser().parse(midgaard_file.read_text(encoding="utf-8"))
-        rooms = [s[1] for s in parsed if s and s[0] == "#ROOMS"][0]
+        rooms = parsed.rooms
         rdb = {r.vnum: Room(r) for r in rooms}
         header = AreaHeader(filename="midgaard.are", name="Midgaard", builder="", vnum_min=3000, vnum_max=3299)
 

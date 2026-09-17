@@ -293,7 +293,7 @@ function toggleElevation(z) {
 
                 g = dwg.g(visibility='hidden')
                 etext = 'Exits: ' + ', '.join([ex.direction.name for ex in room.exits])
-                desc = room.desc.split('\n') + [etext]
+                desc = room.description.split('\n') + [etext]
                 g.add(
                     dwg.rect(
                         fill='white',

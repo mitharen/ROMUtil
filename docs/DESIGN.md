@@ -106,7 +106,7 @@ The parsing engine ingests text-based MUD area files across historical and moder
 - **ANATOLIA 3.0 Custom Section Tolerance (`#RESETMESSAGE`, `#FLAG`)**:
   - Ingests ANATOLIA 3.0 top-level area file sections, including tilde-terminated `#RESETMESSAGE <text>~` (and multiline `#RESETMESSAGE\n<text>~`) and area flag declarations (`#FLAG <flags>` or `#FLAG\n<flags>`) containing alphanumeric identifiers, words, or numeric bitvectors.
   - Normalizes section boundaries within `normalize_dialect_buffer` to enforce canonical delimiter spacing without interfering with subsequent room blocks (`#ROOMS`) or resets (`#RESETS`).
-  - PLY reductions in `Parser` map `#RESETMESSAGE` and `#FLAG` AST nodes into `reset_message` and `flag` attributes on the `AreaData` domain model, exposing them through standard dictionary keys (`area["#RESETMESSAGE"]`, `area["#FLAG"]`) and sequence iteration while maintaining full backward compatibility with standard ROM 2.4 and Merc-derived formats.
+  - PLY reductions in `Parser` map `#RESETMESSAGE` and `#FLAG` AST nodes into canonical `reset_message` and `flag` attributes on the `AreaData` domain model while maintaining full backward compatibility with standard ROM 2.4 and Merc-derived formats.
 - **Dialect Normalization Layer (`normalize_dialect_buffer`)**:
   - Preprocesses input text buffers prior to lexical analysis to ensure deterministic state transitions in PLY's LALR(1) state machine without lookahead ambiguity.
   - Converts Envy `#AREADATA ... End` key-value blocks, ACK!MUD tagged `#AREA` blocks, and Merc single-line `#AREA { ... } ...~` headers into canonical 4-line `#AREA` metadata.
