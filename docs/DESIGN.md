@@ -544,21 +544,21 @@ flowchart TD
 
 3. **Pass 2 (Container Solve with Macro-Cavity Reservation)**:
    - For each child zone, constructs a `MacroCavityContract` encoding linear constraints:
-     - **Multi-Port Relative Displacement Invariants**: For port pairs $(u_1, v_1, d_1)$ and $(u_2, v_2, d_2)$, enforces container gateway room separation matching the child's internal vector $\\Delta \\mathbf{P}_{12} = \\mathbf{p}_{v1} - \\mathbf{p}_{v2}$:
-       $$\\mathbf{x}_{u1} - \\mathbf{x}_{u2} = \\Delta \\mathbf{P}_{12} + \\mathbf{d}_2 - \\mathbf{d}_1$$
-       For The Hood, this enforces $y_{3119} - y_{3144} \\ge 11$ and $x_{3119} == x_{3144}$.
-     - **Bounding Clearance Inequalities**: Pushes container perimeter rooms downstream of gateway exits outside the child's bounding envelope:
-       $$x_w \\ge x_u + W_{\\text{child}} + 2 \\quad (\\text{for Eastward child cavity})$$
-       $$y_u - y_w \\ge H_{\\text{child}} + 2 \\quad (\\text{for Southward child cavity})$$
-       For Midgaard, Concourse rooms (3272, 3273) are pushed East of The Hood, Mage's Guild rooms (3018, 3019) East of Mob Factory, and southern wall rooms (3130, 3127) South of Graveyard.
+     - **Multi-Port Relative Displacement Invariants**: For port pairs $(u_1, v_1, d_1)$ and $(u_2, v_2, d_2)$, enforces container gateway room separation matching the child's internal vector $\Delta \mathbf{P}_{12} = \mathbf{p}_{v1} - \mathbf{p}_{v2}$:
+       $$\mathbf{x}_{u1} - \mathbf{x}_{u2} = \Delta \mathbf{P}_{12} + \mathbf{d}_2 - \mathbf{d}_1$$
+       For The Hood, this enforces $y_{3119} - y_{3144} == 11$ and $x_{3119} == x_{3144}$.
+     - **Port-Relative Footprint Clearance Inequalities**: Pushes container perimeter rooms downstream or transverse to gateway exits outside the child's port-relative polygon footprint envelope $(\min \Delta x, \max \Delta x, \min \Delta y, \max \Delta y, \min \Delta z, \max \Delta z)$:
+       $$x_w \ge x_u + \max \Delta x_{\text{child}} + 2 \quad (\text{for longitudinal Eastward child cavity})$$
+       $$y_u - y_w \ge -\min \Delta y_{\text{child}} + 2 \quad (\text{for longitudinal Southward child cavity})$$
+       For Midgaard, Concourse rooms (3272, 3273) are pushed East of The Hood, Mage's Guild and southern wall rooms receive longitudinal and transverse cavity reservations protecting Mob Factory and Graveyard footprints.
    - Solves the container zone using CBC via Pyomo constraint injection hook `create_macro_cavity_hook()`.
 
 4. **Pass 3 (Leaf-Up Macro-Assembly)**:
    - Embeds container rooms into the composite world frame as the reference coordinate system.
    - Translates enclosed child blocks into their reserved cavities via rigid affine translations:
-     $$\\mathbf{x}_{\\text{global}} = \\mathbf{x}_{\\text{local}} + \\mathbf{T}$$
-     where $\\mathbf{T} = (\\mathbf{x}_u + \\mathbf{d}) - \\mathbf{p}_v$.
-   - Layers satellite zones onto dedicated vertical elevation planes ($Z_{\\text{sat}} \\ge Z_{\\max}^{\\text{container}} + 1$), preserving cardinal alignment with gateway stubs while avoiding ground-plane collisions.
+     $$\mathbf{x}_{\text{global}} = \mathbf{x}_{\text{local}} + \mathbf{T}$$
+     where $\mathbf{T} = (\mathbf{x}_u + \mathbf{d}) - \mathbf{p}_v$.
+   - Layers satellite zones onto dedicated vertical elevation planes ($Z_{\text{sat}} \ge Z_{\max}^{\text{container}} + 1$), preserving cardinal alignment with gateway stubs while avoiding ground-plane collisions.
    - Restores original inter-area exit topologies, normalizes minimum coordinates to $(0, 0, 0)$, and verifies spatial coordinate non-overlap invariants.
 
 ---
