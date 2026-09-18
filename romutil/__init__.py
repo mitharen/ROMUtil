@@ -18,7 +18,7 @@ from romutil.models import (
 )
 from romutil.parser import Parser, parse_file, parse_circlemud_directory, parse_circlemud_zone_file, normalize_dialect_buffer, sanitize_ackmud_colour
 from romutil.solver import solve, non_euler, find_overlap_candidates, get_cbc_solver, compute_dynamic_solver_timeout, add_room_separation_constraint, build_spatial_coordinate_buckets, find_spatial_room_collisions, find_collinear_exit_room_penetrations, add_collinear_separation_constraint
-from romutil.graph import solve_layout, restore_rooms, compute_bounding_box, decompose_components
+from romutil.graph import solve_layout, restore_rooms, compute_bounding_box, decompose_components, CorridorFixup, HallwayCorridor
 from romutil.cli import main, cli
 from romutil.decomposition import (
     AreaProfile,
@@ -80,6 +80,8 @@ __all__ = [
     'restore_rooms',
     'compute_bounding_box',
     'decompose_components',
+    'CorridorFixup',
+    'HallwayCorridor',
     'build_area_json',
     'export_json',
     'generate_html_viewer',

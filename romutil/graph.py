@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
 import logging
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
@@ -11,37 +12,348 @@ from romutil.solver import compute_dynamic_solver_timeout, position_dummy_rooms,
 
 log = logging.getLogger('Mapper.graph')
 
-def restore_rooms(room):
-    rooms = []
-    for r, d, dist in room.fixups:
-        r.x, r.y, r.z = room.x, room.y, room.z
-        if d == Direction.north:
-            r.y += dist
-        elif d == Direction.east:
-            r.x += dist
-        elif d == Direction.south:
-            r.y -= dist
-        elif d == Direction.west:
-            r.x -= dist
-        elif d == Direction.up:
-            r.z += dist
-        elif d == Direction.down:
-            r.z -= dist
-        elif d == Direction.northeast:
-            r.x += dist
-            r.y += dist
-        elif d == Direction.northwest:
-            r.x -= dist
-            r.y += dist
-        elif d == Direction.southeast:
-            r.x += dist
-            r.y -= dist
-        elif d == Direction.southwest:
-            r.x -= dist
-            r.y -= dist
+@dataclass
+class HallwayCorridor:
+    """Represents a straight bidirectional hallway corridor between endpoints u and v."""
+
+    u_vnum: int
+    v_vnum: int
+    direction: Direction
+    total_distance: int
+    rooms: list[Room]
+    cumulative_distances: list[int]
+
+
+class CorridorFixup(tuple):
+    """
+    A 3-tuple (room, direction, distance) representing a collapsed hallway room,
+    annotated with corridor endpoint metadata for even spacing interpolation.
+
+    Subclasses tuple so it can be unpacked as (r, d, dist) or indexed by [0], [1], [2]
+    for complete backward compatibility.
+    """
+
+    room: Room
+    direction: Direction
+    distance: int
+    target_vnum: Optional[int]
+    total_distance: Optional[int]
+
+    def __new__(
+        cls,
+        room: Room,
+        direction: Optional[Direction] = None,
+        distance: Optional[int] = None,
+        target_vnum: Optional[int] = None,
+        total_distance: Optional[int] = None,
+    ) -> CorridorFixup:
+        if direction is None and isinstance(room, tuple) and len(room) >= 3:
+            r, d, dist = room[:3]
+            tv = getattr(room, "target_vnum", target_vnum)
+            td = getattr(room, "total_distance", total_distance)
+            inst = super().__new__(cls, (r, d, dist))
+            inst.room = r
+            inst.direction = d
+            inst.distance = dist
+            inst.target_vnum = tv
+            inst.total_distance = td
+            return inst
+        if direction is None or distance is None:
+            raise ValueError("CorridorFixup requires (room, direction, distance)")
+        inst = super().__new__(cls, (room, direction, distance))
+        inst.room = room
+        inst.direction = direction
+        inst.distance = distance
+        inst.target_vnum = target_vnum
+        inst.total_distance = total_distance
+        return inst
+
+    def __reduce__(self) -> Any:
+        return (
+            CorridorFixup,
+            (self.room, self.direction, self.distance, self.target_vnum, self.total_distance),
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"CorridorFixup(vnum={self.room.vnum}, dir={self.direction.name}, "
+            f"dist={self.distance}, target_vnum={self.target_vnum}, total_dist={self.total_distance})"
+        )
+
+
+def _apply_directional_offset(x: int, y: int, z: int, d: Direction, dist: int) -> tuple[int, int, int]:
+    """Calculate nominal directional offset coordinates from (x, y, z) by stepping dist in direction d."""
+    if d == Direction.north:
+        return x, y + dist, z
+    elif d == Direction.east:
+        return x + dist, y, z
+    elif d == Direction.south:
+        return x, y - dist, z
+    elif d == Direction.west:
+        return x - dist, y, z
+    elif d == Direction.up:
+        return x, y, z + dist
+    elif d == Direction.down:
+        return x, y, z - dist
+    elif d == Direction.northeast:
+        return x + dist, y + dist, z
+    elif d == Direction.northwest:
+        return x - dist, y + dist, z
+    elif d == Direction.southeast:
+        return x + dist, y - dist, z
+    elif d == Direction.southwest:
+        return x - dist, y - dist, z
+    return x, y, z
+
+
+def restore_rooms(room: Room, rdb: Optional[Mapping[int, Room]] = None) -> list[Room]:
+    """
+    Restore collapsed hallway rooms attached to `room`.
+
+    If `rdb` is provided and the fixup references a valid endpoint room `v` in `rdb`
+    with distinct solved coordinates, intermediate rooms are interpolated evenly
+    along the corridor between `room` and `v`:
+        x_h = round(x_u + t * (x_v - x_u))
+        y_h = round(y_u + t * (y_v - y_u))
+        z_h = round(z_u + t * (z_v - z_u))
+    where t = dist / total_distance.
+
+    Otherwise (e.g. degenerate endpoints where u == v, missing rdb, missing endpoint,
+    or None coordinates), safely falls back to nominal unit directional offsets:
+        x_h = x_u + dist * d(D)
+    preserving 100% backward compatibility.
+    """
+    rooms: list[Room] = []
+    rx = room.x if room.x is not None else 0
+    ry = room.y if room.y is not None else 0
+    rz = room.z if room.z is not None else 0
+
+    for fixup in getattr(room, "fixups", ()):
+        r: Room = fixup[0]
+        d: Direction = fixup[1]
+        dist: int = fixup[2]
+
+        target_vnum: Optional[int] = getattr(fixup, "target_vnum", None)
+        total_dist: Optional[int] = getattr(fixup, "total_distance", None)
+        if target_vnum is None and len(fixup) >= 5:
+            target_vnum = fixup[3]
+            total_dist = fixup[4]
+
+        # If fixup doesn't have target metadata, check room attributes on r
+        if target_vnum is None:
+            target_vnum = getattr(r, "_corridor_target", None)
+            if total_dist is None:
+                total_dist = getattr(r, "_corridor_total_dist", None)
+
+        # Fallback target resolution: inspect exits on room in direction d
+        if target_vnum is None and rdb is not None:
+            for ex in getattr(room, "exits", ()):
+                if ex.direction == d and ex.dst in rdb and ex.dst != room.vnum:
+                    target_vnum = ex.dst
+                    if total_dist is None:
+                        total_dist = ex.distance
+                    break
+
+        v_room = rdb.get(target_vnum) if (rdb is not None and target_vnum is not None) else None
+
+        can_interpolate = False
+        if (
+            v_room is not None
+            and v_room.x is not None
+            and v_room.y is not None
+            and v_room.z is not None
+            and total_dist is not None
+            and total_dist > 0
+        ):
+            # Degenerate & Coincident check: endpoints must not coincide
+            if (v_room.x, v_room.y, v_room.z) != (rx, ry, rz):
+                can_interpolate = True
+
+        if (
+            can_interpolate
+            and v_room is not None
+            and total_dist is not None
+            and v_room.x is not None
+            and v_room.y is not None
+            and v_room.z is not None
+        ):
+            t = dist / total_dist
+            r.x = round(rx + t * (v_room.x - rx))
+            r.y = round(ry + t * (v_room.y - ry))
+            r.z = round(rz + t * (v_room.z - rz))
+        else:
+            r.x, r.y, r.z = _apply_directional_offset(rx, ry, rz, d, dist)
+
         rooms.append(r)
-        rooms += restore_rooms(r)
+        rooms += restore_rooms(r, rdb=rdb)
+
     return rooms
+
+
+def _is_hallway_candidate(r: Room, rdb: Mapping[int, Room]) -> bool:
+    if getattr(r, "dummy", False):
+        return False
+    if len(r.exits) != 2:
+        return False
+    e0, e1 = r.exits[0], r.exits[1]
+    if e0.dst not in rdb or e1.dst not in rdb:
+        return False
+    if e0.dst == e1.dst:
+        return False
+    if e0.direction != e1.direction.invert():
+        return False
+    n0, n1 = rdb[e0.dst], rdb[e1.dst]
+    if e0 not in n0.exits or e1 not in n1.exits:
+        return False
+    return True
+
+
+def _collapse_hallways(rdb: dict[int, Room], area_name: str) -> list[HallwayCorridor]:
+    """
+    Find and collapse maximal straight bidirectional hallway corridors.
+    Tracks each corridor as a HallwayCorridor and populates parent.fixups
+    with CorridorFixup entries containing endpoint references and total distances.
+    """
+    corridors: list[HallwayCorridor] = []
+    collapsed_rooms: set[int] = set()
+
+    for vnum in list(rdb.keys()):
+        if vnum in collapsed_rooms or vnum not in rdb:
+            continue
+        r = rdb[vnum]
+        if not _is_hallway_candidate(r, rdb):
+            continue
+
+        e0, e1 = r.exits[0], r.exits[1]
+        D = e1.direction
+        D_rev = e0.direction
+
+        # Trace backward in direction D_rev
+        backward_rooms: list[Room] = []
+        curr = r
+        cycle_detected = False
+        seen_in_chain = {r.vnum}
+
+        while True:
+            ex_rev = next((e for e in curr.exits if e.direction == D_rev), None)
+            if ex_rev is None:
+                break
+            prev_vnum = ex_rev.dst
+            if prev_vnum in seen_in_chain:
+                cycle_detected = True
+                break
+            if prev_vnum not in rdb or prev_vnum in collapsed_rooms:
+                break
+            prev_room = rdb[prev_vnum]
+            if not _is_hallway_candidate(prev_room, rdb):
+                break
+            dirs = {e.direction for e in prev_room.exits}
+            if dirs != {D, D_rev}:
+                break
+            seen_in_chain.add(prev_vnum)
+            backward_rooms.append(prev_room)
+            curr = prev_room
+
+        if cycle_detected:
+            continue
+
+        # Trace forward in direction D
+        forward_rooms: list[Room] = []
+        curr = r
+        while True:
+            ex_fwd = next((e for e in curr.exits if e.direction == D), None)
+            if ex_fwd is None:
+                break
+            next_vnum = ex_fwd.dst
+            if next_vnum in seen_in_chain:
+                cycle_detected = True
+                break
+            if next_vnum not in rdb or next_vnum in collapsed_rooms:
+                break
+            next_room = rdb[next_vnum]
+            if not _is_hallway_candidate(next_room, rdb):
+                break
+            dirs = {e.direction for e in next_room.exits}
+            if dirs != {D, D_rev}:
+                break
+            seen_in_chain.add(next_vnum)
+            forward_rooms.append(next_room)
+            curr = next_room
+
+        if cycle_detected:
+            continue
+
+        corridor_rooms = list(reversed(backward_rooms)) + [r] + forward_rooms
+        first_room = corridor_rooms[0]
+        last_room = corridor_rooms[-1]
+
+        ex_u = next((e for e in first_room.exits if e.direction == D_rev), None)
+        ex_v = next((e for e in last_room.exits if e.direction == D), None)
+        if ex_u is None or ex_v is None:
+            continue
+
+        u_vnum = ex_u.dst
+        v_vnum = ex_v.dst
+        if u_vnum == v_vnum or u_vnum not in rdb or v_vnum not in rdb:
+            continue
+
+        u_room = rdb[u_vnum]
+        v_room = rdb[v_vnum]
+
+        # Calculate step weights
+        ex_from_u = next((e for e in u_room.exits if e.dst == first_room.vnum and e.direction == D), None)
+        w_first = ex_from_u.distance if ex_from_u is not None else 1
+
+        step_weights = [w_first]
+        for i in range(len(corridor_rooms) - 1):
+            curr_rm = corridor_rooms[i]
+            nxt_rm = corridor_rooms[i + 1]
+            ex_step = next((e for e in curr_rm.exits if e.dst == nxt_rm.vnum and e.direction == D), None)
+            step_weights.append(ex_step.distance if ex_step is not None else 1)
+
+        ex_to_v = next((e for e in last_room.exits if e.dst == v_vnum and e.direction == D), None)
+        w_last = ex_to_v.distance if ex_to_v is not None else 1
+        step_weights.append(w_last)
+
+        total_distance = sum(step_weights)
+
+        cum_dists: list[int] = []
+        cur_d = 0
+        for i in range(len(corridor_rooms)):
+            cur_d += step_weights[i]
+            cum_dists.append(cur_d)
+
+        u_room.replace_exit(first_room.vnum, v_vnum, total_distance - w_first)
+        v_room.replace_exit(last_room.vnum, u_vnum, total_distance - w_last)
+
+        for i, room_i in enumerate(corridor_rooms):
+            cd = cum_dists[i]
+            fixup = CorridorFixup(room_i, D, cd, target_vnum=v_vnum, total_distance=total_distance)
+            u_room.fixups.append(fixup)
+            setattr(room_i, "_corridor_src", u_vnum)
+            setattr(room_i, "_corridor_target", v_vnum)
+            setattr(room_i, "_corridor_total_dist", total_distance)
+            setattr(room_i, "_corridor_dist", cd)
+            setattr(room_i, "_corridor_dir", D)
+
+        for room_i in corridor_rooms:
+            collapsed_rooms.add(room_i.vnum)
+            if room_i.vnum in rdb:
+                del rdb[room_i.vnum]
+            log.debug(f"{area_name} Trimmed hallway {room_i.vnum}.")
+
+        corridors.append(
+            HallwayCorridor(
+                u_vnum=u_vnum,
+                v_vnum=v_vnum,
+                direction=D,
+                total_distance=total_distance,
+                rooms=corridor_rooms,
+                cumulative_distances=cum_dists,
+            )
+        )
+
+    return corridors
 
 
 def compute_bounding_box(rooms: Iterable[Room]) -> tuple[int, int, int, int, int, int]:
@@ -135,18 +447,8 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
     original_exits = {vnum: copy.deepcopy(r.exits) for vnum, r in rdb.items()}
 
     # collapse straight bidirectional hallways
-    for vnum, r in list(rdb.items()):
-        if len(r.exits) == 2:
-            if not all(e.dst in rdb.keys() for e in r.exits):
-                continue
-            if not all([e in rdb[e.dst].exits for e in r.exits]):
-                continue
-            if r.exits[0].direction == r.exits[1].direction.invert():
-                rdb[r.exits[0].dst].replace_exit(vnum, r.exits[1].dst, r.exits[1].distance)
-                rdb[r.exits[1].dst].replace_exit(vnum, r.exits[0].dst, r.exits[0].distance)
-                rdb[r.exits[0].dst].fixups.append((r, r.exits[0].direction.invert(), r.exits[0].distance))
-                del rdb[vnum]
-                log.debug(f'{area_name} Trimmed hallway {vnum}.')
+    corridors = _collapse_hallways(rdb, area_name)
+    setattr(solve_layout, 'last_corridors', corridors)
 
     exits = list(set([e for r in rdb.values() for e in r.exits]))
 
@@ -273,10 +575,15 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
             log.error(f'{area_name} Solver failed!')
             if results and hasattr(results, 'solver'):
                 log.debug(f'{str(results.solver)}')
-            for r in rdb.values():
+            for r in list(rdb.values()):
                 if r.x is None: r.x = 0
                 if r.y is None: r.y = 0
                 if r.z is None: r.z = 0
+                for restored in restore_rooms(r, rdb=rdb):
+                    rdb[restored.vnum] = restored
+                    if restored.x is None: restored.x = 0
+                    if restored.y is None: restored.y = 0
+                    if restored.z is None: restored.z = 0
             return rdb, exits
 
         if hasattr(model, 'cut'):
@@ -293,7 +600,11 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
             room.x = model.x[vnum].value if model.x[vnum].value is not None else 0
             room.y = model.y[vnum].value if model.y[vnum].value is not None else 0
             room.z = model.z[vnum].value if model.z[vnum].value is not None else 0
-            for r in restore_rooms(room):
+
+        for vnum, room in list(rdb.items()):
+            if getattr(room, 'dummy', False) is True:
+                continue
+            for r in restore_rooms(room, rdb=rdb):
                 rdb[r.vnum] = r
 
         position_dummy_rooms(rdb, exits)
@@ -408,7 +719,10 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
                     room.x = model_i.x[vnum].value if model_i.x[vnum].value is not None else 0
                     room.y = model_i.y[vnum].value if model_i.y[vnum].value is not None else 0
                     room.z = model_i.z[vnum].value if model_i.z[vnum].value is not None else 0
-                    for r in restore_rooms(room):
+
+                for vnum in comp_vnums:
+                    room = rdb[vnum]
+                    for r in restore_rooms(room, rdb=rdb):
                         rdb[r.vnum] = r
                         restored_rooms_i.append(r)
             else:
@@ -421,7 +735,10 @@ def solve_layout(rdb, area=None, solver_timeout=None, component_padding: int = 2
                     if room.x is None: room.x = 0
                     if room.y is None: room.y = 0
                     if room.z is None: room.z = 0
-                    for r in restore_rooms(room):
+
+                for vnum in comp_vnums:
+                    room = rdb[vnum]
+                    for r in restore_rooms(room, rdb=rdb):
                         rdb[r.vnum] = r
                         if r.x is None: r.x = 0
                         if r.y is None: r.y = 0

@@ -88,9 +88,9 @@ KNOWN_MACRO_CONTRACTS: dict[tuple[str, str], list[int]] = {
     ("mobfact", "midgaard"): [3018, 3019, 3024, 3044, 3048, 3101, 3170],
     ("mob factory", "midgaard"): [3018, 3019, 3024, 3044, 3048, 3101, 3170],
     ("the mob factory", "midgaard"): [3018, 3019, 3024, 3044, 3048, 3101, 3170],
-    ("grave", "midgaard"): [3130, 3127],
-    ("graveyard", "midgaard"): [3130, 3127],
-    ("the graveyard", "midgaard"): [3130, 3127],
+    ("grave", "midgaard"): [3130, 3127, 3122],
+    ("graveyard", "midgaard"): [3130, 3127, 3122],
+    ("the graveyard", "midgaard"): [3130, 3127, 3122],
 }
 
 

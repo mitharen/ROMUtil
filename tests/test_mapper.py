@@ -7,7 +7,7 @@ from romutil.models import Direction, Room, Exit, RoomDef, ExitDef, AreaHeader
 from romutil.renderers.svg import SVGRenderer
 from romutil.renderers import render_map
 from romutil.solver import non_euler, solve
-from romutil.graph import restore_rooms, solve_layout
+from romutil.graph import restore_rooms, solve_layout, CorridorFixup
 from romutil.cli import main, cli
 
 from tests.conftest import SAMPLE_AREAS_DIR
@@ -160,6 +160,136 @@ class TestRestoreRooms:
         assert (r_w.x, r_w.y, r_w.z) == (6, 10, 10)
         assert (r_u.x, r_u.y, r_u.z) == (10, 10, 15)
         assert (r_d.x, r_d.y, r_d.z) == (10, 10, 8)
+
+    def test_restore_rooms_even_spacing_stretched_corridor(self):
+        """Intermediate rooms in a stretched corridor are evenly interpolated between endpoints."""
+        u = Room(RoomDef(vnum=1, name="West Endpoint", description="", exits=()))
+        u.x, u.y, u.z = 0, 0, 0
+
+        v = Room(RoomDef(vnum=5, name="East Endpoint", description="", exits=()))
+        v.x, v.y, v.z = 12, 0, 0
+
+        h1 = Room(RoomDef(vnum=2, name="Hall 1", description="", exits=()))
+        h2 = Room(RoomDef(vnum=3, name="Hall 2", description="", exits=()))
+        h3 = Room(RoomDef(vnum=4, name="Hall 3", description="", exits=()))
+
+        # Corridor total distance 4 (k=3 intermediate rooms)
+        # u.fixups contains CorridorFixup entries with total_distance=4 and target_vnum=5
+        u.fixups = [
+            CorridorFixup(h1, Direction.east, 1, target_vnum=5, total_distance=4),
+            CorridorFixup(h2, Direction.east, 2, target_vnum=5, total_distance=4),
+            CorridorFixup(h3, Direction.east, 3, target_vnum=5, total_distance=4),
+        ]
+
+        rdb = {1: u, 2: h1, 3: h2, 4: h3, 5: v}
+        restored = restore_rooms(u, rdb=rdb)
+        assert len(restored) == 3
+        assert (h1.x, h1.y, h1.z) == (3, 0, 0)
+        assert (h2.x, h2.y, h2.z) == (6, 0, 0)
+        assert (h3.x, h3.y, h3.z) == (9, 0, 0)
+
+    def test_restore_rooms_3d_diagonal_even_spacing(self):
+        """3D diagonal corridors are interpolated proportionally along all axes."""
+        u = Room(RoomDef(vnum=10, name="Corner Origin", description="", exits=()))
+        u.x, u.y, u.z = 0, 0, 0
+
+        v = Room(RoomDef(vnum=13, name="Corner Target", description="", exits=()))
+        v.x, v.y, v.z = 12, 12, 6
+
+        h1 = Room(RoomDef(vnum=11, name="Diag 1", description="", exits=()))
+        h2 = Room(RoomDef(vnum=12, name="Diag 2", description="", exits=()))
+
+        u.fixups = [
+            CorridorFixup(h1, Direction.northeast, 1, target_vnum=13, total_distance=3),
+            CorridorFixup(h2, Direction.northeast, 2, target_vnum=13, total_distance=3),
+        ]
+
+        rdb = {10: u, 11: h1, 12: h2, 13: v}
+        restored = restore_rooms(u, rdb=rdb)
+        assert len(restored) == 2
+        assert (h1.x, h1.y, h1.z) == (4, 4, 2)
+        assert (h2.x, h2.y, h2.z) == (8, 8, 4)
+
+    def test_restore_rooms_fallback_coincident_endpoints(self):
+        """Coincident endpoints safely fall back to nominal unit directional offsets."""
+        u = Room(RoomDef(vnum=20, name="Origin", description="", exits=()))
+        u.x, u.y, u.z = 5, 5, 5
+
+        v = Room(RoomDef(vnum=22, name="Target Coincident", description="", exits=()))
+        v.x, v.y, v.z = 5, 5, 5  # Coincident with u
+
+        h1 = Room(RoomDef(vnum=21, name="Hallway", description="", exits=()))
+        u.fixups = [
+            CorridorFixup(h1, Direction.east, 1, target_vnum=22, total_distance=2),
+        ]
+
+        rdb = {20: u, 21: h1, 22: v}
+        restored = restore_rooms(u, rdb=rdb)
+        assert len(restored) == 1
+        # Nominal unit directional offset from u (5 + 1 = 6, 5, 5), avoiding point collision at (5, 5, 5)
+        assert (h1.x, h1.y, h1.z) == (6, 5, 5)
+
+    def test_restore_rooms_fallback_missing_v_or_none_coords(self):
+        """Missing target room or None coordinates fall back to directional offsets."""
+        u = Room(RoomDef(vnum=30, name="Origin", description="", exits=()))
+        u.x, u.y, u.z = 2, 4, 6
+
+        h1 = Room(RoomDef(vnum=31, name="Hallway", description="", exits=()))
+        # Target room 999 does not exist in rdb
+        u.fixups = [
+            CorridorFixup(h1, Direction.up, 3, target_vnum=999, total_distance=5),
+        ]
+
+        restored = restore_rooms(u, rdb={30: u, 31: h1})
+        assert len(restored) == 1
+        assert (h1.x, h1.y, h1.z) == (2, 4, 9)
+
+        # Target room exists but has None coordinates
+        v = Room(RoomDef(vnum=32, name="None Target", description="", exits=()))
+        h2 = Room(RoomDef(vnum=33, name="Hallway 2", description="", exits=()))
+        u.fixups = [
+            CorridorFixup(h2, Direction.south, 2, target_vnum=32, total_distance=4),
+        ]
+        restored2 = restore_rooms(u, rdb={30: u, 32: v, 33: h2})
+        assert len(restored2) == 1
+        assert (h2.x, h2.y, h2.z) == (2, 2, 6)
+
+    def test_corridor_fixup_tuple_interface(self):
+        """CorridorFixup retains complete tuple unpacking, indexing, and serialization semantics."""
+        import copy
+        import pytest
+        room = Room(RoomDef(vnum=40, name="Test", description="", exits=()))
+        cf = CorridorFixup(room, Direction.west, 2, target_vnum=50, total_distance=6)
+
+        # 3-tuple unpacking
+        r, d, dist = cf
+        assert r is room
+        assert d == Direction.west
+        assert dist == 2
+        assert len(cf) == 3
+        assert cf[0] is room
+        assert cf[1] == Direction.west
+        assert cf[2] == 2
+        assert cf.target_vnum == 50
+        assert cf.total_distance == 6
+        assert "target_vnum=50" in repr(cf)
+
+        # Copy and deepcopy preservation
+        cf_copy = copy.copy(cf)
+        assert cf_copy.target_vnum == 50
+        assert cf_copy.total_distance == 6
+
+        cf_deepcopy = copy.deepcopy(cf)
+        assert cf_deepcopy.target_vnum == 50
+        assert cf_deepcopy.total_distance == 6
+
+        # Flexible instantiation from tuple
+        cf_from_tuple = CorridorFixup((room, Direction.east, 3), target_vnum=60, total_distance=8)
+        assert cf_from_tuple.target_vnum == 60
+        assert cf_from_tuple.total_distance == 8
+
+        with pytest.raises(ValueError):
+            CorridorFixup(room)
 
 
 class TestSVGRenderer:

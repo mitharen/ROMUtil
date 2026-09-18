@@ -495,3 +495,130 @@ class TestComponentRenderingIntegration:
         solved_rdb, exits = solve_layout({}, None)
         assert solved_rdb == {}
         assert exits == []
+
+    def test_solve_layout_stretched_hallway_even_spacing(self, monkeypatch):
+        """Straight hallway stretched by solver is restored with evenly spaced coordinates."""
+        # 1 <-> 2 <-> 3 <-> 4 <-> 5 (East/West)
+        r1 = Room(RoomDef(vnum=1, name="R1", description="", exits=(
+            ExitDef(direction=1, dst_vnum=2),
+            ExitDef(direction=0, dst_vnum=100),
+        )))
+        r2 = Room(RoomDef(vnum=2, name="R2", description="", exits=(
+            ExitDef(direction=3, dst_vnum=1),
+            ExitDef(direction=1, dst_vnum=3),
+        )))
+        r3 = Room(RoomDef(vnum=3, name="R3", description="", exits=(
+            ExitDef(direction=3, dst_vnum=2),
+            ExitDef(direction=1, dst_vnum=4),
+        )))
+        r4 = Room(RoomDef(vnum=4, name="R4", description="", exits=(
+            ExitDef(direction=3, dst_vnum=3),
+            ExitDef(direction=1, dst_vnum=5),
+        )))
+        r5 = Room(RoomDef(vnum=5, name="R5", description="", exits=(
+            ExitDef(direction=3, dst_vnum=4),
+            ExitDef(direction=2, dst_vnum=101),
+        )))
+        r100 = Room(RoomDef(vnum=100, name="R100", description="", exits=(ExitDef(direction=2, dst_vnum=1),)))
+        r101 = Room(RoomDef(vnum=101, name="R101", description="", exits=(ExitDef(direction=0, dst_vnum=5),)))
+
+        rdb = {1: r1, 2: r2, 3: r3, 4: r4, 5: r5, 100: r100, 101: r101}
+
+        import sys
+        graph_mod = sys.modules["romutil.graph"]
+
+        def mock_solve(sub_rdb, sub_exits, timeout=None):
+            m = MockModelCoords({
+                1: (0, 0, 0),
+                5: (12, 0, 0),
+                100: (0, 1, 0),
+                101: (12, -1, 0),
+            })
+            return m, MockSolverResults(pyomo.opt.TerminationCondition.optimal)
+
+        monkeypatch.setattr(graph_mod, "solve", mock_solve)
+
+        solved_rdb, exits = solve_layout(rdb, solver_timeout=10)
+
+        assert set(solved_rdb.keys()) == {1, 2, 3, 4, 5, 100, 101}
+        assert solved_rdb[1].x == 0
+        assert solved_rdb[5].x == 12
+        assert solved_rdb[2].x == 3
+        assert solved_rdb[3].x == 6
+        assert solved_rdb[4].x == 9
+
+    def test_solve_layout_diagonal_corridor_even_spacing(self, monkeypatch):
+        """Diagonal corridor (NE/SW) stretched by solver is evenly spaced."""
+        r10 = Room(RoomDef(vnum=10, name="R10", description="", exits=(
+            ExitDef(direction=6, dst_vnum=11),  # NE
+            ExitDef(direction=0, dst_vnum=110),
+        )))
+        r11 = Room(RoomDef(vnum=11, name="R11", description="", exits=(
+            ExitDef(direction=9, dst_vnum=10),  # SW
+            ExitDef(direction=6, dst_vnum=12),  # NE
+        )))
+        r12 = Room(RoomDef(vnum=12, name="R12", description="", exits=(
+            ExitDef(direction=9, dst_vnum=11),  # SW
+            ExitDef(direction=6, dst_vnum=13),  # NE
+        )))
+        r13 = Room(RoomDef(vnum=13, name="R13", description="", exits=(
+            ExitDef(direction=9, dst_vnum=12),  # SW
+            ExitDef(direction=2, dst_vnum=113),
+        )))
+        r110 = Room(RoomDef(vnum=110, name="R110", description="", exits=(ExitDef(direction=2, dst_vnum=10),)))
+        r113 = Room(RoomDef(vnum=113, name="R113", description="", exits=(ExitDef(direction=0, dst_vnum=13),)))
+
+        rdb = {10: r10, 11: r11, 12: r12, 13: r13, 110: r110, 113: r113}
+
+        import sys
+        graph_mod = sys.modules["romutil.graph"]
+
+        def mock_solve(sub_rdb, sub_exits, timeout=None):
+            m = MockModelCoords({
+                10: (0, 0, 0),
+                13: (9, 9, 3),
+                110: (0, 1, 0),
+                113: (9, 8, 3),
+            })
+            return m, MockSolverResults(pyomo.opt.TerminationCondition.optimal)
+
+        monkeypatch.setattr(graph_mod, "solve", mock_solve)
+
+        solved_rdb, exits = solve_layout(rdb, solver_timeout=10)
+
+        assert solved_rdb[10].x == 0 and solved_rdb[10].y == 0 and solved_rdb[10].z == 0
+        assert solved_rdb[13].x == 9 and solved_rdb[13].y == 9 and solved_rdb[13].z == 3
+        assert (solved_rdb[11].x, solved_rdb[11].y, solved_rdb[11].z) == (3, 3, 1)
+        assert (solved_rdb[12].x, solved_rdb[12].y, solved_rdb[12].z) == (6, 6, 2)
+
+    def test_solve_layout_hallway_fallback_on_solver_failure(self, monkeypatch):
+        """On solver failure or coincident endpoints, hallway restoration falls back to nominal offsets."""
+        r1 = Room(RoomDef(vnum=1, name="R1", description="", exits=(
+            ExitDef(direction=1, dst_vnum=2),
+            ExitDef(direction=0, dst_vnum=100),
+        )))
+        r2 = Room(RoomDef(vnum=2, name="R2", description="", exits=(
+            ExitDef(direction=3, dst_vnum=1),
+            ExitDef(direction=1, dst_vnum=3),
+        )))
+        r3 = Room(RoomDef(vnum=3, name="R3", description="", exits=(
+            ExitDef(direction=3, dst_vnum=2),
+            ExitDef(direction=2, dst_vnum=101),
+        )))
+        r100 = Room(RoomDef(vnum=100, name="R100", description="", exits=(ExitDef(direction=2, dst_vnum=1),)))
+        r101 = Room(RoomDef(vnum=101, name="R101", description="", exits=(ExitDef(direction=0, dst_vnum=3),)))
+
+        rdb = {1: r1, 2: r2, 3: r3, 100: r100, 101: r101}
+
+        import sys
+        graph_mod = sys.modules["romutil.graph"]
+
+        def mock_solve(sub_rdb, sub_exits, timeout=None):
+            return None, MockSolverResults(pyomo.opt.TerminationCondition.infeasible)
+
+        monkeypatch.setattr(graph_mod, "solve", mock_solve)
+
+        solved_rdb, exits = solve_layout(rdb, solver_timeout=10)
+
+        assert 2 in solved_rdb
+        assert solved_rdb[2].x == 1
