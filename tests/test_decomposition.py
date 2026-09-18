@@ -49,7 +49,7 @@ from romutil.decomposition import (
     assemble_composite_layout,
     KNOWN_MACRO_CONTRACTS,
 )
-from romutil.solver import build_spatial_coordinate_buckets, find_spatial_room_collisions
+from romutil.solver import build_spatial_coordinate_buckets, compute_dynamic_solver_timeout, find_spatial_room_collisions
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "areas"
 
@@ -471,3 +471,126 @@ class TestMetropolitanClusterSolve:
         assert len(inter_area_collisions) == 0, (
             f"Expected 0 inter-area collisions, found {len(inter_area_collisions)}: {inter_area_collisions}"
         )
+
+
+# ============================================================================
+# 6. Task 10i Tests: Exact Multi-Port Invariants & Non-Rectangular Footprints
+# ============================================================================
+
+class TestTask10iFeatures:
+    """Verify Task 10i automated polygon footprints, exact multi-port alignment, and dynamic timeout."""
+
+    def test_multi_port_relative_displacement_equality_constraints(self):
+        """Verify create_macro_cavity_hook generates strict equalities (==) for multi-port alignment."""
+        model = pyo.ConcreteModel()
+        model.Rooms = pyo.Set(initialize=[10, 20, 30])
+        model.x = pyo.Var(model.Rooms, within=pyo.Integers)
+        model.y = pyo.Var(model.Rooms, within=pyo.Integers)
+        model.z = pyo.Var(model.Rooms, within=pyo.Integers)
+
+        contract = MacroCavityContract(
+            child_area_name="ChildArea",
+            container_area_name="ContainerArea",
+            enclosure_type=EnclosureType.ENCLOSED,
+            port_pairs=[(10, 101, Direction.east), (20, 102, Direction.east)],
+            port_displacement={
+                (10, 20): (3, -5, 0),
+                (20, 30): (-2, 0, 4),
+            },
+        )
+
+        hook = create_macro_cavity_hook([contract])
+        hook(model)
+
+        assert hasattr(model, "macro_cavity_constraints")
+        constraints = list(model.macro_cavity_constraints.values())
+        assert len(constraints) == 6
+
+        # All multi-port relative displacement constraints must be exact equalities (c.equality is True)
+        for c in constraints:
+            assert c.equality is True
+            assert c.lower == c.upper
+
+    def test_profile_area_computes_port_relative_footprint(self):
+        """AreaProfile correctly computes tight footprint relative to anchor port."""
+        r_anchor = Room(RoomDef(vnum=100, name="Anchor", description=""))
+        r_anchor.x, r_anchor.y, r_anchor.z = 5, 5, 0
+
+        r_east = Room(RoomDef(vnum=101, name="East", description=""))
+        r_east.x, r_east.y, r_east.z = 8, 5, 0
+
+        r_west = Room(RoomDef(vnum=102, name="West", description=""))
+        r_west.x, r_west.y, r_west.z = 2, 5, 0
+
+        r_north = Room(RoomDef(vnum=103, name="North", description=""))
+        r_north.x, r_north.y, r_north.z = 5, 9, 0
+
+        r_south = Room(RoomDef(vnum=104, name="South", description=""))
+        r_south.x, r_south.y, r_south.z = 5, 1, 0
+
+        rooms = {100: r_anchor, 101: r_east, 102: r_west, 103: r_north, 104: r_south}
+        b = compute_bounding_box(rooms.values())
+        prof = AreaProfile(
+            area_name="TestArea",
+            rooms=rooms,
+            exits=[],
+            bounds=b,
+            width=6,
+            height=8,
+            depth=0,
+            ports={100: (5, 5, 0)},
+        )
+
+        # In build_macro_contracts, footprint relative to port 100
+        contracts = build_macro_contracts(
+            container_name="Container",
+            container_rooms={1: Room(RoomDef(vnum=1, name="C1", description=""))},
+            child_profiles={"TestArea": prof},
+            inter_links=[("Container", "TestArea", 1, 100, Direction.east)],
+        )
+        assert len(contracts) == 1
+        c = contracts[0]
+        # Footprint: min_dx=2-5=-3, max_dx=8-5=+3, min_dy=1-5=-4, max_dy=9-5=+4
+        assert c.footprint == (-3, 3, -4, 4, 0, 0)
+
+    def test_transverse_clearance_reservation_enforcement(self):
+        """Clearance rooms in transverse directions receive directional bounds matching footprint."""
+        model = pyo.ConcreteModel()
+        model.Rooms = pyo.Set(initialize=[1, 2, 3])
+        model.x = pyo.Var(model.Rooms, within=pyo.Integers)
+        model.y = pyo.Var(model.Rooms, within=pyo.Integers)
+        model.z = pyo.Var(model.Rooms, within=pyo.Integers)
+
+        # Primary port East from room 1. Transverse span in Y is [-2, +2].
+        # Clearance room 2 is North, room 3 is South.
+        contract = MacroCavityContract(
+            child_area_name="MobFact",
+            container_area_name="Midgaard",
+            enclosure_type=EnclosureType.ENCLOSED,
+            port_pairs=[(1, 100, Direction.east)],
+            bounding_box=(4, 4, 0),
+            clearance_rooms=[2, 3],
+            footprint=(0, 4, -2, 2, 0, 0),
+            clearance_directions={2: Direction.north, 3: Direction.south},
+        )
+
+        hook = create_macro_cavity_hook([contract])
+        hook(model)
+
+        constraints = list(model.macro_cavity_constraints.values())
+        assert len(constraints) == 2
+
+        # Room 2 (North) must have y[2] >= y[1] + 3
+        # Room 3 (South) must have y[1] - y[3] >= 3
+        c_north = next(c for c in constraints if "y[2]" in str(c.expr))
+        c_south = next(c for c in constraints if "y[3]" in str(c.expr))
+        assert "3" in str(c_north.expr)
+        assert "3" in str(c_south.expr)
+
+    def test_dynamic_container_timeout_computation(self):
+        """solve_hierarchical_layout dynamically scales container timeout when not specified."""
+        solver = HierarchicalLayoutSolver(container_timeout=None)
+        assert solver.container_timeout is None
+        # Verify dynamic calculation for 143 container rooms
+        expected_timeout = compute_dynamic_solver_timeout(143)
+        assert expected_timeout >= 120

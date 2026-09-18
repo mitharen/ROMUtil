@@ -24,6 +24,7 @@ import pyomo.environ as pyo
 from romutil.models import Direction, Exit, Room
 from romutil.solver import (
     build_spatial_coordinate_buckets,
+    compute_dynamic_solver_timeout,
     find_spatial_room_collisions,
 )
 
@@ -48,6 +49,8 @@ class AreaProfile:
     height: int
     depth: int
     ports: dict[int, tuple[int, int, int]] = field(default_factory=dict)
+    footprint: tuple[int, int, int, int, int, int] = (0, 0, 0, 0, 0, 0)
+    port_footprints: dict[int, tuple[int, int, int, int, int, int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -60,6 +63,9 @@ class MacroCavityContract:
     port_displacement: dict[tuple[int, int], tuple[int, int, int]] = field(default_factory=dict)
     bounding_box: tuple[int, int, int] = (0, 0, 0)  # (width, height, depth)
     clearance_rooms: list[int] = field(default_factory=list)
+    footprint: tuple[int, int, int, int, int, int] = (0, 0, 0, 0, 0, 0)
+    port_footprints: dict[int, tuple[int, int, int, int, int, int]] = field(default_factory=dict)
+    clearance_directions: dict[int, Direction] = field(default_factory=dict)
 
 
 @dataclass
@@ -79,9 +85,9 @@ KNOWN_MACRO_CONTRACTS: dict[tuple[str, str], list[int]] = {
     ("the hood", "midgaard"): [3272, 3273],
     ("gangland", "midgaard"): [3272, 3273],
     ("the slums", "midgaard"): [3272, 3273],
-    ("mobfact", "midgaard"): [3018, 3019, 3024, 3044, 3048, 3101],
-    ("mob factory", "midgaard"): [3018, 3019, 3024, 3044, 3048, 3101],
-    ("the mob factory", "midgaard"): [3018, 3019, 3024, 3044, 3048, 3101],
+    ("mobfact", "midgaard"): [3018, 3019, 3024, 3044, 3048, 3101, 3170],
+    ("mob factory", "midgaard"): [3018, 3019, 3024, 3044, 3048, 3101, 3170],
+    ("the mob factory", "midgaard"): [3018, 3019, 3024, 3044, 3048, 3101, 3170],
     ("grave", "midgaard"): [3130, 3127],
     ("graveyard", "midgaard"): [3130, 3127],
     ("the graveyard", "midgaard"): [3130, 3127],
@@ -244,9 +250,31 @@ def profile_area(
     d = max(0, b[5] - b[4])
 
     ports: dict[int, tuple[int, int, int]] = {}
+    valid_coords = [
+        (int(r.x), int(r.y), int(r.z))
+        for r in solved_rdb.values()
+        if not getattr(r, "dummy", False) and r.x is not None and r.y is not None and r.z is not None
+    ]
     for vnum, room in solved_rdb.items():
         if not getattr(room, "dummy", False) and room.x is not None and room.y is not None and room.z is not None:
             ports[vnum] = (int(room.x), int(room.y), int(room.z))
+
+    port_footprints: dict[int, tuple[int, int, int, int, int, int]] = {}
+    for p_vnum, (px, py, pz) in ports.items():
+        if valid_coords:
+            min_dx = min(rx - px for rx, _, _ in valid_coords)
+            max_dx = max(rx - px for rx, _, _ in valid_coords)
+            min_dy = min(ry - py for _, ry, _ in valid_coords)
+            max_dy = max(ry - py for _, ry, _ in valid_coords)
+            min_dz = min(rz - pz for _, _, rz in valid_coords)
+            max_dz = max(rz - pz for _, _, rz in valid_coords)
+            port_footprints[p_vnum] = (min_dx, max_dx, min_dy, max_dy, min_dz, max_dz)
+
+    default_footprint = (
+        next(iter(port_footprints.values()))
+        if port_footprints
+        else (0, w, 0, h, 0, d)
+    )
 
     return AreaProfile(
         area_name=area_name,
@@ -257,6 +285,8 @@ def profile_area(
         height=h,
         depth=d,
         ports=ports,
+        footprint=default_footprint,
+        port_footprints=port_footprints,
     )
 
 
@@ -341,6 +371,98 @@ def build_macro_contracts(
             auto_rooms = find_clearance_rooms(container_rooms, u, d, max_hops=4)
             clearance_set.update(auto_rooms)
 
+        u_primary, v_primary, d_primary = port_pairs[0]
+        # Footprint relative to primary port
+        footprint = (0, child_prof.width, 0, child_prof.height, 0, child_prof.depth)
+        if v_primary in child_prof.port_footprints:
+            footprint = child_prof.port_footprints[v_primary]
+        elif v_primary in child_prof.ports:
+            pv = child_prof.ports[v_primary]
+            valid_coords = [
+                (int(r.x), int(r.y), int(r.z))
+                for r in child_prof.rooms.values()
+                if not getattr(r, "dummy", False) and r.x is not None and r.y is not None and r.z is not None
+            ]
+            if valid_coords:
+                min_dx = min(rx - pv[0] for rx, _, _ in valid_coords)
+                max_dx = max(rx - pv[0] for rx, _, _ in valid_coords)
+                min_dy = min(ry - pv[1] for _, ry, _ in valid_coords)
+                max_dy = max(ry - pv[1] for _, ry, _ in valid_coords)
+                min_dz = min(rz - pv[2] for _, _, rz in valid_coords)
+                max_dz = max(rz - pv[2] for _, _, rz in valid_coords)
+                footprint = (min_dx, max_dx, min_dy, max_dy, min_dz, max_dz)
+            else:
+                footprint = child_prof.footprint
+        elif child_prof.footprint != (0, 0, 0, 0, 0, 0):
+            footprint = child_prof.footprint
+
+        # Determine clearance room directions relative to container gateway
+        clearance_directions: dict[int, Direction] = {}
+        cont_graph = nx.DiGraph()
+        for r_vnum, r_obj in container_rooms.items():
+            if getattr(r_obj, "dummy", False):
+                continue
+            cont_graph.add_node(r_vnum)
+            for ex in r_obj.exits:
+                if ex.dst in container_rooms and not getattr(container_rooms[ex.dst], "dummy", False):
+                    cont_graph.add_edge(ex.src, ex.dst, dir=ex.direction)
+
+        for w in clearance_set:
+            if (
+                w in container_rooms
+                and cont_graph.has_node(u_primary)
+                and cont_graph.has_node(w)
+                and nx.has_path(cont_graph, u_primary, w)
+            ):
+                path = nx.shortest_path(cont_graph, u_primary, w)
+                if len(path) >= 2:
+                    first_dir = cont_graph[path[0]][path[1]]["dir"]
+                    vx, vy, vz = 0, 0, 0
+                    for a, b in zip(path[:-1], path[1:]):
+                        step_dx, step_dy, step_dz = direction_offset(cont_graph[a][b]["dir"])
+                        vx += step_dx
+                        vy += step_dy
+                        vz += step_dz
+
+                    if d_primary in (Direction.east, Direction.west):
+                        # Transverse axis is Y (North/South)
+                        if d_primary == Direction.east and vx > 0 and vy == 0:
+                            clearance_directions[w] = Direction.east
+                        elif d_primary == Direction.west and vx < 0 and vy == 0:
+                            clearance_directions[w] = Direction.west
+                        elif footprint[2] < 0 and footprint[3] > 0:
+                            if vy > 0 or (vy == 0 and first_dir == Direction.north):
+                                clearance_directions[w] = Direction.north
+                            elif vy < 0 or (vy == 0 and first_dir == Direction.south):
+                                clearance_directions[w] = Direction.south
+                            else:
+                                clearance_directions[w] = d_primary
+                        else:
+                            clearance_directions[w] = d_primary
+                    elif d_primary in (Direction.north, Direction.south):
+                        # Transverse axis is X (East/West)
+                        if d_primary == Direction.south and vy < 0:
+                            clearance_directions[w] = Direction.south
+                        elif d_primary == Direction.north and vy > 0:
+                            clearance_directions[w] = Direction.north
+                        elif footprint[0] < 0 and footprint[1] > 0:
+                            if vx > 0:
+                                clearance_directions[w] = Direction.east
+                            elif vx < 0:
+                                clearance_directions[w] = Direction.west
+                            elif first_dir in (Direction.east, Direction.west):
+                                clearance_directions[w] = first_dir
+                            else:
+                                clearance_directions[w] = d_primary
+                        else:
+                            clearance_directions[w] = d_primary
+                    else:
+                        clearance_directions[w] = d_primary
+                else:
+                    clearance_directions[w] = d_primary
+            else:
+                clearance_directions[w] = d_primary
+
         contracts.append(
             MacroCavityContract(
                 child_area_name=child_name,
@@ -350,6 +472,9 @@ def build_macro_contracts(
                 port_displacement=displacements,
                 bounding_box=(child_prof.width, child_prof.height, child_prof.depth),
                 clearance_rooms=sorted(clearance_set),
+                footprint=footprint,
+                port_footprints=child_prof.port_footprints,
+                clearance_directions=clearance_directions,
             )
         )
 
@@ -370,54 +495,63 @@ def create_macro_cavity_hook(
             if contract.enclosure_type != EnclosureType.ENCLOSED:
                 continue
 
-            # 1. Multi-port rigid displacement invariants
+            # 1. Multi-port rigid displacement invariants (exact equality)
             for (u1, u2), (dx, dy, dz) in contract.port_displacement.items():
                 if hasattr(model, "Rooms") and u1 in model.Rooms and u2 in model.Rooms:
-                    if dx == 0:
-                        model.macro_cavity_constraints.add(model.x[u1] == model.x[u2])
-                    elif dx > 0:
-                        model.macro_cavity_constraints.add(model.x[u1] - model.x[u2] >= int(dx))
-                    else:
-                        model.macro_cavity_constraints.add(model.x[u2] - model.x[u1] >= int(-dx))
+                    model.macro_cavity_constraints.add(model.x[u1] - model.x[u2] == int(dx))
+                    model.macro_cavity_constraints.add(model.y[u1] - model.y[u2] == int(dy))
+                    model.macro_cavity_constraints.add(model.z[u1] - model.z[u2] == int(dz))
 
-                    if dy == 0:
-                        model.macro_cavity_constraints.add(model.y[u1] == model.y[u2])
-                    elif dy > 0:
-                        model.macro_cavity_constraints.add(model.y[u1] - model.y[u2] >= int(dy))
-                    else:
-                        model.macro_cavity_constraints.add(model.y[u2] - model.y[u1] >= int(-dy))
+            # 2. Cavity clearance bounding box inequalities with port-relative footprints
+            if not contract.port_pairs:
+                continue
+            u, v, d = contract.port_pairs[0]
+            if not hasattr(model, "Rooms") or u not in model.Rooms:
+                continue
 
-                    if dz == 0:
-                        model.macro_cavity_constraints.add(model.z[u1] == model.z[u2])
-                    elif dz > 0:
-                        model.macro_cavity_constraints.add(model.z[u1] - model.z[u2] >= int(dz))
-                    else:
-                        model.macro_cavity_constraints.add(model.z[u2] - model.z[u1] >= int(-dz))
-
-            # 2. Cavity clearance bounding box inequalities
             w_box, h_box, _ = contract.bounding_box
-            for u, _, d in contract.port_pairs:
-                if not hasattr(model, "Rooms") or u not in model.Rooms:
-                    continue
+            fp = contract.port_footprints.get(v, contract.footprint)
+            if fp == (0, 0, 0, 0, 0, 0) and contract.bounding_box != (0, 0, 0):
+                min_dx, max_dx = 0, w_box
+                min_dy, max_dy = 0, h_box
+                min_dz, max_dz = 0, 0
+            else:
+                min_dx, max_dx, min_dy, max_dy, min_dz, max_dz = fp
 
-                for w in contract.clearance_rooms:
-                    if w in model.Rooms and w != u:
-                        if d in (Direction.east, Direction.northeast, Direction.southeast):
-                            model.macro_cavity_constraints.add(
-                                model.x[w] >= model.x[u] + int(w_box + 2)
-                            )
-                        elif d in (Direction.west, Direction.northwest, Direction.southwest):
-                            model.macro_cavity_constraints.add(
-                                model.x[u] - model.x[w] >= int(w_box + 2)
-                            )
-                        elif d in (Direction.north, Direction.northeast, Direction.northwest):
-                            model.macro_cavity_constraints.add(
-                                model.y[w] >= model.y[u] + int(h_box + 2)
-                            )
-                        elif d in (Direction.south, Direction.southeast, Direction.southwest):
-                            model.macro_cavity_constraints.add(
-                                model.y[u] - model.y[w] >= int(h_box + 2)
-                            )
+            off_x, off_y, off_z = direction_offset(d)
+
+            for w in contract.clearance_rooms:
+                if w in model.Rooms and w != u:
+                    d_eff = contract.clearance_directions.get(w, d)
+
+                    if d_eff in (Direction.east, Direction.northeast, Direction.southeast):
+                        bound = off_x + max_dx + 1
+                        if d in (Direction.east, Direction.northeast, Direction.southeast) and bound < w_box + 2:
+                            bound = max(bound, w_box + 2)
+                        model.macro_cavity_constraints.add(
+                            model.x[w] >= model.x[u] + int(bound)
+                        )
+                    elif d_eff in (Direction.west, Direction.northwest, Direction.southwest):
+                        bound = -(off_x + min_dx) + 1
+                        if d in (Direction.west, Direction.northwest, Direction.southwest) and bound < w_box + 2:
+                            bound = max(bound, w_box + 2)
+                        model.macro_cavity_constraints.add(
+                            model.x[u] - model.x[w] >= int(bound)
+                        )
+                    elif d_eff in (Direction.north, Direction.northeast, Direction.northwest):
+                        bound = off_y + max_dy + 1
+                        if d in (Direction.north, Direction.northeast, Direction.northwest) and bound < h_box + 2:
+                            bound = max(bound, h_box + 2)
+                        model.macro_cavity_constraints.add(
+                            model.y[w] >= model.y[u] + int(bound)
+                        )
+                    elif d_eff in (Direction.south, Direction.southeast, Direction.southwest):
+                        bound = -(off_y + min_dy) + 1
+                        if d in (Direction.south, Direction.southeast, Direction.southwest) and bound < h_box + 2:
+                            bound = max(bound, h_box + 2)
+                        model.macro_cavity_constraints.add(
+                            model.y[u] - model.y[w] >= int(bound)
+                        )
 
     return hook
 
@@ -573,7 +707,7 @@ class HierarchicalLayoutSolver:
     def __init__(
         self,
         child_timeout: int = 15,
-        container_timeout: int = 60,
+        container_timeout: int | None = None,
         component_padding: int = 2,
     ):
         self.child_timeout = child_timeout
@@ -595,9 +729,14 @@ class HierarchicalLayoutSolver:
 
         partitions = partition_rooms_by_area(rdb)
         if len(partitions) <= 1:
+            c_timeout = (
+                self.container_timeout
+                if self.container_timeout is not None
+                else compute_dynamic_solver_timeout(len(rdb))
+            )
             return solve_layout(
                 rdb,
-                solver_timeout=self.container_timeout,
+                solver_timeout=c_timeout,
                 component_padding=self.component_padding,
                 hierarchical=False,
             )
@@ -650,9 +789,14 @@ class HierarchicalLayoutSolver:
             # Pass 2: Solve container with macro-cavity reservation hook
             hook = create_macro_cavity_hook(contracts)
             container_rdb = partitions[container_name]
+            c_timeout = (
+                self.container_timeout
+                if self.container_timeout is not None
+                else compute_dynamic_solver_timeout(len(container_rdb))
+            )
             s_cont_rdb, s_cont_exits = solve_layout(
                 container_rdb,
-                solver_timeout=self.container_timeout,
+                solver_timeout=c_timeout,
                 extra_constraints_hook=hook,
                 hierarchical=False,
             )
@@ -708,13 +852,19 @@ def solve_hierarchical_layout(
     solver_timeout: int | None = None,
     component_padding: int = 2,
     child_timeout: int = 15,
-    container_timeout: int = 60,
+    container_timeout: int | None = None,
 ) -> tuple[dict[int, Room], list[Exit]]:
     """
     Public API to hierarchically solve multi-area composite room layouts.
     """
-    effective_container_timeout = solver_timeout or container_timeout
-    effective_child_timeout = min(effective_container_timeout, child_timeout)
+    effective_container_timeout = (
+        solver_timeout if solver_timeout is not None else container_timeout
+    )
+    effective_child_timeout = (
+        min(effective_container_timeout, child_timeout)
+        if effective_container_timeout is not None
+        else child_timeout
+    )
 
     solver = HierarchicalLayoutSolver(
         child_timeout=effective_child_timeout,
