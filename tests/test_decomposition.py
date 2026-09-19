@@ -47,7 +47,6 @@ from romutil.decomposition import (
     build_macro_contracts,
     create_macro_cavity_hook,
     assemble_composite_layout,
-    KNOWN_MACRO_CONTRACTS,
 )
 from romutil.solver import build_spatial_coordinate_buckets, compute_dynamic_solver_timeout, find_spatial_room_collisions
 
@@ -213,8 +212,74 @@ class TestGraphPartitioningAndClassification:
         assert 1 not in clearance
         assert 5 not in clearance
 
+        # Test with explicit footprint bounding box filtering
+        # Footprint spans y in [0, 2], so room 4 at y = -1 is excluded
+        clearance_fp = find_clearance_rooms(
+            rdb,
+            gateway_vnum=1,
+            direction=Direction.east,
+            footprint=(0, 3, 0, 2, 0, 0),
+            max_hops=3,
+        )
+        assert 2 in clearance_fp
+        assert 3 in clearance_fp
+        assert 4 not in clearance_fp
+
     def test_find_clearance_rooms_empty(self):
         assert find_clearance_rooms({}, gateway_vnum=1, direction=Direction.east) == []
+        r1 = Room(RoomDef(vnum=1, name="R1", description=""))
+        # Gateway not in container
+        assert find_clearance_rooms({2: r1}, gateway_vnum=1, direction=Direction.east) == []
+
+    def test_find_clearance_rooms_directions_and_hops(self):
+        # Test north/south/west footprint calculation
+        r1 = Room(RoomDef(vnum=1, name="R1", description=""))
+        r2 = Room(RoomDef(vnum=2, name="R2", description=""))
+        r3 = Room(RoomDef(vnum=3, name="R3", description=""))
+        r1.exits.append(Exit(ExitDef(direction=Direction.north, dst_vnum=2), source=1))
+        r2.exits.append(Exit(ExitDef(direction=Direction.north, dst_vnum=3), source=2))
+        rdb = {1: r1, 2: r2, 3: r3}
+
+        # With max_hops=1, only room 2 is reached
+        res1 = find_clearance_rooms(rdb, gateway_vnum=1, direction=Direction.north, max_hops=1)
+        assert res1 == [2]
+
+        # With max_hops=2, both 2 and 3 are reached
+        res2 = find_clearance_rooms(rdb, gateway_vnum=1, direction=Direction.north, max_hops=2)
+        assert res2 == [2, 3]
+
+    def test_find_clearance_rooms_hallway_endpoints(self):
+        # 1 -> 2 (east) -> 3 (east, hallway) -> 4 (east)
+        # room 3 is a collapsible hallway between 2 and 4
+        r1 = Room(RoomDef(vnum=1, name="R1", description=""))
+        r2 = Room(RoomDef(vnum=2, name="R2", description=""))
+        r3 = Room(RoomDef(vnum=3, name="R3", description=""))
+        r4 = Room(RoomDef(vnum=4, name="R4", description=""))
+        r20 = Room(RoomDef(vnum=20, name="R20", description=""))
+        r40 = Room(RoomDef(vnum=40, name="R40", description=""))
+
+        r1.exits.append(Exit(ExitDef(direction=Direction.east, dst_vnum=2), source=1))
+        # r2 has 3 exits (branching endpoint)
+        r2.exits.append(Exit(ExitDef(direction=Direction.north, dst_vnum=20), source=2))
+        r2.exits.append(Exit(ExitDef(direction=Direction.west, dst_vnum=1), source=2))
+        r2.exits.append(Exit(ExitDef(direction=Direction.east, dst_vnum=3), source=2))
+        r20.exits.append(Exit(ExitDef(direction=Direction.south, dst_vnum=2), source=20))
+
+        # r3 has 2 opposite exits (collapsible hallway)
+        r3.exits.append(Exit(ExitDef(direction=Direction.west, dst_vnum=2), source=3))
+        r3.exits.append(Exit(ExitDef(direction=Direction.east, dst_vnum=4), source=3))
+
+        # r4 has 2 non-opposite exits (endpoint)
+        r4.exits.append(Exit(ExitDef(direction=Direction.west, dst_vnum=3), source=4))
+        r4.exits.append(Exit(ExitDef(direction=Direction.south, dst_vnum=40), source=4))
+        r40.exits.append(Exit(ExitDef(direction=Direction.north, dst_vnum=4), source=40))
+
+        rdb = {1: r1, 2: r2, 3: r3, 4: r4, 20: r20, 40: r40}
+        # Footprint covers room 3 (displacement vx=2, vy=0)
+        cl = find_clearance_rooms(rdb, gateway_vnum=1, direction=Direction.east, footprint=(1, 1, 0, 0, 0, 0), max_hops=3)
+        assert 3 in cl
+        assert 2 in cl
+        assert 4 in cl
 
 
 # ============================================================================
@@ -234,6 +299,10 @@ class TestMacroContractsAndHooks:
             height=12,
             depth=0,
             ports={2101: (0, 11, 0), 2160: (0, 0, 0)},
+            port_footprints={
+                2101: (0, 8, -11, 1, 0, 0),
+                2160: (0, 8, -1, 11, 0, 0),
+            },
         )
 
         inter_links = [
@@ -242,7 +311,31 @@ class TestMacroContractsAndHooks:
             ("Hood", "Midgaard", 2101, 3119, Direction.west),
         ]
 
-        contracts = build_macro_contracts("Midgaard", {}, {"Hood": child_prof, "Midgaard": AreaProfile("Midgaard", {}, [], (0,0,0,0,0,0), 0,0,0)}, inter_links)
+        r3119 = Room(RoomDef(vnum=3119, name="Emerald Ave", description=""))
+        r3144 = Room(RoomDef(vnum=3144, name="Elm St", description=""))
+        r3124 = Room(RoomDef(vnum=3124, name="Connecting", description=""))
+        r3273 = Room(RoomDef(vnum=3273, name="Concourse Elm", description=""))
+        r3272 = Room(RoomDef(vnum=3272, name="Concourse Penny", description=""))
+
+        # 3144 -> south -> 3124 -> east -> 3273 -> north -> 3272
+        r3144.exits.append(Exit(ExitDef(direction=Direction.south, dst_vnum=3124), source=3144))
+        r3124.exits.append(Exit(ExitDef(direction=Direction.east, dst_vnum=3273), source=3124))
+        r3273.exits.append(Exit(ExitDef(direction=Direction.north, dst_vnum=3272), source=3273))
+
+        container_rooms = {
+            3119: r3119,
+            3144: r3144,
+            3124: r3124,
+            3273: r3273,
+            3272: r3272,
+        }
+
+        contracts = build_macro_contracts(
+            "Midgaard",
+            container_rooms,
+            {"Hood": child_prof, "Midgaard": AreaProfile("Midgaard", container_rooms, [], (0,0,0,0,0,0), 0,0,0)},
+            inter_links,
+        )
         assert len(contracts) == 1
         c = contracts[0]
         assert c.child_area_name == "Hood"
@@ -252,11 +345,58 @@ class TestMacroContractsAndHooks:
         assert c.port_displacement[(3119, 3144)] == (0, 11, 0)
         assert 3272 in c.clearance_rooms
         assert 3273 in c.clearance_rooms
+        assert 3124 not in c.clearance_rooms
+        assert 3144 not in c.clearance_rooms
+        assert 3119 not in c.clearance_rooms
 
     def test_build_macro_contracts_no_ports(self):
         child_prof = AreaProfile("Unconnected", {}, [], (0, 0, 0, 0, 0, 0), 0, 0, 0)
         contracts = build_macro_contracts("Midgaard", {}, {"Unconnected": child_prof}, [])
         assert len(contracts) == 0
+
+    def test_build_macro_contracts_directional_branches(self):
+        # East gateway 10 with transverse north 11, transverse south 12, east 13
+        r10 = Room(RoomDef(vnum=10, name="10", description=""))
+        r11 = Room(RoomDef(vnum=11, name="11", description=""))
+        r12 = Room(RoomDef(vnum=12, name="12", description=""))
+        r13 = Room(RoomDef(vnum=13, name="13", description=""))
+        r10.exits.append(Exit(ExitDef(direction=Direction.east, dst_vnum=13), source=10))
+        r13.exits.append(Exit(ExitDef(direction=Direction.north, dst_vnum=11), source=13))
+        r13.exits.append(Exit(ExitDef(direction=Direction.south, dst_vnum=12), source=13))
+
+        # Secondary gateway 30 (West into 300) with room 31 reachable ONLY from 30
+        r30 = Room(RoomDef(vnum=30, name="30", description=""))
+        r31 = Room(RoomDef(vnum=31, name="31", description=""))
+        r30.exits.append(Exit(ExitDef(direction=Direction.west, dst_vnum=31), source=30))
+
+        container_rooms = {10: r10, 11: r11, 12: r12, 13: r13, 30: r30, 31: r31}
+        child_prof = AreaProfile(
+            area_name="Child",
+            rooms={},
+            exits=[],
+            bounds=(0, 4, -2, 2, 0, 0),
+            width=4,
+            height=4,
+            depth=0,
+            ports={100: (0, 0, 0), 300: (0, 0, 0)},
+            port_footprints={100: (0, 4, -2, 2, 0, 0), 300: (-4, 0, -2, 2, 0, 0)},
+        )
+        inter_links = [
+            ("Cont", "Child", 10, 100, Direction.east),
+            ("Cont", "Child", 30, 300, Direction.west),
+        ]
+        contracts = build_macro_contracts(
+            "Cont",
+            container_rooms,
+            {"Child": child_prof, "Cont": AreaProfile("Cont", container_rooms, [], (0, 0, 0, 0, 0, 0), 0, 0, 0)},
+            inter_links,
+        )
+        assert len(contracts) == 1
+        c = contracts[0]
+        assert c.clearance_directions[11] == Direction.north
+        assert c.clearance_directions[12] == Direction.south
+        assert c.clearance_directions[13] == Direction.east
+        assert c.clearance_directions[31] == Direction.west
 
     def test_create_macro_cavity_hook_all_directions(self):
         model = pyo.ConcreteModel()

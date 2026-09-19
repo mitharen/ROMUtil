@@ -79,19 +79,6 @@ class MacroAssemblyResult:
     is_collision_free: bool
 
 
-# Curated cavity clearance sets for canonical MUD metropolitan areas
-KNOWN_MACRO_CONTRACTS: dict[tuple[str, str], list[int]] = {
-    ("hood", "midgaard"): [3272, 3273],
-    ("the hood", "midgaard"): [3272, 3273],
-    ("gangland", "midgaard"): [3272, 3273],
-    ("the slums", "midgaard"): [3272, 3273],
-    ("mobfact", "midgaard"): [3018, 3019, 3024, 3044, 3048, 3101, 3170],
-    ("mob factory", "midgaard"): [3018, 3019, 3024, 3044, 3048, 3101, 3170],
-    ("the mob factory", "midgaard"): [3018, 3019, 3024, 3044, 3048, 3101, 3170],
-    ("grave", "midgaard"): [3130, 3127, 3122],
-    ("graveyard", "midgaard"): [3130, 3127, 3122],
-    ("the graveyard", "midgaard"): [3130, 3127, 3122],
-}
 
 
 def direction_offset(d: Direction) -> tuple[int, int, int]:
@@ -185,44 +172,89 @@ def find_clearance_rooms(
     container_rooms: Mapping[int, Room],
     gateway_vnum: int,
     direction: Direction,
-    max_hops: int = 5,
+    footprint: tuple[int, int, int, int, int, int] | None = None,
+    max_hops: int = 3,
 ) -> list[int]:
     """
-    Topologically discover candidate container rooms downstream in the given exit direction.
+    Topologically discover candidate container rooms downstream in the given exit direction
+    whose vector displacements intersect the child cavity envelope.
     """
     clearance: set[int] = set()
     if gateway_vnum not in container_rooms:
         return []
 
-    visited = {gateway_vnum}
-    queue: list[tuple[int, int]] = [(gateway_vnum, 0)]
-
-    while queue:
-        curr, hops = queue.pop(0)
-        if hops >= max_hops:
+    cont_graph = nx.DiGraph()
+    for r_vnum, r_obj in container_rooms.items():
+        if getattr(r_obj, "dummy", False):
             continue
+        cont_graph.add_node(r_vnum)
+        for ex in r_obj.exits:
+            if ex.dst in container_rooms and not getattr(container_rooms[ex.dst], "dummy", False):
+                cont_graph.add_edge(ex.src, ex.dst, dir=ex.direction)
 
-        room = container_rooms.get(curr)
-        if not room:
+    if not cont_graph.has_node(gateway_vnum):
+        return []
+
+    off_x, off_y, off_z = direction_offset(direction)
+
+    if footprint is None:
+        fp_x = (0, max_hops) if off_x > 0 else ((-max_hops, 0) if off_x < 0 else (-max_hops, max_hops))
+        fp_y = (0, max_hops) if off_y > 0 else ((-max_hops, 0) if off_y < 0 else (-max_hops, max_hops))
+        fp_z = (0, max_hops) if off_z > 0 else ((-max_hops, 0) if off_z < 0 else (-max_hops, max_hops))
+        footprint = (fp_x[0], fp_x[1], fp_y[0], fp_y[1], fp_z[0], fp_z[1])
+
+    env_min_x = off_x + min(footprint[0], footprint[1])
+    env_max_x = off_x + max(footprint[0], footprint[1])
+    env_min_y = off_y + min(footprint[2], footprint[3])
+    env_max_y = off_y + max(footprint[2], footprint[3])
+    env_min_z = off_z + min(footprint[4], footprint[5])
+    env_max_z = off_z + max(footprint[4], footprint[5])
+
+    from romutil.graph import _is_hallway_candidate
+
+    paths = nx.single_source_shortest_path(cont_graph, gateway_vnum, cutoff=max_hops)
+
+    for w, path in paths.items():
+        if w == gateway_vnum:
             continue
+        vx, vy, vz = 0, 0, 0
+        for a, b in zip(path[:-1], path[1:]):
+            step_dx, step_dy, step_dz = direction_offset(cont_graph[a][b]["dir"])
+            vx += step_dx
+            vy += step_dy
+            vz += step_dz
 
-        for ex in room.exits:
-            nxt = ex.dst
-            if nxt not in container_rooms or nxt in visited:
-                continue
-            if getattr(container_rooms[nxt], "dummy", False):
-                continue
+        if (
+            env_min_x <= vx <= env_max_x
+            and env_min_y <= vy <= env_max_y
+            and env_min_z <= vz <= env_max_z
+        ):
+            clearance.add(w)
 
-            # Check if this exit advances in the target direction or downstream
-            if hops == 0 and ex.direction == direction:
-                visited.add(nxt)
-                clearance.add(nxt)
-                queue.append((nxt, hops + 1))
-            elif hops > 0:
-                visited.add(nxt)
-                clearance.add(nxt)
-                queue.append((nxt, hops + 1))
+    # For any clearance room that is a collapsible hallway room,
+    # include its non-hallway corridor endpoints so the Pyomo model
+    # (which only contains corridor endpoints) receives the cavity reservations.
+    hallway_endpoints: set[int] = set()
+    for w in clearance:
+        r_w = container_rooms.get(w)
+        if r_w and _is_hallway_candidate(r_w, container_rooms):
+            for ex in r_w.exits:
+                curr = ex.dst
+                seen_corridor = {w}
+                while curr in container_rooms and curr not in seen_corridor:
+                    seen_corridor.add(curr)
+                    c_room = container_rooms[curr]
+                    if not _is_hallway_candidate(c_room, container_rooms):
+                        hallway_endpoints.add(curr)
+                        break
+                    opp = ex.direction.invert()
+                    nxt_ex = next((e for e in c_room.exits if e.direction != opp), None)
+                    if not nxt_ex:
+                        hallway_endpoints.add(curr)
+                        break
+                    curr = nxt_ex.dst
 
+    clearance.update(hallway_endpoints)
     clearance.discard(gateway_vnum)
     return sorted(clearance)
 
@@ -356,21 +388,6 @@ def build_macro_contracts(
                         )
                         displacements[(u1, u2)] = delta_u
 
-        # Identify clearance rooms
-        clearance_set: set[int] = set()
-
-        # Check curated knowledge base first
-        child_key = child_name.lower()
-        cont_key = container_name.lower()
-        for (ck, ctk), rooms in KNOWN_MACRO_CONTRACTS.items():
-            if ck in child_key and ctk in cont_key:
-                clearance_set.update(rooms)
-
-        # Augment with automatic topological clearance detection
-        for u, _, d in port_pairs:
-            auto_rooms = find_clearance_rooms(container_rooms, u, d, max_hops=4)
-            clearance_set.update(auto_rooms)
-
         u_primary, v_primary, d_primary = port_pairs[0]
         # Footprint relative to primary port
         footprint = (0, child_prof.width, 0, child_prof.height, 0, child_prof.depth)
@@ -396,6 +413,13 @@ def build_macro_contracts(
         elif child_prof.footprint != (0, 0, 0, 0, 0, 0):
             footprint = child_prof.footprint
 
+        # Identify clearance rooms topologically intersecting child cavity
+        clearance_set: set[int] = set()
+        for u, v, d in port_pairs:
+            fp = child_prof.port_footprints.get(v, footprint)
+            auto_rooms = find_clearance_rooms(container_rooms, u, d, footprint=fp, max_hops=3)
+            clearance_set.update(auto_rooms)
+
         # Determine clearance room directions relative to container gateway
         clearance_directions: dict[int, Direction] = {}
         cont_graph = nx.DiGraph()
@@ -408,6 +432,8 @@ def build_macro_contracts(
                     cont_graph.add_edge(ex.src, ex.dst, dir=ex.direction)
 
         for w in clearance_set:
+            path: list[int] | None = None
+            gw_d = d_primary
             if (
                 w in container_rooms
                 and cont_graph.has_node(u_primary)
@@ -415,53 +441,63 @@ def build_macro_contracts(
                 and nx.has_path(cont_graph, u_primary, w)
             ):
                 path = nx.shortest_path(cont_graph, u_primary, w)
-                if len(path) >= 2:
-                    first_dir = cont_graph[path[0]][path[1]]["dir"]
-                    vx, vy, vz = 0, 0, 0
-                    for a, b in zip(path[:-1], path[1:]):
-                        step_dx, step_dy, step_dz = direction_offset(cont_graph[a][b]["dir"])
-                        vx += step_dx
-                        vy += step_dy
-                        vz += step_dz
-
-                    if d_primary in (Direction.east, Direction.west):
-                        # Transverse axis is Y (North/South)
-                        if d_primary == Direction.east and vx > 0 and vy == 0:
-                            clearance_directions[w] = Direction.east
-                        elif d_primary == Direction.west and vx < 0 and vy == 0:
-                            clearance_directions[w] = Direction.west
-                        elif footprint[2] < 0 and footprint[3] > 0:
-                            if vy > 0 or (vy == 0 and first_dir == Direction.north):
-                                clearance_directions[w] = Direction.north
-                            elif vy < 0 or (vy == 0 and first_dir == Direction.south):
-                                clearance_directions[w] = Direction.south
-                            else:
-                                clearance_directions[w] = d_primary
-                        else:
-                            clearance_directions[w] = d_primary
-                    elif d_primary in (Direction.north, Direction.south):
-                        # Transverse axis is X (East/West)
-                        if d_primary == Direction.south and vy < 0:
-                            clearance_directions[w] = Direction.south
-                        elif d_primary == Direction.north and vy > 0:
-                            clearance_directions[w] = Direction.north
-                        elif footprint[0] < 0 and footprint[1] > 0:
-                            if vx > 0:
-                                clearance_directions[w] = Direction.east
-                            elif vx < 0:
-                                clearance_directions[w] = Direction.west
-                            elif first_dir in (Direction.east, Direction.west):
-                                clearance_directions[w] = first_dir
-                            else:
-                                clearance_directions[w] = d_primary
-                        else:
-                            clearance_directions[w] = d_primary
-                    else:
-                        clearance_directions[w] = d_primary
-                else:
-                    clearance_directions[w] = d_primary
             else:
-                clearance_directions[w] = d_primary
+                for u_cand, _, d_cand in port_pairs:
+                    if (
+                        w in container_rooms
+                        and cont_graph.has_node(u_cand)
+                        and cont_graph.has_node(w)
+                        and nx.has_path(cont_graph, u_cand, w)
+                    ):
+                        path = nx.shortest_path(cont_graph, u_cand, w)
+                        gw_d = d_cand
+                        break
+
+            if path is not None and len(path) >= 2:
+                first_dir = cont_graph[path[0]][path[1]]["dir"]
+                vx, vy, vz = 0, 0, 0
+                for a, b in zip(path[:-1], path[1:]):
+                    step_dx, step_dy, step_dz = direction_offset(cont_graph[a][b]["dir"])
+                    vx += step_dx
+                    vy += step_dy
+                    vz += step_dz
+
+                if gw_d in (Direction.east, Direction.west):
+                    # Transverse axis is Y (North/South)
+                    if gw_d == Direction.east and vx > 0 and vy == 0:
+                        clearance_directions[w] = Direction.east
+                    elif gw_d == Direction.west and vx < 0 and vy == 0:
+                        clearance_directions[w] = Direction.west
+                    elif footprint[2] < 0 and footprint[3] > 0:
+                        if vy > 0 or (vy == 0 and first_dir == Direction.north):
+                            clearance_directions[w] = Direction.north
+                        elif vy < 0 or (vy == 0 and first_dir == Direction.south):
+                            clearance_directions[w] = Direction.south
+                        else:
+                            clearance_directions[w] = gw_d
+                    else:
+                        clearance_directions[w] = gw_d
+                elif gw_d in (Direction.north, Direction.south):
+                    # Transverse axis is X (East/West)
+                    if gw_d == Direction.south and vy < 0:
+                        clearance_directions[w] = Direction.south
+                    elif gw_d == Direction.north and vy > 0:
+                        clearance_directions[w] = Direction.north
+                    elif footprint[0] < 0 and footprint[1] > 0:
+                        if vx > 0:
+                            clearance_directions[w] = Direction.east
+                        elif vx < 0:
+                            clearance_directions[w] = Direction.west
+                        elif first_dir in (Direction.east, Direction.west):
+                            clearance_directions[w] = first_dir
+                        else:
+                            clearance_directions[w] = gw_d
+                    else:
+                        clearance_directions[w] = gw_d
+                else:
+                    clearance_directions[w] = gw_d
+            else:
+                clearance_directions[w] = gw_d
 
         contracts.append(
             MacroCavityContract(
