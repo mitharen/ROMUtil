@@ -381,6 +381,73 @@ class TestGraphAndCorridorCollapse:
         assert r1.x < r2.x < r3.x
         assert os.path.exists(out_svg)
 
+    def test_hallway_collapse_cyclic_degree_2_loops(self):
+        """Cyclic degree-2 loops are not collapsed into degenerate zero-length corridors."""
+        from romutil.graph import _collapse_hallways
+
+        # Case 1: 3-room cyclic corridor (1 <-> 2 <-> 3 <-> 1) where backward trace encounters cycle
+        r1 = Room(RoomDef(vnum=1, name="Loop 1", description="", exits=(
+            ExitDef(direction=3, dst_vnum=3),  # West to 3
+            ExitDef(direction=1, dst_vnum=2),  # East to 2
+        )))
+        r2 = Room(RoomDef(vnum=2, name="Loop 2", description="", exits=(
+            ExitDef(direction=3, dst_vnum=1),  # West to 1
+            ExitDef(direction=1, dst_vnum=3),  # East to 3
+        )))
+        r3 = Room(RoomDef(vnum=3, name="Loop 3", description="", exits=(
+            ExitDef(direction=3, dst_vnum=2),  # West to 2
+            ExitDef(direction=1, dst_vnum=1),  # East to 1
+        )))
+        rdb = {1: r1, 2: r2, 3: r3}
+        corridors = _collapse_hallways(rdb, "TestArea")
+        assert len(corridors) == 0
+        assert 1 in rdb and 2 in rdb and 3 in rdb
+
+        # Case 2: Multi-room corridor connecting back to same endpoint (u_vnum == v_vnum)
+        r10 = Room(RoomDef(vnum=10, name="Hub", description="", exits=(
+            ExitDef(direction=1, dst_vnum=11),
+            ExitDef(direction=3, dst_vnum=12),
+            ExitDef(direction=0, dst_vnum=13),
+        )))
+        r11 = Room(RoomDef(vnum=11, name="Hall 1", description="", exits=(
+            ExitDef(direction=3, dst_vnum=10),
+            ExitDef(direction=1, dst_vnum=12),
+        )))
+        r12 = Room(RoomDef(vnum=12, name="Hall 2", description="", exits=(
+            ExitDef(direction=3, dst_vnum=11),
+            ExitDef(direction=1, dst_vnum=10),
+        )))
+        r13 = Room(RoomDef(vnum=13, name="North", description="", exits=(
+            ExitDef(direction=2, dst_vnum=10),
+        )))
+        rdb2 = {10: r10, 11: r11, 12: r12, 13: r13}
+        corridors2 = _collapse_hallways(rdb2, "TestArea")
+        assert len(corridors2) == 0
+
+    def test_hallway_collapse_one_way_corridors_preserved(self):
+        """One-way corridors are not collapsed, preserving non-reciprocal exit semantics."""
+        from romutil.graph import _collapse_hallways
+
+        # Room 1 -(East)-> Room 2 -(East)-> Room 3 without reciprocal West exits
+        r1 = Room(RoomDef(vnum=1, name="Start", description="", exits=(ExitDef(direction=1, dst_vnum=2),)))
+        r2 = Room(RoomDef(vnum=2, name="Middle", description="", exits=(
+            ExitDef(direction=3, dst_vnum=1),
+            ExitDef(direction=1, dst_vnum=3),
+        )))
+        r3 = Room(RoomDef(vnum=3, name="End", description="", exits=()))
+        rdb = {1: r1, 2: r2, 3: r3}
+
+        # Room 2 is not a candidate because exit to 3 is not reciprocal in 3
+        corridors = _collapse_hallways(rdb, "TestArea")
+        assert len(corridors) == 0
+        assert 2 in rdb
+
+        # Solve layout with one-way corridor preserves all rooms
+        header = AreaHeader(filename="oneway.are", name="OneWay", builder="", vnum_min=1, vnum_max=3)
+        solved_rdb, exits = solve_layout(rdb, header)
+        assert len(solved_rdb) == 3
+        assert all(r.x is not None for r in solved_rdb.values())
+
     def test_disconnected_room_handled(self, caplog):
         # Room with no exits
         r1 = Room(RoomDef(vnum=1, name="Isolated", description="No exits", exits=()))

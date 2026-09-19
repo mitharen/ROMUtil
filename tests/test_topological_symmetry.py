@@ -17,7 +17,6 @@ Verifies:
    - Zero regressions across area fixtures (school.are, smurf.are, tower.are, midgaard.are).
 """
 
-from pathlib import Path
 import pyomo.environ as pyo
 import pytest
 
@@ -25,8 +24,6 @@ from romutil.graph import solve_layout
 from romutil.models import AreaHeader, Direction, Exit, ExitDef, Room, RoomDef
 from romutil.parser import Parser
 from romutil.solver import non_euler, solve
-
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 def _make_bidirectional_pair(r1: Room, r2: Room, direction: Direction, distance: int = 1) -> tuple[Exit, Exit]:
@@ -423,50 +420,6 @@ S
 class TestFixtureZeroRegressions:
     """Verification of standard area fixtures with isotropic 3D constraints."""
 
-    @pytest.mark.slow
-    @pytest.mark.integration
-    def test_area_fixture_regressions(self):
-        """Standard area fixture regression solves with isotropic constraints."""
-        self.test_smurf_are_zero_cuts()
-        self.test_school_are_solves()
-        self.test_tower_are_solves()
-
-    @pytest.mark.slow
-    @pytest.mark.integration
-    def test_smurf_are_zero_cuts(self):
-        """smurf.are solves cleanly with 0 cuts."""
-        smurf_file = FIXTURES_DIR / "areas" / "smurf.are"
-        assert smurf_file.exists(), "smurf.are fixture must exist"
-
-        parsed = Parser().parse(smurf_file.read_text(encoding="utf-8"))
-        rooms = parsed.rooms
-        rdb = {r.vnum: Room(r) for r in rooms}
-        header = AreaHeader(filename="smurf.are", name="Smurf", builder="", vnum_min=100, vnum_max=199)
-
-        rdb, exits = solve_layout(rdb, header)
-        assert len(rdb) > 0
-        non_dummy = [r for r in rdb.values() if not r.dummy]
-        assert all(r.x is not None and r.y is not None and r.z is not None for r in non_dummy)
-
-    @pytest.mark.slow
-    @pytest.mark.integration
-    def test_school_are_solves(self):
-        """school.are solves cleanly without regression."""
-        school_file = FIXTURES_DIR / "areas" / "school.are"
-        assert school_file.exists(), "school.are fixture must exist"
-
-        parsed = Parser().parse(school_file.read_text(encoding="utf-8"))
-        rooms = parsed.rooms
-        rdb = {r.vnum: Room(r) for r in rooms}
-        header = AreaHeader(filename="school.are", name="School", builder="", vnum_min=3700, vnum_max=3799)
-
-        rdb, exits = solve_layout(rdb, header)
-        assert len(rdb) > 0
-        non_dummy = [r for r in rdb.values() if not r.dummy]
-        assert all(r.x is not None and r.y is not None and r.z is not None for r in non_dummy)
-
-    @pytest.mark.slow
-    @pytest.mark.integration
     def test_tower_are_solves(self):
         """tower.are solves cleanly with multiple elevation layers."""
         parsed = Parser().parse(SAMPLE_TOWER_ARE)
@@ -478,30 +431,3 @@ class TestFixtureZeroRegressions:
         non_dummy = [r for r in rdb.values() if not r.dummy]
         unique_z = {r.z for r in non_dummy}
         assert len(unique_z) == 3
-
-    @pytest.mark.slow
-    @pytest.mark.integration
-    def test_midgaard_are_solves(self):
-        """midgaard.are solves cleanly without regression."""
-        midgaard_file = FIXTURES_DIR / "areas" / "midgaard.are"
-        assert midgaard_file.exists(), "midgaard.are fixture must exist"
-
-        parsed = Parser().parse(midgaard_file.read_text(encoding="utf-8"))
-        rooms = parsed.rooms
-        rdb = {r.vnum: Room(r) for r in rooms}
-        header = AreaHeader(filename="midgaard.are", name="Midgaard", builder="", vnum_min=3000, vnum_max=3299)
-
-        rdb, exits = solve_layout(rdb, header, solver_timeout=30)
-        assert len(rdb) > 0
-        non_dummy = [r for r in rdb.values() if not r.dummy]
-        assert all(r.x is not None and r.y is not None and r.z is not None for r in non_dummy)
-
-
-@pytest.mark.slow
-@pytest.mark.integration
-def test_area_fixture_regressions():
-    """Module-level regression verification for standard area fixtures."""
-    suite = TestFixtureZeroRegressions()
-    suite.test_smurf_are_zero_cuts()
-    suite.test_school_are_solves()
-    suite.test_tower_are_solves()

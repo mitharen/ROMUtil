@@ -494,6 +494,21 @@ def build_macro_contracts(
                             clearance_directions[w] = gw_d
                     else:
                         clearance_directions[w] = gw_d
+                elif gw_d in (Direction.up, Direction.down):
+                    # Transverse axes are X and Y
+                    if gw_d == Direction.up and vz > 0 and vx == 0 and vy == 0:
+                        clearance_directions[w] = Direction.up
+                    elif gw_d == Direction.down and vz < 0 and vx == 0 and vy == 0:
+                        clearance_directions[w] = Direction.down
+                    elif footprint[4] < 0 and footprint[5] > 0:
+                        if vz > 0:
+                            clearance_directions[w] = Direction.up
+                        elif vz < 0:
+                            clearance_directions[w] = Direction.down
+                        else:
+                            clearance_directions[w] = gw_d
+                    else:
+                        clearance_directions[w] = gw_d
                 else:
                     clearance_directions[w] = gw_d
             else:
@@ -545,12 +560,12 @@ def create_macro_cavity_hook(
             if not hasattr(model, "Rooms") or u not in model.Rooms:
                 continue
 
-            w_box, h_box, _ = contract.bounding_box
+            w_box, h_box, d_box = contract.bounding_box
             fp = contract.port_footprints.get(v, contract.footprint)
             if fp == (0, 0, 0, 0, 0, 0) and contract.bounding_box != (0, 0, 0):
                 min_dx, max_dx = 0, w_box
                 min_dy, max_dy = 0, h_box
-                min_dz, max_dz = 0, 0
+                min_dz, max_dz = 0, d_box
             else:
                 min_dx, max_dx, min_dy, max_dy, min_dz, max_dz = fp
 
@@ -587,6 +602,20 @@ def create_macro_cavity_hook(
                             bound = max(bound, h_box + 2)
                         model.macro_cavity_constraints.add(
                             model.y[u] - model.y[w] >= int(bound)
+                        )
+                    elif d_eff == Direction.up:
+                        bound = off_z + max_dz + 1
+                        if d == Direction.up and bound < d_box + 2:
+                            bound = max(bound, d_box + 2)
+                        model.macro_cavity_constraints.add(
+                            model.z[w] >= model.z[u] + int(bound)
+                        )
+                    elif d_eff == Direction.down:
+                        bound = -(off_z + min_dz) + 1
+                        if d == Direction.down and bound < d_box + 2:
+                            bound = max(bound, d_box + 2)
+                        model.macro_cavity_constraints.add(
+                            model.z[u] - model.z[w] >= int(bound)
                         )
 
     return hook

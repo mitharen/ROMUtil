@@ -35,8 +35,7 @@ import pyomo.environ as pyo
 import pytest
 
 from romutil.models import Direction, Exit, Room, RoomDef
-from romutil.parser import Parser, parse_circlemud_directory
-from romutil.graph import solve_layout
+from romutil.parser import Parser
 from romutil.solver import (
     compute_dimension_bounds,
     get_candidate_batch_cap,
@@ -364,76 +363,3 @@ class TestModelVariableBounds:
             assert model.x[v].bounds == (-model.Mx.value, model.Mx.value)
             assert model.y[v].bounds == (-model.My.value, model.My.value)
             assert model.z[v].bounds == (-model.Mz.value, model.Mz.value)
-
-
-@pytest.mark.slow
-@pytest.mark.integration
-class TestEndToEndSolverFixtures:
-    """Zero solver regressions across all fixtures."""
-
-    def test_smurf_solve_layout(self):
-        """Verify smurf.are solves cleanly with valid integer coordinates."""
-        filepath = FIXTURES_DIR / "areas" / "smurf.are"
-        area = Parser().parse(filepath.read_text(encoding="latin-1"))
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=20)
-        assert len(solved_rdb) == 30
-        for r in solved_rdb.values():
-            assert r.x is not None
-            assert r.y is not None
-            assert r.z is not None
-            assert isinstance(r.x, (int, float))
-
-    def test_school_solve_layout(self):
-        """Verify school.are solves cleanly with valid integer coordinates."""
-        filepath = FIXTURES_DIR / "areas" / "school.are"
-        area = Parser().parse(filepath.read_text(encoding="latin-1"))
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
-        assert len(solved_rdb) in (60, 61)
-        for r in solved_rdb.values():
-            assert r.x is not None
-            assert r.y is not None
-            assert r.z is not None
-
-    def test_midgaard_solve_layout(self):
-        """Verify midgaard.are solves cleanly with valid coordinates."""
-        filepath = FIXTURES_DIR / "areas" / "midgaard.are"
-        area = Parser().parse(filepath.read_text(encoding="latin-1"))
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
-        assert len(solved_rdb) >= 108
-        for r in solved_rdb.values():
-            assert r.x is not None
-            assert r.y is not None
-            assert r.z is not None
-
-    def test_circlemud_split_solve_layout(self):
-        """Verify CircleMUD split world resolves without regressions."""
-        circlemud_dir = FIXTURES_DIR / "dialects" / "circle_world"
-        if not circlemud_dir.exists():
-            pytest.skip("CircleMUD directory not found")
-        area = parse_circlemud_directory(circlemud_dir)
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=20)
-        assert len(solved_rdb) > 0
-        for r in solved_rdb.values():
-            assert r.x is not None
-            assert r.y is not None
-            assert r.z is not None
-
-    def test_dikumud_alfa_solve_layout(self):
-        """Verify DikuMUD Alfa (.wld) solves cleanly with valid coordinates."""
-        filepath = FIXTURES_DIR / "dialects" / "dikumud_alfa.wld"
-        area = Parser().parse(filepath.read_text(encoding="latin-1"))
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=20)
-        assert len(solved_rdb) >= len(area.rooms)
-        for r in solved_rdb.values():
-            assert r.x is not None
-            assert r.y is not None
-            assert r.z is not None

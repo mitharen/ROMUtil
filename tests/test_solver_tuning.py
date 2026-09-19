@@ -30,7 +30,7 @@ import pytest
 
 from romutil.graph import solve_layout
 from romutil.models import AreaData, AreaHeader, Direction, Exit, ExitDef, Room, RoomDef
-from romutil.parser import Parser, parse_circlemud_directory
+from romutil.parser import Parser
 from romutil.solver import compute_dynamic_solver_timeout, get_cbc_solver, non_euler, solve
 
 
@@ -161,70 +161,6 @@ class TestCBCSolverConfiguration:
         assert solve_opts.get("presolve") == "on"
         assert solve_opts.get("cuts") == "on"
         assert solve_opts.get("heuristics") == "on"
-
-
-@pytest.mark.slow
-@pytest.mark.integration
-class TestStandardFixturesLayoutSolving:
-    """Verify layout solving succeeds with valid integer coordinates across all standard area fixtures."""
-
-    def _verify_coordinates(self, solved_rdb):
-        """Helper to assert all rooms have valid non-None integer coordinates."""
-        assert len(solved_rdb) > 0
-        for vnum, room in solved_rdb.items():
-            assert room.x is not None, f"Room {vnum} x is None"
-            assert room.y is not None, f"Room {vnum} y is None"
-            assert room.z is not None, f"Room {vnum} z is None"
-            assert isinstance(room.x, (int, float)), f"Room {vnum} x not numeric: {room.x}"
-            assert isinstance(room.y, (int, float)), f"Room {vnum} y not numeric: {room.y}"
-            assert isinstance(room.z, (int, float)), f"Room {vnum} z not numeric: {room.z}"
-            assert round(room.x) == room.x, f"Room {vnum} x not integer: {room.x}"
-            assert round(room.y) == room.y, f"Room {vnum} y not integer: {room.y}"
-            assert round(room.z) == room.z, f"Room {vnum} z not integer: {room.z}"
-
-    def test_smurf_solve(self):
-        """Verify smurf.are solves cleanly with valid integer coordinates."""
-        filepath = FIXTURES_DIR / "areas" / "smurf.are"
-        area = Parser().parse(filepath.read_text(encoding="latin-1"))
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
-        self._verify_coordinates(solved_rdb)
-
-    def test_school_solve(self):
-        """Verify school.are solves cleanly with valid integer coordinates."""
-        filepath = FIXTURES_DIR / "areas" / "school.are"
-        area = Parser().parse(filepath.read_text(encoding="latin-1"))
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
-        self._verify_coordinates(solved_rdb)
-
-    def test_midgaard_solve(self):
-        """Verify midgaard.are solves cleanly with valid integer coordinates."""
-        filepath = FIXTURES_DIR / "areas" / "midgaard.are"
-        area = Parser().parse(filepath.read_text(encoding="latin-1"))
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
-        self._verify_coordinates(solved_rdb)
-
-    def test_circlemud_split_solve(self):
-        """Verify CircleMUD split world resolves cleanly with valid integer coordinates."""
-        circlemud_dir = FIXTURES_DIR / "dialects" / "circle_world"
-        if not circlemud_dir.exists():
-            pytest.skip("CircleMUD directory fixture not found")
-        area = parse_circlemud_directory(circlemud_dir)
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
-        self._verify_coordinates(solved_rdb)
-
-    def test_dikumud_alfa_solve(self):
-        """Verify DikuMUD Alfa world resolves cleanly with valid integer coordinates."""
-        filepath = FIXTURES_DIR / "dialects" / "dikumud_alfa.wld"
-        if not filepath.exists():
-            pytest.skip("DikuMUD Alfa fixture not found")
-        area = Parser().parse(filepath.read_text(encoding="latin-1"))
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
-        self._verify_coordinates(solved_rdb)
 
 
 

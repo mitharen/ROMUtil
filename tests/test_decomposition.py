@@ -727,6 +727,122 @@ class TestTask10iFeatures:
         assert "3" in str(c_north.expr)
         assert "3" in str(c_south.expr)
 
+    def test_3d_multi_elevation_cavity_clearance_vertical_and_diagonal(self):
+        """Enclosed child area with 3D multi-level footprint adds vertical cavity clearance inequalities along Z."""
+        model = pyo.ConcreteModel()
+        model.Rooms = pyo.Set(initialize=[10, 11, 12, 13])
+        model.x = pyo.Var(model.Rooms, within=pyo.Integers)
+        model.y = pyo.Var(model.Rooms, within=pyo.Integers)
+        model.z = pyo.Var(model.Rooms, within=pyo.Integers)
+
+        # 3D multi-level child area with depth box = 3, vertical span in Z is [-1, 2]
+        contract = MacroCavityContract(
+            child_area_name="TowerChild",
+            container_area_name="Midgaard",
+            enclosure_type=EnclosureType.ENCLOSED,
+            port_pairs=[(10, 100, Direction.up)],
+            bounding_box=(4, 4, 3),
+            clearance_rooms=[11, 12],
+            footprint=(0, 4, 0, 4, -1, 2),
+            clearance_directions={11: Direction.up, 12: Direction.down},
+        )
+
+        hook = create_macro_cavity_hook([contract])
+        hook(model)
+
+        constraints = list(model.macro_cavity_constraints.values())
+        assert len(constraints) == 2
+
+        # Clearance room 11 (Up): model.z[11] >= model.z[10] + bound (bound >= d_box + 2 = 5)
+        # Clearance room 12 (Down): model.z[10] - model.z[12] >= bound
+        c_up = next(c for c in constraints if "z[11]" in str(c.expr))
+        c_down = next(c for c in constraints if "z[12]" in str(c.expr))
+        assert "z[11] - z[10]" in str(c_up.expr) or "z[11]" in str(c_up.expr)
+        assert "z[10] - z[12]" in str(c_down.expr) or "z[12]" in str(c_down.expr)
+
+    def test_3d_multi_gateway_port_pairs_transverse_offsets(self):
+        """Multi-gateway port pairs preserve exact 3D displacement inequalities including transverse offsets."""
+        model = pyo.ConcreteModel()
+        model.Rooms = pyo.Set(initialize=[10, 20, 30])
+        model.x = pyo.Var(model.Rooms, within=pyo.Integers)
+        model.y = pyo.Var(model.Rooms, within=pyo.Integers)
+        model.z = pyo.Var(model.Rooms, within=pyo.Integers)
+
+        contract = MacroCavityContract(
+            child_area_name="MultiGateway3D",
+            container_area_name="Midgaard",
+            enclosure_type=EnclosureType.ENCLOSED,
+            port_pairs=[(10, 100, Direction.northeast), (20, 200, Direction.southwest)],
+            port_displacement={(10, 20): (6, -4, 2)},
+            bounding_box=(6, 6, 2),
+            clearance_rooms=[30],
+            footprint=(-2, 4, -2, 4, 0, 2),
+            clearance_directions={30: Direction.east},
+        )
+
+        hook = create_macro_cavity_hook([contract])
+        hook(model)
+
+        constraints = list(model.macro_cavity_constraints.values())
+        # 3 displacement equalities (x, y, z) + 1 clearance constraint
+        assert len(constraints) == 4
+        c_x = next(c for c in constraints if "x[10] - x[20]" in str(c.expr))
+        c_y = next(c for c in constraints if "y[10] - y[20]" in str(c.expr))
+        c_z = next(c for c in constraints if "z[10] - z[20]" in str(c.expr))
+        assert "6" in str(c_x.expr)
+        assert "-4" in str(c_y.expr)
+        assert "2" in str(c_z.expr)
+
+    def test_3d_multi_elevation_enclosed_child_contract_building(self):
+        """build_macro_contracts detects 3D multi-level child footprints with vertical gateway connections."""
+        # Child area with 3D elevation variation (z=0, 1, 2)
+        rd100 = RoomDef(vnum=100, name="Ground", description="", exits=(ExitDef(direction=4, dst_vnum=101), ExitDef(direction=5, dst_vnum=1)))
+        rd101 = RoomDef(vnum=101, name="Mid", description="", exits=(ExitDef(direction=5, dst_vnum=100), ExitDef(direction=4, dst_vnum=102)))
+        rd102 = RoomDef(vnum=102, name="Top", description="", exits=(ExitDef(direction=5, dst_vnum=101),))
+        r100, r101, r102 = Room(rd100), Room(rd101), Room(rd102)
+        r100.x, r100.y, r100.z = 0, 0, 0
+        r101.x, r101.y, r101.z = 0, 0, 1
+        r102.x, r102.y, r102.z = 0, 0, 2
+        child_rdb = {100: r100, 101: r101, 102: r102}
+        child_area = AreaData(
+            header=AreaHeader(filename="tower.are", name="Tower", builder="", vnum_min=100, vnum_max=199),
+            rooms=(rd100, rd101, rd102),
+        )
+
+        child_prof = profile_area("Tower", child_rdb, solver_timeout=15)
+        assert child_prof.depth == 2
+
+        # Container area with room 1 connected via Up exit to 100, and room 2 connected to 1
+        rd1 = RoomDef(vnum=1, name="Entrance", description="", exits=(ExitDef(direction=4, dst_vnum=100), ExitDef(direction=0, dst_vnum=2)))
+        rd2 = RoomDef(vnum=2, name="Hall", description="", exits=(ExitDef(direction=2, dst_vnum=1),))
+        r1, r2 = Room(rd1), Room(rd2)
+        cont_area = AreaData(
+            header=AreaHeader(filename="cont.are", name="Container", builder="", vnum_min=1, vnum_max=99),
+            rooms=(rd1, rd2),
+        )
+
+        # 1. Diagonal gateway link to 3D multi-level child area -> Enclosed cavity reservation
+        contracts_diag = build_macro_contracts(
+            "Container",
+            {1: r1, 2: r2},
+            {"Tower": child_prof},
+            [("Container", "Tower", 1, 100, Direction.northeast)],
+        )
+        assert len(contracts_diag) == 1
+        c_diag = contracts_diag[0]
+        assert c_diag.enclosure_type == EnclosureType.ENCLOSED
+        assert c_diag.bounding_box[2] == 2
+
+        # 2. Vertical gateway link (Up/Down) -> Satellite elevation layer
+        contracts_vert = build_macro_contracts(
+            "Container",
+            {1: r1, 2: r2},
+            {"Tower": child_prof},
+            [("Container", "Tower", 1, 100, Direction.up)],
+        )
+        assert len(contracts_vert) == 1
+        assert contracts_vert[0].enclosure_type == EnclosureType.SATELLITE
+
     def test_dynamic_container_timeout_computation(self):
         """solve_hierarchical_layout dynamically scales container timeout when not specified."""
         solver = HierarchicalLayoutSolver(container_timeout=None)

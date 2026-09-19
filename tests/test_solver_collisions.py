@@ -918,6 +918,67 @@ def test_add_collinear_separation_constraint_with_dummy_anchors() -> None:
     assert len(m.crossings) == 13
 
 
+def test_add_collinear_separation_constraint_vertical_and_diagonal_penetration() -> None:
+    """Verify collinear penetration on vertical and diagonal exits generates 3D disjunctive constraints."""
+    # 1. Vertical exit penetration (g = gcd(0, 0, 4) = 4 > 1)
+    ex_up = Exit(direction=Direction.up, src=1, dst=2, distance=4)
+    coords_vert = {1: (0.0, 0.0, 0.0), 2: (0.0, 0.0, 4.0), 3: (0.0, 0.0, 2.0)}
+    pen_vert = find_collinear_exit_room_penetrations([ex_up], coords_vert)
+    assert pen_vert == [(0, 3)]
+
+    m_vert = ConcreteModel()
+    m_vert.Rooms = [1, 2, 3]
+    m_vert.Exits = [0]
+    m_vert.x = Var(m_vert.Rooms, within=Integers)
+    m_vert.y = Var(m_vert.Rooms, within=Integers)
+    m_vert.z = Var(m_vert.Rooms, within=Integers)
+    m_vert.cut = Var(m_vert.Exits, within=Boolean)
+    m_vert.crossings = ConstraintList()
+    m_vert.Mx = 20
+    m_vert.My = 20
+    m_vert.Mz = 15
+
+    next_rel = add_collinear_separation_constraint(
+        m_vert, exit_idx=0, w=3, relations=0, ex=ex_up, coords=coords_vert, has_vertical_exits=True
+    )
+    assert next_rel == 1
+    assert hasattr(m_vert, "collinear_rel_0")
+    rel_vert = getattr(m_vert, "collinear_rel_0")
+    assert len(rel_vert) == 6
+    assert Direction.up in rel_vert and Direction.down in rel_vert
+    # 1 sum constraint + 2 endpoints * 6 directions = 13 constraints
+    assert len(m_vert.crossings) == 13
+
+    # Verify Z-separation constraints exist in crossings
+    expr_strs = [str(c.expr) for c in m_vert.crossings.values()]
+    assert any("z[1] - z[3]" in s or "z[1]" in s for s in expr_strs)
+    assert any("z[3] - z[1]" in s or "z[3]" in s for s in expr_strs)
+
+    # 2. Diagonal 3D exit penetration (g = gcd(2, 2, 2) = 2 > 1)
+    ex_diag = Exit(direction=Direction.northeast, src=10, dst=20, distance=2)
+    coords_diag = {10: (0.0, 0.0, 0.0), 20: (2.0, 2.0, 2.0), 30: (1.0, 1.0, 1.0)}
+    pen_diag = find_collinear_exit_room_penetrations([ex_diag], coords_diag)
+    assert pen_diag == [(0, 30)]
+
+    m_diag = ConcreteModel()
+    m_diag.Rooms = [10, 20, 30]
+    m_diag.Exits = [0]
+    m_diag.x = Var(m_diag.Rooms, within=Integers)
+    m_diag.y = Var(m_diag.Rooms, within=Integers)
+    m_diag.z = Var(m_diag.Rooms, within=Integers)
+    m_diag.cut = Var(m_diag.Exits, within=Boolean)
+    m_diag.crossings = ConstraintList()
+    m_diag.Mx = 20
+    m_diag.My = 20
+    m_diag.Mz = 20
+
+    next_rel_diag = add_collinear_separation_constraint(
+        m_diag, exit_idx=0, w=30, relations=0, ex=ex_diag, coords=coords_diag, has_vertical_exits=True
+    )
+    assert next_rel_diag == 1
+    assert len(m_diag.crossings) == 13
+
+
 def test_find_collinear_exit_room_penetrations_branches() -> None:
     """Verify edge cases: model coords, Pyomo cut variables, non-integer coords, empty vnums."""
     # 1. Pyomo model with Rooms attribute

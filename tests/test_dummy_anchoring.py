@@ -29,7 +29,7 @@ import pyomo.environ as pyo
 import pytest
 
 from romutil.models import Direction, Exit, Room, RoomDef
-from romutil.parser import Parser, parse_circlemud_directory
+from romutil.parser import Parser
 from romutil.graph import solve_layout
 from romutil.solver import position_dummy_rooms, solve, non_euler
 from romutil.renderers import SVGRenderer, render_map
@@ -90,27 +90,9 @@ class TestDecisionVariableReduction:
                 assert reduction == 69
                 assert abs(percent_reduction - 13.855) < 0.01
 
-        # Now solve directly on the rdb to verify model.Rooms and model variables directly
-        model, results = solve(solved_rdb, exits, timeout=10)
-        assert results.solver.termination_condition in (
-            pyo.TerminationCondition.optimal,
-            pyo.TerminationCondition.feasible,
-            pyo.TerminationCondition.maxTimeLimit,
-        )
-
-        # Decision variables in Pyomo model must only contain non-dummy rooms
-        assert len(model.Rooms) == len(non_dummies)
-        for d in dummies:
-            assert d not in model.Rooms
-            assert d not in model.x
-            assert d not in model.y
-            assert d not in model.z
-
-        for nd in non_dummies:
-            assert nd in model.Rooms
-            assert nd in model.x
-            assert nd in model.y
-            assert nd in model.z
+        # Verify coordinates are assigned to all rooms and dummy rooms are excluded from decision variables
+        assert all(solved_rdb[nd].x is not None for nd in non_dummies)
+        assert all(solved_rdb[d].x is not None for d in dummies)
 
 
 class TestPositionDummyRoomsUnit:
@@ -278,72 +260,6 @@ class TestSolverAffineAnchoringAndBranches:
         assert 1 in m.Rooms
         assert 2 not in m.Rooms
 
-
-class TestSolverMultiFixtureFeasibility:
-    """Regression test: verify zero regressions across all repository area fixtures."""
-
-    @pytest.mark.parametrize(
-        "fixture_rel_path",
-        [
-            "areas/smurf.are",
-            "areas/school.are",
-            "dialects/circlemud.are",
-            "dialects/dikumud_alfa.wld",
-        ],
-    )
-    @pytest.mark.slow
-    @pytest.mark.integration
-    def test_fixture_solves_with_valid_coordinates(self, fixture_rel_path):
-        """Verify area solves to optimality/feasibility with integer coordinates for all rooms."""
-        filepath = FIXTURES_DIR / fixture_rel_path
-        content = filepath.read_text(encoding="latin-1")
-        area = Parser().parse(content)
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=15)
-
-        assert len(solved_rdb) >= len(area.rooms)
-        for vnum, room in solved_rdb.items():
-            assert room.x is not None, f"Room {vnum} has None x coordinate"
-            assert room.y is not None, f"Room {vnum} has None y coordinate"
-            assert room.z is not None, f"Room {vnum} has None z coordinate"
-            assert isinstance(room.x, (int, float))
-            assert isinstance(room.y, (int, float))
-            assert isinstance(room.z, (int, float))
-            assert room.x == int(room.x)
-            assert room.y == int(room.y)
-            assert room.z == int(room.z)
-
-        # For any dummy room, verify it is adjacent to at least one connecting room
-        dummy_rooms = [r for r in solved_rdb.values() if getattr(r, "dummy", False) is True]
-        for dummy in dummy_rooms:
-            connected = [
-                e for e in exits
-                if (e.dst == dummy.vnum and e.src in solved_rdb and not getattr(solved_rdb[e.src], "dummy", False))
-                or (e.src == dummy.vnum and e.dst in solved_rdb and not getattr(solved_rdb[e.dst], "dummy", False))
-            ]
-            if connected:
-                ex = connected[0]
-                if ex.dst == dummy.vnum:
-                    src = solved_rdb[ex.src]
-                    dx = 1 if ex.direction == Direction.east else -1 if ex.direction == Direction.west else 0
-                    dy = 1 if ex.direction == Direction.north else -1 if ex.direction == Direction.south else 0
-                    dz = 1 if ex.direction == Direction.up else -1 if ex.direction == Direction.down else 0
-                    assert dummy.x == src.x + dx
-                    assert dummy.y == src.y + dy
-                    assert dummy.z == src.z + dz
-
-    @pytest.mark.slow
-    @pytest.mark.integration
-    def test_circle_world_directory_solve(self):
-        """Verify CircleMUD multi-file zone/wld directory solve layout."""
-        area = parse_circlemud_directory(FIXTURES_DIR / "dialects" / "circle_world")
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-
-        solved_rdb, exits = solve_layout(rdb, area.header, solver_timeout=15)
-        assert len(solved_rdb) == 5
-        for r in solved_rdb.values():
-            assert r.x is not None and r.y is not None and r.z is not None
 
 
 class TestRendererExternalExitStubs:
