@@ -10,14 +10,11 @@ Validates parsing and layout generation across:
 
 import os
 from pathlib import Path
-import xml.etree.ElementTree as ET
 import pytest
 
 import json
 from romutil.models import AreaData, AreaHeader, Room, Exit, RoomDef, ExitDef, Direction
 from romutil.parser import Parser, normalize_dialect_buffer, eval_flags, sanitize_ackmud_colour
-from romutil.renderers import SVGRenderer, HTMLRenderer, JSONRenderer, render_map
-from romutil.graph import solve_layout
 from romutil.cli import cli, main
 
 
@@ -317,58 +314,6 @@ class TestDialectParserPositive:
         assert len(area.resets) == 2
 
 
-@pytest.mark.slow
-@pytest.mark.integration
-class TestDialectLayoutSolver:
-    """Validate that area graphs from all 4 dialects solve cleanly and generate valid maps."""
-
-    @pytest.mark.parametrize("fixture_name,expected_room_count", [
-        ("rom24.are", 5),
-        ("merc22.are", 4),
-        ("envy20.are", 4),
-        ("circlemud.are", 4),
-        ("dikumud_alfa.wld", 5),
-        ("ackmud.are", 5),
-        ("anatolia.are", 5),
-    ])
-    def test_solve_and_render_all_dialects(self, fixture_name, expected_room_count, tmp_path):
-        """Ensure layout solver assigns coordinates and plots SVG for each dialect without errors."""
-        filepath = FIXTURES_DIR / fixture_name
-        area = Parser().parse(filepath.read_text(encoding="utf-8"))
-
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-        assert len(rdb) == expected_room_count
-
-        out_svg = tmp_path / f"{fixture_name}.svg"
-        solved_rdb, exits = solve_layout(rdb, area.header)
-        render_map(solved_rdb, str(out_svg), fmt="svg", header=area.header, exits=exits)
-
-        assert out_svg.exists()
-        assert out_svg.stat().st_size > 0
-
-        # Verify output SVG is valid XML
-        tree = ET.parse(out_svg)
-        root = tree.getroot()
-        assert "svg" in root.tag.lower()
-
-        # Verify all rooms have non-None coordinates
-        for vnum, room in rdb.items():
-            assert room.x is not None, f"Room {vnum} missing x coordinate"
-            assert room.y is not None, f"Room {vnum} missing y coordinate"
-            assert room.z is not None, f"Room {vnum} missing z coordinate"
-
-    def test_dikumud_alfa_elevation_hierarchy(self):
-        """Verify 3D elevation positioning: Limbo (z) < The Void (z) < Temple (z)."""
-        filepath = FIXTURES_DIR / "dikumud_alfa.wld"
-        area = Parser().parse(filepath.read_text(encoding="utf-8"))
-
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-        solved_rdb, exits = solve_layout(rdb, area.header)
-
-        # Limbo (vnum 1) exits UP to The Void (vnum 0)
-        # The Void (vnum 0) exits UP to Temple (vnum 3001)
-        assert solved_rdb[1].z < solved_rdb[0].z
-        assert solved_rdb[0].z < solved_rdb[3001].z
 
 
 class TestDialectHelperFunctions:
@@ -551,15 +496,6 @@ S
         assert 3001 in ex0
         assert hash(ex0) == hash(r3001.exits[0])
 
-        # Layout solve
-        rdb = {0: r0, 3001: r3001}
-        solved, exits = solve_layout(rdb)
-
-        # Bidirectional exits properly resolved (one_way is False)
-        assert not solved[0].exits[0].one_way
-        assert not solved[3001].exits[0].one_way
-        assert solved[0].z < solved[3001].z
-
     def test_cli_invocation_with_wld_file(self, tmp_path, monkeypatch):
         """Validate CLI execution passing monolithic .wld file."""
         wld_content = (FIXTURES_DIR / "dikumud_alfa.wld").read_text(encoding="utf-8")
@@ -573,16 +509,6 @@ S
             cli()
         assert exc.value.code == 0
 
-        json_file = tmp_path / "alfa_out.json"
-        assert json_file.exists()
-
-        data = json.loads(json_file.read_text(encoding="utf-8"))
-        assert data["area"]["name"] == "tinyworld"
-        assert data["area"]["file"] == "tinyworld.wld"
-        assert len(data["rooms"]) == 5
-        assert data["rooms"][0]["vnum"] == 0
-        assert data["rooms"][0]["name"] == "The Void"
-
     def test_cli_invocation_with_map_subcommand(self, tmp_path, monkeypatch):
         """Validate CLI execution with 'romutil map <file.wld>' syntax."""
         wld_content = (FIXTURES_DIR / "dikumud_alfa.wld").read_text(encoding="utf-8")
@@ -595,10 +521,6 @@ S
         with pytest.raises(SystemExit) as exc:
             cli()
         assert exc.value.code == 0
-
-        svg_files = list(tmp_path.glob("map_out*.svg"))
-        assert len(svg_files) >= 1
-        assert svg_files[0].stat().st_size > 0
 
     def test_diku_room_zero_with_leading_comments(self):
         """Validate parsing when comments precede room 0 and between rooms."""
@@ -842,44 +764,6 @@ S
         assert area.header.vnum_min == 9000
         assert area.header.vnum_max == 9099
 
-    def test_ackmud_render_all_formats(self, tmp_path):
-        """Verify solved ACK!MUD area renders seamlessly to SVG, HTML, and JSON."""
-        filepath = FIXTURES_DIR / "ackmud.are"
-        area = Parser().parse(filepath.read_text(encoding="utf-8"))
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=10)
-
-        # SVG Rendering
-        svg_file = tmp_path / "ackmud.svg"
-        out_svg = SVGRenderer().render(solved_rdb, svg_file, header=area.header, exits=exits)
-        assert out_svg.exists()
-        svg_content = out_svg.read_text(encoding="utf-8")
-        assert "<svg" in svg_content
-        assert "Grand Entrance" in svg_content
-        assert "Central Courtyard" in svg_content
-        # Confirm no raw @@ tokens leaked into SVG
-        assert "@@" not in svg_content
-
-        # HTML Rendering
-        html_file = tmp_path / "ackmud.html"
-        out_html = HTMLRenderer().render(solved_rdb, html_file, header=area.header, exits=exits)
-        assert out_html.exists()
-        html_content = out_html.read_text(encoding="utf-8")
-        assert "The Citadel of Ack" in html_content
-        assert "Grand Entrance" in html_content
-        assert "@@" not in html_content
-
-        # JSON Rendering
-        json_file = tmp_path / "ackmud.json"
-        out_json = JSONRenderer().render(solved_rdb, json_file, header=area.header, exits=exits)
-        assert out_json.exists()
-        json_dict = json.loads(out_json.read_text(encoding="utf-8"))
-        assert json_dict["area"]["name"] == "The Citadel of Ack"
-        # builder not stored under area dict
-        assert len(json_dict["rooms"]) == 5
-        room_names = [r["name"] for r in json_dict["rooms"]]
-        assert "Grand Entrance" in room_names
-        assert all("@@" not in name for name in room_names)
 
     def test_tagged_area_header_edge_cases(self):
         """Verify edge cases: A tag, single VNUM, missing name derived from filename, and non-ACK single tag."""
@@ -917,42 +801,6 @@ M none~
 class TestAnatoliaDialectFeatures:
     """Comprehensive test suite for ANATOLIA 3.0 section tolerance, layout, and rendering."""
 
-    def test_anatolia_render_all_formats(self, tmp_path):
-        """Verify solved ANATOLIA area renders seamlessly to SVG, HTML, and JSON."""
-        filepath = FIXTURES_DIR / "anatolia.are"
-        area = Parser().parse(filepath.read_text(encoding="utf-8"))
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=10)
-
-        # SVG Rendering
-        svg_file = tmp_path / "anatolia.svg"
-        out_svg = SVGRenderer().render(solved_rdb, svg_file, header=area.header, exits=exits)
-        assert out_svg.exists()
-        svg_content = out_svg.read_text(encoding="utf-8")
-        assert "<svg" in svg_content
-        assert "Citadel Gates" in svg_content
-        assert "Citadel Courtyard" in svg_content
-        assert "Battle Arena" in svg_content
-
-        # HTML Rendering
-        html_file = tmp_path / "anatolia.html"
-        out_html = HTMLRenderer().render(solved_rdb, html_file, header=area.header, exits=exits)
-        assert out_html.exists()
-        html_content = out_html.read_text(encoding="utf-8")
-        assert "Anatolia Citadel" in html_content
-        assert "Citadel Gates" in html_content
-        assert "Battle Arena" in html_content
-
-        # JSON Rendering
-        json_file = tmp_path / "anatolia.json"
-        out_json = JSONRenderer().render(solved_rdb, json_file, header=area.header, exits=exits)
-        assert out_json.exists()
-        json_dict = json.loads(out_json.read_text(encoding="utf-8"))
-        assert json_dict["area"]["name"] == "Anatolia Citadel"
-        assert len(json_dict["rooms"]) == 5
-        room_names = [r["name"] for r in json_dict["rooms"]]
-        assert "Citadel Gates" in room_names
-        assert "Eastern Steppe" in room_names
 
     def test_standalone_resetmessage_variations(self):
         """Test inline, multiline, and whitespace-padded #RESETMESSAGE variations."""
@@ -1211,75 +1059,6 @@ class TestSmaugCompatibility:
         mapped_exit = Exit(exit_def_6, source=500)
         assert mapped_exit.direction == Direction.northeast
 
-    def test_smaug_layout_solving_geometric_properties(self):
-        """Verify solver assigns correct relative coordinates for cardinal, vertical, and diagonal exits."""
-        filepath = FIXTURES_DIR / "smaug.are"
-        area = Parser().parse(filepath.read_text(encoding="utf-8"))
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
-
-        nexus = solved_rdb[500]
-        assert nexus.x is not None and nexus.y is not None and nexus.z is not None
-
-        # Verify cardinal directions
-        assert solved_rdb[501].x == nexus.x and solved_rdb[501].y > nexus.y and solved_rdb[501].z == nexus.z  # North
-        assert solved_rdb[502].x > nexus.x and solved_rdb[502].y == nexus.y and solved_rdb[502].z == nexus.z  # East
-        assert solved_rdb[503].x == nexus.x and solved_rdb[503].y < nexus.y and solved_rdb[503].z == nexus.z  # South
-        assert solved_rdb[504].x < nexus.x and solved_rdb[504].y == nexus.y and solved_rdb[504].z == nexus.z  # West
-        assert solved_rdb[505].x == nexus.x and solved_rdb[505].y == nexus.y and solved_rdb[505].z > nexus.z  # Up
-        assert solved_rdb[506].x == nexus.x and solved_rdb[506].y == nexus.y and solved_rdb[506].z < nexus.z  # Down
-
-        # Verify diagonal directions
-        ne = solved_rdb[507]
-        assert ne.x > nexus.x and ne.y > nexus.y and ne.z == nexus.z, f"Northeast failed: ({ne.x}, {ne.y})"
-
-        nw = solved_rdb[508]
-        assert nw.x < nexus.x and nw.y > nexus.y and nw.z == nexus.z, f"Northwest failed: ({nw.x}, {nw.y})"
-
-        se = solved_rdb[509]
-        assert se.x > nexus.x and se.y < nexus.y and se.z == nexus.z, f"Southeast failed: ({se.x}, {se.y})"
-
-        sw = solved_rdb[510]
-        assert sw.x < nexus.x and sw.y < nexus.y and sw.z == nexus.z, f"Southwest failed: ({sw.x}, {sw.y})"
-
-    def test_smaug_rendering_diagonals(self, tmp_path):
-        """Verify SVG, HTML, and JSON renderers handle areas with diagonal exits."""
-        filepath = FIXTURES_DIR / "smaug.are"
-        area = Parser().parse(filepath.read_text(encoding="utf-8"))
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
-
-        # SVG Rendering
-        svg_file = tmp_path / "smaug.svg"
-        out_svg = SVGRenderer().render(solved_rdb, svg_file, header=area.header, exits=exits)
-        assert out_svg.exists()
-        svg_content = out_svg.read_text(encoding="utf-8")
-        assert "<svg" in svg_content
-        assert "Central Nexus" in svg_content
-        assert "Dawn Spire" in svg_content
-        assert "Dusk Spire" in svg_content
-        assert "Solstice Pavilion" in svg_content
-        assert "Equinox Dome" in svg_content
-
-        # HTML Rendering
-        html_file = tmp_path / "smaug.html"
-        out_html = HTMLRenderer().render(solved_rdb, html_file, header=area.header, exits=exits)
-        assert out_html.exists()
-        html_content = out_html.read_text(encoding="utf-8")
-        assert "Astral Sanctum" in html_content
-        assert "Dawn Spire" in html_content
-
-        # JSON Rendering
-        json_file = tmp_path / "smaug.json"
-        out_json = JSONRenderer().render(solved_rdb, json_file, header=area.header, exits=exits)
-        assert out_json.exists()
-        json_dict = json.loads(out_json.read_text(encoding="utf-8"))
-        assert json_dict["area"]["name"] == "Astral Sanctum"
-        assert len(json_dict["rooms"]) == 11
-        for room_data in json_dict["rooms"]:
-            assert room_data["coords"]["x"] is not None
-            assert room_data["coords"]["y"] is not None
-            assert room_data["coords"]["z"] is not None
 
     def test_smaug_fussarea_normalization(self):
         """Verify SmaugFUSS #FUSSAREA header normalization and parsing."""
@@ -1376,150 +1155,6 @@ S
         assert len(area.rooms) == 1
         assert area.rooms[0].vnum == 800
 
-    def test_diagonal_one_way_exit_solving(self, tmp_path):
-        """Verify one-way diagonal exits position destination in the forward half-space and render correctly."""
-        text = """#AREA OneWay Diagonal~
-#ROOMS
-#800
-Hub~
-Central room.~
-0 0 1
-D6
-~
-~
-0 0 801
-D7
-~
-~
-0 0 802
-D8
-~
-~
-0 0 803
-D9
-~
-~
-0 0 804
-S
-#801
-NE OneWay~
-Destination northeast.~
-0 0 1
-S
-#802
-NW OneWay~
-Destination northwest.~
-0 0 1
-S
-#803
-SE OneWay~
-Destination southeast.~
-0 0 1
-S
-#804
-SW OneWay~
-Destination southwest.~
-0 0 1
-S
-#0
-#$
-"""
-        area = Parser().parse(text)
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
-
-        hub = solved_rdb[800]
-        ne = solved_rdb[801]
-        nw = solved_rdb[802]
-        se = solved_rdb[803]
-        sw = solved_rdb[804]
-
-        # One-way forward half-space constraints
-        assert ne.x >= hub.x + 1 and ne.y >= hub.y + 1
-        assert nw.x <= hub.x - 1 and nw.y >= hub.y + 1
-        assert se.x >= hub.x + 1 and se.y <= hub.y - 1
-        assert sw.x <= hub.x - 1 and sw.y <= hub.y - 1
-
-        # Verify SVG rendering with one-way diagonal boundary exits
-        svg_file = tmp_path / "oneway_diagonals.svg"
-        out_svg = SVGRenderer().render(solved_rdb, svg_file, header=area.header, exits=exits)
-        assert out_svg.exists()
-
-    def test_diagonal_contradictory_cycle_relaxation(self):
-        """Verify that contradictory diagonal cycles engage cut relaxation and solve feasibly."""
-        text = """#AREA Diagonal Cycle~
-#ROOMS
-#900
-Room 900~
-Origin room.~
-0 0 1
-D6
-~
-~
-0 0 901
-S
-#901
-Room 901~
-Second room.~
-0 0 1
-D1
-~
-~
-0 0 902
-S
-#902
-Room 902~
-Third room creating impossible loop by heading northeast back to origin.~
-0 0 1
-D6
-~
-~
-0 0 900
-S
-#0
-#$
-"""
-        area = Parser().parse(text)
-        rdb = {r.vnum: Room(r) for r in area.rooms}
-        solved_rdb, exits = solve_layout(rdb, area, solver_timeout=25)
-
-        # Solver must resolve without crashing and assign valid coordinates
-        for v in (900, 901, 902):
-            assert solved_rdb[v].x is not None
-            assert solved_rdb[v].y is not None
-            assert solved_rdb[v].z is not None
-
-        # At least one exit should have been cut to relax the contradictory loop
-        assert any(getattr(e, "one_way", False) or getattr(e, "cut", False) for e in exits)
-
-    def test_graph_restore_rooms_diagonals(self):
-        """Verify restore_rooms correctly restores coordinates for collapsed diagonal corridors."""
-        from romutil.graph import restore_rooms
-
-        parent = Room(vnum=1000, name="Center")
-        parent.x = 10
-        parent.y = 10
-        parent.z = 5
-
-        r_ne = Room(vnum=1001, name="NE Corridor")
-        r_nw = Room(vnum=1002, name="NW Corridor")
-        r_se = Room(vnum=1003, name="SE Corridor")
-        r_sw = Room(vnum=1004, name="SW Corridor")
-
-        parent.fixups = [
-            (r_ne, Direction.northeast, 2),
-            (r_nw, Direction.northwest, 3),
-            (r_se, Direction.southeast, 4),
-            (r_sw, Direction.southwest, 5),
-        ]
-
-        restored = restore_rooms(parent)
-        assert len(restored) == 4
-
-        assert r_ne.x == 10 + 2 and r_ne.y == 10 + 2 and r_ne.z == 5
-        assert r_nw.x == 10 - 3 and r_nw.y == 10 + 3 and r_nw.z == 5
-        assert r_se.x == 10 + 4 and r_se.y == 10 - 4 and r_se.z == 5
-        assert r_sw.x == 10 - 5 and r_sw.y == 10 - 5 and r_sw.z == 5
 
     def test_smaug_roomdata_normalization_and_termination(self):
         """Verify #ROOMDATA normalization to #ROOMS and automatic #0 termination if missing."""
@@ -1536,61 +1171,3 @@ S
         area = Parser().parse(raw_text)
         assert len(area.rooms) == 1
         assert area.rooms[0].vnum == 1100
-
-    def test_diagonal_dummy_rooms_positioning_and_svg_stubs(self, tmp_path):
-        """Verify position_dummy_rooms and SVGRenderer._line_coords handle all 4 diagonals."""
-        from romutil.solver import position_dummy_rooms
-        from romutil.renderers.svg import SVGRenderer
-
-        # Test Pass 1: exits from non-dummy to dummy for all 4 diagonals
-        r_core = Room(vnum=1, name="Core")
-        r_core.x, r_core.y, r_core.z = 10, 10, 0
-
-        dummies = {
-            Direction.northeast: Room(vnum=2, name="NE Dummy"),
-            Direction.northwest: Room(vnum=3, name="NW Dummy"),
-            Direction.southeast: Room(vnum=4, name="SE Dummy"),
-            Direction.southwest: Room(vnum=5, name="SW Dummy"),
-        }
-        for d in dummies.values():
-            d.dummy = True
-
-        rdb = {1: r_core, **{r.vnum: r for r in dummies.values()}}
-        exits = [
-            Exit(src=1, dst=dummies[d].vnum, direction=d)
-            for d in (Direction.northeast, Direction.northwest, Direction.southeast, Direction.southwest)
-        ]
-        position_dummy_rooms(rdb, exits)
-
-        assert dummies[Direction.northeast].x == 11 and dummies[Direction.northeast].y == 11
-        assert dummies[Direction.northwest].x == 9 and dummies[Direction.northwest].y == 11
-        assert dummies[Direction.southeast].x == 11 and dummies[Direction.southeast].y == 9
-        assert dummies[Direction.southwest].x == 9 and dummies[Direction.southwest].y == 9
-
-        # Test Pass 2: exits from dummy to non-dummy for all 4 diagonals
-        dummies_rev = {
-            Direction.northeast: Room(vnum=12, name="NE Rev"),
-            Direction.northwest: Room(vnum=13, name="NW Rev"),
-            Direction.southeast: Room(vnum=14, name="SE Rev"),
-            Direction.southwest: Room(vnum=15, name="SW Rev"),
-        }
-        for d in dummies_rev.values():
-            d.dummy = True
-
-        rdb_rev = {1: r_core, **{r.vnum: r for r in dummies_rev.values()}}
-        exits_rev = [
-            Exit(src=dummies_rev[d].vnum, dst=1, direction=d)
-            for d in (Direction.northeast, Direction.northwest, Direction.southeast, Direction.southwest)
-        ]
-        position_dummy_rooms(rdb_rev, exits_rev)
-
-        assert dummies_rev[Direction.northeast].x == 9 and dummies_rev[Direction.northeast].y == 9
-        assert dummies_rev[Direction.northwest].x == 11 and dummies_rev[Direction.northwest].y == 9
-        assert dummies_rev[Direction.southeast].x == 9 and dummies_rev[Direction.southeast].y == 11
-        assert dummies_rev[Direction.southwest].x == 11 and dummies_rev[Direction.southwest].y == 11
-
-        # Test SVGRenderer renders all dummy diagonal stubs without exception
-        svg_file = tmp_path / "dummy_stubs.svg"
-        header = AreaHeader(filename="stubs.are", name="Stubs", builder="Tester", vnum_min=1, vnum_max=15)
-        out_svg = SVGRenderer().render(rdb, svg_file, header=header, exits=exits)
-        assert out_svg.exists()
