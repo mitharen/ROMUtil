@@ -33,8 +33,10 @@ from romutil.layout.ir import (
     TreeSolution,
 )
 from romutil.layout.milp import (
+    HierarchicalTreeSolver,
     LeafTreeSolver,
     solve_leaf_cluster,
+    solve_parent_cluster,
 )
 from romutil.layout.protocols import (
     GraphSimplifier,
@@ -59,6 +61,7 @@ __all__ = [
     "GraphSimplifier",
     "HallwayCompactor",
     "HierarchicalLayoutSolver",
+    "HierarchicalTreeSolver",
     "IdentityLayoutAssembler",
     "LayoutAssembler",
     "LayoutEdge",
@@ -86,4 +89,5 @@ __all__ = [
     "segment_room_penetration",
     "segments_intersect_3d",
     "solve_leaf_cluster",
+    "solve_parent_cluster",
 ]

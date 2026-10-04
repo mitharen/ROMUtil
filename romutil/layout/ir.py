@@ -114,6 +114,7 @@ class NodeSolution:
     node_id: str
     local_coordinates: Mapping[int, Coord3D]
     bounding_box: tuple[Coord3D, Coord3D] | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
