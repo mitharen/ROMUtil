@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 from romutil.models import RoomDef
 from romutil.types import Coord3D, WorldGraph
@@ -83,7 +83,7 @@ class SolveTreeNode:
 
     node_id: str
     node_type: str
-    rooms: frozenset[int]
+    rooms: frozenset[int] | Collection[int]
     children: Sequence[SolveTreeNode] = field(default_factory=tuple)
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
