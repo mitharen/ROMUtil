@@ -9,10 +9,19 @@ import shutil
 import sys
 from typing import Any, Sequence
 
-from romutil.models import AreaData, AreaHeader, Room, merge_areas
+from romutil.layout import (
+    ChainedSimplifier,
+    HallwayCompactor,
+    HierarchicalLayoutAssembler,
+    HierarchicalLayoutSolver,
+    HierarchicalTreeSolver,
+    SpqrTreeBuilder,
+    WarpSeverer,
+)
+from romutil.models import AreaData, AreaHeader, merge_areas
 from romutil.parser import Parser, parse_circlemud_directory
 from romutil.renderers import RENDERERS, get_renderer
-from romutil.types import WorldGraph
+from romutil.types import LayoutOptions, RenderOptions, WorldGraph
 
 logging.basicConfig()
 log = logging.getLogger("Mapper")
@@ -134,47 +143,31 @@ def main(
                 clean_base = clean_base[:-len(ext)]
                 break
 
-        all_rooms: dict[int, Room] = {}
-        for idx, r in enumerate(composite_area.rooms):
-            room = Room(r)
-            room.x = (idx % 10) * 2
-            room.y = (idx // 10) * 2
-            room.z = 0
-            all_rooms[room.vnum] = room
+        if hierarchical:
+            solver = HierarchicalLayoutSolver(
+                simplifier=ChainedSimplifier([HallwayCompactor(), WarpSeverer()]),
+                tree_builder=SpqrTreeBuilder(),
+                tree_solver=HierarchicalTreeSolver(),
+                assembler=HierarchicalLayoutAssembler(),
+            )
+        else:
+            solver = HierarchicalLayoutSolver()
 
-        all_exits = [e for rm in all_rooms.values() for e in rm.exits]
+        layout_opts = LayoutOptions(timeout_seconds=solver_timeout or 60)
+        layout = solver.solve(graph, layout_opts)
 
+        render_opts = RenderOptions(split_levels=split_levels)
         for fmt_name in formats:
             renderer = get_renderer(fmt_name)
-            if fmt_name == "html":
-                out_file = outbase if outbase.endswith(".html") else f"{clean_base}.html"
-                renderer.render(all_rooms, out_file, header=area_meta)
-                log.info("Exported HTML viewer to %s", out_file)
-            elif fmt_name == "json":
-                out_file = outbase if outbase.endswith(".json") else f"{clean_base}.json"
-                renderer.render(all_rooms, out_file, header=area_meta)
-                log.info("Exported JSON map to %s", out_file)
-            elif fmt_name == "svg":
-                out_file = outbase if outbase.endswith(".svg") else f"{clean_base}.svg"
-                renderer.render(
-                    all_rooms,
-                    out_file,
-                    header=area_meta,
-                    exits=all_exits,
-                    split_levels=split_levels,
-                    outbase=clean_base,
-                )
-                if not split_levels:
-                    out_file_0 = Path(f"{clean_base}0.svg")
-                    try:
-                        shutil.copyfile(out_file, out_file_0)
-                    except Exception:
-                        pass
-                log.info("Exported SVG map to %s", out_file)
-            else:
-                out_file = outbase if outbase.endswith(f".{fmt_name}") else f"{clean_base}.{fmt_name}"
-                renderer.render(all_rooms, out_file, header=area_meta)
-                log.info("Exported %s to %s", fmt_name.upper(), out_file)
+            out_file = outbase if outbase.endswith(f".{fmt_name}") else f"{clean_base}.{fmt_name}"
+            renderer.render(graph, layout, out_file, options=render_opts)
+            if fmt_name == "svg" and not split_levels:
+                out_file_0 = Path(f"{clean_base}0.svg")
+                try:
+                    shutil.copyfile(out_file, out_file_0)
+                except Exception:
+                    pass
+            log.info("Exported %s to %s", fmt_name.upper(), out_file)
 
     sys.exit(0)
 

@@ -131,6 +131,40 @@ class HierarchicalLayoutSolver:
         self.tree_solver: TreeSolver = tree_solver if tree_solver is not None else PlaceholderTreeSolver()
         self.assembler: LayoutAssembler = assembler if assembler is not None else HierarchicalLayoutAssembler()
 
+    @classmethod
+    def production(
+        cls,
+        simplifier: GraphSimplifier | None = None,
+        tree_builder: TreeBuilder | None = None,
+        tree_solver: TreeSolver | None = None,
+        assembler: LayoutAssembler | None = None,
+    ) -> HierarchicalLayoutSolver:
+        """Construct a HierarchicalLayoutSolver configured with standard production stages."""
+        from romutil.layout.assembly import HierarchicalLayoutAssembler
+        from romutil.layout.hierarchy import SpqrTreeBuilder
+        from romutil.layout.milp import HierarchicalTreeSolver
+        from romutil.layout.simplification import (
+            ChainedSimplifier,
+            HallwayCompactor,
+            WarpSeverer,
+        )
+
+        actual_simplifier = (
+            simplifier
+            if simplifier is not None
+            else ChainedSimplifier([HallwayCompactor(), WarpSeverer()])
+        )
+        actual_tree_builder = tree_builder if tree_builder is not None else SpqrTreeBuilder()
+        actual_tree_solver = tree_solver if tree_solver is not None else HierarchicalTreeSolver()
+        actual_assembler = assembler if assembler is not None else HierarchicalLayoutAssembler()
+
+        return cls(
+            simplifier=actual_simplifier,
+            tree_builder=actual_tree_builder,
+            tree_solver=actual_tree_solver,
+            assembler=actual_assembler,
+        )
+
     def solve(
         self,
         graph: WorldGraph,

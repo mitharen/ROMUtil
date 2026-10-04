@@ -150,8 +150,9 @@ class TestCliCoverage:
 
     def test_main_custom_format_dispatch(self, tmp_path, monkeypatch):
         class MockCustom(BaseRenderer):
-            def render(self, rdb, output_path, header=None, **options):
-                p = Path(output_path)
+            def render(self, *args, **options):
+                out = args[2] if len(args) > 2 else args[1]
+                p = Path(out)
                 p.write_text("custom-out", encoding="utf-8")
                 return p
 

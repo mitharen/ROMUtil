@@ -54,6 +54,8 @@ from romutil.layout.simplification import (
     is_euclidean_satisfiable,
 )
 
+production = HierarchicalLayoutSolver.production
+
 __all__ = [
     "BlockCutTreeBuilder",
     "BoundingBox3D",
@@ -72,6 +74,7 @@ __all__ = [
     "NodeSolution",
     "PassthroughSimplifier",
     "PlaceholderTreeSolver",
+    "production",
     "Segment3D",
     "SimplifiedGraph",
     "SolveTree",
