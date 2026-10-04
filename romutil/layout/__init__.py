@@ -25,10 +25,15 @@ from romutil.layout.protocols import (
     TreeBuilder,
     TreeSolver,
 )
+from romutil.layout.simplification import (
+    HallwayCompactor,
+    expand_corridor_coordinates,
+)
 
 __all__ = [
     "CorridorSegment",
     "GraphSimplifier",
+    "HallwayCompactor",
     "HierarchicalLayoutSolver",
     "IdentityLayoutAssembler",
     "LayoutAssembler",
@@ -44,4 +49,5 @@ __all__ = [
     "TreeSolution",
     "TreeSolver",
     "TrivialTreeBuilder",
+    "expand_corridor_coordinates",
 ]

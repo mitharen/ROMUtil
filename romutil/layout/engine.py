@@ -20,6 +20,7 @@ from romutil.layout.protocols import (
     TreeBuilder,
     TreeSolver,
 )
+from romutil.layout.simplification.hallways import expand_corridor_coordinates
 from romutil.types import (
     Coord3D,
     LayoutDiagnostics,
@@ -95,6 +96,15 @@ class IdentityLayoutAssembler:
         all_coords: dict[int, Coord3D] = {}
         for node_sol in solution.node_solutions.values():
             all_coords.update(node_sol.local_coordinates)
+
+        for corridor in simplified.corridors:
+            if corridor.start_vnum in all_coords and corridor.end_vnum in all_coords:
+                intermediate_coords = expand_corridor_coordinates(
+                    corridor,
+                    all_coords[corridor.start_vnum],
+                    all_coords[corridor.end_vnum],
+                )
+                all_coords.update(intermediate_coords)
 
         return SolvedLayout(
             coordinates=all_coords,
