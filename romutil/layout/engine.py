@@ -6,6 +6,7 @@ import dataclasses
 import time
 
 from romutil.interfaces import BaseLayoutSolver
+from romutil.layout.assembly import HierarchicalLayoutAssembler
 from romutil.layout.ir import (
     LayoutGraph,
     NodeSolution,
@@ -128,7 +129,7 @@ class HierarchicalLayoutSolver:
         self.simplifier: GraphSimplifier = simplifier if simplifier is not None else PassthroughSimplifier()
         self.tree_builder: TreeBuilder = tree_builder if tree_builder is not None else TrivialTreeBuilder()
         self.tree_solver: TreeSolver = tree_solver if tree_solver is not None else PlaceholderTreeSolver()
-        self.assembler: LayoutAssembler = assembler if assembler is not None else IdentityLayoutAssembler()
+        self.assembler: LayoutAssembler = assembler if assembler is not None else HierarchicalLayoutAssembler()
 
     def solve(
         self,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from romutil.layout.assembly import HierarchicalLayoutAssembler
 from romutil.layout.engine import (
     HierarchicalLayoutSolver,
     IdentityLayoutAssembler,
@@ -60,6 +61,7 @@ __all__ = [
     "CorridorSegment",
     "GraphSimplifier",
     "HallwayCompactor",
+    "HierarchicalLayoutAssembler",
     "HierarchicalLayoutSolver",
     "HierarchicalTreeSolver",
     "IdentityLayoutAssembler",
