@@ -32,6 +32,10 @@ from romutil.layout.ir import (
     SolveTreeNode,
     TreeSolution,
 )
+from romutil.layout.milp import (
+    LeafTreeSolver,
+    solve_leaf_cluster,
+)
 from romutil.layout.protocols import (
     GraphSimplifier,
     LayoutAssembler,
@@ -59,6 +63,7 @@ __all__ = [
     "LayoutAssembler",
     "LayoutEdge",
     "LayoutGraph",
+    "LeafTreeSolver",
     "NodeSolution",
     "PassthroughSimplifier",
     "PlaceholderTreeSolver",
@@ -80,4 +85,5 @@ __all__ = [
     "segment_box_penetration",
     "segment_room_penetration",
     "segments_intersect_3d",
+    "solve_leaf_cluster",
 ]

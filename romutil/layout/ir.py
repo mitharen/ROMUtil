@@ -100,6 +100,7 @@ class SolveTree:
 
     root: SolveTreeNode
     components: Sequence[SolveTreeNode] = field(default_factory=tuple)
+    graph: LayoutGraph | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.components, tuple):
