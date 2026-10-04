@@ -219,4 +219,4 @@ class SpqrTreeBuilder(TreeBuilder):
         else:
             components = (new_root,)
 
-        return SolveTree(root=new_root, components=components)
+        return SolveTree(root=new_root, components=components, graph=simplified.graph)

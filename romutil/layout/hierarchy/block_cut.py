@@ -27,7 +27,8 @@ class BlockCutTreeBuilder(TreeBuilder):
                     node_id="empty",
                     node_type="empty",
                     rooms=frozenset(),
-                )
+                ),
+                graph=simplified.graph,
             )
 
         graph = nx.Graph()
@@ -48,7 +49,7 @@ class BlockCutTreeBuilder(TreeBuilder):
             comp_nodes.append(comp_node)
 
         if len(comp_nodes) == 1:
-            return SolveTree(root=comp_nodes[0], components=tuple(comp_nodes))
+            return SolveTree(root=comp_nodes[0], components=tuple(comp_nodes), graph=simplified.graph)
 
         world_root = SolveTreeNode(
             node_id="world_root",
@@ -56,7 +57,7 @@ class BlockCutTreeBuilder(TreeBuilder):
             rooms=frozenset(),
             children=tuple(comp_nodes),
         )
-        return SolveTree(root=world_root, components=tuple(comp_nodes))
+        return SolveTree(root=world_root, components=tuple(comp_nodes), graph=simplified.graph)
 
     def _build_component_tree(
         self,

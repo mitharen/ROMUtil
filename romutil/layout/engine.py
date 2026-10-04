@@ -49,7 +49,7 @@ class TrivialTreeBuilder:
             node_type="root",
             rooms=frozenset(simplified.graph.rooms.keys()),
         )
-        return SolveTree(root=root, components=(root,))
+        return SolveTree(root=root, components=(root,), graph=simplified.graph)
 
 
 class PlaceholderTreeSolver:
