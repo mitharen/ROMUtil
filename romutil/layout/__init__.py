@@ -9,6 +9,9 @@ from romutil.layout.engine import (
     PlaceholderTreeSolver,
     TrivialTreeBuilder,
 )
+from romutil.layout.hierarchy import (
+    BlockCutTreeBuilder,
+)
 from romutil.layout.ir import (
     CorridorSegment,
     LayoutEdge,
@@ -35,6 +38,7 @@ from romutil.layout.simplification import (
 )
 
 __all__ = [
+    "BlockCutTreeBuilder",
     "ChainedSimplifier",
     "CorridorSegment",
     "GraphSimplifier",
