@@ -11,6 +11,8 @@ from romutil.layout.engine import (
 )
 from romutil.layout.hierarchy import (
     BlockCutTreeBuilder,
+    SpqrTreeBuilder,
+    build_block_spqr_tree,
 )
 from romutil.layout.ir import (
     CorridorSegment,
@@ -54,11 +56,13 @@ __all__ = [
     "SimplifiedGraph",
     "SolveTree",
     "SolveTreeNode",
+    "SpqrTreeBuilder",
     "TreeBuilder",
     "TreeSolution",
     "TreeSolver",
     "TrivialTreeBuilder",
     "WarpSeverer",
+    "build_block_spqr_tree",
     "direction_to_displacement",
     "expand_corridor_coordinates",
     "is_euclidean_satisfiable",

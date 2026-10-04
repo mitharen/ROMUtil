@@ -6,19 +6,23 @@ build-backend = "setuptools.build_meta"
 name = "romutil"
 version = "0.1.0"
 description = "ROM MUD area parser and isometric map generator"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "graphviz>=0.20",
     "networkx>=3.0",
     "ply>=3.11",
     "pydot>=3.0",
     "pyomo>=6.0",
+    "spqrtree>=0.1.2",
     "svgwrite>=1.4.0",
     "tqdm>=4.60.0",
 ]
 
 [project.scripts]
 romutil = "romutil.cli:cli"
+
+[tool.setuptools.packages.find]
+include = ["romutil*"]
 
 [tool.setuptools.package-data]
 "romutil.templates" = ["*.html"]
