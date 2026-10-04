@@ -9,6 +9,14 @@ from romutil.layout.engine import (
     PlaceholderTreeSolver,
     TrivialTreeBuilder,
 )
+from romutil.layout.geometry import (
+    BoundingBox3D,
+    Segment3D,
+    point_in_segment_interior,
+    segment_box_penetration,
+    segment_room_penetration,
+    segments_intersect_3d,
+)
 from romutil.layout.hierarchy import (
     BlockCutTreeBuilder,
     SpqrTreeBuilder,
@@ -41,6 +49,7 @@ from romutil.layout.simplification import (
 
 __all__ = [
     "BlockCutTreeBuilder",
+    "BoundingBox3D",
     "ChainedSimplifier",
     "CorridorSegment",
     "GraphSimplifier",
@@ -53,6 +62,7 @@ __all__ = [
     "NodeSolution",
     "PassthroughSimplifier",
     "PlaceholderTreeSolver",
+    "Segment3D",
     "SimplifiedGraph",
     "SolveTree",
     "SolveTreeNode",
@@ -66,4 +76,8 @@ __all__ = [
     "direction_to_displacement",
     "expand_corridor_coordinates",
     "is_euclidean_satisfiable",
+    "point_in_segment_interior",
+    "segment_box_penetration",
+    "segment_room_penetration",
+    "segments_intersect_3d",
 ]
