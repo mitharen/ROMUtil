@@ -94,8 +94,6 @@ class TestRepositoryPathHygiene:
         """Verify test modules import SAMPLE_AREAS_DIR from shared conftest instead of hardcoding paths."""
         test_files = [
             REPO_ROOT / "tests" / "test_area_parser.py",
-            REPO_ROOT / "tests" / "test_exporter.py",
-            REPO_ROOT / "tests" / "test_mapper.py",
             REPO_ROOT / "tests" / "test_typed_models.py",
         ]
         for test_file in test_files:

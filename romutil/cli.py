@@ -1,3 +1,7 @@
+"""Command-line interface and entrypoints for ROMUtil."""
+
+from __future__ import annotations
+
 import argparse
 import logging
 from pathlib import Path
@@ -5,28 +9,27 @@ import shutil
 import sys
 from typing import Any, Sequence
 
-import networkx as nx
-import pyomo.common.config
-
-from romutil.models import Room, Exit, AreaData, AreaHeader, merge_areas
+from romutil.models import AreaData, AreaHeader, Room, merge_areas
 from romutil.parser import Parser, parse_circlemud_directory
-from romutil.graph import solve_layout
-from romutil.renderers import RENDERERS, get_renderer, render_map
+from romutil.renderers import RENDERERS, get_renderer
+from romutil.types import WorldGraph
 
 logging.basicConfig()
-log = logging.getLogger('Mapper')
+log = logging.getLogger("Mapper")
+
 
 def main(
     area_files: Sequence[Any],
-    outbase: str,
+    outbase: str | None = None,
     split_levels: bool = False,
     fmt: str | Sequence[str] = "svg",
     circle_dir: Path | str | None = None,
     solver_timeout: int | None = None,
     hierarchical: bool = True,
-) -> None:
+) -> WorldGraph:
+    """Parse areas into a unified WorldGraph and optionally render without invoking the solver engine."""
     if isinstance(fmt, str):
-        format_list = [f.strip().lower() for f in fmt.split(',') if f.strip()]
+        format_list = [f.strip().lower() for f in fmt.split(",") if f.strip()]
     elif isinstance(fmt, (list, tuple, set)):
         format_list = [str(f).strip().lower() for f in fmt if str(f).strip()]
     else:
@@ -40,7 +43,7 @@ def main(
             supported = ", ".join(sorted(RENDERERS.keys()))
             raise ValueError(f"Unsupported format '{f}'. Supported formats: {supported}")
 
-    # Deduplicate while preserving order
+    # Deduplicate preserving order
     seen: set[str] = set()
     formats: list[str] = []
     for f in format_list:
@@ -67,13 +70,12 @@ def main(
             parsed_areas.append(area)
             continue
 
-        # Support both open file objects and Path / string paths
-        if hasattr(area_file, 'read'):
+        if hasattr(area_file, "read"):
             content = area_file.read()
-            first_file_name = getattr(area_file, 'name', 'area.are')
+            first_file_name = getattr(area_file, "name", "area.are")
         else:
             first_file_name = str(area_file)
-            with open(area_file, 'r', encoding='latin-1', errors='replace') as fp:
+            with open(area_file, "r", encoding="latin-1", errors="replace") as fp:
                 content = fp.read()
 
         parser = Parser()
@@ -88,7 +90,7 @@ def main(
         parsed_areas.append(area)
 
     if not parsed_areas or not any(a.rooms for a in parsed_areas):
-        log.error('No rooms to plot.')
+        log.error("No rooms to plot.")
         sys.exit(0)
 
     if len(parsed_areas) == 1:
@@ -97,11 +99,8 @@ def main(
         composite_area = merge_areas(parsed_areas)
 
     area_meta = composite_area.header
-    rdb = {r.vnum: Room(r) for r in composite_area.rooms}
-
-    # Provide fallback area metadata if none was in the file
-    if area_meta is None and rdb:
-        room_vnums = list(rdb.keys())
+    if area_meta is None and composite_area.rooms:
+        room_vnums = [r.vnum for r in composite_area.rooms]
         v_min = min(room_vnums)
         v_max = max(room_vnums)
         area_meta = AreaHeader(
@@ -111,144 +110,109 @@ def main(
             vnum_min=v_min,
             vnum_max=v_max,
         )
-
-    edges = [
-        (e.src, e.dst)
-        for r in rdb.values()
-        for e in r.exits
-        if e.src in rdb.keys() and e.dst in rdb.keys()
-    ]
-    g = nx.DiGraph()
-    g.add_nodes_from(rdb.keys())
-    g.add_edges_from(edges)
-
-    connected_comps = list(nx.connected_components(g.to_undirected()))
-    connected_comps.sort(key=lambda c: min(c) if c else 0)
-
-    all_solved_rooms: dict[int, Room] = {}
-    all_exits: list[Exit] = []
-    offset_x = 0
-
-    if solver_timeout is None:
-        log.info(f"Automatic dynamic solver timeout scaling active across {len(connected_comps)} component(s)")
-    else:
-        log.info(f"Using user-specified fixed solver timeout of {solver_timeout}s across components")
-
-    has_any_collision_failure = False
-    collision_details_list = []
-
-    for i, sub_graph in enumerate(connected_comps):
-        sub_rdb = {node: rdb[node] for node in sub_graph}
-        if not hierarchical:
-            solved_sub, solved_exits = solve_layout(sub_rdb, area_meta, solver_timeout=solver_timeout, hierarchical=False)
-        else:
-            solved_sub, solved_exits = solve_layout(sub_rdb, area_meta, solver_timeout=solver_timeout)
-        graph_solve_layout = getattr(sys.modules.get('romutil.graph', None), 'solve_layout', None)
-        failed = (
-            getattr(solve_layout, 'last_timeout_collision_failure', False)
-            or getattr(graph_solve_layout, 'last_timeout_collision_failure', False)
-        )
-        if failed:
-            has_any_collision_failure = True
-            det = (
-                getattr(solve_layout, 'last_unresolved_collisions', None)
-                or getattr(graph_solve_layout, 'last_unresolved_collisions', None)
-                or {}
-            )
-            collision_details_list.append(det)
-        non_dummy = [r for r in solved_sub.values() if not getattr(r, 'dummy', False)]
-        if non_dummy:
-            if offset_x > 0:
-                for r in non_dummy:
-                    if r.x is not None:
-                        r.x += offset_x
-            valid_x = [r.x for r in non_dummy if r.x is not None]
-            if valid_x:
-                max_x = max(valid_x)
-                offset_x = max_x + 3
-        all_solved_rooms.update({r.vnum: r for r in non_dummy})
-        all_exits.extend(solved_exits)
-
-    if has_any_collision_failure:
-        total_coll = sum(d.get('total', 0) for d in collision_details_list)
-        total_rc = sum(d.get('room_collisions', 0) for d in collision_details_list)
-        total_cp = sum(d.get('collinear_penetrations', 0) for d in collision_details_list)
-        total_op = sum(d.get('overlapping_pairs', 0) for d in collision_details_list)
-        log.error(
-            f"Layout solve failed to find a collision-free layout due to solver timeout: "
-            f"{total_coll} unresolved collision(s) remaining "
-            f"(room collisions: {total_rc}, collinear penetrations: {total_cp}, overlapping pairs: {total_op})"
+        composite_area = AreaData(
+            header=area_meta,
+            rooms=composite_area.rooms,
+            mobiles=composite_area.mobiles,
+            objects=composite_area.objects,
+            resets=composite_area.resets,
+            shops=composite_area.shops,
+            specials=composite_area.specials,
+            helps=composite_area.helps,
+            socials=composite_area.socials,
+            reset_message=composite_area.reset_message,
+            flag=composite_area.flag,
         )
 
-    # Clean base name (strip known renderer extensions if present)
-    clean_base = outbase
-    for ext in ('.html', '.svg', '.json'):
-        if clean_base.lower().endswith(ext):
-            clean_base = clean_base[:-len(ext)]
-            break
+    graph = WorldGraph.from_area_data(composite_area)
+    log.info("Parsed %d rooms and %d exits into WorldGraph", len(graph.rooms), len(graph.exits))
 
-    for fmt_name in formats:
-        renderer = get_renderer(fmt_name)
-        if fmt_name == 'html':
-            out_file = outbase if outbase.endswith('.html') else f'{clean_base}.html'
-            renderer.render(all_solved_rooms, out_file, header=area_meta)
-            log.info(f'Exported HTML viewer to {out_file}')
-        elif fmt_name == 'json':
-            out_file = outbase if outbase.endswith('.json') else f'{clean_base}.json'
-            renderer.render(all_solved_rooms, out_file, header=area_meta)
-            log.info(f'Exported JSON map to {out_file}')
-        elif fmt_name == 'svg':
-            out_file = outbase if outbase.endswith('.svg') else f'{clean_base}.svg'
-            renderer.render(
-                all_solved_rooms,
-                out_file,
-                header=area_meta,
-                exits=all_exits,
-                split_levels=split_levels,
-                outbase=clean_base,
-            )
-            if not split_levels:
-                out_file_0 = Path(f'{clean_base}0.svg')
-                try:
-                    shutil.copyfile(out_file, out_file_0)
-                except Exception:
-                    pass
-            log.info(f'Exported SVG map to {out_file}')
-        else:
-            out_file = outbase if outbase.endswith(f'.{fmt_name}') else f'{clean_base}.{fmt_name}'
-            renderer.render(all_solved_rooms, out_file, header=area_meta)
-            log.info(f'Exported {fmt_name.upper()} to {out_file}')
+    if outbase:
+        clean_base = outbase
+        for ext in (".html", ".svg", ".json"):
+            if clean_base.lower().endswith(ext):
+                clean_base = clean_base[:-len(ext)]
+                break
+
+        all_rooms: dict[int, Room] = {}
+        for idx, r in enumerate(composite_area.rooms):
+            room = Room(r)
+            room.x = (idx % 10) * 2
+            room.y = (idx // 10) * 2
+            room.z = 0
+            all_rooms[room.vnum] = room
+
+        all_exits = [e for rm in all_rooms.values() for e in rm.exits]
+
+        for fmt_name in formats:
+            renderer = get_renderer(fmt_name)
+            if fmt_name == "html":
+                out_file = outbase if outbase.endswith(".html") else f"{clean_base}.html"
+                renderer.render(all_rooms, out_file, header=area_meta)
+                log.info("Exported HTML viewer to %s", out_file)
+            elif fmt_name == "json":
+                out_file = outbase if outbase.endswith(".json") else f"{clean_base}.json"
+                renderer.render(all_rooms, out_file, header=area_meta)
+                log.info("Exported JSON map to %s", out_file)
+            elif fmt_name == "svg":
+                out_file = outbase if outbase.endswith(".svg") else f"{clean_base}.svg"
+                renderer.render(
+                    all_rooms,
+                    out_file,
+                    header=area_meta,
+                    exits=all_exits,
+                    split_levels=split_levels,
+                    outbase=clean_base,
+                )
+                if not split_levels:
+                    out_file_0 = Path(f"{clean_base}0.svg")
+                    try:
+                        shutil.copyfile(out_file, out_file_0)
+                    except Exception:
+                        pass
+                log.info("Exported SVG map to %s", out_file)
+            else:
+                out_file = outbase if outbase.endswith(f".{fmt_name}") else f"{clean_base}.{fmt_name}"
+                renderer.render(all_rooms, out_file, header=area_meta)
+                log.info("Exported %s to %s", fmt_name.upper(), out_file)
 
     sys.exit(0)
 
-def cli():
-    parser = argparse.ArgumentParser(description='ROM MUD Area Mapper and 3D Visualizer')
-    parser.add_argument('areas', nargs='*', type=Path, help='.ARE files or directories for parsing')
+
+def cli() -> None:
+    """CLI argument parser entrypoint."""
+    parser = argparse.ArgumentParser(description="ROM MUD Area Parser and Topology Builder")
+    parser.add_argument("areas", nargs="*", type=Path, help=".ARE files or directories for parsing")
     parser.add_argument(
-        '--circle-dir',
+        "--circle-dir",
         type=Path,
         default=None,
-        help='CircleMUD split world directory containing .wld and .zon files'
+        help="CircleMUD split world directory containing .wld and .zon files",
     )
-    parser.add_argument('-outbase', help='output base name')
-    parser.add_argument('--split-levels', action='store_true', help='Output separate SVGs for each distinct elevation plane')
-    parser.add_argument('-d', '--debug', action='store_true', help='Show debug info')
+    parser.add_argument("-outbase", help="output base name")
     parser.add_argument(
-        '-f', '--format',
-        default='svg',
-        help='Output format(s), comma-separated: svg (default), json, html (e.g. -f html,svg)',
+        "--split-levels",
+        action="store_true",
+        help="Output separate SVGs for each distinct elevation plane",
+    )
+    parser.add_argument("-d", "--debug", action="store_true", help="Show debug info")
+    parser.add_argument(
+        "-f",
+        "--format",
+        default="svg",
+        help="Output format(s), comma-separated: svg (default), json, html",
     )
     parser.add_argument(
-        '--solver-timeout',
+        "--solver-timeout",
         type=int,
         default=None,
-        help='CBC solver timeout limit in seconds (default: dynamic room-scaled timeout)',
+        help="Solver timeout limit in seconds",
     )
     parser.add_argument(
-        '--hierarchical',
+        "--hierarchical",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help='Enable hierarchical decomposition for multi-area solves (default: True)',
+        help="Enable hierarchical decomposition (default: True)",
     )
     args = parser.parse_args()
 
@@ -256,11 +220,10 @@ def cli():
         args.areas = args.areas[1:]
 
     if not args.areas and not args.circle_dir:
-        parser.error('At least one area file or --circle-dir must be provided.')
+        parser.error("At least one area file or --circle-dir must be provided.")
 
-    # Validate format list in CLI
     raw_fmt = args.format
-    format_list = [f.strip().lower() for f in raw_fmt.split(',') if f.strip()]
+    format_list = [f.strip().lower() for f in raw_fmt.split(",") if f.strip()]
     if not format_list:
         parser.error("No format specified in --format argument.")
     for f in format_list:
@@ -268,14 +231,13 @@ def cli():
             supported = ", ".join(sorted(RENDERERS.keys()))
             parser.error(f"Unsupported format '{f}'. Supported formats: {supported}")
 
-    pyomo.common.config.logger.setLevel(logging.ERROR)
     if args.debug:
         log.setLevel(logging.DEBUG)
 
     outbase = args.outbase
     if not outbase:
         if args.areas:
-            outbase = str(args.areas[0].with_suffix(''))
+            outbase = str(args.areas[0].with_suffix(""))
         elif args.circle_dir:
             outbase = str(args.circle_dir / args.circle_dir.name)
 
@@ -288,6 +250,7 @@ def cli():
         solver_timeout=args.solver_timeout,
         hierarchical=args.hierarchical,
     )
+
 
 if __name__ == "__main__":
     cli()

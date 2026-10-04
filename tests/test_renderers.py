@@ -350,7 +350,8 @@ class TestPackageRootExports:
     """Verify renderer public API exports on the package root."""
 
     def test_package_root_exports(self):
-        assert romutil.BaseRenderer is BaseRenderer
+        assert romutil.renderers.BaseRenderer is BaseRenderer
+        assert romutil.BaseRenderer is romutil.interfaces.BaseRenderer
         assert romutil.SVGRenderer is SVGRenderer
         assert romutil.JSONRenderer is JSONRenderer
         assert romutil.HTMLRenderer is HTMLRenderer
