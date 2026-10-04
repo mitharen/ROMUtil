@@ -26,11 +26,16 @@ from romutil.layout.protocols import (
     TreeSolver,
 )
 from romutil.layout.simplification import (
+    ChainedSimplifier,
     HallwayCompactor,
+    WarpSeverer,
+    direction_to_displacement,
     expand_corridor_coordinates,
+    is_euclidean_satisfiable,
 )
 
 __all__ = [
+    "ChainedSimplifier",
     "CorridorSegment",
     "GraphSimplifier",
     "HallwayCompactor",
@@ -49,5 +54,8 @@ __all__ = [
     "TreeSolution",
     "TreeSolver",
     "TrivialTreeBuilder",
+    "WarpSeverer",
+    "direction_to_displacement",
     "expand_corridor_coordinates",
+    "is_euclidean_satisfiable",
 ]
