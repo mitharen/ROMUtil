@@ -22,6 +22,7 @@ from romutil.layout import (
     SpqrTreeBuilder,
     TreeSolution,
     TreeSolver,
+    ParentClusterSolver,
     build_block_spqr_tree,
     solve_leaf_cluster,
     solve_parent_cluster,
@@ -35,13 +36,17 @@ from romutil.layout.geometry import (
     segments_intersect_3d,
 )
 from romutil.layout.milp.parent import (
-    _boxes_intersect,
     _get_child_bbox_corners,
-    _point_in_box_bounds,
-    _solve_parent_fallback,
 )
 from romutil.models import Direction, Exit, Room
-from romutil.types import Coord3D, LayoutOptions, SolvedLayout, SolverStatus, WorldGraph
+from romutil.types import (
+    Coord3D,
+    LayoutOptions,
+    LayoutSolverError,
+    SolvedLayout,
+    SolverStatus,
+    WorldGraph,
+)
 
 
 def _make_room(vnum: int, exits: list[Exit] | None = None) -> Room:
@@ -119,7 +124,7 @@ class TestParentClusterMILP:
         child_edges = [
             (2, 5, Direction.east, 1),
             (5, 6, Direction.north, 1),
-            (6, 2, Direction.south, 1),  # stretched south-west link
+            (6, 2, Direction.southwest, 1),  # closing south-west link
         ]
         all_edges = parent_edges + child_edges
         graph = _make_graph(all_rooms, all_edges)
@@ -476,36 +481,33 @@ class TestParentClusterMILP:
 
 
 class TestParentFallbackAndRobustness:
-    """Unit tests verifying deterministic fallback solver behavior, geometry helpers, and error handling."""
+    """Unit tests verifying fail-fast behavior, geometry helpers, and error handling."""
 
     def test_geometry_helpers(self) -> None:
-        """Verify _boxes_intersect, _point_in_box_bounds, and _get_child_bbox_corners."""
-        b1 = (0, 2, 0, 2, 0, 2)
-        b2 = (3, 5, 0, 2, 0, 2)
-        b3 = (1, 3, 1, 3, 1, 3)
-
-        assert not _boxes_intersect(b1, b2)
-        assert _boxes_intersect(b1, b3)
-
-        assert _point_in_box_bounds((1, 1, 1), b1)
-        assert not _point_in_box_bounds((3, 1, 1), b1)
-
+        """Verify _get_child_bbox_corners helper."""
         assert _get_child_bbox_corners(None) is None
         bb = BoundingBox3D(min_x=1, max_x=2, min_y=3, max_y=4, min_z=5, max_z=6)
         assert _get_child_bbox_corners(bb) == (1, 2, 3, 4, 5, 6)
         tup_bb = (Coord3D(1, 3, 5), Coord3D(2, 4, 6))
         assert _get_child_bbox_corners(tup_bb) == (1, 2, 3, 4, 5, 6)
 
-    def test_fallback_empty_node(self) -> None:
-        """Fallback on completely empty node returns clean empty NodeSolution."""
-        node = SolveTreeNode(node_id="fb_empty", node_type="container", rooms=frozenset())
+    def test_solve_empty_node(self) -> None:
+        """Solving completely empty node returns clean empty NodeSolution."""
+        node = SolveTreeNode(node_id="empty_test", node_type="container", rooms=frozenset())
         graph = LayoutGraph(rooms={}, edges=())
-        sol = _solve_parent_fallback(node, {}, graph)
+        sol = solve_parent_cluster(node, {}, graph)
         assert sol.local_coordinates == {}
         assert sol.bounding_box is None
 
-    def test_fallback_when_solver_unavailable(self) -> None:
-        """Invalid solver name cleanly triggers _solve_parent_fallback."""
+    def test_solve_single_room_no_children(self) -> None:
+        """Single room container with no children places room at origin directly."""
+        node = SolveTreeNode(node_id="single_test", node_type="leaf", rooms=frozenset({10}))
+        graph = LayoutGraph(rooms={10: _make_room(10)}, edges=())
+        sol = solve_parent_cluster(node, {}, graph)
+        assert sol.local_coordinates == {10: Coord3D(0, 0, 0)}
+
+    def test_solver_unavailable_raises_error(self) -> None:
+        """Invalid solver name raises LayoutSolverError."""
         parent_rooms = [1, 2]
         child_rooms = [3, 4]
         edges = [
@@ -523,17 +525,16 @@ class TestParentFallbackAndRobustness:
             rooms=frozenset(parent_rooms),
             children=(child,),
         )
-        sol = solve_parent_cluster(
-            parent,
-            {child.node_id: child_sol},
-            graph,
-            solver_name="nonexistent_solver_xyz",
-        )
-        assert len(sol.local_coordinates) == 2
-        assert child.node_id in sol.metadata["child_offsets"]
+        with pytest.raises(LayoutSolverError):
+            solve_parent_cluster(
+                parent,
+                {child.node_id: child_sol},
+                graph,
+                solver_name="nonexistent_solver_xyz",
+            )
 
-    def test_fallback_solver_factory_exception(self) -> None:
-        """Exception during pyo.SolverFactory triggers fallback cleanly."""
+    def test_solver_factory_exception_raises_error(self) -> None:
+        """Exception during pyo.SolverFactory raises LayoutSolverError."""
         parent_rooms = [1, 2]
         edges = [(1, 2, Direction.east, 1)]
         graph = _make_graph(parent_rooms, edges)
@@ -543,11 +544,11 @@ class TestParentFallbackAndRobustness:
         parent = SolveTreeNode(node_id="p_exc", node_type="block", rooms=frozenset(parent_rooms), children=(child,))
 
         with patch("pyomo.environ.SolverFactory", side_effect=RuntimeError("Solver init failure")):
-            sol = solve_parent_cluster(parent, {child.node_id: child_sol}, graph)
-            assert len(sol.local_coordinates) == 2
+            with pytest.raises(LayoutSolverError):
+                solve_parent_cluster(parent, {child.node_id: child_sol}, graph)
 
-    def test_fallback_infeasible_status(self) -> None:
-        """Infeasible solver status cleanly triggers fallback."""
+    def test_solver_infeasible_status_raises_error(self) -> None:
+        """Infeasible solver status cleanly raises LayoutSolverError."""
         parent_rooms = [1, 2]
         edges = [(1, 2, Direction.east, 1)]
         graph = _make_graph(parent_rooms, edges)
@@ -564,11 +565,11 @@ class TestParentFallbackAndRobustness:
         mock_solver.solve.return_value = mock_results
 
         with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
-            sol = solve_parent_cluster(parent, {child.node_id: child_sol}, graph)
-            assert len(sol.local_coordinates) == 2
+            with pytest.raises(LayoutSolverError):
+                solve_parent_cluster(parent, {child.node_id: child_sol}, graph)
 
-    def test_fallback_none_coordinate_value(self) -> None:
-        """pyo.value returning None triggers fallback."""
+    def test_solver_none_coordinate_value_raises_error(self) -> None:
+        """pyo.value returning None raises LayoutSolverError."""
         parent_rooms = [1, 2]
         edges = [(1, 2, Direction.east, 1)]
         graph = _make_graph(parent_rooms, edges)
@@ -586,8 +587,8 @@ class TestParentFallbackAndRobustness:
 
         with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
             with patch("pyomo.environ.value", return_value=None):
-                sol = solve_parent_cluster(parent, {child.node_id: child_sol}, graph)
-                assert len(sol.local_coordinates) == 2
+                with pytest.raises(LayoutSolverError):
+                    solve_parent_cluster(parent, {child.node_id: child_sol}, graph)
 
     def test_timeout_options_configuration(self) -> None:
         """Options timeout_seconds are passed to CBC and GLPK solvers."""
@@ -622,8 +623,8 @@ class TestParentFallbackAndRobustness:
                 solve_parent_cluster(parent, {child.node_id: child_sol}, graph, options=opts, solver_name="glpk")
                 assert mock_glpk.options.get("tmlim") == 30
 
-    def test_fallback_unconnected_overlapping_boxes_step_away(self) -> None:
-        """Fallback separates multiple unconnected children whose default placements collide."""
+    def test_unconnected_overlapping_boxes_separated_by_milp(self) -> None:
+        """MILP separates multiple unconnected children whose default placements collide."""
         c1 = SolveTreeNode(node_id="fb_c1", node_type="leaf", rooms=frozenset({1}))
         c2 = SolveTreeNode(node_id="fb_c2", node_type="leaf", rooms=frozenset({2}))
         sol1 = NodeSolution(node_id="fb_c1", local_coordinates={1: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 1, 1)))
@@ -632,13 +633,18 @@ class TestParentFallbackAndRobustness:
         parent = SolveTreeNode(node_id="p_fb_boxes", node_type="container", rooms=frozenset(), children=(c1, c2))
         graph = LayoutGraph(rooms={}, edges=())
 
-        sol = _solve_parent_fallback(parent, {c1.node_id: sol1, c2.node_id: sol2}, graph)
+        sol = solve_parent_cluster(parent, {c1.node_id: sol1, c2.node_id: sol2}, graph)
         off1 = sol.metadata["child_offsets"]["fb_c1"]
         off2 = sol.metadata["child_offsets"]["fb_c2"]
 
         box1 = (off1.x, off1.x + 1, off1.y, off1.y + 1, off1.z, off1.z + 1)
         box2 = (off2.x, off2.x + 1, off2.y, off2.y + 1, off2.z, off2.z + 1)
-        assert not _boxes_intersect(box1, box2)
+        overlap = not (
+            box1[1] < box2[0] or box1[0] > box2[1]
+            or box1[3] < box2[2] or box1[2] > box2[3]
+            or box1[5] < box2[4] or box1[4] > box2[5]
+        )
+        assert not overlap
 
     def test_stretched_gateway_corridor_avoids_piercing_third_party_room(self) -> None:
         """A stretched gateway corridor avoids piercing a third-party parent room along its line of sight."""
@@ -830,8 +836,8 @@ class TestParentFallbackAndRobustness:
 
         assert not segments_intersect_3d(gw_seg, int_seg)
 
-    def test_fallback_corridor_clearance_and_sibling_box_avoidance(self) -> None:
-        """Deterministic fallback places child boxes without corridor piercing."""
+    def test_milp_corridor_clearance_and_sibling_box_avoidance(self) -> None:
+        """MILP solver places child boxes without corridor piercing."""
         parent_rooms = [1, 2]
         all_rooms = [1, 2, 3, 4]
 
@@ -849,7 +855,7 @@ class TestParentFallbackAndRobustness:
 
         parent = SolveTreeNode(node_id="p_fb_corr", node_type="block", rooms=frozenset(parent_rooms), children=(c1, c2))
 
-        sol = _solve_parent_fallback(parent, {c1.node_id: sol1, c2.node_id: sol2}, graph)
+        sol = solve_parent_cluster(parent, {c1.node_id: sol1, c2.node_id: sol2}, graph)
 
         p1 = sol.local_coordinates[1]
         p2 = sol.local_coordinates[2]
@@ -1066,7 +1072,7 @@ class TestHierarchicalLayoutIntegration:
         layout = solver.solve(world_graph)
 
         assert isinstance(layout, SolvedLayout)
-        assert layout.diagnostics.status == SolverStatus.FEASIBLE
+        assert layout.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
         assert len(layout.coordinates) == 5
 
     def test_integration_block_cut_and_hierarchical_solver(self) -> None:
@@ -1095,165 +1101,22 @@ class TestHierarchicalLayoutIntegration:
         layout = solver.solve(world_graph)
 
         assert len(layout.coordinates) == 4
-        assert layout.diagnostics.status == SolverStatus.FEASIBLE
+        assert layout.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
 
 
 class TestParentComprehensiveEdgeCoverage:
-    """Tests targeting specific fallback and MILP edge cases to achieve 100% coverage."""
+    """Tests targeting specific solver edge cases and error handling to ensure fail-fast semantics."""
 
-    def test_fallback_invalid_parent_edge_direction(self) -> None:
-        """Fallback skips parent edges with invalid directions."""
-        parent_rooms = [1, 2]
-        edges = [LayoutEdge(src=1, dst=2, direction=999, weight=1)]
-        graph = LayoutGraph(rooms={v: _make_room(v) for v in parent_rooms}, edges=tuple(edges))
-        node = SolveTreeNode(node_id="fb_inv", node_type="block", rooms=frozenset(parent_rooms))
-        sol = _solve_parent_fallback(node, {}, graph)
-        assert len(sol.local_coordinates) == 2
-
-    def test_fallback_multiple_disconnected_and_stepping(self) -> None:
-        """Fallback handles multiple disconnected parent rooms and occupied cell collisions."""
-        rooms = [1, 2, 3, 4]
-        # Room 1 and 2 share edge, 3 and 4 share edge, but placed in occupied positions
-        edges = [
-            LayoutEdge(src=1, dst=2, direction=Direction.east, weight=1),
-            LayoutEdge(src=3, dst=4, direction=Direction.east, weight=1),
-        ]
-        graph = LayoutGraph(rooms={v: _make_room(v) for v in rooms}, edges=tuple(edges))
-        node = SolveTreeNode(node_id="fb_discon", node_type="block", rooms=frozenset(rooms))
-        sol = _solve_parent_fallback(node, {}, graph)
-        assert len(sol.local_coordinates) == 4
-
-    def test_fallback_child_none_solution(self) -> None:
-        """Fallback records (0, 0, 0) offset when child is missing from child_solutions."""
-        c = SolveTreeNode(node_id="missing_c", node_type="leaf", rooms=frozenset({1}))
-        parent = SolveTreeNode(node_id="p_miss", node_type="container", rooms=frozenset(), children=(c,))
-        graph = LayoutGraph(rooms={}, edges=())
-        sol = _solve_parent_fallback(parent, {}, graph)
-        assert sol.metadata["child_offsets"]["missing_c"] == Coord3D(0, 0, 0)
-
-    def test_fallback_split_pair_alignment(self) -> None:
-        """Fallback aligns children under a split pair container with poles."""
-        poles = (1, 2)
-        c_rooms = [1, 2, 3]
-        edges = [LayoutEdge(src=1, dst=2, direction=Direction.north, weight=2)]
-        graph = LayoutGraph(rooms={v: _make_room(v) for v in [1, 2, 3]}, edges=tuple(edges))
-
-        child = SolveTreeNode(node_id="c_sp", node_type="leaf", rooms=frozenset(c_rooms))
-        c_sol = NodeSolution(
-            node_id="c_sp",
-            local_coordinates={1: Coord3D(0, 0, 0), 2: Coord3D(0, 2, 0), 3: Coord3D(1, 1, 0)},
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 2, 0)),
-        )
-        parent = SolveTreeNode(
-            node_id="p_sp",
-            node_type="split_pair_container",
-            rooms=frozenset(poles),
-            children=(child,),
-            metadata={"cut_type": "split_pair", "poles": poles},
-        )
-        sol = _solve_parent_fallback(parent, {child.node_id: c_sol}, graph)
-        assert child.node_id in sol.metadata["child_offsets"]
-
-    def test_fallback_common_room_anchor_and_doorway_directions(self) -> None:
-        """Fallback infers anchor from common room and traverses forward/reverse doorway edges."""
-        # Common room without anchor_vnum
-        parent = SolveTreeNode(
-            node_id="p_com",
-            node_type="block",
-            rooms=frozenset({1, 2}),
-            children=(
-                SolveTreeNode(node_id="c_com", node_type="leaf", rooms=frozenset({2, 3})),
-                SolveTreeNode(node_id="c_fwd", node_type="leaf", rooms=frozenset({4})),
-                SolveTreeNode(node_id="c_rev", node_type="leaf", rooms=frozenset({5})),
-            ),
-        )
-        edges = [
-            LayoutEdge(src=1, dst=2, direction=Direction.north, weight=1),
-            LayoutEdge(src=1, dst=4, direction=Direction.east, weight=1),  # Forward doorway
-            LayoutEdge(src=5, dst=2, direction=Direction.west, weight=1),  # Reverse doorway
-            LayoutEdge(src=1, dst=4, direction=999, weight=1),             # Invalid forward
-            LayoutEdge(src=5, dst=2, direction=999, weight=1),             # Invalid reverse
-        ]
-        graph = LayoutGraph(rooms={v: _make_room(v) for v in range(1, 6)}, edges=tuple(edges))
-        sol_com = NodeSolution(node_id="c_com", local_coordinates={2: Coord3D(0, 0, 0), 3: Coord3D(1, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 0, 0)))
-        sol_fwd = NodeSolution(node_id="c_fwd", local_coordinates={4: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
-        sol_rev = NodeSolution(node_id="c_rev", local_coordinates={5: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
-
-        child_solutions = {
-            "c_com": sol_com,
-            "c_fwd": sol_fwd,
-            "c_rev": sol_rev,
-        }
-        sol = _solve_parent_fallback(parent, child_solutions, graph)
-        assert len(sol.metadata["child_offsets"]) == 3
-
-    def test_fallback_collision_while_loop_step(self) -> None:
-        """Fallback steps when placed child macro-boxes overlap."""
-        c1 = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({1}))
-        c2 = SolveTreeNode(node_id="c2", node_type="leaf", rooms=frozenset({2}))
-        # Both connected to parent room 10 via same doorway direction East
-        parent = SolveTreeNode(
-            node_id="p_col",
-            node_type="block",
-            rooms=frozenset({10}),
-            children=(c1, c2),
-        )
-        edges = [
-            LayoutEdge(src=10, dst=1, direction=Direction.east, weight=1),
-            LayoutEdge(src=10, dst=2, direction=Direction.east, weight=1),
-        ]
-        graph = LayoutGraph(rooms={10: _make_room(10), 1: _make_room(1), 2: _make_room(2)}, edges=tuple(edges))
-        sol1 = NodeSolution(node_id="c1", local_coordinates={1: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(2, 2, 2)))
-        sol2 = NodeSolution(node_id="c2", local_coordinates={2: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(2, 2, 2)))
-
-        sol = _solve_parent_fallback(parent, {"c1": sol1, "c2": sol2}, graph)
-        off1 = sol.metadata["child_offsets"]["c1"]
-        off2 = sol.metadata["child_offsets"]["c2"]
-        box1 = (off1.x, off1.x + 2, off1.y, off1.y + 2, off1.z, off1.z + 2)
-        box2 = (off2.x, off2.x + 2, off2.y, off2.y + 2, off2.z, off2.z + 2)
-        assert not _boxes_intersect(box1, box2)
-
-    def test_fallback_cand_stepping_in_occupied(self) -> None:
-        """Fallback steps cand when candidate cell is already occupied."""
-        # 1 -E-> 2, 1 -E-> 3 (where 3 attempts to step into (1, 0, 0) already occupied by 2)
-        rooms = [1, 2, 3]
-        edges = [
-            LayoutEdge(src=1, dst=2, direction=Direction.east, weight=1),
-            LayoutEdge(src=1, dst=3, direction=Direction.east, weight=1),
-        ]
-        graph = LayoutGraph(rooms={v: _make_room(v) for v in rooms}, edges=tuple(edges))
-        node = SolveTreeNode(node_id="fb_step", node_type="block", rooms=frozenset(rooms))
-        sol = _solve_parent_fallback(node, {}, graph)
-        assert len(sol.local_coordinates) == 3
-        assert sol.local_coordinates[2] == Coord3D(1, 0, 0)
-        assert sol.local_coordinates[3] == Coord3D(2, 0, 0)
-
-    def test_fallback_doorway_cut_and_invalid_directions(self) -> None:
-        """Fallback skips cut edges and invalid direction doorway edges."""
-        parent = SolveTreeNode(
-            node_id="p_dw_test",
-            node_type="block",
-            rooms=frozenset({10}),
-            children=(
-                SolveTreeNode(node_id="c_fwd", node_type="leaf", rooms=frozenset({1})),
-                SolveTreeNode(node_id="c_rev", node_type="leaf", rooms=frozenset({2})),
-            ),
-        )
-        edges = [
-            LayoutEdge(src=10, dst=1, direction=Direction.east, weight=1, cut=True),  # Cut edge
-            LayoutEdge(src=10, dst=1, direction=999, weight=1),  # Invalid direction forward
-            LayoutEdge(src=10, dst=1, direction=Direction.east, weight=1),  # Valid forward
-            LayoutEdge(src=2, dst=10, direction=999, weight=1),  # Invalid direction reverse
-            LayoutEdge(src=2, dst=10, direction=Direction.east, weight=1),  # Valid reverse
-        ]
-        graph = LayoutGraph(rooms={10: _make_room(10), 1: _make_room(1), 2: _make_room(2)}, edges=tuple(edges))
-        sol1 = NodeSolution(node_id="c_fwd", local_coordinates={1: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
-        sol2 = NodeSolution(node_id="c_rev", local_coordinates={2: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
-        sol = _solve_parent_fallback(parent, {"c_fwd": sol1, "c_rev": sol2}, graph)
-        assert len(sol.metadata["child_offsets"]) == 2
+    def test_parent_cluster_solver_delegate(self) -> None:
+        """ParentClusterSolver wraps solve_parent_cluster cleanly."""
+        solver = ParentClusterSolver(solver_name="cbc")
+        node = SolveTreeNode(node_id="pcs_single", node_type="leaf", rooms=frozenset({1}))
+        graph = LayoutGraph(rooms={1: _make_room(1)}, edges=())
+        sol = solver.solve(node, {}, graph)
+        assert sol.local_coordinates == {1: Coord3D(0, 0, 0)}
 
     def test_milp_solver_unavailable_branch(self) -> None:
-        """When solver.available() returns False in solve_parent_cluster, fallback is invoked."""
+        """When solver.available() returns False in solve_parent_cluster, LayoutSolverError is raised."""
         child = SolveTreeNode(node_id="c_unavail", node_type="leaf", rooms=frozenset({2}))
         parent = SolveTreeNode(node_id="p_unavail", node_type="block", rooms=frozenset({1}), children=(child,))
         graph = _make_graph([1, 2], [])
@@ -1262,8 +1125,8 @@ class TestParentComprehensiveEdgeCoverage:
         mock_solver = MagicMock()
         mock_solver.available.return_value = False
         with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
-            sol = solve_parent_cluster(parent, {"c_unavail": c_sol}, graph)
-            assert 1 in sol.local_coordinates
+            with pytest.raises(LayoutSolverError):
+                solve_parent_cluster(parent, {"c_unavail": c_sol}, graph)
 
     def test_milp_common_room_anchor_inferred(self) -> None:
         """MILP infers articulation anchor when parent and child share 1 room without anchor_vnum in metadata."""
@@ -1320,8 +1183,8 @@ class TestParentComprehensiveEdgeCoverage:
         sol = solve_parent_cluster(parent, {"c_no_box": sol_no_box}, graph)
         assert 1 in sol.local_coordinates
 
-    def test_milp_none_value_child_offset_triggers_fallback(self) -> None:
-        """pyo.value returning None for child offset triggers fallback."""
+    def test_milp_none_value_child_offset_raises_error(self) -> None:
+        """pyo.value returning None for child offset raises LayoutSolverError."""
         child = SolveTreeNode(node_id="c_none", node_type="leaf", rooms=frozenset({2}))
         parent = SolveTreeNode(node_id="p_none_c", node_type="block", rooms=frozenset({1}), children=(child,))
         c_sol = NodeSolution(node_id="c_none", local_coordinates={2: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
@@ -1337,11 +1200,11 @@ class TestParentComprehensiveEdgeCoverage:
         # Return numbers for parent x, y, z, then None for child cx
         with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
             with patch("pyomo.environ.value", side_effect=[0, 0, 0, None, 0, 0]):
-                sol = solve_parent_cluster(parent, {"c_none": c_sol}, graph)
-                assert 1 in sol.local_coordinates
+                with pytest.raises(LayoutSolverError):
+                    solve_parent_cluster(parent, {"c_none": c_sol}, graph)
 
-    def test_milp_solve_exception_triggers_fallback(self) -> None:
-        """Exception during solver.solve triggers fallback."""
+    def test_milp_solve_exception_raises_error(self) -> None:
+        """Exception during solver.solve raises LayoutSolverError."""
         child = SolveTreeNode(node_id="c_exc_solve", node_type="leaf", rooms=frozenset({2}))
         parent = SolveTreeNode(node_id="p_exc_solve", node_type="block", rooms=frozenset({1}), children=(child,))
         c_sol = NodeSolution(node_id="c_exc_solve", local_coordinates={2: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
@@ -1352,8 +1215,8 @@ class TestParentComprehensiveEdgeCoverage:
         mock_solver.solve.side_effect = RuntimeError("Solve crashed")
 
         with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
-            sol = solve_parent_cluster(parent, {"c_exc_solve": c_sol}, graph)
-            assert 1 in sol.local_coordinates
+            with pytest.raises(LayoutSolverError):
+                solve_parent_cluster(parent, {"c_exc_solve": c_sol}, graph)
 
     def test_hierarchical_solver_caching_and_nested_room_collection(self) -> None:
         """HierarchicalTreeSolver returns cached solutions and collects rooms across nested children when graph is None."""

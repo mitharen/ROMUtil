@@ -187,7 +187,7 @@ class WarpSeverer:
         active_edges: list[LayoutEdge] = [e for e in graph.edges if not e.cut]
         severed_chords: list[LayoutEdge] = []
 
-        # Check for non-Euclidean self-loops
+        # Check for non-Euclidean self-loops (1-cycles)
         for edge in list(active_edges):
             if edge.src == edge.dst:
                 try:
@@ -199,6 +199,33 @@ class WarpSeverer:
                     severed_edge = replace(edge, cut=True)
                     severed_chords.append(severed_edge)
                     active_edges.remove(edge)
+
+        # Check for non-Euclidean 2-cycles (antiparallel edges between same pair of rooms)
+        pair_to_edges: dict[tuple[int, int], list[LayoutEdge]] = collections.defaultdict(list)
+        for edge in active_edges:
+            pair = (min(edge.src, edge.dst), max(edge.src, edge.dst))
+            pair_to_edges[pair].append(edge)
+
+        for pair, pair_edges in sorted(pair_to_edges.items()):
+            if len(pair_edges) < 2:
+                continue
+            for i in range(len(pair_edges)):
+                for j in range(i + 1, len(pair_edges)):
+                    e1 = pair_edges[i]
+                    e2 = pair_edges[j]
+                    if e1 not in active_edges or e2 not in active_edges:
+                        continue
+                    try:
+                        d1 = direction_to_displacement(e1.direction)
+                        d2 = direction_to_displacement(e2.direction)
+                    except ValueError:
+                        continue
+                    if e1.src == e2.dst and e1.dst == e2.src:
+                        if not is_euclidean_satisfiable([d1, d2]):
+                            edge_to_cut = e2 if e2.weight <= e1.weight else e1
+                            severed_edge = replace(edge_to_cut, cut=True)
+                            severed_chords.append(severed_edge)
+                            active_edges.remove(edge_to_cut)
 
         while True:
             # Construct undirected view of remaining active edges

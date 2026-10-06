@@ -33,7 +33,6 @@ def main(
     fmt: str | Sequence[str] = "svg",
     circle_dir: Path | str | None = None,
     solver_timeout: int | None = None,
-    hierarchical: bool = True,
 ) -> WorldGraph:
     """Parse areas into a unified WorldGraph and optionally render without invoking the solver engine."""
     if isinstance(fmt, str):
@@ -142,15 +141,12 @@ def main(
                 clean_base = clean_base[:-len(ext)]
                 break
 
-        if hierarchical:
-            solver = HierarchicalLayoutSolver(
-                simplifier=ChainedSimplifier([HallwayCompactor(), WarpSeverer()]),
-                tree_builder=SpqrTreeBuilder(),
-                tree_solver=HierarchicalTreeSolver(),
-                assembler=HierarchicalLayoutAssembler(),
-            )
-        else:
-            solver = HierarchicalLayoutSolver()
+        solver = HierarchicalLayoutSolver(
+            simplifier=ChainedSimplifier([HallwayCompactor(), WarpSeverer()]),
+            tree_builder=SpqrTreeBuilder(),
+            tree_solver=HierarchicalTreeSolver(),
+            assembler=HierarchicalLayoutAssembler(),
+        )
 
         layout_opts = LayoutOptions(timeout_seconds=solver_timeout or 60)
         layout = solver.solve(graph, layout_opts)
@@ -194,12 +190,6 @@ def cli() -> None:
         default=None,
         help="Solver timeout limit in seconds",
     )
-    parser.add_argument(
-        "--hierarchical",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Enable hierarchical decomposition (default: True)",
-    )
     args = parser.parse_args()
 
     if not args.areas and not args.circle_dir:
@@ -231,7 +221,6 @@ def cli() -> None:
         fmt=format_list,
         circle_dir=args.circle_dir,
         solver_timeout=args.solver_timeout,
-        hierarchical=args.hierarchical,
     )
 
 

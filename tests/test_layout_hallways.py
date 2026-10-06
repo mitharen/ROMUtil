@@ -19,7 +19,6 @@ from romutil.layout import (
     TreeBuilder,
     TreeSolution,
     TreeSolver,
-    TrivialTreeBuilder,
     expand_corridor_coordinates,
 )
 from romutil.models import AreaHeader, Exit, Room
@@ -508,7 +507,7 @@ class TestPipelineIntegration:
 
         assert isinstance(solved, SolvedLayout)
         assert set(solved.coordinates.keys()) == {1, 2, 3}
-        assert solved.diagnostics.status == SolverStatus.FEASIBLE
+        assert solved.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
 
     def test_end_to_end_with_custom_solver_placements(self) -> None:
         """Verify intermediate room interpolation with explicit solved endpoint coordinates."""

@@ -112,15 +112,15 @@ class TestCliPipelineEndToEnd:
         split_svgs = list(tmp_path.glob("school_split*.svg"))
         assert len(split_svgs) >= 1
 
-    def test_cli_no_hierarchical_fallback(self, tmp_path: Path) -> None:
-        """Verify CLI executes gracefully when hierarchical is disabled."""
+    def test_cli_pipeline_execution(self, tmp_path: Path) -> None:
+        """Verify CLI executes the canonical pipeline cleanly."""
         fixture_path = DIALECTS_DIR / "rom24.are"
-        outbase = str(tmp_path / "rom24_flat")
+        outbase = str(tmp_path / "rom24_canonical")
 
         with pytest.raises(SystemExit) as exc:
-            main([fixture_path], outbase=outbase, fmt="json", hierarchical=False)
+            main([fixture_path], outbase=outbase, fmt="json")
         assert exc.value.code == 0
-        assert (tmp_path / "rom24_flat.json").exists()
+        assert (tmp_path / "rom24_canonical.json").exists()
 
     def test_cli_solver_timeout_option(self, tmp_path: Path) -> None:
         """Verify CLI main accepts custom solver timeout."""

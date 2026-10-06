@@ -185,10 +185,10 @@ class TestCliCoverage:
             cli()
         assert exc.value.code != 0
 
-        # solver-timeout and hierarchical flags
+        # solver-timeout flag
         monkeypatch.setattr(
             "sys.argv",
-            ["romutil", str(are_file), "-outbase", out, "--solver-timeout", "10", "--no-hierarchical"],
+            ["romutil", str(are_file), "-outbase", out, "--solver-timeout", "10"],
         )
         with pytest.raises(SystemExit) as exc:
             cli()

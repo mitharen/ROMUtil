@@ -298,7 +298,7 @@ The console entry point `romutil` (invoked via `uv run romutil`) wires the 3 sub
 
 1. **Ingestion**: Parses input area files or CircleMUD directories into an immutable `WorldGraph`.
 2. **Solving**:
-   - When `--hierarchical` is enabled (default), executes the 5-stage production pipeline:
+   - Executes the 5-stage production pipeline:
      ```python
      solver = HierarchicalLayoutSolver(
          simplifier=ChainedSimplifier([HallwayCompactor(), WarpSeverer()]),
@@ -308,7 +308,6 @@ The console entry point `romutil` (invoked via `uv run romutil`) wires the 3 sub
      )
      layout = solver.solve(graph, LayoutOptions(timeout_seconds=solver_timeout or 60))
      ```
-   - When `--no-hierarchical` is specified, falls back to baseline `HierarchicalLayoutSolver()`.
 3. **Rendering**:
    - Dispatches the `(graph, layout)` pair to each requested format (`--format svg,html,json`) via `BaseRenderer`.
    - Supports elevation plane splitting (`--split-levels`).

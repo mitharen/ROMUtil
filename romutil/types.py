@@ -18,6 +18,10 @@ class Coord3D:
     z: int
 
 
+class LayoutSolverError(RuntimeError):
+    """Exception raised when layout solving fails or is infeasible without fallback."""
+
+
 class SolverStatus(str, Enum):
     """Status outcomes from a layout solver run."""
 

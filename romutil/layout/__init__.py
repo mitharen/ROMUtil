@@ -7,8 +7,6 @@ from romutil.layout.engine import (
     HierarchicalLayoutSolver,
     IdentityLayoutAssembler,
     PassthroughSimplifier,
-    PlaceholderTreeSolver,
-    TrivialTreeBuilder,
 )
 from romutil.layout.geometry import (
     BoundingBox3D,
@@ -36,6 +34,7 @@ from romutil.layout.ir import (
 from romutil.layout.milp import (
     HierarchicalTreeSolver,
     LeafTreeSolver,
+    ParentClusterSolver,
     solve_leaf_cluster,
     solve_parent_cluster,
 )
@@ -53,6 +52,7 @@ from romutil.layout.simplification import (
     expand_corridor_coordinates,
     is_euclidean_satisfiable,
 )
+from romutil.types import LayoutSolverError
 
 production = HierarchicalLayoutSolver.production
 
@@ -70,10 +70,11 @@ __all__ = [
     "LayoutAssembler",
     "LayoutEdge",
     "LayoutGraph",
+    "LayoutSolverError",
     "LeafTreeSolver",
     "NodeSolution",
+    "ParentClusterSolver",
     "PassthroughSimplifier",
-    "PlaceholderTreeSolver",
     "production",
     "Segment3D",
     "SimplifiedGraph",
@@ -83,7 +84,6 @@ __all__ = [
     "TreeBuilder",
     "TreeSolution",
     "TreeSolver",
-    "TrivialTreeBuilder",
     "WarpSeverer",
     "build_block_spqr_tree",
     "direction_to_displacement",

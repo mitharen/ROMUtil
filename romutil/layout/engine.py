@@ -7,14 +7,7 @@ import time
 
 from romutil.interfaces import BaseLayoutSolver
 from romutil.layout.assembly import HierarchicalLayoutAssembler
-from romutil.layout.ir import (
-    LayoutGraph,
-    NodeSolution,
-    SimplifiedGraph,
-    SolveTree,
-    SolveTreeNode,
-    TreeSolution,
-)
+from romutil.layout.ir import LayoutGraph, SimplifiedGraph, SolveTree, TreeSolution
 from romutil.layout.protocols import (
     GraphSimplifier,
     LayoutAssembler,
@@ -38,49 +31,6 @@ class PassthroughSimplifier:
     def simplify(self, graph: LayoutGraph, options: LayoutOptions) -> SimplifiedGraph:
         """Return a SimplifiedGraph wrapping the unmodified LayoutGraph."""
         return SimplifiedGraph(graph=graph)
-
-
-class TrivialTreeBuilder:
-    """Default stage 3 tree builder grouping all rooms into a single root node."""
-
-    def build_tree(self, simplified: SimplifiedGraph, options: LayoutOptions) -> SolveTree:
-        """Construct a single-node SolveTree from the simplified graph rooms."""
-        root = SolveTreeNode(
-            node_id="root",
-            node_type="root",
-            rooms=frozenset(simplified.graph.rooms.keys()),
-        )
-        return SolveTree(root=root, components=(root,), graph=simplified.graph)
-
-
-class PlaceholderTreeSolver:
-    """Default stage 4 tree solver placing all rooms at origin coordinates."""
-
-    def solve_tree(self, tree: SolveTree, options: LayoutOptions) -> TreeSolution:
-        """Assign origin coordinates to rooms for each node in the tree."""
-        nodes: dict[str, SolveTreeNode] = {}
-
-        def _traverse(node: SolveTreeNode) -> None:
-            if node.node_id not in nodes:
-                nodes[node.node_id] = node
-                for child in node.children:
-                    _traverse(child)
-
-        _traverse(tree.root)
-        for comp in tree.components:
-            _traverse(comp)
-
-        node_solutions: dict[str, NodeSolution] = {}
-        for node_id, node in nodes.items():
-            local_coords = {vnum: Coord3D(0, 0, 0) for vnum in node.rooms}
-            bbox = (Coord3D(0, 0, 0), Coord3D(0, 0, 0)) if local_coords else None
-            node_solutions[node_id] = NodeSolution(
-                node_id=node_id,
-                local_coordinates=local_coords,
-                bounding_box=bbox,
-            )
-
-        return TreeSolution(node_solutions=node_solutions)
 
 
 class IdentityLayoutAssembler:
@@ -126,10 +76,29 @@ class HierarchicalLayoutSolver:
         tree_solver: TreeSolver | None = None,
         assembler: LayoutAssembler | None = None,
     ) -> None:
-        self.simplifier: GraphSimplifier = simplifier if simplifier is not None else PassthroughSimplifier()
-        self.tree_builder: TreeBuilder = tree_builder if tree_builder is not None else TrivialTreeBuilder()
-        self.tree_solver: TreeSolver = tree_solver if tree_solver is not None else PlaceholderTreeSolver()
-        self.assembler: LayoutAssembler = assembler if assembler is not None else HierarchicalLayoutAssembler()
+        from romutil.layout.assembly import HierarchicalLayoutAssembler
+        from romutil.layout.hierarchy import SpqrTreeBuilder
+        from romutil.layout.milp import HierarchicalTreeSolver
+        from romutil.layout.simplification import (
+            ChainedSimplifier,
+            HallwayCompactor,
+            WarpSeverer,
+        )
+
+        self.simplifier: GraphSimplifier = (
+            simplifier
+            if simplifier is not None
+            else ChainedSimplifier([HallwayCompactor(), WarpSeverer()])
+        )
+        self.tree_builder: TreeBuilder = (
+            tree_builder if tree_builder is not None else SpqrTreeBuilder()
+        )
+        self.tree_solver: TreeSolver = (
+            tree_solver if tree_solver is not None else HierarchicalTreeSolver()
+        )
+        self.assembler: LayoutAssembler = (
+            assembler if assembler is not None else HierarchicalLayoutAssembler()
+        )
 
     @classmethod
     def production(
@@ -140,29 +109,11 @@ class HierarchicalLayoutSolver:
         assembler: LayoutAssembler | None = None,
     ) -> HierarchicalLayoutSolver:
         """Construct a HierarchicalLayoutSolver configured with standard production stages."""
-        from romutil.layout.assembly import HierarchicalLayoutAssembler
-        from romutil.layout.hierarchy import SpqrTreeBuilder
-        from romutil.layout.milp import HierarchicalTreeSolver
-        from romutil.layout.simplification import (
-            ChainedSimplifier,
-            HallwayCompactor,
-            WarpSeverer,
-        )
-
-        actual_simplifier = (
-            simplifier
-            if simplifier is not None
-            else ChainedSimplifier([HallwayCompactor(), WarpSeverer()])
-        )
-        actual_tree_builder = tree_builder if tree_builder is not None else SpqrTreeBuilder()
-        actual_tree_solver = tree_solver if tree_solver is not None else HierarchicalTreeSolver()
-        actual_assembler = assembler if assembler is not None else HierarchicalLayoutAssembler()
-
         return cls(
-            simplifier=actual_simplifier,
-            tree_builder=actual_tree_builder,
-            tree_solver=actual_tree_solver,
-            assembler=actual_assembler,
+            simplifier=simplifier,
+            tree_builder=tree_builder,
+            tree_solver=tree_solver,
+            assembler=assembler,
         )
 
     def solve(

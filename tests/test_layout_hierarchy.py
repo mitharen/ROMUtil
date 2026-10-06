@@ -408,7 +408,7 @@ class TestHierarchicalLayoutSolverIntegration:
         solved = solver.solve(world_graph, LayoutOptions())
 
         assert isinstance(solved, SolvedLayout)
-        assert solved.diagnostics.status == SolverStatus.FEASIBLE
+        assert solved.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
         assert set(solved.coordinates.keys()) == {1, 2, 3, 4, 5, 6}
         for vnum, coord in solved.coordinates.items():
             assert isinstance(coord, Coord3D)
@@ -438,7 +438,7 @@ class TestHierarchicalLayoutSolverIntegration:
         solved = solver.solve(world_graph)
 
         assert isinstance(solved, SolvedLayout)
-        assert solved.diagnostics.status == SolverStatus.FEASIBLE
+        assert solved.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
         assert set(solved.coordinates.keys()) == {1, 2, 3, 4, 5, 6}
 
     def test_end_to_end_solve_empty_graph(self) -> None:

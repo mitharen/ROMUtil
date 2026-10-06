@@ -18,14 +18,12 @@ from romutil.layout import (
     LayoutGraph,
     NodeSolution,
     PassthroughSimplifier,
-    PlaceholderTreeSolver,
     SimplifiedGraph,
     SolveTree,
     SolveTreeNode,
     TreeBuilder,
     TreeSolution,
     TreeSolver,
-    TrivialTreeBuilder,
 )
 from romutil.models import AreaHeader, Exit, Room
 from romutil.types import Coord3D, LayoutOptions, SolvedLayout, SolverStatus, WorldGraph
@@ -200,11 +198,14 @@ class TestProtocols:
     """Tests for stage protocols and runtime_checkable adherence."""
 
     def test_default_stages_satisfy_protocols(self) -> None:
+        solver = HierarchicalLayoutSolver()
+        assert isinstance(solver.simplifier, GraphSimplifier)
+        assert isinstance(solver.tree_builder, TreeBuilder)
+        assert isinstance(solver.tree_solver, TreeSolver)
+        assert isinstance(solver.assembler, LayoutAssembler)
+        assert isinstance(solver, BaseLayoutSolver)
         assert isinstance(PassthroughSimplifier(), GraphSimplifier)
-        assert isinstance(TrivialTreeBuilder(), TreeBuilder)
-        assert isinstance(PlaceholderTreeSolver(), TreeSolver)
         assert isinstance(IdentityLayoutAssembler(), LayoutAssembler)
-        assert isinstance(HierarchicalLayoutSolver(), BaseLayoutSolver)
 
     def test_custom_stage_runtime_check(self) -> None:
         class ValidSimplifier:
@@ -259,40 +260,6 @@ class TestLayoutEngine:
         assert simp.corridors == ()
         assert simp.severed_chords == ()
 
-    def test_trivial_tree_builder(self) -> None:
-        r1 = Room(vnum=1, name="R1", description="D")
-        r2 = Room(vnum=2, name="R2", description="D")
-        lg = LayoutGraph(rooms={1: r1, 2: r2}, edges=())
-        simp = SimplifiedGraph(graph=lg)
-        tree = TrivialTreeBuilder().build_tree(simp, LayoutOptions())
-
-        assert tree.root.node_id == "root"
-        assert tree.root.rooms == frozenset({1, 2})
-        assert len(tree.components) == 1
-        assert tree.components[0] == tree.root
-
-    def test_placeholder_tree_solver_hierarchical(self) -> None:
-        child = SolveTreeNode(node_id="child", node_type="leaf", rooms=frozenset({2, 3}))
-        root = SolveTreeNode(node_id="root", node_type="parent", rooms=frozenset({1}), children=(child,))
-        extra_comp = SolveTreeNode(node_id="comp", node_type="island", rooms=frozenset({4}))
-        tree = SolveTree(root=root, components=(extra_comp,))
-
-        solution = PlaceholderTreeSolver().solve_tree(tree, LayoutOptions())
-
-        assert set(solution.node_solutions.keys()) == {"root", "child", "comp"}
-        assert solution.node_solutions["root"].local_coordinates[1] == Coord3D(0, 0, 0)
-        assert solution.node_solutions["child"].local_coordinates[2] == Coord3D(0, 0, 0)
-        assert solution.node_solutions["child"].local_coordinates[3] == Coord3D(0, 0, 0)
-        assert solution.node_solutions["comp"].local_coordinates[4] == Coord3D(0, 0, 0)
-        assert solution.node_solutions["child"].bounding_box == (Coord3D(0, 0, 0), Coord3D(0, 0, 0))
-
-    def test_placeholder_tree_solver_empty_node(self) -> None:
-        root = SolveTreeNode(node_id="empty", node_type="root", rooms=frozenset())
-        tree = SolveTree(root=root)
-        solution = PlaceholderTreeSolver().solve_tree(tree, LayoutOptions())
-        assert solution.node_solutions["empty"].local_coordinates == {}
-        assert solution.node_solutions["empty"].bounding_box is None
-
     def test_identity_layout_assembler(self) -> None:
         sol1 = NodeSolution(node_id="n1", local_coordinates={1: Coord3D(0, 0, 0), 2: Coord3D(1, 0, 0)})
         sol2 = NodeSolution(node_id="n2", local_coordinates={3: Coord3D(2, 0, 0)})
@@ -319,9 +286,9 @@ class TestLayoutEngine:
 
         assert isinstance(result, SolvedLayout)
         assert set(result.coordinates.keys()) == {100, 101}
-        assert result.coordinates[100] == Coord3D(0, 0, 0)
-        assert result.coordinates[101] == Coord3D(0, 0, 0)
-        assert result.diagnostics.status == SolverStatus.FEASIBLE
+        assert result.coordinates[100] != result.coordinates[101]
+        assert result.coordinates[101].y == result.coordinates[100].y + 1
+        assert result.diagnostics.status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE)
         assert result.diagnostics.duration_seconds >= 0.0
 
     def test_solver_empty_world_graph(self) -> None:
@@ -331,7 +298,7 @@ class TestLayoutEngine:
 
         assert isinstance(result, SolvedLayout)
         assert result.coordinates == {}
-        assert result.diagnostics.status == SolverStatus.FEASIBLE
+        assert result.diagnostics.status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE)
         assert result.diagnostics.duration_seconds >= 0.0
 
     def test_solver_custom_stage_injection_and_order(self) -> None:

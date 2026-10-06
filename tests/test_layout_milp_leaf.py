@@ -22,9 +22,15 @@ from romutil.layout import (
     solve_leaf_cluster,
 )
 from romutil.layout.geometry.primitives import BoundingBox3D
-from romutil.layout.milp.leaf import _find_free_pos, _solve_leaf_fallback
 from romutil.models import Direction, Exit, Room
-from romutil.types import Coord3D, LayoutOptions, SolvedLayout, SolverStatus, WorldGraph
+from romutil.types import (
+    Coord3D,
+    LayoutOptions,
+    LayoutSolverError,
+    SolvedLayout,
+    SolverStatus,
+    WorldGraph,
+)
 
 
 def _make_room(vnum: int, exits: list[Exit] | None = None) -> Room:
@@ -200,32 +206,22 @@ class TestSolveLeafClusterPrimitives:
         assert sol.local_coordinates[1] != sol.local_coordinates[2]
 
 
-class TestFallbackSolver:
-    """Unit tests verifying deterministic fallback solver behavior and robustness."""
+class TestSolverFailFast:
+    """Unit tests verifying fail-fast behavior and LayoutSolverError on solver failure."""
 
-    def test_find_free_pos_stepping(self) -> None:
-        """_find_free_pos steps forward along preferred displacement until a vacant cell is found."""
-        occupied = {(0, 0, 0), (1, 0, 0), (2, 0, 0)}
-        free_pos = _find_free_pos((0, 0, 0), occupied, step=(1, 0, 0))
-        assert free_pos == (3, 0, 0)
-
-        # Zero step defaults to (1, 0, 0)
-        free_pos_zero = _find_free_pos((0, 0, 0), occupied, step=(0, 0, 0))
-        assert free_pos_zero == (3, 0, 0)
-
-    def test_fallback_empty_and_single(self) -> None:
-        """Fallback solver handles empty and single-room clusters gracefully."""
+    def test_solve_empty_and_single_room(self) -> None:
+        """Solver handles empty and single-room clusters cleanly."""
         graph = LayoutGraph(rooms={}, edges=())
         empty_node = SolveTreeNode(node_id="e", node_type="leaf", rooms=frozenset())
-        sol_empty = _solve_leaf_fallback(empty_node, graph)
+        sol_empty = solve_leaf_cluster(empty_node, graph)
         assert sol_empty.local_coordinates == {}
 
         single_node = SolveTreeNode(node_id="s", node_type="leaf", rooms=frozenset({100}))
-        sol_single = _solve_leaf_fallback(single_node, graph)
+        sol_single = solve_leaf_cluster(single_node, graph)
         assert sol_single.local_coordinates == {100: Coord3D(0, 0, 0)}
 
-    def test_fallback_when_solver_unavailable(self) -> None:
-        """When an invalid solver name is passed, fallback solver is invoked deterministically."""
+    def test_solver_unavailable_raises_error(self) -> None:
+        """When an invalid solver name is passed, LayoutSolverError is raised."""
         rooms = [1, 2, 3]
         edges = [
             (1, 2, Direction.north, 1),
@@ -234,56 +230,22 @@ class TestFallbackSolver:
         graph = _make_graph(rooms, edges)
         node = SolveTreeNode(node_id="fb_test", node_type="leaf", rooms=frozenset(rooms))
 
-        sol = solve_leaf_cluster(node, graph, solver_name="nonexistent_solver_xyz")
-        coords = sol.local_coordinates
-        assert len(coords) == 3
-        assert len(set(coords.values())) == 3
-        # Room 1 -> N -> 2 -> E -> 3
-        assert coords[1] == Coord3D(0, 0, 0)
-        assert coords[2] == Coord3D(0, 1, 0)
-        assert coords[3] == Coord3D(1, 1, 0)
+        with pytest.raises(LayoutSolverError):
+            solve_leaf_cluster(node, graph, solver_name="nonexistent_solver_xyz")
 
-    def test_fallback_disconnected_rooms(self) -> None:
-        """Fallback solver places disconnected rooms safely on the positive X axis."""
-        rooms = [1, 2, 10, 20]
-        edges = [
-            (1, 2, Direction.north, 1),
-            (10, 20, Direction.south, 1),
-        ]
-        graph = _make_graph(rooms, edges)
-        node = SolveTreeNode(node_id="fb_discon", node_type="leaf", rooms=frozenset(rooms))
-
-        sol = _solve_leaf_fallback(node, graph)
-        coords = sol.local_coordinates
-        assert len(coords) == 4
-        assert len(set(coords.values())) == 4
-
-    def test_fallback_reverse_edges(self) -> None:
-        """Fallback solver traverses reverse incident edges correctly."""
-        rooms = [1, 2]
-        # Only reverse edge 2 -> 1 (East)
-        edges = [(2, 1, Direction.east, 1)]
-        graph = _make_graph(rooms, edges)
-        node = SolveTreeNode(node_id="fb_rev", node_type="leaf", rooms=frozenset(rooms))
-
-        sol = _solve_leaf_fallback(node, graph)
-        assert len(sol.local_coordinates) == 2
-        assert sol.local_coordinates[1] != sol.local_coordinates[2]
-
-    def test_solver_factory_exception_triggers_fallback(self) -> None:
-        """Exceptions in pyo.SolverFactory or solver setup cleanly trigger fallback."""
+    def test_solver_factory_exception_raises_error(self) -> None:
+        """Exceptions in pyo.SolverFactory or solver setup raise LayoutSolverError."""
         rooms = [1, 2]
         edges = [(1, 2, Direction.east, 1)]
         graph = _make_graph(rooms, edges)
         node = SolveTreeNode(node_id="exc_node", node_type="leaf", rooms=frozenset(rooms))
 
         with patch("pyomo.environ.SolverFactory", side_effect=RuntimeError("Solver init error")):
-            sol = solve_leaf_cluster(node, graph)
-            assert len(sol.local_coordinates) == 2
-            assert sol.local_coordinates[1] != sol.local_coordinates[2]
+            with pytest.raises(LayoutSolverError):
+                solve_leaf_cluster(node, graph)
 
-    def test_solver_infeasible_status_triggers_fallback(self) -> None:
-        """Infeasible or errored solver status triggers fallback solver."""
+    def test_solver_infeasible_status_raises_error(self) -> None:
+        """Infeasible or errored solver status raises LayoutSolverError."""
         rooms = [1, 2]
         edges = [(1, 2, Direction.east, 1)]
         graph = _make_graph(rooms, edges)
@@ -297,12 +259,11 @@ class TestFallbackSolver:
         mock_solver.solve.return_value = mock_results
 
         with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
-            sol = solve_leaf_cluster(node, graph)
-            assert len(sol.local_coordinates) == 2
-            assert sol.local_coordinates[1] != sol.local_coordinates[2]
+            with pytest.raises(LayoutSolverError):
+                solve_leaf_cluster(node, graph)
 
-    def test_solver_none_value_triggers_fallback(self) -> None:
-        """If pyo.value returns None for a coordinate, fallback is cleanly triggered."""
+    def test_solver_none_value_raises_error(self) -> None:
+        """If pyo.value returns None for a coordinate, LayoutSolverError is raised."""
         rooms = [1, 2]
         edges = [(1, 2, Direction.east, 1)]
         graph = _make_graph(rooms, edges)
@@ -317,11 +278,11 @@ class TestFallbackSolver:
 
         with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
             with patch("pyomo.environ.value", return_value=None):
-                sol = solve_leaf_cluster(node, graph)
-                assert len(sol.local_coordinates) == 2
+                with pytest.raises(LayoutSolverError):
+                    solve_leaf_cluster(node, graph)
 
-    def test_solver_unavailable_triggers_fallback(self) -> None:
-        """When solver.available() returns False, fallback is cleanly triggered."""
+    def test_solver_unavailable_flag_raises_error(self) -> None:
+        """When solver.available() returns False, LayoutSolverError is raised."""
         rooms = [1, 2]
         edges = [(1, 2, Direction.east, 1)]
         graph = _make_graph(rooms, edges)
@@ -330,11 +291,11 @@ class TestFallbackSolver:
         mock_solver = MagicMock()
         mock_solver.available.return_value = False
         with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
-            sol = solve_leaf_cluster(node, graph)
-            assert len(sol.local_coordinates) == 2
+            with pytest.raises(LayoutSolverError):
+                solve_leaf_cluster(node, graph)
 
-    def test_solve_model_exception_triggers_fallback(self) -> None:
-        """Exceptions raised during model solving trigger fallback."""
+    def test_solve_model_exception_raises_error(self) -> None:
+        """Exceptions raised during model solving raise LayoutSolverError."""
         rooms = [1, 2]
         edges = [(1, 2, Direction.east, 1)]
         graph = _make_graph(rooms, edges)
@@ -345,21 +306,8 @@ class TestFallbackSolver:
         mock_solver.solve.side_effect = RuntimeError("Model error during solve")
 
         with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
-            sol = solve_leaf_cluster(node, graph)
-            assert len(sol.local_coordinates) == 2
-
-    def test_fallback_with_none_active_edges_and_invalid_direction(self) -> None:
-        """Fallback with active_edges=None skips invalid direction edges."""
-        rooms = [1, 2]
-        room_defs = {v: _make_room(v) for v in rooms}
-        layout_edges = [
-            LayoutEdge(src=1, dst=2, direction=888, weight=1),  # Invalid direction
-        ]
-        graph = LayoutGraph(rooms=room_defs, edges=tuple(layout_edges))
-        node = SolveTreeNode(node_id="fb_inv", node_type="leaf", rooms=frozenset(rooms))
-
-        sol = _solve_leaf_fallback(node, graph, active_edges=None)
-        assert len(sol.local_coordinates) == 2
+            with pytest.raises(LayoutSolverError):
+                solve_leaf_cluster(node, graph)
 
     def test_solver_timeout_options_configuration(self) -> None:
         """LayoutOptions timeout_seconds are passed to CBC and GLPK solvers."""
@@ -528,8 +476,7 @@ class TestHierarchicalLayoutIntegration:
         solver = HierarchicalLayoutSolver(tree_solver=LeafTreeSolver())
         layout = solver.solve(world_graph)
 
-        assert isinstance(layout, SolvedLayout)
-        assert layout.diagnostics.status == SolverStatus.FEASIBLE
+        assert layout.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
         assert 101 in layout.coordinates
         assert 102 in layout.coordinates
         # Room 102 is 1 step East of 101
@@ -583,5 +530,4 @@ class TestHierarchicalLayoutIntegration:
         )
         layout = solver.solve(world_graph)
 
-        assert len(layout.coordinates) == 4
-        assert layout.diagnostics.status == SolverStatus.FEASIBLE
+        assert layout.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)

@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-from collections import deque
+from dataclasses import replace
 from typing import Any, Mapping, Sequence
 
 import pyomo.environ as pyo
 from pyomo.opt import SolverStatus as PyomoSolverStatus, TerminationCondition
 
-from romutil.layout.geometry import (
-    BoundingBox3D,
-    Segment3D,
-    point_in_segment_interior,
-    segment_box_penetration,
-)
+from romutil.layout.geometry import BoundingBox3D
 from romutil.layout.ir import (
     LayoutEdge,
     LayoutGraph,
@@ -23,12 +18,10 @@ from romutil.layout.ir import (
     TreeSolution,
 )
 from romutil.layout.milp.constraints import add_disjunctive_box_separation
-from romutil.layout.milp.leaf import solve_leaf_cluster
 from romutil.layout.protocols import TreeSolver
 from romutil.layout.simplification.warps import direction_to_displacement
 from romutil.models import Room
-from romutil.types import Coord3D, LayoutOptions
-
+from romutil.types import Coord3D, LayoutOptions, LayoutSolverError, SolverStatus
 
 
 def _get_child_bbox_corners(
@@ -41,299 +34,6 @@ def _get_child_bbox_corners(
         return (bbox.min_x, bbox.max_x, bbox.min_y, bbox.max_y, bbox.min_z, bbox.max_z)
     min_pt, max_pt = bbox
     return (min_pt.x, max_pt.x, min_pt.y, max_pt.y, min_pt.z, max_pt.z)
-
-
-def _boxes_intersect(
-    b1: tuple[int, int, int, int, int, int],
-    b2: tuple[int, int, int, int, int, int],
-) -> bool:
-    """Check if two axis-aligned 3D boxes intersect (closed boxes)."""
-    return not (
-        b1[1] < b2[0]
-        or b1[0] > b2[1]
-        or b1[3] < b2[2]
-        or b1[2] > b2[3]
-        or b1[5] < b2[4]
-        or b1[4] > b2[5]
-    )
-
-
-def _point_in_box_bounds(
-    pt: tuple[int, int, int],
-    box: tuple[int, int, int, int, int, int],
-) -> bool:
-    """Check if a 3D point is inside an axis-aligned bounding box."""
-    return (
-        box[0] <= pt[0] <= box[1]
-        and box[2] <= pt[1] <= box[3]
-        and box[4] <= pt[2] <= box[5]
-    )
-
-
-def _solve_parent_fallback(
-    node: SolveTreeNode,
-    child_solutions: Mapping[str, NodeSolution],
-    graph: LayoutGraph,
-) -> NodeSolution:
-    """Deterministic fallback placement for parent container and child macro-boxes."""
-    rooms = sorted(node.rooms)
-    children = list(node.children)
-
-    if not rooms and not children:
-        return NodeSolution(
-            node_id=node.node_id,
-            local_coordinates={},
-            bounding_box=None,
-            metadata={"child_offsets": {}},
-        )
-
-    # 1. Place parent rooms if present
-    parent_coords: dict[int, tuple[int, int, int]] = {}
-    if rooms:
-        room_set = set(rooms)
-        parent_edges: list[tuple[LayoutEdge, tuple[int, int, int]]] = []
-        for e in graph.edges:
-            if not e.cut and e.src in room_set and e.dst in room_set:
-                try:
-                    disp = direction_to_displacement(e.direction)
-                    parent_edges.append((e, disp))
-                except ValueError:
-                    continue
-
-        adj: dict[int, list[tuple[int, tuple[int, int, int], int, bool]]] = {u: [] for u in rooms}
-        for e, disp in parent_edges:
-            w = max(1, e.weight)
-            adj[e.src].append((e.dst, disp, w, False))
-            adj[e.dst].append((e.src, disp, w, True))
-
-        occupied_rooms: set[tuple[int, int, int]] = set()
-        for r in rooms:
-            if r in parent_coords:
-                continue
-            if not parent_coords:
-                curr_pos = (0, 0, 0)
-            else:
-                max_x = max(p[0] for p in occupied_rooms)
-                curr_pos = (max_x + 2, 0, 0)
-
-            parent_coords[r] = curr_pos
-            occupied_rooms.add(curr_pos)
-
-            queue: deque[int] = deque([r])
-            while queue:
-                curr = queue.popleft()
-                cx, cy, cz = parent_coords[curr]
-                for nbr, (dx, dy, dz), w, is_rev in adj[curr]:
-                    if nbr not in parent_coords:
-                        step_x, step_y, step_z = (-dx, -dy, -dz) if is_rev else (dx, dy, dz)
-                        cand = (cx + step_x * w, cy + step_y * w, cz + step_z * w)
-                        while cand in occupied_rooms:
-                            cand = (cand[0] + step_x, cand[1] + step_y, cand[2] + step_z)
-                        parent_coords[nbr] = cand
-                        occupied_rooms.add(cand)
-                        queue.append(nbr)
-
-    # 2. Place child macro-boxes
-    placed_boxes: list[tuple[str, tuple[int, int, int, int, int, int]]] = []
-    raw_child_offsets: dict[str, tuple[int, int, int]] = {}
-
-    cut_type = node.metadata.get("cut_type")
-    poles = tuple(node.metadata.get("poles", ()))
-
-    for child in children:
-        c_sol = child_solutions.get(child.node_id)
-        if c_sol is None:
-            raw_child_offsets[child.node_id] = (0, 0, 0)
-            continue
-
-        c_coords = c_sol.local_coordinates
-        c_bbox = _get_child_bbox_corners(c_sol.bounding_box)
-
-        step_dir = (1, 0, 0)
-        target_pos: tuple[int, int, int] | None = None
-
-        # Check 2-cut split pair alignment
-        if (
-            cut_type == "split_pair"
-            and len(poles) == 2
-            and all(p in parent_coords and p in c_coords for p in poles)
-        ):
-            p0 = poles[0]
-            target_pos = (
-                parent_coords[p0][0] - c_coords[p0].x,
-                parent_coords[p0][1] - c_coords[p0].y,
-                parent_coords[p0][2] - c_coords[p0].z,
-            )
-
-        # Check 1-cut articulation anchor alignment
-        if target_pos is None:
-            a = child.metadata.get("anchor_vnum")
-            if a is None:
-                common = set(parent_coords.keys()) & set(c_coords.keys())
-                if len(common) == 1:
-                    a = next(iter(common))
-            if a is not None and a in parent_coords and a in c_coords:
-                target_pos = (
-                    parent_coords[a][0] - c_coords[a].x,
-                    parent_coords[a][1] - c_coords[a].y,
-                    parent_coords[a][2] - c_coords[a].z,
-                )
-
-        doorway_info: tuple[int, int, tuple[int, int, int]] | None = None
-
-        # Check doorway / bridge edge alignment
-        if target_pos is None and parent_coords:
-            for edge in graph.edges:
-                if edge.cut:
-                    continue
-                if edge.src in parent_coords and edge.dst in c_coords:
-                    try:
-                        dx, dy, dz = direction_to_displacement(edge.direction)
-                        w = max(1, edge.weight)
-                        pu = parent_coords[edge.src]
-                        cv = c_coords[edge.dst]
-                        target_pos = (pu[0] + w * dx - cv.x, pu[1] + w * dy - cv.y, pu[2] + w * dz - cv.z)
-                        step_dir = (dx, dy, dz) if (dx, dy, dz) != (0, 0, 0) else (1, 0, 0)
-                        doorway_info = (edge.src, edge.dst, (dx, dy, dz))
-                        break
-                    except ValueError:
-                        pass
-                elif edge.dst in parent_coords and edge.src in c_coords:
-                    try:
-                        dx, dy, dz = direction_to_displacement(edge.direction)
-                        w = max(1, edge.weight)
-                        pu = parent_coords[edge.dst]
-                        cv = c_coords[edge.src]
-                        target_pos = (pu[0] - w * dx - cv.x, pu[1] - w * dy - cv.y, pu[2] - w * dz - cv.z)
-                        step_dir = (-dx, -dy, -dz) if (-dx, -dy, -dz) != (0, 0, 0) else (1, 0, 0)
-                        doorway_info = (edge.dst, edge.src, (-dx, -dy, -dz))
-                        break
-                    except ValueError:
-                        pass
-
-        # Unconnected child or parent with 0 rooms
-        if target_pos is None:
-            if not placed_boxes:
-                target_pos = (0, 0, 0)
-            else:
-                max_x = max(b[1] for _, b in placed_boxes)
-                c_min_x = c_bbox[0] if c_bbox else 0
-                target_pos = (max_x + 2 - c_min_x, 0, 0)
-
-        cx, cy, cz = target_pos
-
-        # Ensure macro-box separation and corridor clearance against already placed disjoint children
-        if c_bbox is not None:
-            curr_box = (
-                cx + c_bbox[0],
-                cx + c_bbox[1],
-                cy + c_bbox[2],
-                cy + c_bbox[3],
-                cz + c_bbox[4],
-                cz + c_bbox[5],
-            )
-            collided = True
-            step_count = 0
-            while collided:
-                collided = False
-                for prev_id, prev_box in placed_boxes:
-                    prev_sol = child_solutions.get(prev_id)
-                    prev_coords = prev_sol.local_coordinates if prev_sol else {}
-                    shared = set(c_coords.keys()) & set(prev_coords.keys())
-                    if not shared and _boxes_intersect(curr_box, prev_box):
-                        collided = True
-                        break
-
-                if not collided and doorway_info is not None:
-                    u_src, v_dst, _ = doorway_info
-                    pu = parent_coords[u_src]
-                    cv = c_coords[v_dst]
-                    pv = (cx + cv.x, cy + cv.y, cz + cv.z)
-                    seg = Segment3D(Coord3D(*pu), Coord3D(*pv))
-
-                    for pr, pr_pos in parent_coords.items():
-                        if pr != u_src and pr not in c_coords:
-                            if point_in_segment_interior(Coord3D(*pr_pos), seg):
-                                collided = True
-                                break
-
-                    if not collided:
-                        for prev_id, prev_box in placed_boxes:
-                            prev_sol = child_solutions.get(prev_id)
-                            prev_coords = prev_sol.local_coordinates if prev_sol else {}
-                            shared = set(c_coords.keys()) & set(prev_coords.keys())
-                            if not shared and u_src not in prev_coords:
-                                pbox = BoundingBox3D(
-                                    prev_box[0], prev_box[1], prev_box[2], prev_box[3], prev_box[4], prev_box[5]
-                                )
-                                if segment_box_penetration(seg, pbox):
-                                    collided = True
-                                    break
-
-                if collided:
-                    step_count += 1
-                    if step_count > 50:
-                        step_x = 0 if step_dir[0] != 0 else 1
-                        step_y = 1 if step_dir[1] == 0 else 0
-                        step_z = 0
-                    else:
-                        step_x = step_dir[0] if step_dir[0] != 0 else 1
-                        step_y = step_dir[1]
-                        step_z = step_dir[2]
-                    cx += step_x
-                    cy += step_y
-                    cz += step_z
-                    curr_box = (
-                        cx + c_bbox[0],
-                        cx + c_bbox[1],
-                        cy + c_bbox[2],
-                        cy + c_bbox[3],
-                        cz + c_bbox[4],
-                        cz + c_bbox[5],
-                    )
-            placed_boxes.append((child.node_id, curr_box))
-
-        raw_child_offsets[child.node_id] = (cx, cy, cz)
-
-    # 3. Normalization: shift all coordinates and offsets so min corner is (0, 0, 0)
-    all_pts: list[tuple[int, int, int]] = list(parent_coords.values())
-    for child in children:
-        c_id = child.node_id
-        cx, cy, cz = raw_child_offsets.get(c_id, (0, 0, 0))
-        c_sol = child_solutions.get(c_id)
-        c_bbox = _get_child_bbox_corners(c_sol.bounding_box) if c_sol else None
-        if c_bbox:
-            all_pts.append((cx + c_bbox[0], cy + c_bbox[2], cz + c_bbox[4]))
-            all_pts.append((cx + c_bbox[1], cy + c_bbox[3], cz + c_bbox[5]))
-        else:
-            all_pts.append((cx, cy, cz))
-
-    min_x = min(p[0] for p in all_pts)
-    min_y = min(p[1] for p in all_pts)
-    min_z = min(p[2] for p in all_pts)
-
-    norm_parent_coords = {
-        u: Coord3D(x - min_x, y - min_y, z - min_z)
-        for u, (x, y, z) in parent_coords.items()
-    }
-    norm_child_offsets = {
-        c_id: Coord3D(x - min_x, y - min_y, z - min_z)
-        for c_id, (x, y, z) in raw_child_offsets.items()
-    }
-
-    shifted_pts = [Coord3D(p[0] - min_x, p[1] - min_y, p[2] - min_z) for p in all_pts]
-    enc = BoundingBox3D.from_coordinates(shifted_pts)
-    parent_bbox = (
-        Coord3D(enc.min_x, enc.min_y, enc.min_z),
-        Coord3D(enc.max_x, enc.max_y, enc.max_z),
-    )
-
-    return NodeSolution(
-        node_id=node.node_id,
-        local_coordinates=norm_parent_coords,
-        bounding_box=parent_bbox,
-        metadata={"child_offsets": norm_child_offsets},
-    )
 
 
 def solve_parent_cluster(
@@ -366,21 +66,23 @@ def solve_parent_cluster(
             metadata={"child_offsets": {}},
         )
 
-    if not children:
-        sol = solve_leaf_cluster(node, graph, options, solver_name=solver_name)
+    if len(rooms) == 1 and not children:
+        r = rooms[0]
         return NodeSolution(
-            node_id=sol.node_id,
-            local_coordinates=sol.local_coordinates,
-            bounding_box=sol.bounding_box,
+            node_id=node.node_id,
+            local_coordinates={r: Coord3D(0, 0, 0)},
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
             metadata={"child_offsets": {}},
         )
 
     try:
         solver = pyo.SolverFactory(solver_name)
         if not solver.available():
-            return _solve_parent_fallback(node, child_solutions, graph)
-    except Exception:
-        return _solve_parent_fallback(node, child_solutions, graph)
+            raise LayoutSolverError(f"MILP solver '{solver_name}' is not available.")
+    except Exception as exc:
+        if isinstance(exc, LayoutSolverError):
+            raise
+        raise LayoutSolverError(f"Failed to initialize MILP solver '{solver_name}': {exc}") from exc
 
     try:
         model = pyo.ConcreteModel()
@@ -474,15 +176,45 @@ def solve_parent_cluster(
         aligned_children: set[str] = set()
 
         if is_split_pair:
-            for child in children:
-                c_sol = child_solutions.get(child.node_id)
-                if c_sol and all(p in c_sol.local_coordinates for p in poles):
-                    for p in poles:
-                        pc = c_sol.local_coordinates[p]
-                        model.align_x.add(model.x[p] == model.cx[child.node_id] + pc.x)
-                        model.align_y.add(model.y[p] == model.cy[child.node_id] + pc.y)
-                        model.align_z.add(model.z[p] == model.cz[child.node_id] + pc.z)
-                        gateway_anchors[child.node_id].add(p)
+            p0, p1 = poles[0], poles[1]
+            split_children = [
+                c
+                for c in children
+                if c.node_id in child_solutions
+                and p0 in child_solutions[c.node_id].local_coordinates
+                and p1 in child_solutions[c.node_id].local_coordinates
+            ]
+            if split_children:
+                def _span(c: SolveTreeNode) -> int:
+                    c_coords = child_solutions[c.node_id].local_coordinates
+                    c0, c1 = c_coords[p0], c_coords[p1]
+                    return abs(c1.x - c0.x) + abs(c1.y - c0.y) + abs(c1.z - c0.z)
+
+                primary_child = max(split_children, key=_span)
+                pc0_prim = child_solutions[primary_child.node_id].local_coordinates[p0]
+                pc1_prim = child_solutions[primary_child.node_id].local_coordinates[p1]
+                primary_disp = (
+                    pc1_prim.x - pc0_prim.x,
+                    pc1_prim.y - pc0_prim.y,
+                    pc1_prim.z - pc0_prim.z,
+                )
+
+                for child in split_children:
+                    c_sol = child_solutions[child.node_id]
+                    pc0 = c_sol.local_coordinates[p0]
+                    model.align_x.add(model.x[p0] == model.cx[child.node_id] + pc0.x)
+                    model.align_y.add(model.y[p0] == model.cy[child.node_id] + pc0.y)
+                    model.align_z.add(model.z[p0] == model.cz[child.node_id] + pc0.z)
+                    gateway_anchors[child.node_id].add(p0)
+
+                    pc1 = c_sol.local_coordinates[p1]
+                    child_disp = (pc1.x - pc0.x, pc1.y - pc0.y, pc1.z - pc0.z)
+                    if child_disp == primary_disp:
+                        model.align_x.add(model.x[p1] == model.cx[child.node_id] + pc1.x)
+                        model.align_y.add(model.y[p1] == model.cy[child.node_id] + pc1.y)
+                        model.align_z.add(model.z[p1] == model.cz[child.node_id] + pc1.z)
+                        gateway_anchors[child.node_id].add(p1)
+
                     aligned_children.add(child.node_id)
 
         # 1-cut articulation point alignment
@@ -843,25 +575,43 @@ def solve_parent_cluster(
         results = solver.solve(model, tee=False)
 
         valid_status = (
-            results.solver.status == PyomoSolverStatus.ok
-            and results.solver.termination_condition
-            in (
-                TerminationCondition.optimal,
-                TerminationCondition.feasible,
-                TerminationCondition.maxTimeLimit,
+            (
+                results.solver.status == PyomoSolverStatus.ok
+                and results.solver.termination_condition
+                in (
+                    TerminationCondition.optimal,
+                    TerminationCondition.feasible,
+                )
+            )
+            or (
+                results.solver.termination_condition
+                in (
+                    TerminationCondition.maxTimeLimit,
+                    TerminationCondition.intermediateNonInteger,
+                )
+                and results.solver.status
+                in (
+                    PyomoSolverStatus.ok,
+                    PyomoSolverStatus.aborted,
+                    PyomoSolverStatus.warning,
+                )
             )
         )
         if not valid_status:
-            return _solve_parent_fallback(node, child_solutions, graph)
+            raise LayoutSolverError(
+                f"MILP solver returned non-optimal status: {results.solver.status}, "
+                f"termination condition: {results.solver.termination_condition} for cluster '{node.node_id}'."
+            )
 
         raw_parent_coords: dict[int, tuple[int, int, int]] = {}
         for u in rooms:
             vx = pyo.value(model.x[u])
             vy = pyo.value(model.y[u])
             vz = pyo.value(model.z[u])
-            if None in (vx, vy, vz):
-                return _solve_parent_fallback(node, child_solutions, graph)
-            assert vx is not None and vy is not None and vz is not None
+            if vx is None or vy is None or vz is None:
+                raise LayoutSolverError(
+                    f"MILP solver failed to retrieve coordinate values for room {u} in cluster '{node.node_id}'."
+                )
             raw_parent_coords[u] = (int(round(vx)), int(round(vy)), int(round(vz)))
 
         raw_child_offsets: dict[str, tuple[int, int, int]] = {}
@@ -869,9 +619,10 @@ def solve_parent_cluster(
             vcx = pyo.value(model.cx[cid])
             vcy = pyo.value(model.cy[cid])
             vcz = pyo.value(model.cz[cid])
-            if None in (vcx, vcy, vcz):
-                return _solve_parent_fallback(node, child_solutions, graph)
-            assert vcx is not None and vcy is not None and vcz is not None
+            if vcx is None or vcy is None or vcz is None:
+                raise LayoutSolverError(
+                    f"MILP solver failed to retrieve offset values for child '{cid}' in cluster '{node.node_id}'."
+                )
             raw_child_offsets[cid] = (int(round(vcx)), int(round(vcy)), int(round(vcz)))
 
         # Normalization
@@ -907,14 +658,50 @@ def solve_parent_cluster(
             Coord3D(enc.max_x, enc.max_y, enc.max_z),
         )
 
+        solver_status = SolverStatus.FEASIBLE
+        if results.solver.termination_condition == TerminationCondition.optimal:
+            solver_status = SolverStatus.OPTIMAL
+        elif results.solver.termination_condition in (
+            TerminationCondition.maxTimeLimit,
+            TerminationCondition.intermediateNonInteger,
+        ):
+            solver_status = SolverStatus.TIMEOUT
+
         return NodeSolution(
             node_id=node.node_id,
             local_coordinates=norm_parent_coords,
             bounding_box=parent_bbox,
-            metadata={"child_offsets": norm_child_offsets},
+            metadata={"child_offsets": norm_child_offsets, "status": solver_status},
         )
-    except Exception:
-        return _solve_parent_fallback(node, child_solutions, graph)
+    except LayoutSolverError:
+        raise
+    except Exception as exc:
+        raise LayoutSolverError(
+            f"MILP solver failed for cluster '{node.node_id}': {exc}"
+        ) from exc
+
+
+class ParentClusterSolver:
+    """Solver for parent container clusters and leaf clusters via MILP."""
+
+    def __init__(self, solver_name: str = "cbc") -> None:
+        self.solver_name = solver_name
+
+    def solve(
+        self,
+        node: SolveTreeNode,
+        child_solutions: Mapping[str, NodeSolution],
+        graph: LayoutGraph,
+        options: LayoutOptions | None = None,
+    ) -> NodeSolution:
+        """Solve cluster layout non-overlapping coordinates and child offsets."""
+        return solve_parent_cluster(
+            node=node,
+            child_solutions=child_solutions,
+            graph=graph,
+            options=options,
+            solver_name=self.solver_name,
+        )
 
 
 class HierarchicalTreeSolver(TreeSolver):
@@ -954,39 +741,75 @@ class HierarchicalTreeSolver(TreeSolver):
 
         solutions: dict[str, NodeSolution] = {}
 
-        def _solve_node(node: SolveTreeNode) -> NodeSolution:
+        def _solve_node(node: SolveTreeNode, g: LayoutGraph) -> NodeSolution:
             if node.node_id in solutions:
                 return solutions[node.node_id]
-
-            if not node.children:
-                sol = solve_leaf_cluster(
-                    node,
-                    layout_graph,
-                    options,
-                    solver_name=self.solver_name,
-                )
-                solutions[node.node_id] = sol
-                return sol
 
             # Post-order traversal: solve all children first
             child_solutions_map: dict[str, NodeSolution] = {}
             for child in node.children:
-                child_sol = _solve_node(child)
+                child_sol = _solve_node(child, g)
                 child_solutions_map[child.node_id] = child_sol
+
+            cut_type = node.metadata.get("cut_type")
+            poles = tuple(node.metadata.get("poles", ()))
+            if cut_type == "split_pair" and len(poles) == 2:
+                p0, p1 = poles[0], poles[1]
+                split_children = [
+                    c
+                    for c in node.children
+                    if p0 in child_solutions_map[c.node_id].local_coordinates
+                    and p1 in child_solutions_map[c.node_id].local_coordinates
+                ]
+                if len(split_children) > 1:
+                    max_dx = max(
+                        abs(child_solutions_map[c.node_id].local_coordinates[p1].x - child_solutions_map[c.node_id].local_coordinates[p0].x)
+                        for c in split_children
+                    )
+                    max_dy = max(
+                        abs(child_solutions_map[c.node_id].local_coordinates[p1].y - child_solutions_map[c.node_id].local_coordinates[p0].y)
+                        for c in split_children
+                    )
+                    max_dz = max(
+                        abs(child_solutions_map[c.node_id].local_coordinates[p1].z - child_solutions_map[c.node_id].local_coordinates[p0].z)
+                        for c in split_children
+                    )
+                    max_span = max(1, max_dx, max_dy, max_dz)
+                    for c in split_children:
+                        c_sol = child_solutions_map[c.node_id]
+                        cur_span = max(
+                            abs(c_sol.local_coordinates[p1].x - c_sol.local_coordinates[p0].x),
+                            abs(c_sol.local_coordinates[p1].y - c_sol.local_coordinates[p0].y),
+                            abs(c_sol.local_coordinates[p1].z - c_sol.local_coordinates[p0].z),
+                        )
+                        if cur_span < max_span:
+                            new_edges = [
+                                replace(e, weight=max_span) if {e.src, e.dst} == {p0, p1} else e
+                                for e in g.edges
+                            ]
+                            g_sub = replace(g, edges=tuple(new_edges))
+
+                            def _clear_subtree(sub_n: SolveTreeNode) -> None:
+                                solutions.pop(sub_n.node_id, None)
+                                for sub_c in sub_n.children:
+                                    _clear_subtree(sub_c)
+
+                            _clear_subtree(c)
+                            child_solutions_map[c.node_id] = _solve_node(c, g_sub)
 
             parent_sol = solve_parent_cluster(
                 node,
                 child_solutions_map,
-                layout_graph,
+                g,
                 options,
                 solver_name=self.solver_name,
             )
             solutions[node.node_id] = parent_sol
             return parent_sol
 
-        _solve_node(tree.root)
+        _solve_node(tree.root, layout_graph)
         for comp in tree.components:
             if comp.node_id not in solutions:
-                _solve_node(comp)
+                _solve_node(comp, layout_graph)
 
         return TreeSolution(node_solutions=solutions)
