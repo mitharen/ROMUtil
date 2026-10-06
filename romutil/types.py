@@ -42,7 +42,11 @@ class SolvedLayout:
     """Solved 3D spatial layout associating room vnums to Coord3D positions."""
 
     coordinates: Mapping[int, Coord3D]
-    diagnostics: LayoutDiagnostics
+    diagnostics: LayoutDiagnostics = field(
+        default_factory=lambda: LayoutDiagnostics(
+            status=SolverStatus.OPTIMAL, duration_seconds=0.0
+        )
+    )
 
 
 @dataclass(frozen=True)

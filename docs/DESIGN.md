@@ -88,8 +88,6 @@ ROMUtil/
 ├── romutil/                     # Core Python package
 │   ├── __init__.py              # Package public API exports
 │   ├── cli.py                   # Unified CLI entry point & multi-format pipeline runner
-│   ├── decomposition.py         # Multi-area macro-assembly & cavity reservation
-│   ├── graph.py                 # Graph utility routines and legacy transformations
 │   ├── interfaces.py            # Formal abstract protocols (BaseParser, BaseLayoutSolver, BaseRenderer)
 │   ├── layout/                  # Hierarchical 5-stage layout solving engine
 │   │   ├── __init__.py          # Layout subsystem exports and production factory
@@ -110,15 +108,14 @@ ROMUtil/
 │   │   └── simplification/      # Stage 2 graph reduction routines
 │   │       ├── hallways.py      # HallwayCompactor (degree-2 corridor compression)
 │   │       └── warps.py         # WarpSeverer (non-Euclidean cycle chord identification)
-│   ├── models.py                # Direction, Room, Exit, and AST domain models
+│   ├── models.py                # Direction, RoomDef, ExitDef, and AST domain models
 │   ├── parser.py                # PLY Lexer & LALR Parser with resilient dialect normalization
 │   ├── renderers/               # Decoupled map rendering subsystem
 │   │   ├── __init__.py          # RENDERERS registry, get_renderer, and render_map dispatcher
-│   │   ├── base.py              # BaseRenderer protocol & adapt_legacy_rdb adapter
+│   │   ├── base.py              # BaseRenderer formal protocol
 │   │   ├── html.py              # Standalone interactive HTML/JS map viewer renderer
 │   │   ├── json.py              # Structured JSON map data renderer & serializer
 │   │   └── svg.py               # Oblique isometric SVG vector map renderer
-│   ├── solver.py                # Legacy single-stage Pyomo MILP optimization
 │   ├── templates/               # Embedded web application assets
 │   │   ├── __init__.py
 │   │   └── viewer.html          # Standalone HTML/JS map viewer template

@@ -6,14 +6,12 @@ from romutil.models import (
     AreaData,
     AreaHeader,
     Direction,
-    Exit,
     ExitDef,
     ExtraDescr,
     HelpDef,
     MobileDef,
     ObjectDef,
     ResetDef,
-    Room,
     RoomDef,
     ShopDef,
     SocialDef,
@@ -239,70 +237,7 @@ class TestTypedDataClasses:
         with pytest.raises(TypeError):
             _ = iter(area)  # type: ignore
 
-    def test_room_and_exit_models_compatibility(self):
-        # Room from RoomDef
-        e_def = ExitDef(direction=1, dst_vnum=2)
-        r_def = RoomDef(vnum=1, name="Room 1", description="Desc 1", exits=(e_def,))
-        room = Room(r_def)
-        assert room.vnum == 1
-        assert room.name == "Room 1"
-        assert room.description == "Desc 1"
-        assert room.desc == "Desc 1"
-        # Test backward-compatible desc property setter
-        room.desc = "Updated Desc"
-        assert room.description == "Updated Desc"
-        assert room.desc == "Updated Desc"
-        room.description = "Desc 1"
-        assert len(room.exits) == 1
-        assert room.exits[0].dst == 2
-        assert room.exits[0].direction == Direction.east
-
-        # Room from another Room
-        room_copy = Room(room)
-        assert room_copy.vnum == 1
-        assert room_copy.name == "Room 1"
-        assert room_copy.description == "Desc 1"
-        assert room_copy.desc == "Desc 1"
-
-        # Room from keyword arguments (testing both desc and description kwargs)
-        room_kwargs = Room(
-            vnum=99,
-            name="Custom",
-            desc="Custom Desc",
-            exits=[ExitDef(direction=0, dst_vnum=100)],
-        )
-        assert room_kwargs.vnum == 99
-        assert room_kwargs.name == "Custom"
-        assert room_kwargs.description == "Custom Desc"
-        assert room_kwargs.desc == "Custom Desc"
-        assert len(room_kwargs.exits) == 1
-        assert room_kwargs.exits[0].dst == 100
-
-        room_desc_kw = Room(
-            vnum=101,
-            name="Canonical Desc Room",
-            description="Explicit Description",
-        )
-        assert room_desc_kw.description == "Explicit Description"
-        assert room_desc_kw.desc == "Explicit Description"
-
-        # Exit from Exit
-        exit_orig = room.exits[0]
-        exit_copy = Exit(exit_orig, source=1)
-        assert exit_copy.dst == 2
-        assert exit_copy.direction == Direction.east
-
-        # Exit from keyword arguments (with Direction enum and int direction)
-        exit_kwargs = Exit(dst=50, direction=Direction.west, source=1)
-        assert exit_kwargs.dst == 50
-        assert exit_kwargs.direction == Direction.west
-
-        exit_int_dir = Exit(dst=50, direction=3, source=1)
-        assert exit_int_dir.direction == Direction.west
-        assert exit_kwargs == exit_int_dir
-        assert exit_kwargs != "not an exit"
-
-        # All 10 standard Diku/ROM directions mapping
+    def test_direction_model_invariants(self):
         expected_dirs = [
             (0, Direction.north),
             (1, Direction.east),
@@ -315,40 +250,21 @@ class TestTypedDataClasses:
             (8, Direction.southeast),
             (9, Direction.southwest),
         ]
-        for dir_val, expected_enum in expected_dirs:
-            assert Direction(dir_val) == expected_enum
-            e_test = Exit(dst=200, direction=dir_val, source=1)
-            assert e_test.direction == expected_enum
-            e_def_test = Exit(ExitDef(direction=dir_val, dst_vnum=200), source=1)
-            assert e_def_test.direction == expected_enum
+        assert len(Direction) == 10
+        for val, enum_member in expected_dirs:
+            assert Direction(val) == enum_member
+            assert enum_member.invert().invert() == enum_member
 
-        # Exit distance copy
-        exit_dist2 = Exit(ExitDef(direction=0, dst_vnum=2), source=1, distance=3)
-        exit_dist2_copy = Exit(exit_dist2, source=1)
-        assert exit_dist2_copy.distance == 3
-
-        # Room with pre-constructed Exit instances
-        room_with_exits = Room(vnum=1, exits=[exit_kwargs])
-        assert len(room_with_exits.exits) == 1
-        assert room_with_exits.exits[0] == exit_kwargs
-
-        # Strict error checks: passing tuples or untyped objects must raise TypeError
-        with pytest.raises(TypeError):
-            Room((100, "Temple", "A grand temple.", []))  # type: ignore
-        with pytest.raises(TypeError):
-            Room("invalid")  # type: ignore
-        with pytest.raises(TypeError):
-            Room()  # missing vnum or RoomDef
-        with pytest.raises(TypeError):
-            Room(vnum=1, exits=["not an exit"])  # type: ignore
-        with pytest.raises(TypeError):
-            Exit((0, 101), source=100)  # type: ignore
-        with pytest.raises(TypeError):
-            Exit("invalid", source=100)  # type: ignore
-        with pytest.raises(TypeError):
-            Exit(source=100)  # missing ExitDef, Exit, or dst/direction
-        with pytest.raises(ValueError):
-            Exit(ExitDef(direction=0, dst_vnum=101))  # missing source
+        assert Direction.north.invert() == Direction.south
+        assert Direction.south.invert() == Direction.north
+        assert Direction.east.invert() == Direction.west
+        assert Direction.west.invert() == Direction.east
+        assert Direction.up.invert() == Direction.down
+        assert Direction.down.invert() == Direction.up
+        assert Direction.northeast.invert() == Direction.southwest
+        assert Direction.southwest.invert() == Direction.northeast
+        assert Direction.northwest.invert() == Direction.southeast
+        assert Direction.southeast.invert() == Direction.northwest
 
     def test_parser_returns_strongly_typed_ast(self):
         """Acceptance Criteria: Parser().parse() returns an AreaData instance with isinstance(r, RoomDef) for all rooms."""

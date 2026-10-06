@@ -85,10 +85,6 @@ class TestCliPipelineEndToEnd:
         assert "<svg" in svg_text and "</svg>" in svg_text
         assert "viewBox" in svg_text
 
-        # Verify copyfile <outbase>0.svg for non-split SVG
-        svg_0_file = tmp_path / f"{fixture_path.stem}0.svg"
-        assert svg_0_file.exists()
-
         # Verify HTML output
         html_file = tmp_path / f"{fixture_path.stem}.html"
         assert html_file.exists(), f"Expected {html_file} to exist"

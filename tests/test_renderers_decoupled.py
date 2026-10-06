@@ -7,13 +7,12 @@ from pathlib import Path
 import pytest
 
 from romutil.interfaces import BaseRenderer as InterfaceBaseRenderer
-from romutil.models import AreaHeader, Direction, Exit, ExitDef, Room, RoomDef
+from romutil.models import AreaHeader, Direction, ExitDef, RoomDef
 from romutil.renderers import (
     BaseRenderer,
     HTMLRenderer,
     JSONRenderer,
     SVGRenderer,
-    adapt_legacy_rdb,
     build_area_json,
     get_renderer,
     render_map,
@@ -470,68 +469,6 @@ class TestEdgeCasesAndAdaptLegacyRdb:
         assert out.exists()
         assert "Lone Room" in out.read_text(encoding="utf-8")
 
-    def test_adapt_legacy_rdb_filters_dummies_and_handles_headers(self):
-        r1 = Room(RoomDef(vnum=10, name="Real Room", description="Valid"))
-        r1.x, r1.y, r1.z = 1, 2, 3
-        dummy = Room(RoomDef(vnum=99, name="Dummy Room", description="Warp"))
-        dummy.dummy = True
-
-        # Header as tuple ("legacy.are", "Legacy Area")
-        header_tuple = ("legacy.are", "Legacy Area")
-        graph, layout = adapt_legacy_rdb([r1, dummy], header=header_tuple)
-
-        assert len(graph.rooms) == 1
-        assert 10 in graph.rooms
-        assert 99 not in graph.rooms
-        assert layout.coordinates[10] == Coord3D(x=1, y=2, z=3)
-        assert graph.header is not None
-        assert graph.header.filename == "legacy.are"
-        assert graph.header.name == "Legacy Area"
-
-    def test_adapt_legacy_rdb_none_and_invalid_inputs(self):
-        graph, layout = adapt_legacy_rdb(None, header=None)  # type: ignore
-        assert graph.rooms == {}
-        assert layout.coordinates == {}
-        assert graph.header is None
-
-    def test_adapt_legacy_rdb_duck_typed_header_and_unplaced_rooms(self):
-        class MockHeader:
-            filename = "duck.are"
-            name = "Duck World"
-            builder = "Donald"
-            vnum_min = 1
-            vnum_max = 5
-
-        r_placed = Room(RoomDef(vnum=1, name="Placed", description=""))
-        r_placed.x, r_placed.y, r_placed.z = 0, 0, 0
-
-        r_unplaced = Room(RoomDef(vnum=2, name="Unplaced", description=""))
-        # x, y, z are None
-
-        graph, layout = adapt_legacy_rdb({1: r_placed, 2: r_unplaced}, header=MockHeader())
-        assert len(graph.rooms) == 2
-        assert len(layout.coordinates) == 1
-        assert 1 in layout.coordinates
-        assert 2 not in layout.coordinates
-        assert graph.header is not None
-        assert graph.header.name == "Duck World"
-
-    def test_svg_legacy_keyword_and_positional_constructors(self, tmp_path):
-        r = Room(RoomDef(vnum=1, name="Room", description=""))
-        r.x, r.y, r.z = 0, 0, 0
-        rdb = {1: r}
-
-        # Keyword rdb
-        renderer_kw = SVGRenderer(rdb=rdb)
-        assert 1 in renderer_kw.graph.rooms
-        assert 1 in renderer_kw.layout.coordinates
-
-        # Positional with integer target_z in options slot
-        renderer_pos = SVGRenderer(str(tmp_path / "pos.svg"), rdb, None, 0)
-        assert renderer_pos.target_z == 0
-        renderer_pos.plot()
-        assert (tmp_path / "pos.svg").exists()
-
     def test_json_and_svg_exits_with_target_vnum_and_custom_attributes(self, tmp_path):
         class MockExit:
             def __init__(self):
@@ -557,9 +494,7 @@ class TestEdgeCasesAndAdaptLegacyRdb:
         assert ex0["distance"] == 5
         assert ex0["one_way"] is True
 
-        # Test render_map with 3rd positional format string
-        r = Room(RoomDef(vnum=1, name="R", description=""))
-        r.x, r.y, r.z = 0, 0, 0
-        map_out = tmp_path / "map_pos_fmt"
-        render_map({1: r}, map_out, "json")
+        # Test render_map with format string
+        map_out = tmp_path / "map_pos_fmt.json"
+        render_map(graph, layout, map_out, fmt="json")
         assert map_out.exists()

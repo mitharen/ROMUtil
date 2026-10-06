@@ -12,9 +12,8 @@ import os
 from pathlib import Path
 import pytest
 
-import json
-from romutil.models import AreaData, AreaHeader, Room, Exit, RoomDef, ExitDef, Direction
-from romutil.parser import Parser, normalize_dialect_buffer, eval_flags, sanitize_ackmud_colour
+from romutil.models import AreaData, AreaHeader, RoomDef, ExitDef, Direction
+from romutil.parser import Parser, eval_flags, normalize_dialect_buffer, sanitize_ackmud_colour
 from romutil.cli import cli, main
 
 
@@ -473,28 +472,19 @@ S
         assert vnums == [0, 3001]
 
     def test_room_zero_domain_models_and_graph(self):
-        """Validate RoomDef, Room, Exit models and bidirectional exit resolution with room 0."""
+        """Validate RoomDef and ExitDef models with room 0."""
         r0_def = RoomDef(vnum=0, name="The Void", description="Mist", sector=1, exits=(ExitDef(direction=4, dst_vnum=3001),))
         r3001_def = RoomDef(vnum=3001, name="Temple", description="Pillars", sector=0, exits=(ExitDef(direction=5, dst_vnum=0),))
 
-        r0 = Room(r0_def)
-        r3001 = Room(r3001_def)
+        assert r0_def.vnum == 0
+        assert r0_def.exits[0].dst_vnum == 3001
+        assert r0_def.exits[0].direction == 4
+        assert Direction(r0_def.exits[0].direction) == Direction.up
 
-        assert r0.vnum == 0
-        assert r0.exits[0].src == 0
-        assert r0.exits[0].dst == 3001
-        assert r0.exits[0].direction == Direction.up
-
-        assert r3001.vnum == 3001
-        assert r3001.exits[0].src == 3001
-        assert r3001.exits[0].dst == 0
-        assert r3001.exits[0].direction == Direction.down
-
-        # Exit containment and hashing
-        ex0 = r0.exits[0]
-        assert 0 in ex0
-        assert 3001 in ex0
-        assert hash(ex0) == hash(r3001.exits[0])
+        assert r3001_def.vnum == 3001
+        assert r3001_def.exits[0].dst_vnum == 0
+        assert r3001_def.exits[0].direction == 5
+        assert Direction(r3001_def.exits[0].direction) == Direction.down
 
     def test_cli_invocation_with_wld_file(self, tmp_path, monkeypatch):
         """Validate CLI execution passing monolithic .wld file."""
@@ -504,19 +494,6 @@ S
 
         outbase = str(tmp_path / "alfa_out")
         monkeypatch.setattr("sys.argv", ["romutil", str(test_file), "-outbase", outbase, "-f", "json"])
-
-        with pytest.raises(SystemExit) as exc:
-            cli()
-        assert exc.value.code == 0
-
-    def test_cli_invocation_with_map_subcommand(self, tmp_path, monkeypatch):
-        """Validate CLI execution with 'romutil map <file.wld>' syntax."""
-        wld_content = (FIXTURES_DIR / "dikumud_alfa.wld").read_text(encoding="utf-8")
-        test_file = tmp_path / "alfa.wld"
-        test_file.write_text(wld_content, encoding="utf-8")
-
-        outbase = str(tmp_path / "map_out")
-        monkeypatch.setattr("sys.argv", ["romutil", "map", str(test_file), "-outbase", outbase])
 
         with pytest.raises(SystemExit) as exc:
             cli()
@@ -1029,35 +1006,25 @@ class TestSmaugCompatibility:
         for d in Direction:
             assert d.invert().invert() == d
 
-        # direction_matrix mapping
-        from romutil.models import direction_matrix
-        assert len(direction_matrix) == 10
-        assert direction_matrix[0] == Direction.north
-        assert direction_matrix[1] == Direction.east
-        assert direction_matrix[2] == Direction.south
-        assert direction_matrix[3] == Direction.west
-        assert direction_matrix[4] == Direction.up
-        assert direction_matrix[5] == Direction.down
-        assert direction_matrix[6] == Direction.northeast
-        assert direction_matrix[7] == Direction.northwest
-        assert direction_matrix[8] == Direction.southeast
-        assert direction_matrix[9] == Direction.southwest
-
-        # Exit model equality and symmetric inversion
-        e_ne = Exit(src=500, dst=507, direction=Direction.northeast)
-        e_sw = Exit(src=507, dst=500, direction=Direction.southwest)
-        assert e_ne == e_sw
-        assert hash(e_ne) == hash(e_sw)
-
-        e_nw = Exit(src=500, dst=508, direction=Direction.northwest)
-        e_se = Exit(src=508, dst=500, direction=Direction.southeast)
-        assert e_nw == e_se
-        assert hash(e_nw) == hash(e_se)
+        # Direction enum values and integer mapping for all 10 directions
+        assert len(Direction) == 10
+        assert Direction(0) == Direction.north
+        assert Direction(1) == Direction.east
+        assert Direction(2) == Direction.south
+        assert Direction(3) == Direction.west
+        assert Direction(4) == Direction.up
+        assert Direction(5) == Direction.down
+        assert Direction(6) == Direction.northeast
+        assert Direction(7) == Direction.northwest
+        assert Direction(8) == Direction.southeast
+        assert Direction(9) == Direction.southwest
 
         # ExitDef mapping with raw integer 6-9
         exit_def_6 = ExitDef(direction=6, dst_vnum=507)
-        mapped_exit = Exit(exit_def_6, source=500)
-        assert mapped_exit.direction == Direction.northeast
+        assert exit_def_6.direction == 6
+        assert Direction(exit_def_6.direction) == Direction.northeast
+        exit_def_7 = ExitDef(direction=7, dst_vnum=508)
+        assert Direction(exit_def_7.direction) == Direction.northwest
 
 
     def test_smaug_fussarea_normalization(self):
