@@ -17,10 +17,12 @@ from romutil.layout.ir import (
     SolveTreeNode,
     TreeSolution,
 )
+from romutil.layout.milp.constraints import add_disjunctive_box_separation
 from romutil.layout.protocols import TreeSolver
 from romutil.layout.simplification.warps import direction_to_displacement
 from romutil.models import Room
 from romutil.types import Coord3D, LayoutOptions
+
 
 
 def _find_free_pos(
@@ -208,43 +210,15 @@ def solve_leaf_cluster(
             for j in range(i + 1, len(rooms))
         ]
 
-        model.b_l = pyo.Var(pairs, domain=pyo.Binary)
-        model.b_r = pyo.Var(pairs, domain=pyo.Binary)
-        model.b_b = pyo.Var(pairs, domain=pyo.Binary)
-        model.b_a = pyo.Var(pairs, domain=pyo.Binary)
-        model.b_d = pyo.Var(pairs, domain=pyo.Binary)
-        model.b_u = pyo.Var(pairs, domain=pyo.Binary)
+        add_disjunctive_box_separation(
+            model=model,
+            pairs=pairs,
+            get_box_a=lambda u: (model.x[u], model.x[u], model.y[u], model.y[u], model.z[u], model.z[u]),
+            get_box_b=lambda v: (model.x[v], model.x[v], model.y[v], model.y[v], model.z[v], model.z[v]),
+            prefix="sep",
+            m_big=m_big,
+        )
 
-        model.sep_sum = pyo.ConstraintList()
-        model.sep_r = pyo.ConstraintList()
-        model.sep_l = pyo.ConstraintList()
-        model.sep_a = pyo.ConstraintList()
-        model.sep_b = pyo.ConstraintList()
-        model.sep_u = pyo.ConstraintList()
-        model.sep_d = pyo.ConstraintList()
-
-        for u, v in pairs:
-            model.sep_sum.add(
-                model.b_l[u, v]
-                + model.b_r[u, v]
-                + model.b_b[u, v]
-                + model.b_a[u, v]
-                + model.b_d[u, v]
-                + model.b_u[u, v]
-                >= 1
-            )
-            # Right: xu - xv >= 1
-            model.sep_r.add(model.x[u] - model.x[v] >= 1 - 2 * m_big * (1 - model.b_r[u, v]))
-            # Left: xv - xu >= 1
-            model.sep_l.add(model.x[v] - model.x[u] >= 1 - 2 * m_big * (1 - model.b_l[u, v]))
-            # Ahead/North: yu - yv >= 1
-            model.sep_a.add(model.y[u] - model.y[v] >= 1 - 2 * m_big * (1 - model.b_a[u, v]))
-            # Behind/South: yv - yu >= 1
-            model.sep_b.add(model.y[v] - model.y[u] >= 1 - 2 * m_big * (1 - model.b_b[u, v]))
-            # Up: zu - zv >= 1
-            model.sep_u.add(model.z[u] - model.z[v] >= 1 - 2 * m_big * (1 - model.b_u[u, v]))
-            # Down: zv - zu >= 1
-            model.sep_d.add(model.z[v] - model.z[u] >= 1 - 2 * m_big * (1 - model.b_d[u, v]))
 
         # Bounding box variables and constraints
         model.x_min = pyo.Var(domain=pyo.Integers, bounds=(-m_coord, m_coord))
