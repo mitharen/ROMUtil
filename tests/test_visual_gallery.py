@@ -376,7 +376,7 @@ class TestGalleryAssetsGeneration:
         assert any(9400 <= v <= 9499 for v in room_vnums), "Mob Factory rooms missing"
 
     def test_composite_viewer_multi_area_provenance_and_inspector(self, tmp_path):
-        """Verify multi-area provenance serialization, zone controls, and inspector attribution (Task 10c)."""
+        """Verify multi-area provenance serialization, zone controls, and inspector attribution."""
         from scripts.build_pages import render_area
 
         grave_path = REPO_ROOT / "tests" / "fixtures" / "areas" / "grave.are"
@@ -687,7 +687,7 @@ class TestHtmlAssetIntegrity:
             validate_html_viewer_file(html_file)
 
     def test_html_viewer_interactive_ux_enhancements(self, sample_gallery_artifacts):
-        """Verify multi-floor controls, collapsible sidebar, and minimap drag navigation (Task 9h)."""
+        """Verify multi-floor controls, collapsible sidebar, and minimap drag navigation."""
         html_files = list(sample_gallery_artifacts.glob("*.html"))
         assert len(html_files) >= 1
         for html_file in html_files:
@@ -720,7 +720,7 @@ class TestHtmlAssetIntegrity:
             assert "cursor: grab;" in content
             assert "cursor: grabbing;" in content
 
-            # 4. Mobile touch navigation & pinch-to-zoom (Task 9i)
+            # 4. Mobile touch navigation & pinch-to-zoom
             assert "touch-action: none;" in content
             assert "#map-container" in content
             assert "mapContainer.addEventListener('touchstart'" in content
