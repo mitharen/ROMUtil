@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Collection, Mapping, Sequence
 
-from romutil.models import RoomDef
+from romutil.models import Room
 from romutil.types import Coord3D, WorldGraph
 
 
@@ -25,7 +25,7 @@ class LayoutEdge:
 class LayoutGraph:
     """Internal graph representation of room topologies and layout edges."""
 
-    rooms: Mapping[int, RoomDef]
+    rooms: Mapping[int, Room]
     edges: Sequence[LayoutEdge]
 
     def __post_init__(self) -> None:

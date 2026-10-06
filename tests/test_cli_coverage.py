@@ -10,8 +10,8 @@ from romutil.models import (
     AreaData,
     AreaHeader,
     Direction,
-    ExitDef,
-    RoomDef,
+    Exit,
+    Room,
     merge_areas,
 )
 from romutil.renderers import RENDERERS
@@ -114,7 +114,7 @@ class TestCliCoverage:
                 main([], out, circle_dir=circle_dir)
 
     def test_main_fallback_area_header(self, tmp_path):
-        r1 = RoomDef(vnum=5, name="R5", description="Desc")
+        r1 = Room(vnum=5, name="R5", description="Desc")
         area_no_hdr = AreaData(header=None, rooms=(r1,))
         synth = tmp_path / "synthetic.are"
         synth.write_text("dummy", encoding="latin-1")
@@ -206,7 +206,7 @@ class TestModelEdgeCases:
         assert len(empty_merged.rooms) == 0
 
         # Single area with custom title
-        r1 = RoomDef(vnum=1, name="R1", description="D")
+        r1 = Room(vnum=1, name="R1", description="D")
         hdr = AreaHeader(filename="a.are", name="Orig", builder="B", vnum_min=1, vnum_max=1)
         area = AreaData(header=hdr, rooms=(r1,))
 

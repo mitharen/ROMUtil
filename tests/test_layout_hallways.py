@@ -22,7 +22,7 @@ from romutil.layout import (
     TrivialTreeBuilder,
     expand_corridor_coordinates,
 )
-from romutil.models import AreaHeader, ExitDef, RoomDef
+from romutil.models import AreaHeader, Exit, Room
 from romutil.types import (
     Coord3D,
     LayoutOptions,
@@ -36,15 +36,15 @@ def _make_bidirectional_corridor(
     vnums: list[int],
     direction_forward: int = 0,
     direction_backward: int = 2,
-) -> tuple[dict[int, RoomDef], list[LayoutEdge]]:
+) -> tuple[dict[int, Room], list[LayoutEdge]]:
     """Helper to construct bidirectional linear chain of rooms."""
-    rooms: dict[int, RoomDef] = {}
+    rooms: dict[int, Room] = {}
     edges: list[LayoutEdge] = []
 
     for i, vnum in enumerate(vnums):
-        exits: list[ExitDef] = []
+        exits: list[Exit] = []
         if i > 0:
-            exits.append(ExitDef(direction=direction_backward, dst_vnum=vnums[i - 1]))
+            exits.append(Exit(direction=direction_backward, dst_vnum=vnums[i - 1]))
             edges.append(
                 LayoutEdge(
                     src=vnum,
@@ -54,7 +54,7 @@ def _make_bidirectional_corridor(
                 )
             )
         if i < len(vnums) - 1:
-            exits.append(ExitDef(direction=direction_forward, dst_vnum=vnums[i + 1]))
+            exits.append(Exit(direction=direction_forward, dst_vnum=vnums[i + 1]))
             edges.append(
                 LayoutEdge(
                     src=vnum,
@@ -63,7 +63,7 @@ def _make_bidirectional_corridor(
                     weight=1,
                 )
             )
-        rooms[vnum] = RoomDef(vnum=vnum, name=f"Room {vnum}", description="", exits=tuple(exits))
+        rooms[vnum] = Room(vnum=vnum, name=f"Room {vnum}", description="", exits=tuple(exits))
 
     return rooms, edges
 
@@ -154,17 +154,17 @@ class TestHallwayCompactor:
     def test_corners_are_preserved(self) -> None:
         """Room 2 turning from North to East must NOT be compacted."""
         # 1 <-> 2 North/South, 2 <-> 3 East/West
-        r1 = RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=0, dst_vnum=2),))
-        r2 = RoomDef(
+        r1 = Room(vnum=1, name="R1", description="", exits=(Exit(direction=0, dst_vnum=2),))
+        r2 = Room(
             vnum=2,
             name="R2 Corner",
             description="",
             exits=(
-                ExitDef(direction=2, dst_vnum=1),
-                ExitDef(direction=1, dst_vnum=3),
+                Exit(direction=2, dst_vnum=1),
+                Exit(direction=1, dst_vnum=3),
             ),
         )
-        r3 = RoomDef(vnum=3, name="R3", description="", exits=(ExitDef(direction=3, dst_vnum=2),))
+        r3 = Room(vnum=3, name="R3", description="", exits=(Exit(direction=3, dst_vnum=2),))
 
         edges = [
             LayoutEdge(src=1, dst=2, direction=0),
@@ -185,19 +185,19 @@ class TestHallwayCompactor:
     def test_junctions_are_not_compacted(self) -> None:
         """Room 2 with degree > 2 is a junction and must never be compacted."""
         # 2 connected to 1 (South), 3 (North), 4 (East)
-        r1 = RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=0, dst_vnum=2),))
-        r2 = RoomDef(
+        r1 = Room(vnum=1, name="R1", description="", exits=(Exit(direction=0, dst_vnum=2),))
+        r2 = Room(
             vnum=2,
             name="R2 Junction",
             description="",
             exits=(
-                ExitDef(direction=2, dst_vnum=1),
-                ExitDef(direction=0, dst_vnum=3),
-                ExitDef(direction=1, dst_vnum=4),
+                Exit(direction=2, dst_vnum=1),
+                Exit(direction=0, dst_vnum=3),
+                Exit(direction=1, dst_vnum=4),
             ),
         )
-        r3 = RoomDef(vnum=3, name="R3", description="", exits=(ExitDef(direction=2, dst_vnum=2),))
-        r4 = RoomDef(vnum=4, name="R4", description="", exits=(ExitDef(direction=3, dst_vnum=2),))
+        r3 = Room(vnum=3, name="R3", description="", exits=(Exit(direction=2, dst_vnum=2),))
+        r4 = Room(vnum=4, name="R4", description="", exits=(Exit(direction=3, dst_vnum=2),))
 
         edges = [
             LayoutEdge(src=1, dst=2, direction=0),
@@ -217,8 +217,8 @@ class TestHallwayCompactor:
 
     def test_dead_ends_are_not_compacted(self) -> None:
         """Rooms of degree 1 (dead ends) are never compacted."""
-        r1 = RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=0, dst_vnum=2),))
-        r2 = RoomDef(vnum=2, name="R2", description="", exits=(ExitDef(direction=2, dst_vnum=1),))
+        r1 = Room(vnum=1, name="R1", description="", exits=(Exit(direction=0, dst_vnum=2),))
+        r2 = Room(vnum=2, name="R2", description="", exits=(Exit(direction=2, dst_vnum=1),))
         edges = [
             LayoutEdge(src=1, dst=2, direction=0),
             LayoutEdge(src=2, dst=1, direction=2),
@@ -233,10 +233,10 @@ class TestHallwayCompactor:
 
     def test_one_way_exit_rejects_candidate(self) -> None:
         """One-way exits violate bidirectional hallway condition."""
-        r1 = RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=0, dst_vnum=2),))
+        r1 = Room(vnum=1, name="R1", description="", exits=(Exit(direction=0, dst_vnum=2),))
         # Room 2 exits to 3, but has no exit back to 1
-        r2 = RoomDef(vnum=2, name="R2", description="", exits=(ExitDef(direction=0, dst_vnum=3),))
-        r3 = RoomDef(vnum=3, name="R3", description="", exits=(ExitDef(direction=2, dst_vnum=2),))
+        r2 = Room(vnum=2, name="R2", description="", exits=(Exit(direction=0, dst_vnum=3),))
+        r3 = Room(vnum=3, name="R3", description="", exits=(Exit(direction=2, dst_vnum=2),))
 
         edges = [
             LayoutEdge(src=1, dst=2, direction=0),
@@ -253,17 +253,17 @@ class TestHallwayCompactor:
 
     def test_inconsistent_reverse_direction_rejects_candidate(self) -> None:
         """Reciprocal edge has non-inverted direction."""
-        r1 = RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=0, dst_vnum=2),))
-        r2 = RoomDef(
+        r1 = Room(vnum=1, name="R1", description="", exits=(Exit(direction=0, dst_vnum=2),))
+        r2 = Room(
             vnum=2,
             name="R2",
             description="",
             exits=(
-                ExitDef(direction=1, dst_vnum=1),  # East instead of South!
-                ExitDef(direction=0, dst_vnum=3),
+                Exit(direction=1, dst_vnum=1),  # East instead of South!
+                Exit(direction=0, dst_vnum=3),
             ),
         )
-        r3 = RoomDef(vnum=3, name="R3", description="", exits=(ExitDef(direction=2, dst_vnum=2),))
+        r3 = Room(vnum=3, name="R3", description="", exits=(Exit(direction=2, dst_vnum=2),))
 
         edges = [
             LayoutEdge(src=1, dst=2, direction=0),
@@ -281,9 +281,9 @@ class TestHallwayCompactor:
 
     def test_invalid_direction_int_rejects_candidate(self) -> None:
         """Unrecognized direction integer outside [0, 9] is rejected."""
-        r1 = RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=99, dst_vnum=2),))
-        r2 = RoomDef(vnum=2, name="R2", description="", exits=())
-        r3 = RoomDef(vnum=3, name="R3", description="", exits=())
+        r1 = Room(vnum=1, name="R1", description="", exits=(Exit(direction=99, dst_vnum=2),))
+        r2 = Room(vnum=2, name="R2", description="", exits=())
+        r3 = Room(vnum=3, name="R3", description="", exits=())
         edges = [
             LayoutEdge(src=1, dst=2, direction=99),
             LayoutEdge(src=2, dst=1, direction=99),
@@ -298,14 +298,14 @@ class TestHallwayCompactor:
 
     def test_external_neighbor_rejects_candidate(self) -> None:
         """Room 2 connected to an external room not in graph.rooms is not compacted."""
-        r1 = RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=0, dst_vnum=2),))
-        r2 = RoomDef(
+        r1 = Room(vnum=1, name="R1", description="", exits=(Exit(direction=0, dst_vnum=2),))
+        r2 = Room(
             vnum=2,
             name="R2",
             description="",
             exits=(
-                ExitDef(direction=2, dst_vnum=1),
-                ExitDef(direction=0, dst_vnum=9999),  # 9999 is external
+                Exit(direction=2, dst_vnum=1),
+                Exit(direction=0, dst_vnum=9999),  # 9999 is external
             ),
         )
         edges = [
@@ -322,7 +322,7 @@ class TestHallwayCompactor:
 
     def test_room_with_self_loop_not_compacted(self) -> None:
         """Room with a self-loop (degree 2 with 1 neighbor in nx.Graph) is not compacted."""
-        r1 = RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=0, dst_vnum=1),))
+        r1 = Room(vnum=1, name="R1", description="", exits=(Exit(direction=0, dst_vnum=1),))
         edges = [LayoutEdge(src=1, dst=1, direction=0)]
         lg = LayoutGraph(rooms={1: r1}, edges=edges)
 
@@ -350,26 +350,26 @@ class TestHallwayCompactor:
     def test_two_chains_meeting_at_corner(self) -> None:
         """Chains meeting at corner room: corner is kept, intermediate rooms compacted."""
         # 1 <-> 2 <-> 3 North; 3 <-> 4 <-> 5 East
-        r1 = RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=0, dst_vnum=2),))
-        r2 = RoomDef(
+        r1 = Room(vnum=1, name="R1", description="", exits=(Exit(direction=0, dst_vnum=2),))
+        r2 = Room(
             vnum=2,
             name="R2",
             description="",
-            exits=(ExitDef(direction=2, dst_vnum=1), ExitDef(direction=0, dst_vnum=3)),
+            exits=(Exit(direction=2, dst_vnum=1), Exit(direction=0, dst_vnum=3)),
         )
-        r3 = RoomDef(
+        r3 = Room(
             vnum=3,
             name="R3 Corner",
             description="",
-            exits=(ExitDef(direction=2, dst_vnum=2), ExitDef(direction=1, dst_vnum=4)),
+            exits=(Exit(direction=2, dst_vnum=2), Exit(direction=1, dst_vnum=4)),
         )
-        r4 = RoomDef(
+        r4 = Room(
             vnum=4,
             name="R4",
             description="",
-            exits=(ExitDef(direction=3, dst_vnum=3), ExitDef(direction=1, dst_vnum=5)),
+            exits=(Exit(direction=3, dst_vnum=3), Exit(direction=1, dst_vnum=5)),
         )
-        r5 = RoomDef(vnum=5, name="R5", description="", exits=(ExitDef(direction=3, dst_vnum=4),))
+        r5 = Room(vnum=5, name="R5", description="", exits=(Exit(direction=3, dst_vnum=4),))
 
         edges = [
             LayoutEdge(src=1, dst=2, direction=0),
@@ -400,23 +400,23 @@ class TestHallwayCompactor:
     def test_pure_cycle_of_degree_2_nodes(self) -> None:
         """A closed loop of collinear degree-2 nodes has no non-collinear boundary."""
         # 1 <-> 2 <-> 3 <-> 1 (all North/South)
-        r1 = RoomDef(
+        r1 = Room(
             vnum=1,
             name="R1",
             description="",
-            exits=(ExitDef(direction=0, dst_vnum=2), ExitDef(direction=2, dst_vnum=3)),
+            exits=(Exit(direction=0, dst_vnum=2), Exit(direction=2, dst_vnum=3)),
         )
-        r2 = RoomDef(
+        r2 = Room(
             vnum=2,
             name="R2",
             description="",
-            exits=(ExitDef(direction=2, dst_vnum=1), ExitDef(direction=0, dst_vnum=3)),
+            exits=(Exit(direction=2, dst_vnum=1), Exit(direction=0, dst_vnum=3)),
         )
-        r3 = RoomDef(
+        r3 = Room(
             vnum=3,
             name="R3",
             description="",
-            exits=(ExitDef(direction=2, dst_vnum=2), ExitDef(direction=0, dst_vnum=1)),
+            exits=(Exit(direction=2, dst_vnum=2), Exit(direction=0, dst_vnum=1)),
         )
         edges = [
             LayoutEdge(src=1, dst=2, direction=0),

@@ -27,7 +27,7 @@ from romutil.layout import (
     TreeSolver,
     TrivialTreeBuilder,
 )
-from romutil.models import AreaHeader, ExitDef, RoomDef
+from romutil.models import AreaHeader, Exit, Room
 from romutil.types import Coord3D, LayoutOptions, SolvedLayout, SolverStatus, WorldGraph
 
 
@@ -59,7 +59,7 @@ class TestLayoutIR:
         assert custom_edge.metadata == {"tag": "secret"}
 
     def test_layout_graph_immutability_and_conversion(self) -> None:
-        r1 = RoomDef(vnum=1, name="R1", description="D1")
+        r1 = Room(vnum=1, name="R1", description="D1")
         e1 = LayoutEdge(src=1, dst=2, direction=0)
         graph = LayoutGraph(rooms={1: r1}, edges=[e1])  # passed as list
 
@@ -71,11 +71,11 @@ class TestLayoutIR:
             graph.edges = ()  # type: ignore[misc]
 
     def test_layout_graph_from_world_graph(self) -> None:
-        ex1 = ExitDef(direction=0, dst_vnum=2)
-        ex2 = ExitDef(direction=1, dst_vnum=3)
-        r1 = RoomDef(vnum=1, name="Hall", description="Entry", exits=(ex1, ex2))
-        r2 = RoomDef(vnum=2, name="Room 2", description="North")
-        r3 = RoomDef(vnum=3, name="Room 3", description="East")
+        ex1 = Exit(direction=0, dst_vnum=2)
+        ex2 = Exit(direction=1, dst_vnum=3)
+        r1 = Room(vnum=1, name="Hall", description="Entry", exits=(ex1, ex2))
+        r2 = Room(vnum=2, name="Room 2", description="North")
+        r3 = Room(vnum=3, name="Room 3", description="East")
         world_graph = WorldGraph(
             rooms={1: r1, 2: r2, 3: r3},
             exits=(ex1, ex2),
@@ -252,7 +252,7 @@ class TestLayoutEngine:
     """Tests for default stage behaviors and HierarchicalLayoutSolver."""
 
     def test_passthrough_simplifier(self) -> None:
-        r1 = RoomDef(vnum=10, name="R10", description="Desc")
+        r1 = Room(vnum=10, name="R10", description="Desc")
         lg = LayoutGraph(rooms={10: r1}, edges=())
         simp = PassthroughSimplifier().simplify(lg, LayoutOptions())
         assert simp.graph == lg
@@ -260,8 +260,8 @@ class TestLayoutEngine:
         assert simp.severed_chords == ()
 
     def test_trivial_tree_builder(self) -> None:
-        r1 = RoomDef(vnum=1, name="R1", description="D")
-        r2 = RoomDef(vnum=2, name="R2", description="D")
+        r1 = Room(vnum=1, name="R1", description="D")
+        r2 = Room(vnum=2, name="R2", description="D")
         lg = LayoutGraph(rooms={1: r1, 2: r2}, edges=())
         simp = SimplifiedGraph(graph=lg)
         tree = TrivialTreeBuilder().build_tree(simp, LayoutOptions())
@@ -310,8 +310,8 @@ class TestLayoutEngine:
         assert solved.diagnostics.duration_seconds == 0.0
 
     def test_solver_default_pipeline_end_to_end(self) -> None:
-        r1 = RoomDef(vnum=100, name="Entry", description="", exits=(ExitDef(direction=0, dst_vnum=101),))
-        r2 = RoomDef(vnum=101, name="Hall", description="", exits=(ExitDef(direction=2, dst_vnum=100),))
+        r1 = Room(vnum=100, name="Entry", description="", exits=(Exit(direction=0, dst_vnum=101),))
+        r2 = Room(vnum=101, name="Hall", description="", exits=(Exit(direction=2, dst_vnum=100),))
         wg = WorldGraph(rooms={100: r1, 101: r2}, exits=(r1.exits[0], r2.exits[0]))
 
         solver = HierarchicalLayoutSolver()
@@ -385,7 +385,7 @@ class TestLayoutEngine:
             assembler=mock_assembler,
         )
 
-        r = RoomDef(vnum=42, name="Custom", description="")
+        r = Room(vnum=42, name="Custom", description="")
         wg = WorldGraph(rooms={42: r}, exits=())
         result = solver.solve(wg, options=custom_options)
 

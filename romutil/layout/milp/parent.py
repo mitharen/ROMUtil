@@ -20,7 +20,7 @@ from romutil.layout.ir import (
 from romutil.layout.milp.leaf import solve_leaf_cluster
 from romutil.layout.protocols import TreeSolver
 from romutil.layout.simplification.warps import direction_to_displacement
-from romutil.models import RoomDef
+from romutil.models import Room
 from romutil.types import Coord3D, LayoutOptions
 
 
@@ -852,7 +852,7 @@ class HierarchicalTreeSolver(TreeSolver):
                 _collect_rooms(comp)
 
             layout_graph = LayoutGraph(
-                rooms={v: RoomDef(vnum=v, name=f"Room {v}", description="", exits=()) for v in all_rooms},
+                rooms={v: Room(vnum=v, name=f"Room {v}", description="", exits=()) for v in all_rooms},
                 edges=(),
             )
 

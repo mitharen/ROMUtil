@@ -8,7 +8,7 @@ from typing import TextIO
 import pytest
 
 from romutil.interfaces import BaseLayoutSolver, BaseParser, BaseRenderer
-from romutil.models import AreaData, AreaHeader, ExitDef, RoomDef
+from romutil.models import AreaData, AreaHeader, Exit, Room
 from romutil.types import (
     Coord3D,
     LayoutDiagnostics,
@@ -154,8 +154,8 @@ class TestWorldGraph:
     """Tests for WorldGraph value object and factory methods."""
 
     def test_world_graph_direct_instantiation(self):
-        r1 = RoomDef(vnum=1, name="Room 1", description="First")
-        ex1 = ExitDef(direction=0, dst_vnum=2)
+        r1 = Room(vnum=1, name="Room 1", description="First")
+        ex1 = Exit(direction=0, dst_vnum=2)
         hdr = AreaHeader(filename="test.are", name="Test", builder="Auth", vnum_min=1, vnum_max=2)
 
         graph = WorldGraph(rooms={1: r1}, exits=(ex1,), header=hdr)
@@ -179,12 +179,12 @@ class TestWorldGraph:
         assert graph.header is None
 
     def test_world_graph_from_populated_area_data(self):
-        ex1 = ExitDef(direction=0, dst_vnum=2)
-        ex2 = ExitDef(direction=1, dst_vnum=3)
-        ex3 = ExitDef(direction=2, dst_vnum=1)
+        ex1 = Exit(direction=0, dst_vnum=2)
+        ex2 = Exit(direction=1, dst_vnum=3)
+        ex3 = Exit(direction=2, dst_vnum=1)
 
-        r1 = RoomDef(vnum=1, name="Hall", description="Entrance", exits=(ex1, ex2))
-        r2 = RoomDef(vnum=2, name="Chamber", description="Inner", exits=(ex3,))
+        r1 = Room(vnum=1, name="Hall", description="Entrance", exits=(ex1, ex2))
+        r2 = Room(vnum=2, name="Chamber", description="Inner", exits=(ex3,))
         hdr = AreaHeader(filename="test.are", name="Test", builder="Auth", vnum_min=1, vnum_max=2)
 
         area = AreaData(header=hdr, rooms=(r1, r2))

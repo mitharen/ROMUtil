@@ -16,13 +16,13 @@ from romutil.layout import (
     direction_to_displacement,
     is_euclidean_satisfiable,
 )
-from romutil.models import Direction, ExitDef, RoomDef
+from romutil.models import Direction, Exit, Room
 from romutil.types import LayoutOptions
 
 
-def _make_room(vnum: int, exits: list[ExitDef] | None = None) -> RoomDef:
-    """Helper to construct a RoomDef with given exits."""
-    return RoomDef(
+def _make_room(vnum: int, exits: list[Exit] | None = None) -> Room:
+    """Helper to construct a Room with given exits."""
+    return Room(
         vnum=vnum,
         name=f"Room {vnum}",
         description="",
@@ -150,7 +150,7 @@ class TestWarpSeverer:
 
     def test_non_euclidean_self_loop(self) -> None:
         """Self loop with North exit must be severed."""
-        rooms = {1: _make_room(1, [ExitDef(direction=0, dst_vnum=1)])}
+        rooms = {1: _make_room(1, [Exit(direction=0, dst_vnum=1)])}
         edges = [LayoutEdge(src=1, dst=1, direction=0)]
         lg = LayoutGraph(rooms=rooms, edges=edges)
 
@@ -165,7 +165,7 @@ class TestWarpSeverer:
 
     def test_self_loop_with_invalid_direction_severed(self) -> None:
         """Self loop with invalid direction must also be severed."""
-        rooms = {1: _make_room(1, [ExitDef(direction=99, dst_vnum=1)])}
+        rooms = {1: _make_room(1, [Exit(direction=99, dst_vnum=1)])}
         edges = [LayoutEdge(src=1, dst=1, direction=99)]
         lg = LayoutGraph(rooms=rooms, edges=edges)
 
@@ -179,10 +179,10 @@ class TestWarpSeverer:
         """Standard Euclidean square (N, E, S, W): 0 chords cut."""
         # 1 -> 2 (East), 2 -> 3 (North), 3 -> 4 (West), 4 -> 1 (South)
         rooms = {
-            1: _make_room(1, [ExitDef(direction=1, dst_vnum=2)]),
-            2: _make_room(2, [ExitDef(direction=0, dst_vnum=3)]),
-            3: _make_room(3, [ExitDef(direction=3, dst_vnum=4)]),
-            4: _make_room(4, [ExitDef(direction=2, dst_vnum=1)]),
+            1: _make_room(1, [Exit(direction=1, dst_vnum=2)]),
+            2: _make_room(2, [Exit(direction=0, dst_vnum=3)]),
+            3: _make_room(3, [Exit(direction=3, dst_vnum=4)]),
+            4: _make_room(4, [Exit(direction=2, dst_vnum=1)]),
         }
         edges = [
             LayoutEdge(src=1, dst=2, direction=1),
@@ -202,11 +202,11 @@ class TestWarpSeverer:
         """Elastic rectangle (2 North, 1 East, 1 South, 1 West): 0 chords cut."""
         # 1 -> 2 (North), 2 -> 3 (North), 3 -> 4 (East), 4 -> 5 (South), 5 -> 1 (West)
         rooms = {
-            1: _make_room(1, [ExitDef(direction=0, dst_vnum=2)]),
-            2: _make_room(2, [ExitDef(direction=0, dst_vnum=3)]),
-            3: _make_room(3, [ExitDef(direction=1, dst_vnum=4)]),
-            4: _make_room(4, [ExitDef(direction=2, dst_vnum=5)]),
-            5: _make_room(5, [ExitDef(direction=3, dst_vnum=1)]),
+            1: _make_room(1, [Exit(direction=0, dst_vnum=2)]),
+            2: _make_room(2, [Exit(direction=0, dst_vnum=3)]),
+            3: _make_room(3, [Exit(direction=1, dst_vnum=4)]),
+            4: _make_room(4, [Exit(direction=2, dst_vnum=5)]),
+            5: _make_room(5, [Exit(direction=3, dst_vnum=1)]),
         }
         edges = [
             LayoutEdge(src=1, dst=2, direction=0),
@@ -227,10 +227,10 @@ class TestWarpSeverer:
         """Non-Euclidean loop (4 North exits returning to start): exactly 1 chord severed."""
         # 1 -> 2 (North), 2 -> 3 (North), 3 -> 4 (North), 4 -> 1 (North)
         rooms = {
-            1: _make_room(1, [ExitDef(direction=0, dst_vnum=2)]),
-            2: _make_room(2, [ExitDef(direction=0, dst_vnum=3)]),
-            3: _make_room(3, [ExitDef(direction=0, dst_vnum=4)]),
-            4: _make_room(4, [ExitDef(direction=0, dst_vnum=1)]),
+            1: _make_room(1, [Exit(direction=0, dst_vnum=2)]),
+            2: _make_room(2, [Exit(direction=0, dst_vnum=3)]),
+            3: _make_room(3, [Exit(direction=0, dst_vnum=4)]),
+            4: _make_room(4, [Exit(direction=0, dst_vnum=1)]),
         }
         edges = [
             LayoutEdge(src=1, dst=2, direction=0),
@@ -254,9 +254,9 @@ class TestWarpSeverer:
         """3D warp loop (pure Up exits forming cycle): exactly 1 chord severed."""
         # 1 -> 2 (Up), 2 -> 3 (Up), 3 -> 1 (Up)
         rooms = {
-            1: _make_room(1, [ExitDef(direction=4, dst_vnum=2)]),
-            2: _make_room(2, [ExitDef(direction=4, dst_vnum=3)]),
-            3: _make_room(3, [ExitDef(direction=4, dst_vnum=1)]),
+            1: _make_room(1, [Exit(direction=4, dst_vnum=2)]),
+            2: _make_room(2, [Exit(direction=4, dst_vnum=3)]),
+            3: _make_room(3, [Exit(direction=4, dst_vnum=1)]),
         }
         edges = [
             LayoutEdge(src=1, dst=2, direction=4),
@@ -449,12 +449,12 @@ class TestChainedSimplifier:
         # Corridor: 1 <-> 2 <-> 3 (North / South, room 2 is degree-2 collinear)
         # Warp loop: 10 -> 11 -> 12 -> 10 (pure Up)
         rooms = {
-            1: _make_room(1, [ExitDef(direction=0, dst_vnum=2)]),
-            2: _make_room(2, [ExitDef(direction=2, dst_vnum=1), ExitDef(direction=0, dst_vnum=3)]),
-            3: _make_room(3, [ExitDef(direction=2, dst_vnum=2)]),
-            10: _make_room(10, [ExitDef(direction=4, dst_vnum=11)]),
-            11: _make_room(11, [ExitDef(direction=4, dst_vnum=12)]),
-            12: _make_room(12, [ExitDef(direction=4, dst_vnum=10)]),
+            1: _make_room(1, [Exit(direction=0, dst_vnum=2)]),
+            2: _make_room(2, [Exit(direction=2, dst_vnum=1), Exit(direction=0, dst_vnum=3)]),
+            3: _make_room(3, [Exit(direction=2, dst_vnum=2)]),
+            10: _make_room(10, [Exit(direction=4, dst_vnum=11)]),
+            11: _make_room(11, [Exit(direction=4, dst_vnum=12)]),
+            12: _make_room(12, [Exit(direction=4, dst_vnum=10)]),
         }
         edges = [
             # Hallway edges

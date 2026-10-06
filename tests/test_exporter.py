@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 import pytest
 
-from romutil.models import AreaHeader, ExitDef, RoomDef
+from romutil.models import AreaHeader, Exit, Room
 from romutil.renderers import (
     build_area_json,
     export_html,
@@ -19,26 +19,26 @@ class TestExporterUnit:
     """Unit tests for exporter serialization and viewer generation."""
 
     def test_build_area_json_schema(self):
-        r1 = RoomDef(
+        r1 = Room(
             vnum=100,
             name="Hallway",
             description="Long hallway.",
             exits=(
-                ExitDef(direction=0, dst_vnum=101),
-                ExitDef(direction=1, dst_vnum=102),
+                Exit(direction=0, dst_vnum=101),
+                Exit(direction=1, dst_vnum=102),
             ),
         )
-        r2 = RoomDef(
+        r2 = Room(
             vnum=101,
             name="North Room",
             description="North room.",
-            exits=(ExitDef(direction=3, dst_vnum=100),),
+            exits=(Exit(direction=3, dst_vnum=100),),
         )
-        r3 = RoomDef(
+        r3 = Room(
             vnum=102,
             name="East Room",
             description="East room.",
-            exits=(ExitDef(direction=4, dst_vnum=100),),
+            exits=(Exit(direction=4, dst_vnum=100),),
         )
 
         area_meta = AreaHeader(
@@ -115,7 +115,7 @@ class TestExporterUnit:
         assert data["area"] == {"name": "", "file": ""}
 
     def test_build_area_json_custom_bounds(self):
-        r1 = RoomDef(vnum=10, name="Room 10", description="Desc")
+        r1 = Room(vnum=10, name="Room 10", description="Desc")
         graph = WorldGraph(rooms={10: r1}, exits=())
         layout = SolvedLayout(coordinates={10: Coord3D(x=2, y=3, z=1)})
 
@@ -137,7 +137,7 @@ class TestExporterUnit:
 
     def test_build_area_json_header_metadata(self):
         header = AreaHeader(filename="obj.are", name="Object Area", builder="B", vnum_min=1, vnum_max=1)
-        r = RoomDef(vnum=1, name="Start", description="Desc")
+        r = Room(vnum=1, name="Start", description="Desc")
         graph = WorldGraph(rooms={1: r}, exits=(), header=header)
         layout = SolvedLayout(coordinates={1: Coord3D(x=0, y=0, z=0)})
         data = build_area_json(graph, layout)

@@ -33,13 +33,13 @@ from romutil.layout.milp.parent import (
     _point_in_box_bounds,
     _solve_parent_fallback,
 )
-from romutil.models import Direction, ExitDef, RoomDef
+from romutil.models import Direction, Exit, Room
 from romutil.types import Coord3D, LayoutOptions, SolvedLayout, SolverStatus, WorldGraph
 
 
-def _make_room(vnum: int, exits: list[ExitDef] | None = None) -> RoomDef:
-    """Helper to construct a RoomDef with given exits."""
-    return RoomDef(
+def _make_room(vnum: int, exits: list[Exit] | None = None) -> Room:
+    """Helper to construct a Room with given exits."""
+    return Room(
         vnum=vnum,
         name=f"Room {vnum}",
         description="",
@@ -719,11 +719,11 @@ class TestHierarchicalLayoutIntegration:
         """HierarchicalLayoutSolver with SpqrTreeBuilder and HierarchicalTreeSolver solves complex nested hierarchy."""
         # 4-room cycle (triconnected block) with a 5th room attached via articulation point at 2
         # 1 -E-> 2 -N-> 3 -W-> 4 -S-> 1, plus 2 -E-> 5
-        r1 = RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=Direction.east, dst_vnum=2), ExitDef(direction=Direction.north, dst_vnum=4)))
-        r2 = RoomDef(vnum=2, name="R2", description="", exits=(ExitDef(direction=Direction.west, dst_vnum=1), ExitDef(direction=Direction.north, dst_vnum=3), ExitDef(direction=Direction.east, dst_vnum=5)))
-        r3 = RoomDef(vnum=3, name="R3", description="", exits=(ExitDef(direction=Direction.south, dst_vnum=2), ExitDef(direction=Direction.west, dst_vnum=4)))
-        r4 = RoomDef(vnum=4, name="R4", description="", exits=(ExitDef(direction=Direction.east, dst_vnum=3), ExitDef(direction=Direction.south, dst_vnum=1)))
-        r5 = RoomDef(vnum=5, name="R5", description="", exits=(ExitDef(direction=Direction.west, dst_vnum=2),))
+        r1 = Room(vnum=1, name="R1", description="", exits=(Exit(direction=Direction.east, dst_vnum=2), Exit(direction=Direction.north, dst_vnum=4)))
+        r2 = Room(vnum=2, name="R2", description="", exits=(Exit(direction=Direction.west, dst_vnum=1), Exit(direction=Direction.north, dst_vnum=3), Exit(direction=Direction.east, dst_vnum=5)))
+        r3 = Room(vnum=3, name="R3", description="", exits=(Exit(direction=Direction.south, dst_vnum=2), Exit(direction=Direction.west, dst_vnum=4)))
+        r4 = Room(vnum=4, name="R4", description="", exits=(Exit(direction=Direction.east, dst_vnum=3), Exit(direction=Direction.south, dst_vnum=1)))
+        r5 = Room(vnum=5, name="R5", description="", exits=(Exit(direction=Direction.west, dst_vnum=2),))
 
         rooms = {1: r1, 2: r2, 3: r3, 4: r4, 5: r5}
         all_exits = tuple(r1.exits + r2.exits + r3.exits + r4.exits + r5.exits)
@@ -741,19 +741,19 @@ class TestHierarchicalLayoutIntegration:
 
     def test_integration_block_cut_and_hierarchical_solver(self) -> None:
         """HierarchicalLayoutSolver with BlockCutTreeBuilder and HierarchicalTreeSolver solves cut-vertex graph."""
-        r1 = RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=Direction.east, dst_vnum=2),))
-        r2 = RoomDef(
+        r1 = Room(vnum=1, name="R1", description="", exits=(Exit(direction=Direction.east, dst_vnum=2),))
+        r2 = Room(
             vnum=2,
             name="R2",
             description="",
             exits=(
-                ExitDef(direction=Direction.west, dst_vnum=1),
-                ExitDef(direction=Direction.north, dst_vnum=3),
-                ExitDef(direction=Direction.south, dst_vnum=4),
+                Exit(direction=Direction.west, dst_vnum=1),
+                Exit(direction=Direction.north, dst_vnum=3),
+                Exit(direction=Direction.south, dst_vnum=4),
             ),
         )
-        r3 = RoomDef(vnum=3, name="R3", description="", exits=(ExitDef(direction=Direction.south, dst_vnum=2),))
-        r4 = RoomDef(vnum=4, name="R4", description="", exits=(ExitDef(direction=Direction.north, dst_vnum=2),))
+        r3 = Room(vnum=3, name="R3", description="", exits=(Exit(direction=Direction.south, dst_vnum=2),))
+        r4 = Room(vnum=4, name="R4", description="", exits=(Exit(direction=Direction.north, dst_vnum=2),))
 
         rooms = {1: r1, 2: r2, 3: r3, 4: r4}
         world_graph = WorldGraph(rooms=rooms, exits=tuple(r1.exits + r2.exits + r3.exits + r4.exits))

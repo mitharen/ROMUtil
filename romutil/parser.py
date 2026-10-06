@@ -7,16 +7,16 @@ import ply.yacc as yacc
 from romutil.models import (
     AreaData,
     AreaHeader,
-    ExitDef,
+    Exit,
     ExtraDescr,
-    HelpDef,
-    MobileDef,
-    ObjectDef,
-    ResetDef,
-    RoomDef,
-    ShopDef,
-    SocialDef,
-    SpecialDef,
+    Help,
+    Mobile,
+    Object,
+    Reset,
+    Room,
+    Shop,
+    Social,
+    Special,
     merge_areas,
 )
 
@@ -590,19 +590,19 @@ class Parser:
                         objects.extend(data)
                 elif tag == '#RESETS':
                     if data:
-                        resets.extend([r for r in data if isinstance(r, (ResetDef, tuple))])
+                        resets.extend([r for r in data if isinstance(r, (Reset, tuple))])
                 elif tag == '#SHOPS':
                     if data:
                         shops.extend(data)
                 elif tag == '#SPECIALS':
                     if data:
-                        specials.extend([s for s in data if isinstance(s, (SpecialDef, tuple))])
+                        specials.extend([s for s in data if isinstance(s, (Special, tuple))])
                 elif tag == '#HELPS':
                     if data:
-                        helps.extend([h for h in data if isinstance(h, (HelpDef, tuple))])
+                        helps.extend([h for h in data if isinstance(h, (Help, tuple))])
                 elif tag == '#SOCIALS':
                     if data:
-                        socials.extend([s for s in data if isinstance(s, (SocialDef, tuple))])
+                        socials.extend([s for s in data if isinstance(s, (Social, tuple))])
                 elif tag == '#RESETMESSAGE':
                     reset_message = data
                 elif tag == '#FLAG':
@@ -610,7 +610,7 @@ class Parser:
 
         if header and header.name:
             rooms = [
-                RoomDef(
+                Room(
                     vnum=r.vnum,
                     name=r.name,
                     description=r.description,
@@ -735,7 +735,7 @@ class Parser:
 
     def p_help(self, p):
         '''help : NUMBER help_keywords TILDE EOL str STRING EOL'''
-        p[0] = HelpDef(level=p[1], keywords=tuple(p[2]), text=p[6])
+        p[0] = Help(level=p[1], keywords=tuple(p[2]), text=p[6])
         log.debug(f'Help: {p[0]}')
 
     def p_help_keywords(self, p):
@@ -754,7 +754,7 @@ class Parser:
         '''social : WORD line EOL social_descs endl EOL
                   | WORD NUMBER NUMBER line EOL social_descs endl EOL'''
         descs = p[4] if len(p) == 7 else p[6]
-        p[0] = SocialDef(name=p[1], stages=tuple(descs) if descs else ())
+        p[0] = Social(name=p[1], stages=tuple(descs) if descs else ())
         log.debug(f'Social: {p[0]}')
 
     def p_social_descs(self, p):
@@ -775,7 +775,7 @@ class Parser:
                     WORD WORD WORD NUMBER EOL \
                     flags flags WORD flags optional EOL \
                     mob_optionals'''
-        p[0] = MobileDef(
+        p[0] = Mobile(
             vnum=p[1],
             player_name=p[4],
             short_desc=p[7],
@@ -822,7 +822,7 @@ class Parser:
                     param param param param param EOL \
                     NUMBER NUMBER NUMBER flags optional EOL \
                     object_optionals'''
-        p[0] = ObjectDef(
+        p[0] = Object(
             vnum=p[1],
             name=p[4],
             short_desc=p[7],
@@ -854,16 +854,16 @@ class Parser:
         extras = []
         if p[15]:
             for opt in p[15]:
-                if isinstance(opt, ExitDef):
+                if isinstance(opt, Exit):
                     exits.append(opt)
                 elif isinstance(opt, (tuple, list)) and len(opt) == 2 and isinstance(opt[0], int) and isinstance(opt[1], int):
-                    exits.append(ExitDef(direction=opt[0], dst_vnum=opt[1]))
+                    exits.append(Exit(direction=opt[0], dst_vnum=opt[1]))
                 elif isinstance(opt, ExtraDescr):
                     extras.append(opt)
                 elif opt is not None:
                     extras.append(opt)
 
-        p[0] = RoomDef(
+        p[0] = Room(
             vnum=p[1],
             name=p[4],
             description=p[7],
@@ -895,7 +895,7 @@ class Parser:
     def p_door(self, p):
         '''door : DOOR NUMBER EOL str STRING EOL str STRING EOL door_params optional EOL'''
         flags, key, dst = p[10]
-        p[0] = ExitDef(
+        p[0] = Exit(
             direction=p[2],
             dst_vnum=dst,
             description=p[5] if p[5] else "",
@@ -934,7 +934,7 @@ class Parser:
         if p[1] and isinstance(p[1], str) and p[1].startswith('*'):
             p[0] = None
             return
-        p[0] = ResetDef(
+        p[0] = Reset(
             command=p[1],
             args=tuple(v for v in p[2:-1] if v is not None),
             comment=p[len(p)-1] if isinstance(p[len(p)-1], str) else None,
@@ -943,7 +943,7 @@ class Parser:
     def p_shop(self, p):
         '''shop : NUMBER NUMBER NUMBER NUMBER NUMBER NUMBER \
                   NUMBER NUMBER NUMBER NUMBER comment'''
-        p[0] = ShopDef(
+        p[0] = Shop(
             keeper=p[1],
             buy_types=(p[2], p[3], p[4], p[5], p[6]),
             profit_buy=p[7],
@@ -959,7 +959,7 @@ class Parser:
         if p[1] and isinstance(p[1], str) and p[1].startswith('*'):
             p[0] = None
             return
-        p[0] = SpecialDef(
+        p[0] = Special(
             command=p[1],
             vnum=p[2],
             spec_fun=p[3],
@@ -1040,7 +1040,7 @@ class Parser:
         return self.parser.parse(buffer, lexer=self.lexer, debug=False)
 
 
-def parse_circlemud_zone_file(file_path_or_content: str | Path) -> tuple[AreaHeader, tuple[ResetDef, ...]]:
+def parse_circlemud_zone_file(file_path_or_content: str | Path) -> tuple[AreaHeader, tuple[Reset, ...]]:
     """Parse a CircleMUD 3.x / tbaMUD zone (.zon) configuration file.
 
     Extracts zone identification, builder/author, room VNUM boundaries,
@@ -1130,7 +1130,7 @@ def parse_circlemud_zone_file(file_path_or_content: str | Path) -> tuple[AreaHea
         vnum_min = zone_num * 100
         vnum_max = zone_num * 100 + 99
 
-    resets: list[ResetDef] = []
+    resets: list[Reset] = []
     while idx < len(lines):
         line = lines[idx].strip()
         idx += 1
@@ -1163,7 +1163,7 @@ def parse_circlemud_zone_file(file_path_or_content: str | Path) -> tuple[AreaHea
             else:
                 args.append(t)
 
-        resets.append(ResetDef(command=cmd, args=tuple(args), comment=comment))
+        resets.append(Reset(command=cmd, args=tuple(args), comment=comment))
 
     header = AreaHeader(
         filename=filename,
@@ -1240,16 +1240,16 @@ def parse_circlemud_directory(directory_path: str | Path) -> AreaData:
     if not zon_files:
         zon_files = list(dir_path.rglob("*.zon"))
 
-    zones_by_stem: dict[str, tuple[AreaHeader, tuple[ResetDef, ...]]] = {}
-    zones_by_range: list[tuple[AreaHeader, tuple[ResetDef, ...]]] = []
+    zones_by_stem: dict[str, tuple[AreaHeader, tuple[Reset, ...]]] = {}
+    zones_by_range: list[tuple[AreaHeader, tuple[Reset, ...]]] = []
     for zf in zon_files:
         h, r = parse_circlemud_zone_file(zf)
         zones_by_stem[zf.stem] = (h, r)
         zones_by_range.append((h, r))
 
     # Parse each .wld file and match with zone metadata
-    all_rooms: list[RoomDef] = []
-    all_resets: list[ResetDef] = []
+    all_rooms: list[Room] = []
+    all_resets: list[Reset] = []
     matched_headers: list[AreaHeader] = []
 
     parser = Parser()
@@ -1268,7 +1268,7 @@ def parse_circlemud_directory(directory_path: str | Path) -> AreaData:
         max_vnum = max(room_vnums)
 
         header: AreaHeader | None = None
-        resets: tuple[ResetDef, ...] = ()
+        resets: tuple[Reset, ...] = ()
         if wf.stem in zones_by_stem:
             header, resets = zones_by_stem[wf.stem]
         else:
@@ -1328,7 +1328,7 @@ def parse_circlemud_directory(directory_path: str | Path) -> AreaData:
 
     if combined_header and combined_header.name:
         all_rooms = [
-            RoomDef(
+            Room(
                 vnum=r.vnum,
                 name=r.name,
                 description=r.description,

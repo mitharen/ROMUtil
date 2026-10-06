@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from romutil.interfaces import BaseRenderer as InterfaceBaseRenderer
-from romutil.models import AreaHeader, Direction, ExitDef, RoomDef
+from romutil.models import AreaHeader, Direction, Exit, Room
 from romutil.renderers import (
     BaseRenderer,
     HTMLRenderer,
@@ -30,11 +30,11 @@ from romutil.types import (
 @pytest.fixture
 def sample_world_graph_and_layout() -> tuple[WorldGraph, SolvedLayout]:
     """Create a decoupled WorldGraph and SolvedLayout test fixture with 2 floors."""
-    ex100_north = ExitDef(direction=0, dst_vnum=101)  # North to 101
-    ex100_up = ExitDef(direction=4, dst_vnum=200)     # Up to 200
-    ex100_east = ExitDef(direction=1, dst_vnum=999)   # East stub to external room 999
+    ex100_north = Exit(direction=0, dst_vnum=101)  # North to 101
+    ex100_up = Exit(direction=4, dst_vnum=200)     # Up to 200
+    ex100_east = Exit(direction=1, dst_vnum=999)   # East stub to external room 999
 
-    r100 = RoomDef(
+    r100 = Room(
         vnum=100,
         name="Ground Hall",
         description="A grand entrance hall on the ground level.",
@@ -43,8 +43,8 @@ def sample_world_graph_and_layout() -> tuple[WorldGraph, SolvedLayout]:
         area_file="castle.are",
     )
 
-    ex101_south = ExitDef(direction=2, dst_vnum=100)  # Reciprocal south to 100
-    r101 = RoomDef(
+    ex101_south = Exit(direction=2, dst_vnum=100)  # Reciprocal south to 100
+    r101 = Room(
         vnum=101,
         name="Throne Room",
         description="The royal throne room.",
@@ -53,8 +53,8 @@ def sample_world_graph_and_layout() -> tuple[WorldGraph, SolvedLayout]:
         area_file="castle.are",
     )
 
-    ex200_down = ExitDef(direction=5, dst_vnum=100)   # Reciprocal down to 100
-    r200 = RoomDef(
+    ex200_down = Exit(direction=5, dst_vnum=100)   # Reciprocal down to 100
+    r200 = Room(
         vnum=200,
         name="Tower Observatory",
         description="A high observation deck with telescope.",
@@ -180,8 +180,8 @@ class TestJSONRendererDecoupled:
             renderer.render(graph, layout, None)  # type: ignore
 
     def test_build_area_json_pure_without_legacy_fields(self):
-        # RoomDef does not possess x, y, z, or dummy attributes
-        r_pure = RoomDef(vnum=42, name="Pure Room", description="No legacy fields")
+        # Room does not possess x, y, z, or dummy attributes
+        r_pure = Room(vnum=42, name="Pure Room", description="No legacy fields")
         assert not hasattr(r_pure, "x")
         assert not hasattr(r_pure, "y")
         assert not hasattr(r_pure, "z")
@@ -321,8 +321,8 @@ class TestSVGRendererDecoupled:
             (Direction.southeast, 8),
             (Direction.southwest, 9),
         ]
-        exits = tuple(ExitDef(direction=dir_enum, dst_vnum=9000 + i) for i, (dir_enum, _) in enumerate(directions))
-        r = RoomDef(vnum=10, name="Hub Room", description="Exits in all directions", exits=exits)
+        exits = tuple(Exit(direction=dir_enum, dst_vnum=9000 + i) for i, (dir_enum, _) in enumerate(directions))
+        r = Room(vnum=10, name="Hub Room", description="Exits in all directions", exits=exits)
 
         graph = WorldGraph(rooms={10: r}, exits=exits)
         layout = SolvedLayout(
@@ -347,7 +347,7 @@ class TestSVGRendererDecoupled:
 
     def test_svg_proj_room_input_types(self):
         coord = Coord3D(x=3, y=4, z=1)
-        r = RoomDef(vnum=10, name="Test", description="")
+        r = Room(vnum=10, name="Test", description="")
         layout = SolvedLayout(
             coordinates={10: coord},
             diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
@@ -457,7 +457,7 @@ class TestEdgeCasesAndAdaptLegacyRdb:
         assert html_out.exists()
 
     def test_single_room_world_graph(self, tmp_path):
-        r = RoomDef(vnum=1, name="Lone Room", description="Only room in the world.")
+        r = Room(vnum=1, name="Lone Room", description="Only room in the world.")
         graph = WorldGraph(rooms={1: r}, exits=(), header=None)
         layout = SolvedLayout(
             coordinates={1: Coord3D(x=0, y=0, z=0)},
@@ -478,7 +478,7 @@ class TestEdgeCasesAndAdaptLegacyRdb:
                 self.distance = 5
                 self.one_way = True
 
-        r1 = RoomDef(vnum=1, name="R1", description="", exits=(MockExit(),))  # type: ignore
+        r1 = Room(vnum=1, name="R1", description="", exits=(MockExit(),))  # type: ignore
         graph = WorldGraph(rooms={1: r1}, exits=())
         layout = SolvedLayout(
             coordinates={1: Coord3D(x=0, y=0, z=0)},

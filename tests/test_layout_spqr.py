@@ -17,14 +17,14 @@ from romutil.layout import (
     TreeBuilder,
     build_block_spqr_tree,
 )
-from romutil.models import Direction, ExitDef, RoomDef
+from romutil.models import Direction, Exit, Room
 from romutil.parser import parse_file
 from romutil.types import LayoutOptions, SolvedLayout, SolverStatus, WorldGraph
 
 
-def _make_room(vnum: int, exits: list[ExitDef] | None = None) -> RoomDef:
-    """Helper to construct a RoomDef with given exits."""
-    return RoomDef(
+def _make_room(vnum: int, exits: list[Exit] | None = None) -> Room:
+    """Helper to construct a Room with given exits."""
+    return Room(
         vnum=vnum,
         name=f"Room {vnum}",
         description="",
@@ -355,10 +355,10 @@ class TestSpqrEndToEndIntegration:
     def test_solver_with_spqr_synthetic_world_graph(self) -> None:
         """HierarchicalLayoutSolver solves synthetic topology with SpqrTreeBuilder."""
         rooms = {
-            1: RoomDef(vnum=1, name="R1", description="", exits=(ExitDef(direction=Direction.north, dst_vnum=2), ExitDef(direction=Direction.east, dst_vnum=3))),
-            2: RoomDef(vnum=2, name="R2", description="", exits=(ExitDef(direction=Direction.south, dst_vnum=1), ExitDef(direction=Direction.east, dst_vnum=4))),
-            3: RoomDef(vnum=3, name="R3", description="", exits=(ExitDef(direction=Direction.west, dst_vnum=1), ExitDef(direction=Direction.north, dst_vnum=4))),
-            4: RoomDef(vnum=4, name="R4", description="", exits=(ExitDef(direction=Direction.west, dst_vnum=2), ExitDef(direction=Direction.south, dst_vnum=3))),
+            1: Room(vnum=1, name="R1", description="", exits=(Exit(direction=Direction.north, dst_vnum=2), Exit(direction=Direction.east, dst_vnum=3))),
+            2: Room(vnum=2, name="R2", description="", exits=(Exit(direction=Direction.south, dst_vnum=1), Exit(direction=Direction.east, dst_vnum=4))),
+            3: Room(vnum=3, name="R3", description="", exits=(Exit(direction=Direction.west, dst_vnum=1), Exit(direction=Direction.north, dst_vnum=4))),
+            4: Room(vnum=4, name="R4", description="", exits=(Exit(direction=Direction.west, dst_vnum=2), Exit(direction=Direction.south, dst_vnum=3))),
         }
         all_exits = tuple(e for r in rooms.values() for e in r.exits)
         world_graph = WorldGraph(rooms=rooms, exits=all_exits)

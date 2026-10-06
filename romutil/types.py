@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping, Sequence
 
-from romutil.models import AreaData, AreaHeader, ExitDef, RoomDef
+from romutil.models import AreaData, AreaHeader, Exit, Room
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,8 +70,8 @@ class RenderOptions:
 class WorldGraph:
     """Immutable topology representation decoupling parsing from layout solving."""
 
-    rooms: Mapping[int, RoomDef]
-    exits: Sequence[ExitDef]
+    rooms: Mapping[int, Room]
+    exits: Sequence[Exit]
     header: AreaHeader | None = None
 
     @classmethod

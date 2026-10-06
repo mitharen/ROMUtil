@@ -45,7 +45,7 @@ class AreaHeader:
 
 
 @dataclass(frozen=True)
-class ExitDef:
+class Exit:
     direction: int
     dst_vnum: int
     description: str = ""
@@ -61,13 +61,13 @@ class ExtraDescr:
 
 
 @dataclass(frozen=True)
-class RoomDef:
+class Room:
     vnum: int
     name: str
     description: str
     room_flags: Any = 0
     sector: int = 0
-    exits: tuple[ExitDef, ...] = ()
+    exits: tuple[Exit, ...] = ()
     extras: tuple[Any, ...] = ()
     area_name: str | None = None
     area_file: str | None = None
@@ -80,7 +80,7 @@ class RoomDef:
 
 
 @dataclass(frozen=True)
-class MobileDef:
+class Mobile:
     vnum: int
     player_name: str
     short_desc: str
@@ -121,7 +121,7 @@ class MobileDef:
 
 
 @dataclass(frozen=True)
-class ObjectDef:
+class Object:
     vnum: int
     name: str
     short_desc: str
@@ -145,14 +145,14 @@ class ObjectDef:
 
 
 @dataclass(frozen=True)
-class ResetDef:
+class Reset:
     command: str
     args: tuple[Any, ...] = ()
     comment: str | None = None
 
 
 @dataclass(frozen=True)
-class ShopDef:
+class Shop:
     keeper: int
     buy_types: tuple[int, ...] = ()
     profit_buy: int = 100
@@ -163,7 +163,7 @@ class ShopDef:
 
 
 @dataclass(frozen=True)
-class SpecialDef:
+class Special:
     command: str
     vnum: int
     spec_fun: str
@@ -171,7 +171,7 @@ class SpecialDef:
 
 
 @dataclass(frozen=True)
-class HelpDef:
+class Help:
     level: int
     keywords: tuple[str, ...] = ()
     text: str = ""
@@ -182,7 +182,7 @@ class HelpDef:
 
 
 @dataclass(frozen=True)
-class SocialDef:
+class Social:
     name: str
     stages: tuple[str, ...] = ()
 
@@ -194,14 +194,14 @@ class SocialDef:
 @dataclass(frozen=True)
 class AreaData:
     header: AreaHeader | None = None
-    rooms: tuple[RoomDef, ...] = ()
-    mobiles: tuple[MobileDef, ...] = ()
-    objects: tuple[ObjectDef, ...] = ()
-    resets: tuple[ResetDef, ...] = ()
-    shops: tuple[ShopDef, ...] = ()
-    specials: tuple[SpecialDef, ...] = ()
-    helps: tuple[HelpDef, ...] = ()
-    socials: tuple[SocialDef, ...] = ()
+    rooms: tuple[Room, ...] = ()
+    mobiles: tuple[Mobile, ...] = ()
+    objects: tuple[Object, ...] = ()
+    resets: tuple[Reset, ...] = ()
+    shops: tuple[Shop, ...] = ()
+    specials: tuple[Special, ...] = ()
+    helps: tuple[Help, ...] = ()
+    socials: tuple[Social, ...] = ()
     reset_message: str | None = None
     flag: str | None = None
 
@@ -219,7 +219,7 @@ def merge_areas(areas: Sequence[AreaData], title: str | None = None) -> AreaData
     """Merge multiple AreaData containers into a unified composite AreaData.
 
     Combines rooms, mobiles, objects, resets, shops, specials, helps, and socials,
-    while tagging each RoomDef with its originating area provenance (area_name).
+    while tagging each Room with its originating area provenance (area_name).
     """
     if not areas:
         header = AreaHeader(
@@ -239,7 +239,7 @@ def merge_areas(areas: Sequence[AreaData], title: str | None = None) -> AreaData
     merged_filename = filenames[0] if filenames else "composite.are"
     merged_builder = ", ".join(builders)
 
-    merged_rooms: list[RoomDef] = []
+    merged_rooms: list[Room] = []
     seen_room_vnums: set[int] = set()
     for area in areas:
         source_area_name = area.header.name if area.header and area.header.name else None
@@ -251,7 +251,7 @@ def merge_areas(areas: Sequence[AreaData], title: str | None = None) -> AreaData
             r_area = room.area_name or source_area_name
             r_file = getattr(room, 'area_file', None) or source_area_file
             if room.area_name != r_area or getattr(room, 'area_file', None) != r_file:
-                room = RoomDef(
+                room = Room(
                     vnum=room.vnum,
                     name=room.name,
                     description=room.description,
@@ -264,7 +264,7 @@ def merge_areas(areas: Sequence[AreaData], title: str | None = None) -> AreaData
                 )
             merged_rooms.append(room)
 
-    merged_mobiles: list[MobileDef] = []
+    merged_mobiles: list[Mobile] = []
     seen_mob_vnums: set[int] = set()
     for area in areas:
         for mob in area.mobiles:
@@ -272,7 +272,7 @@ def merge_areas(areas: Sequence[AreaData], title: str | None = None) -> AreaData
                 seen_mob_vnums.add(mob.vnum)
                 merged_mobiles.append(mob)
 
-    merged_objects: list[ObjectDef] = []
+    merged_objects: list[Object] = []
     seen_obj_vnums: set[int] = set()
     for area in areas:
         for obj in area.objects:
@@ -280,11 +280,11 @@ def merge_areas(areas: Sequence[AreaData], title: str | None = None) -> AreaData
                 seen_obj_vnums.add(obj.vnum)
                 merged_objects.append(obj)
 
-    merged_resets: list[ResetDef] = []
+    merged_resets: list[Reset] = []
     for area in areas:
         merged_resets.extend(area.resets)
 
-    merged_shops: list[ShopDef] = []
+    merged_shops: list[Shop] = []
     seen_shop_keepers: set[int] = set()
     for area in areas:
         for shop in area.shops:
@@ -292,15 +292,15 @@ def merge_areas(areas: Sequence[AreaData], title: str | None = None) -> AreaData
                 seen_shop_keepers.add(shop.keeper)
                 merged_shops.append(shop)
 
-    merged_specials: list[SpecialDef] = []
+    merged_specials: list[Special] = []
     for area in areas:
         merged_specials.extend(area.specials)
 
-    merged_helps: list[HelpDef] = []
+    merged_helps: list[Help] = []
     for area in areas:
         merged_helps.extend(area.helps)
 
-    merged_socials: list[SocialDef] = []
+    merged_socials: list[Social] = []
     seen_social_names: set[str] = set()
     for area in areas:
         for soc in area.socials:
@@ -349,15 +349,15 @@ __all__ = [
     "AreaData",
     "AreaHeader",
     "Direction",
-    "ExitDef",
+    "Exit",
     "ExtraDescr",
-    "HelpDef",
-    "MobileDef",
-    "ObjectDef",
-    "ResetDef",
-    "RoomDef",
-    "ShopDef",
-    "SocialDef",
-    "SpecialDef",
+    "Help",
+    "Mobile",
+    "Object",
+    "Reset",
+    "Room",
+    "Shop",
+    "Social",
+    "Special",
     "merge_areas",
 ]
