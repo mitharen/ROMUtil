@@ -16,3 +16,9 @@
 - **Dedicated Feature Branches**: Every agent or contributor must operate on its own unique feature branch (e.g., `feature/<task-name>`). Never commit directly to `main`.
 - **Pre-Completion Checks**: Before completing a task or submitting a pull request, run `uv run pre-commit run --all-files` and `uv run pytest` (enforcing >= 95% coverage).
 - **No Unreviewed Direct Merges**: Feature branches must be verified through clean tests and code review before integration into `main`.
+
+## Local Example Artifact Generation Policy
+- **Visual Impact Verification on Task Completion**:
+  - Whenever a task affecting parsing, layout, or rendering is merged into `main`, the coordinator must automatically produce local example outputs to enable visual inspection of the changes.
+  - Build local map outputs using `uv run python scripts/build_pages.py --solver-timeout 10` (or targeted `romutil` CLI invocations) outputting to `_site/`.
+  - Provide direct clickable `file://` links to key outputs (e.g., `[Site Index](file:///home/user/proj/ROMUtil/_site/index.html)`, `[Midgaard HTML](file:///home/user/proj/ROMUtil/_site/midgaard.html)`, `[Midgaard Metropolitan HTML](file:///home/user/proj/ROMUtil/_site/midgaard_metropolitan.html)`) in the completion summary for user review.
