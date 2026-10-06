@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import pytest
 
-from romutil.models import AreaData, AreaHeader, RoomDef, ExitDef, Direction
+from romutil.models import AreaData, AreaHeader, Room, Exit, Direction
 from romutil.parser import Parser, eval_flags, normalize_dialect_buffer, sanitize_ackmud_colour
 from romutil.cli import cli, main
 
@@ -472,9 +472,9 @@ S
         assert vnums == [0, 3001]
 
     def test_room_zero_domain_models_and_graph(self):
-        """Validate RoomDef and ExitDef models with room 0."""
-        r0_def = RoomDef(vnum=0, name="The Void", description="Mist", sector=1, exits=(ExitDef(direction=4, dst_vnum=3001),))
-        r3001_def = RoomDef(vnum=3001, name="Temple", description="Pillars", sector=0, exits=(ExitDef(direction=5, dst_vnum=0),))
+        """Validate Room and Exit models with room 0."""
+        r0_def = Room(vnum=0, name="The Void", description="Mist", sector=1, exits=(Exit(direction=4, dst_vnum=3001),))
+        r3001_def = Room(vnum=3001, name="Temple", description="Pillars", sector=0, exits=(Exit(direction=5, dst_vnum=0),))
 
         assert r0_def.vnum == 0
         assert r0_def.exits[0].dst_vnum == 3001
@@ -1019,11 +1019,11 @@ class TestSmaugCompatibility:
         assert Direction(8) == Direction.southeast
         assert Direction(9) == Direction.southwest
 
-        # ExitDef mapping with raw integer 6-9
-        exit_def_6 = ExitDef(direction=6, dst_vnum=507)
+        # Exit mapping with raw integer 6-9
+        exit_def_6 = Exit(direction=6, dst_vnum=507)
         assert exit_def_6.direction == 6
         assert Direction(exit_def_6.direction) == Direction.northeast
-        exit_def_7 = ExitDef(direction=7, dst_vnum=508)
+        exit_def_7 = Exit(direction=7, dst_vnum=508)
         assert Direction(exit_def_7.direction) == Direction.northwest
 
 

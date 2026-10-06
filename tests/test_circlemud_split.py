@@ -13,7 +13,7 @@ Validates:
 from pathlib import Path
 import pytest
 
-from romutil.models import AreaData, AreaHeader, ExitDef, ResetDef
+from romutil.models import AreaData, AreaHeader, Exit, Reset
 from romutil.parser import (
     Parser,
     parse_circlemud_directory,

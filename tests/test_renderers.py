@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import romutil
-from romutil.models import AreaHeader, Direction, ExitDef, RoomDef
+from romutil.models import AreaHeader, Direction, Exit, Room
 from romutil.renderers import (
     HTML_TEMPLATE,
     RENDERERS,
@@ -37,26 +37,26 @@ from romutil.types import (
 @pytest.fixture
 def sample_rdb() -> tuple[WorldGraph, SolvedLayout]:
     """Create a sample solved room graph and layout with elevation layers."""
-    r1 = RoomDef(
+    r1 = Room(
         vnum=100,
         name="Ground Room",
         description="A room on the ground floor.",
         exits=(
-            ExitDef(direction=0, dst_vnum=101),
-            ExitDef(direction=4, dst_vnum=102),
+            Exit(direction=0, dst_vnum=101),
+            Exit(direction=4, dst_vnum=102),
         ),
     )
-    r2 = RoomDef(
+    r2 = Room(
         vnum=101,
         name="North Room",
         description="A room to the north.",
-        exits=(ExitDef(direction=2, dst_vnum=100),),
+        exits=(Exit(direction=2, dst_vnum=100),),
     )
-    r3 = RoomDef(
+    r3 = Room(
         vnum=102,
         name="Upper Room",
         description="A room on the second floor.",
-        exits=(ExitDef(direction=5, dst_vnum=100),),
+        exits=(Exit(direction=5, dst_vnum=100),),
     )
     header = AreaHeader(
         filename="sample.are",
@@ -68,10 +68,10 @@ def sample_rdb() -> tuple[WorldGraph, SolvedLayout]:
     graph = WorldGraph(
         rooms={100: r1, 101: r2, 102: r3},
         exits=(
-            ExitDef(direction=0, dst_vnum=101),
-            ExitDef(direction=4, dst_vnum=102),
-            ExitDef(direction=2, dst_vnum=100),
-            ExitDef(direction=5, dst_vnum=100),
+            Exit(direction=0, dst_vnum=101),
+            Exit(direction=4, dst_vnum=102),
+            Exit(direction=2, dst_vnum=100),
+            Exit(direction=5, dst_vnum=100),
         ),
         header=header,
     )
@@ -318,7 +318,7 @@ class TestSVGRenderer:
 
     def test_svg_split_levels_empty_unique_zs(self, tmp_path):
         # Room without coordinates
-        r = RoomDef(vnum=1, name="Void", description="Empty")
+        r = Room(vnum=1, name="Void", description="Empty")
         out = tmp_path / "empty_split.svg"
         renderer = SVGRenderer()
         graph = WorldGraph(rooms={1: r}, exits=(), header=None)
@@ -438,30 +438,30 @@ class TestWebViewerVisualAndUsabilityOptimizations:
     @pytest.fixture
     def multi_floor_rdb(self) -> tuple[WorldGraph, SolvedLayout]:
         """Create a multi-floor room database with one-way and relaxed exits."""
-        r1 = RoomDef(
+        r1 = Room(
             vnum=100,
             name="Ground Hall",
             description="Grand hall on the ground floor.",
             exits=(
-                ExitDef(direction=0, dst_vnum=101),  # Two-way north
-                ExitDef(direction=4, dst_vnum=200),  # Inter-floor up (Z=0 -> Z=1)
-                ExitDef(direction=1, dst_vnum=105),  # One-way east (no return)
-                ExitDef(direction=2, dst_vnum=999),  # Stub south (external)
+                Exit(direction=0, dst_vnum=101),  # Two-way north
+                Exit(direction=4, dst_vnum=200),  # Inter-floor up (Z=0 -> Z=1)
+                Exit(direction=1, dst_vnum=105),  # One-way east (no return)
+                Exit(direction=2, dst_vnum=999),  # Stub south (external)
             ),
         )
-        r2 = RoomDef(
+        r2 = Room(
             vnum=101,
             name="North Antechamber",
             description="Antechamber north of the hall.",
-            exits=(ExitDef(direction=2, dst_vnum=100),),
+            exits=(Exit(direction=2, dst_vnum=100),),
         )
-        r3 = RoomDef(
+        r3 = Room(
             vnum=200,
             name="Tower Balcony",
             description="Upper balcony overlooking the courtyard.",
-            exits=(ExitDef(direction=5, dst_vnum=100),),  # Inter-floor down (Z=1 -> Z=0)
+            exits=(Exit(direction=5, dst_vnum=100),),  # Inter-floor down (Z=1 -> Z=0)
         )
-        r4 = RoomDef(
+        r4 = Room(
             vnum=105,
             name="Secret Cellar",
             description="A one-way trap cellar with no reciprocal return exit.",
@@ -477,12 +477,12 @@ class TestWebViewerVisualAndUsabilityOptimizations:
         graph = WorldGraph(
             rooms={100: r1, 101: r2, 200: r3, 105: r4},
             exits=(
-                ExitDef(direction=0, dst_vnum=101),
-                ExitDef(direction=4, dst_vnum=200),
-                ExitDef(direction=1, dst_vnum=105),
-                ExitDef(direction=2, dst_vnum=999),
-                ExitDef(direction=2, dst_vnum=100),
-                ExitDef(direction=5, dst_vnum=100),
+                Exit(direction=0, dst_vnum=101),
+                Exit(direction=4, dst_vnum=200),
+                Exit(direction=1, dst_vnum=105),
+                Exit(direction=2, dst_vnum=999),
+                Exit(direction=2, dst_vnum=100),
+                Exit(direction=5, dst_vnum=100),
             ),
             header=header,
         )
@@ -824,8 +824,8 @@ class TestAreaProvenanceSerialization:
 
     def test_area_provenance_json_serialization_multi_area(self):
         """Verify area_name and area_file are serialized per room in multi-area databases."""
-        r1 = RoomDef(vnum=100, name="Midgaard Gate", description="Gate", area_name="Midgaard", area_file="midgaard.are")
-        r2 = RoomDef(vnum=200, name="Graveyard Entrance", description="Entrance", area_name="Graveyard", area_file="grave.are")
+        r1 = Room(vnum=100, name="Midgaard Gate", description="Gate", area_name="Midgaard", area_file="midgaard.are")
+        r2 = Room(vnum=200, name="Graveyard Entrance", description="Entrance", area_name="Graveyard", area_file="grave.are")
         header = AreaHeader(
             filename="composite.are",
             name="Midgaard Metropolitan",
@@ -851,7 +851,7 @@ class TestAreaProvenanceSerialization:
 
     def test_area_provenance_json_fallback_to_header(self):
         """Verify rooms without explicit area provenance fallback to header metadata."""
-        r1 = RoomDef(vnum=10, name="Single Room", description="Desc")
+        r1 = Room(vnum=10, name="Single Room", description="Desc")
         header = AreaHeader(
             filename="single.are",
             name="Single Domain",
@@ -876,9 +876,9 @@ class TestMultiAreaViewerUI:
 
     @pytest.fixture
     def composite_viewer_html(self) -> str:
-        r1 = RoomDef(vnum=100, name="Town Square", description="A lively square.", area_name="Midgaard", area_file="midgaard.are")
-        r2 = RoomDef(vnum=200, name="Cemetery Gate", description="A dark gate.", area_name="Graveyard", area_file="grave.are")
-        r3 = RoomDef(vnum=300, name="Assembly Line", description="Factory machines.", area_name="Mob Factory", area_file="mobfact.are")
+        r1 = Room(vnum=100, name="Town Square", description="A lively square.", area_name="Midgaard", area_file="midgaard.are")
+        r2 = Room(vnum=200, name="Cemetery Gate", description="A dark gate.", area_name="Graveyard", area_file="grave.are")
+        r3 = Room(vnum=300, name="Assembly Line", description="Factory machines.", area_name="Mob Factory", area_file="mobfact.are")
         header = AreaHeader(
             filename="composite.are",
             name="Midgaard + Graveyard + Mob Factory",

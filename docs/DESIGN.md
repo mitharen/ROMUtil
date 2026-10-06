@@ -64,7 +64,7 @@ flowchart TD
 1. **Parsing & Ingestion Subsystem**:
    - Ingests raw `.are` files, `.wld` files, and CircleMUD directory structures across diverse dialect grammars.
    - Evaluates piped bitmasks, sanitizes colour markup, and extracts room topology and exits into immutable AST records (`AreaData`).
-   - Converts `AreaData` into a canonical, immutable `WorldGraph` containing `RoomDef` records, `ExitDef` records, and optional `AreaHeader` metadata.
+   - Converts `AreaData` into a canonical, immutable `WorldGraph` containing `Room` records, `Exit` records, and optional `AreaHeader` metadata.
 2. **Hierarchical Solving Engine**:
    - Ingests the `WorldGraph` into an internal `LayoutGraph`.
    - Simplifies degree-2 straight corridors (`HallwayCompactor`) and cuts non-Euclidean cycle chords (`WarpSeverer`).
@@ -108,7 +108,7 @@ ROMUtil/
 │   │   └── simplification/      # Stage 2 graph reduction routines
 │   │       ├── hallways.py      # HallwayCompactor (degree-2 corridor compression)
 │   │       └── warps.py         # WarpSeverer (non-Euclidean cycle chord identification)
-│   ├── models.py                # Direction, RoomDef, ExitDef, and AST domain models
+│   ├── models.py                # Direction, Room, Exit, and AST domain models
 │   ├── parser.py                # PLY Lexer & LALR Parser with resilient dialect normalization
 │   ├── renderers/               # Decoupled map rendering subsystem
 │   │   ├── __init__.py          # RENDERERS registry, get_renderer, and render_map dispatcher
@@ -134,17 +134,17 @@ ROMUtil/
 The ingestion subsystem processes text-based area files into strongly-typed AST structures and constructs an immutable `WorldGraph`. It implements [`BaseParser`](../romutil/interfaces.py) and supports legacy and modern MUD dialects: ROM 2.4, Merc 2.1/2.2, Envy 1.0/2.0, CircleMUD / DikuMUD III, DikuMUD Alfa / Gamma, ACK!MUD / AckFUSS, and ANATOLIA 3.0.
 
 - **Data Contracts**:
-  - `RoomDef`: Immutable room definition containing `vnum`, `name`, `description`, `room_flags`, `sector`, and `exits` tuple.
-  - `ExitDef`: Immutable directional exit definition containing `direction` integer, `dst_vnum` integer, `description`, `keyword`, `key_vnum`, and `flags`.
+  - `Room`: Immutable room definition containing `vnum`, `name`, `description`, `room_flags`, `sector`, and `exits` tuple.
+  - `Exit`: Immutable directional exit definition containing `direction` integer, `dst_vnum` integer, `description`, `keyword`, `key_vnum`, and `flags`.
   - `AreaData`: Immutable container holding top-level AST sections (`header`, `rooms`, `mobiles`, `objects`, `resets`, `shops`, `specials`, `helps`, `socials`, `reset_message`, `flag`).
-  - `WorldGraph`: Primary immutable graph representation holding `rooms` (`Mapping[int, RoomDef]`), `exits` (`Sequence[ExitDef]`), and optional `header` (`AreaHeader`). Constructed via `WorldGraph.from_area_data(area)`.
+  - `WorldGraph`: Primary immutable graph representation holding `rooms` (`Mapping[int, Room]`), `exits` (`Sequence[Exit]`), and optional `header` (`AreaHeader`). Constructed via `WorldGraph.from_area_data(area)`.
 
 - **DikuMUD Alfa / Gamma Monolithic Ingestion & VNUM 0 ("The Void") Architecture**:
   - Ingests monolithic `.wld` files (such as `tinyworld.wld`) containing unpartitioned room definitions across multiple zones without `#AREA` metadata headers or `#ROOMS` section boundaries.
   - Accommodates Diku Alfa's 3-parameter room definition lines (`<zone_number> <room_flags> <sector_type>`) and normalizes trailing EOF sentinels (`#99999\n$~`, `#0\n$~`, `$~`, `$\n`).
   - Resolves semantic overloading of VNUM `0` ("The Void"): in DikuMUD Alfa, room `#0` is a valid, traversable room with cardinal exits, while in ROM/Merc derivations `#0` functions as a section terminator sentinel. The lexer utilizes contextual lookahead in `t_NULL`: when `#0` is immediately followed by a tilde-terminated room title string, it emits `VNUM(0)` to enter `p_room`; when followed by section boundaries or EOF, it emits `NULL` to close `p_sections` without LALR(1) shift/reduce conflicts.
   - Generates synthesized `AreaHeader` metadata when standalone or monolithic `.wld` files are processed by the CLI or plotting pipelines, determining bounding intervals $[V_{\min}, V_{\max}]$ from parsed rooms and deriving human-readable area names from filename stems.
-  - Domain abstractions (`RoomDef`, `Room`, `Exit`) and MILP solver formulations treat node `0` and edges to destination `0` symmetrically with non-zero nodes, supporting full vertical layering and reciprocal one-way exit resolution.
+  - Domain abstractions (`Room`, `Exit`) and MILP solver formulations treat node `0` and edges to destination `0` symmetrically with non-zero nodes, supporting full vertical layering and reciprocal one-way exit resolution.
 
 - **ACK!MUD / AckFUSS Tagged Headers & Colour Markup Sanitization**:
   - Ingests ACK!MUD 4.3 and AckFUSS area definitions featuring single-character tagged line headers (`Q`, `K`, `L`, `N`, `I`, `V`, `X`, `F`, `U`, `O`, `R`, `W`, `M`) under `#AREA` or `#AREADATA`.

@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Union, overload
 import svgwrite
 from svgwrite import cm
 
-from romutil.models import Direction, ExitDef
+from romutil.models import Direction, Exit
 from romutil.renderers.base import BaseRenderer
 from romutil.types import Coord3D, LayoutDiagnostics, RenderOptions, SolvedLayout, SolverStatus, WorldGraph
 
@@ -323,7 +323,7 @@ function toggleElevation(z) {
                     else getattr(ex, "dst_vnum", getattr(ex, "dst", None))
                 )
 
-                if getattr(ex, "one_way", None) is not None and not isinstance(ex, ExitDef):
+                if getattr(ex, "one_way", None) is not None and not isinstance(ex, Exit):
                     is_one_way = bool(getattr(ex, "one_way"))
                 elif dst_v is not None and dst_v in self.graph.rooms:
                     dst_room = self.graph.rooms[dst_v]

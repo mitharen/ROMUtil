@@ -89,8 +89,8 @@ Represents an integer 3D grid point. Hashable and immutable.
 ```python
 @dataclass(frozen=True)
 class WorldGraph:
-    rooms: Mapping[int, RoomDef]
-    exits: Sequence[ExitDef]
+    rooms: Mapping[int, Room]
+    exits: Sequence[Exit]
     header: AreaHeader | None = None
 
     @classmethod

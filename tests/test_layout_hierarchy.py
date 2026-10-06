@@ -14,13 +14,13 @@ from romutil.layout import (
     SolveTreeNode,
     TreeBuilder,
 )
-from romutil.models import Direction, ExitDef, RoomDef
+from romutil.models import Direction, Exit, Room
 from romutil.types import Coord3D, LayoutOptions, SolvedLayout, SolverStatus, WorldGraph
 
 
-def _make_room(vnum: int, exits: list[ExitDef] | None = None) -> RoomDef:
-    """Helper to construct a RoomDef with given exits."""
-    return RoomDef(
+def _make_room(vnum: int, exits: list[Exit] | None = None) -> Room:
+    """Helper to construct a Room with given exits."""
+    return Room(
         vnum=vnum,
         name=f"Room {vnum}",
         description="",
@@ -384,13 +384,13 @@ class TestHierarchicalLayoutSolverIntegration:
 
     def test_end_to_end_solve_articulated_world_graph(self) -> None:
         # Build WorldGraph representing barbell graph
-        ex1 = ExitDef(direction=Direction.east, dst_vnum=2)
-        ex2 = ExitDef(direction=Direction.south, dst_vnum=3)
-        ex3 = ExitDef(direction=Direction.northwest, dst_vnum=1)
-        ex4 = ExitDef(direction=Direction.east, dst_vnum=4)
-        ex5 = ExitDef(direction=Direction.east, dst_vnum=5)
-        ex6 = ExitDef(direction=Direction.south, dst_vnum=6)
-        ex7 = ExitDef(direction=Direction.northwest, dst_vnum=4)
+        ex1 = Exit(direction=Direction.east, dst_vnum=2)
+        ex2 = Exit(direction=Direction.south, dst_vnum=3)
+        ex3 = Exit(direction=Direction.northwest, dst_vnum=1)
+        ex4 = Exit(direction=Direction.east, dst_vnum=4)
+        ex5 = Exit(direction=Direction.east, dst_vnum=5)
+        ex6 = Exit(direction=Direction.south, dst_vnum=6)
+        ex7 = Exit(direction=Direction.northwest, dst_vnum=4)
 
         r1 = _make_room(1, [ex1])
         r2 = _make_room(2, [ex2])
@@ -415,12 +415,12 @@ class TestHierarchicalLayoutSolverIntegration:
 
     def test_end_to_end_solve_multiple_components(self) -> None:
         # Two disconnected triangles in WorldGraph
-        ex1 = ExitDef(direction=Direction.east, dst_vnum=2)
-        ex2 = ExitDef(direction=Direction.south, dst_vnum=3)
-        ex3 = ExitDef(direction=Direction.northwest, dst_vnum=1)
-        ex4 = ExitDef(direction=Direction.east, dst_vnum=5)
-        ex5 = ExitDef(direction=Direction.south, dst_vnum=6)
-        ex6 = ExitDef(direction=Direction.northwest, dst_vnum=4)
+        ex1 = Exit(direction=Direction.east, dst_vnum=2)
+        ex2 = Exit(direction=Direction.south, dst_vnum=3)
+        ex3 = Exit(direction=Direction.northwest, dst_vnum=1)
+        ex4 = Exit(direction=Direction.east, dst_vnum=5)
+        ex5 = Exit(direction=Direction.south, dst_vnum=6)
+        ex6 = Exit(direction=Direction.northwest, dst_vnum=4)
 
         r1 = _make_room(1, [ex1])
         r2 = _make_room(2, [ex2])

@@ -6,16 +6,16 @@ from romutil.models import (
     AreaData,
     AreaHeader,
     Direction,
-    ExitDef,
+    Exit,
     ExtraDescr,
-    HelpDef,
-    MobileDef,
-    ObjectDef,
-    ResetDef,
-    RoomDef,
-    ShopDef,
-    SocialDef,
-    SpecialDef,
+    Help,
+    Mobile,
+    Object,
+    Reset,
+    Room,
+    Shop,
+    Social,
+    Special,
 )
 from romutil.parser import Parser
 import importlib
@@ -49,8 +49,8 @@ class TestTypedDataClasses:
         with pytest.raises(dataclasses.FrozenInstanceError):
             header.name = "New Name"  # type: ignore
 
-    def test_exit_def(self):
-        e1 = ExitDef(
+    def test_exit(self):
+        e1 = Exit(
             direction=0,
             dst_vnum=101,
             description="North door",
@@ -74,10 +74,10 @@ class TestTypedDataClasses:
         assert not (e1 == (0, 101))
         assert not (e1 == "not an exit")
 
-        # Equality with another ExitDef
-        e2 = ExitDef(direction=0, dst_vnum=101, description="North door", keyword="door", key_vnum=1000, flags=1)
+        # Equality with another Exit
+        e2 = Exit(direction=0, dst_vnum=101, description="North door", keyword="door", key_vnum=1000, flags=1)
         assert e1 == e2
-        e3 = ExitDef(direction=1, dst_vnum=101)
+        e3 = Exit(direction=1, dst_vnum=101)
         assert e1 != e3
 
         # Hashing
@@ -98,11 +98,11 @@ class TestTypedDataClasses:
         with pytest.raises(dataclasses.FrozenInstanceError):
             ext.keyword = "other"  # type: ignore
 
-    def test_room_def(self):
-        e1 = ExitDef(direction=0, dst_vnum=101)
+    def test_room(self):
+        e1 = Exit(direction=0, dst_vnum=101)
         ext = ExtraDescr(keyword="plaque", description="A gold plaque.")
         # Test passing lists to verify __post_init__ converts to tuples
-        room = RoomDef(
+        room = Room(
             vnum=100,
             name="Hall",
             description="A grand hall.",
@@ -127,8 +127,8 @@ class TestTypedDataClasses:
         with pytest.raises(dataclasses.FrozenInstanceError):
             room.name = "Other"  # type: ignore
 
-    def test_mobile_def(self):
-        mob = MobileDef(
+    def test_mobile(self):
+        mob = Mobile(
             vnum=100,
             player_name="goblin scout",
             short_desc="a goblin scout",
@@ -149,8 +149,8 @@ class TestTypedDataClasses:
         with pytest.raises(dataclasses.FrozenInstanceError):
             mob.vnum = 200  # type: ignore
 
-    def test_object_def(self):
-        obj = ObjectDef(
+    def test_object(self):
+        obj = Object(
             vnum=200,
             name="sword rusty",
             short_desc="a rusty sword",
@@ -173,36 +173,36 @@ class TestTypedDataClasses:
         with pytest.raises(dataclasses.FrozenInstanceError):
             obj.cost = 50  # type: ignore
 
-    def test_auxiliary_defs(self):
-        # ResetDef
-        rst = ResetDef(command="M", args=(0, 100, 1, 100, 1), comment="* load mob")
+    def test_auxiliary_models(self):
+        # Reset
+        rst = Reset(command="M", args=(0, 100, 1, 100, 1), comment="* load mob")
         assert rst.command == "M"
         assert rst.args == (0, 100, 1, 100, 1)
         with pytest.raises(TypeError):
             _ = rst[0]  # type: ignore
 
-        # ShopDef
-        shop = ShopDef(keeper=100, buy_types=(1, 2, 3, 4, 5), profit_buy=120, profit_sell=80, open_hour=8, close_hour=20)
+        # Shop
+        shop = Shop(keeper=100, buy_types=(1, 2, 3, 4, 5), profit_buy=120, profit_sell=80, open_hour=8, close_hour=20)
         assert shop.keeper == 100
         with pytest.raises(TypeError):
             _ = shop[0]  # type: ignore
 
-        # SpecialDef
-        spec = SpecialDef(command="M", vnum=100, spec_fun="spec_cast_mage", comment="* spec")
+        # Special
+        spec = Special(command="M", vnum=100, spec_fun="spec_cast_mage", comment="* spec")
         assert spec.command == "M"
         assert spec.vnum == 100
         with pytest.raises(TypeError):
             _ = spec[0]  # type: ignore
 
-        # HelpDef
-        help_def = HelpDef(level=1, keywords=["TEST", "HELP"], text="Help text")  # type: ignore
-        assert isinstance(help_def.keywords, tuple)
-        assert help_def.level == 1
+        # Help
+        help_entry = Help(level=1, keywords=["TEST", "HELP"], text="Help text")  # type: ignore
+        assert isinstance(help_entry.keywords, tuple)
+        assert help_entry.level == 1
         with pytest.raises(TypeError):
-            _ = help_def[0]  # type: ignore
+            _ = help_entry[0]  # type: ignore
 
-        # SocialDef
-        soc = SocialDef(name="dance", stages=["dance1", "dance2"])  # type: ignore
+        # Social
+        soc = Social(name="dance", stages=["dance1", "dance2"])  # type: ignore
         assert isinstance(soc.stages, tuple)
         assert soc.name == "dance"
         with pytest.raises(TypeError):
@@ -210,8 +210,8 @@ class TestTypedDataClasses:
 
     def test_area_data(self):
         header = AreaHeader(filename="a.are", name="A", builder="B", vnum_min=1, vnum_max=10)
-        r1 = RoomDef(vnum=1, name="R1", description="D1")
-        r2 = RoomDef(vnum=2, name="R2", description="D2")
+        r1 = Room(vnum=1, name="R1", description="D1")
+        r2 = Room(vnum=2, name="R2", description="D2")
         area = AreaData(
             header=header,
             rooms=[r1, r2],  # type: ignore
@@ -267,7 +267,7 @@ class TestTypedDataClasses:
         assert Direction.southeast.invert() == Direction.northwest
 
     def test_parser_returns_strongly_typed_ast(self):
-        """Acceptance Criteria: Parser().parse() returns an AreaData instance with isinstance(r, RoomDef) for all rooms."""
+        """Parser returns an AreaData instance with Room instances for all rooms."""
         parser = Parser()
         minimal_area = """#AREA
 test_typed.are~
@@ -305,10 +305,10 @@ S
         assert len(result.rooms) == 2
 
         for r in result.rooms:
-            assert isinstance(r, RoomDef)
+            assert isinstance(r, Room)
             assert not isinstance(r, tuple)
             for e in r.exits:
-                assert isinstance(e, ExitDef)
+                assert isinstance(e, Exit)
                 assert not isinstance(e, tuple)
 
     @pytest.mark.skipif(not os.path.isdir(SAMPLE_AREAS_DIR), reason="QuickMUD area files not available")
@@ -322,22 +322,22 @@ S
         assert isinstance(result.header, AreaHeader)
         assert len(result.rooms) > 0
         for r in result.rooms:
-            assert isinstance(r, RoomDef)
+            assert isinstance(r, Room)
             assert not isinstance(r, tuple)
             for e in r.exits:
-                assert isinstance(e, ExitDef)
+                assert isinstance(e, Exit)
                 assert not isinstance(e, tuple)
 
         for m in result.mobiles:
-            assert isinstance(m, MobileDef)
+            assert isinstance(m, Mobile)
             assert not isinstance(m, tuple)
 
         for o in result.objects:
-            assert isinstance(o, ObjectDef)
+            assert isinstance(o, Object)
             assert not isinstance(o, tuple)
 
         for rst in result.resets:
-            assert isinstance(rst, ResetDef)
+            assert isinstance(rst, Reset)
             assert not isinstance(rst, tuple)
 
     def test_cli_legacy_fallback(self, monkeypatch, tmp_path):

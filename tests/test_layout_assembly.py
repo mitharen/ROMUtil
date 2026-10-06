@@ -20,7 +20,7 @@ from romutil.layout.ir import (
 from romutil.layout.milp import HierarchicalTreeSolver
 from romutil.layout.protocols import LayoutAssembler
 from romutil.layout.simplification import HallwayCompactor
-from romutil.models import Direction, ExitDef, RoomDef
+from romutil.models import Direction, Exit, Room
 from romutil.types import (
     Coord3D,
     LayoutOptions,
@@ -30,8 +30,8 @@ from romutil.types import (
 )
 
 
-def _make_dummy_room(vnum: int) -> RoomDef:
-    return RoomDef(vnum=vnum, name=f"Room {vnum}", description="", exits=())
+def _make_dummy_room(vnum: int) -> Room:
+    return Room(vnum=vnum, name=f"Room {vnum}", description="", exits=())
 
 
 class TestHierarchicalLayoutAssemblerProtocol:
@@ -715,7 +715,7 @@ class TestStatusAggregation:
     def _make_fixture(self, statuses: dict[str, str | SolverStatus | None]) -> tuple[SolveTree, TreeSolution, SimplifiedGraph]:
         nodes: list[SolveTreeNode] = []
         node_sols: dict[str, NodeSolution] = {}
-        rooms: dict[int, RoomDef] = {}
+        rooms: dict[int, Room] = {}
 
         for idx, (node_id, st) in enumerate(statuses.items(), start=1):
             nodes.append(SolveTreeNode(node_id=node_id, node_type="leaf", rooms=frozenset({idx})))
@@ -842,67 +842,67 @@ class TestHierarchicalLayoutPipelineIntegration:
         """Solve an area with a 4-room cycle, articulation point, and 3-room corridor."""
         # Cycle: 1 -E-> 2 -N-> 3 -W-> 4 -S-> 1
         # Articulation point at 2 connecting to corridor: 2 -E-> 5 -E-> 6 -E-> 7
-        r1 = RoomDef(
+        r1 = Room(
             vnum=1,
             name="R1",
             description="",
             exits=(
-                ExitDef(direction=Direction.east, dst_vnum=2),
-                ExitDef(direction=Direction.north, dst_vnum=4),
+                Exit(direction=Direction.east, dst_vnum=2),
+                Exit(direction=Direction.north, dst_vnum=4),
             ),
         )
-        r2 = RoomDef(
+        r2 = Room(
             vnum=2,
             name="R2",
             description="",
             exits=(
-                ExitDef(direction=Direction.west, dst_vnum=1),
-                ExitDef(direction=Direction.north, dst_vnum=3),
-                ExitDef(direction=Direction.east, dst_vnum=5),
+                Exit(direction=Direction.west, dst_vnum=1),
+                Exit(direction=Direction.north, dst_vnum=3),
+                Exit(direction=Direction.east, dst_vnum=5),
             ),
         )
-        r3 = RoomDef(
+        r3 = Room(
             vnum=3,
             name="R3",
             description="",
             exits=(
-                ExitDef(direction=Direction.south, dst_vnum=2),
-                ExitDef(direction=Direction.west, dst_vnum=4),
+                Exit(direction=Direction.south, dst_vnum=2),
+                Exit(direction=Direction.west, dst_vnum=4),
             ),
         )
-        r4 = RoomDef(
+        r4 = Room(
             vnum=4,
             name="R4",
             description="",
             exits=(
-                ExitDef(direction=Direction.east, dst_vnum=3),
-                ExitDef(direction=Direction.south, dst_vnum=1),
+                Exit(direction=Direction.east, dst_vnum=3),
+                Exit(direction=Direction.south, dst_vnum=1),
             ),
         )
-        r5 = RoomDef(
+        r5 = Room(
             vnum=5,
             name="R5",
             description="",
             exits=(
-                ExitDef(direction=Direction.west, dst_vnum=2),
-                ExitDef(direction=Direction.east, dst_vnum=6),
+                Exit(direction=Direction.west, dst_vnum=2),
+                Exit(direction=Direction.east, dst_vnum=6),
             ),
         )
-        r6 = RoomDef(
+        r6 = Room(
             vnum=6,
             name="R6 Corridor",
             description="",
             exits=(
-                ExitDef(direction=Direction.west, dst_vnum=5),
-                ExitDef(direction=Direction.east, dst_vnum=7),
+                Exit(direction=Direction.west, dst_vnum=5),
+                Exit(direction=Direction.east, dst_vnum=7),
             ),
         )
-        r7 = RoomDef(
+        r7 = Room(
             vnum=7,
             name="R7 End",
             description="",
             exits=(
-                ExitDef(direction=Direction.west, dst_vnum=6),
+                Exit(direction=Direction.west, dst_vnum=6),
             ),
         )
 
