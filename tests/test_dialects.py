@@ -568,7 +568,7 @@ $~
 
 
 class TestAckMudCompatibility:
-    """Comprehensive unit and regression tests for ACK!MUD / AckFUSS compatibility (Task 8f)."""
+    """Comprehensive unit and regression tests for ACK!MUD / AckFUSS compatibility."""
 
     def test_colour_sanitization_tokens(self):
         """Verify all standard ACK!MUD @@<char> colour tokens are cleanly stripped."""

@@ -433,7 +433,7 @@ class TestSVGRendererDelegation:
 
 
 class TestWebViewerVisualAndUsabilityOptimizations:
-    """Unit and regression tests for Task 9c web viewer visual & usability enhancements."""
+    """Unit and regression tests for interactive web viewer visual and usability enhancements."""
 
     @pytest.fixture
     def multi_floor_rdb(self) -> tuple[WorldGraph, SolvedLayout]:
@@ -686,7 +686,7 @@ class TestWebViewerVisualAndUsabilityOptimizations:
         assert "panToMinimapCoord" in content
 
     def test_arbitrary_multi_floor_selection(self, multi_floor_rdb):
-        """Verify multi-floor level selection controls, active floor set, and legend toggling (Task 9h)."""
+        """Verify multi-floor level selection controls, active floor set, and legend toggling."""
         graph, layout = multi_floor_rdb
         data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
@@ -715,7 +715,7 @@ class TestWebViewerVisualAndUsabilityOptimizations:
         assert "leg.addEventListener('click', () => toggleFloor(z));" in html
 
     def test_collapsible_sidebar_controls_and_layout(self, multi_floor_rdb):
-        """Verify collapsible sidebar toggle button, expand tab, and collapsed CSS layout (Task 9h)."""
+        """Verify collapsible sidebar toggle button, expand tab, and collapsed CSS layout."""
         graph, layout = multi_floor_rdb
         data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
@@ -740,7 +740,7 @@ class TestWebViewerVisualAndUsabilityOptimizations:
         assert "sidebar.classList.toggle('collapsed', collapsed);" in html
 
     def test_minimap_drag_navigation_and_cursors(self, multi_floor_rdb):
-        """Verify minimap drag-scroll event listeners, coordinate mapping math, and cursor styles (Task 9h)."""
+        """Verify minimap drag-scroll event listeners, coordinate mapping math, and cursor styles."""
         graph, layout = multi_floor_rdb
         data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
@@ -765,7 +765,7 @@ class TestWebViewerVisualAndUsabilityOptimizations:
         assert "#minimap.dragging" in html
 
     def test_mobile_touch_gestures_and_pinch_zoom(self, multi_floor_rdb):
-        """Verify mobile touch drag-to-pan, minimap touch navigation, and pinch-to-zoom (Task 9i)."""
+        """Verify mobile touch drag-to-pan, minimap touch navigation, and pinch-to-zoom."""
         graph, layout = multi_floor_rdb
         data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
@@ -820,7 +820,7 @@ class TestWebViewerVisualAndUsabilityOptimizations:
 
 
 class TestAreaProvenanceSerialization:
-    """Test area provenance ingestion and serialization in JSON and HTML (Task 10c)."""
+    """Test area provenance ingestion and serialization in JSON and HTML."""
 
     def test_area_provenance_json_serialization_multi_area(self):
         """Verify area_name and area_file are serialized per room in multi-area databases."""
@@ -872,7 +872,7 @@ class TestAreaProvenanceSerialization:
 
 
 class TestMultiAreaViewerUI:
-    """Test interactive zone/area filtering, legend, styling, and inspector in HTML viewer (Task 10c)."""
+    """Test interactive zone/area filtering, legend, styling, and inspector in HTML viewer."""
 
     @pytest.fixture
     def composite_viewer_html(self) -> str:
