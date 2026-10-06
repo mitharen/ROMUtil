@@ -5,10 +5,9 @@ from __future__ import annotations
 import importlib.resources
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional, Union, overload
+from typing import Any, Dict, Optional, Union
 
-from romutil.models import AreaHeader, Room
-from romutil.renderers.base import BaseRenderer, adapt_legacy_rdb
+from romutil.renderers.base import BaseRenderer
 from romutil.renderers.json import build_area_json
 from romutil.types import RenderOptions, SolvedLayout, WorldGraph
 
@@ -80,7 +79,6 @@ def export_html(
 class HTMLRenderer:
     """Renderer generating standalone interactive HTML/JS map viewers conforming to BaseRenderer."""
 
-    @overload
     def render(
         self,
         graph: WorldGraph,
@@ -88,64 +86,22 @@ class HTMLRenderer:
         output_path: Path | str,
         options: RenderOptions | None = None,
         *,
-        header: AreaHeader | None = None,
+        title: Optional[str] = None,
+        bounds: Optional[Dict[str, int]] = None,
         **extra_options: Any,
     ) -> Path:
-        ...
-
-    @overload
-    def render(
-        self,
-        graph: dict[int, Any] | list[Any],
-        layout: str | Path,
-        output_path: AreaHeader | Any | None = None,
-        options: Any = None,
-        *,
-        header: AreaHeader | None = None,
-        **extra_options: Any,
-    ) -> Path:
-        ...
-
-    def render(
-        self,
-        graph: Any,
-        layout: Any,
-        output_path: Any = None,
-        options: Any = None,
-        *,
-        header: AreaHeader | None = None,
-        **extra_options: Any,
-    ) -> Path:
-        """Render a standalone interactive HTML viewer for a WorldGraph and SolvedLayout.
-
-        Primary signature: render(graph, layout, output_path, options=None)
-        Legacy signature: render(rdb, output_path, header=None, **options)
-        """
-        if isinstance(graph, WorldGraph):
-            actual_graph = graph
-            if not isinstance(layout, SolvedLayout):
-                raise TypeError(f"Expected SolvedLayout as second argument, got {type(layout).__name__}")
-            actual_layout = layout
-            if output_path is None:
-                raise TypeError("output_path must be specified")
-            actual_output_path = Path(output_path)
-            actual_options = options
-            title = extra_options.get("title")
-            bounds = extra_options.get("bounds")
-        else:
-            # Legacy signature: render(rdb, output_path, header=None, **options)
-            legacy_rdb = graph
-            actual_output_path = Path(layout if isinstance(layout, (str, Path)) else str(layout))
-            legacy_header = header if header is not None else (
-                output_path if isinstance(output_path, (AreaHeader, tuple, list)) or hasattr(output_path, "filename") or hasattr(output_path, "name") else None
-            )
-            actual_graph, actual_layout = adapt_legacy_rdb(legacy_rdb, legacy_header)
-            actual_options = options
-            title = extra_options.get("title")
-            bounds = extra_options.get("bounds")
-
-        data = build_area_json(actual_graph, actual_layout, actual_options, bounds=bounds)
-        return export_html(data, actual_output_path, title=title)
+        """Render a standalone interactive HTML viewer for a WorldGraph and SolvedLayout."""
+        if not isinstance(graph, WorldGraph):
+            raise TypeError(f"Expected WorldGraph as first argument, got {type(graph).__name__}")
+        if not isinstance(layout, SolvedLayout):
+            raise TypeError(f"Expected SolvedLayout as second argument, got {type(layout).__name__}")
+        if output_path is None:
+            raise TypeError("output_path must be specified")
+        actual_output_path = Path(output_path)
+        actual_title = title or extra_options.get("title")
+        actual_bounds = bounds or extra_options.get("bounds")
+        data = build_area_json(graph, layout, options, bounds=actual_bounds)
+        return export_html(data, actual_output_path, title=actual_title)
 
 
 __all__ = [

@@ -4,45 +4,32 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, overload
+from typing import Any, Dict, List, Optional, Union
 
-from romutil.models import AreaHeader, Direction, Room
-from romutil.renderers.base import BaseRenderer, adapt_legacy_rdb
-from romutil.types import Coord3D, LayoutDiagnostics, RenderOptions, SolvedLayout, SolverStatus, WorldGraph
+from romutil.models import Direction
+from romutil.renderers.base import BaseRenderer
+from romutil.types import RenderOptions, SolvedLayout, WorldGraph
 
 
 def build_area_json(
-    graph_or_rooms: WorldGraph | Dict[int, Any] | List[Any],
-    layout_or_meta: Optional[Any] = None,
-    options_or_bounds: Optional[Any] = None,
+    graph: WorldGraph,
+    layout: SolvedLayout,
+    options: RenderOptions | None = None,
     *,
-    area_meta: Optional[Any] = None,
     bounds: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Any]:
     """Construct a JSON-serializable dictionary representing the solved area map.
 
-    Consumes WorldGraph and SolvedLayout with zero access to legacy Room.x/y/z/dummy.
-    Provides backward-compatible fallback for legacy callers passing (rdb, area_meta, bounds).
+    Consumes WorldGraph and SolvedLayout strictly.
     """
-    if isinstance(graph_or_rooms, WorldGraph):
-        graph = graph_or_rooms
-        if isinstance(layout_or_meta, SolvedLayout):
-            layout = layout_or_meta
-        else:
-            layout = SolvedLayout(
-                coordinates={},
-                diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
-            )
-        resolved_bounds = bounds
-        if resolved_bounds is None and isinstance(options_or_bounds, dict):
-            resolved_bounds = options_or_bounds.get("bounds")
-    else:
-        # Legacy caller passing rooms: dict[int, Room] or list[Room]
-        meta = area_meta if area_meta is not None else layout_or_meta
-        resolved_bounds = bounds if bounds is not None else (
-            options_or_bounds if isinstance(options_or_bounds, dict) else None
-        )
-        graph, layout = adapt_legacy_rdb(graph_or_rooms, meta)
+    if not isinstance(graph, WorldGraph):
+        raise TypeError(f"Expected WorldGraph as first argument, got {type(graph).__name__}")
+    if not isinstance(layout, SolvedLayout):
+        raise TypeError(f"Expected SolvedLayout as second argument, got {type(layout).__name__}")
+
+    resolved_bounds = bounds
+    if resolved_bounds is None and isinstance(options, dict):
+        resolved_bounds = options.get("bounds")
 
     # Determine area name and filename
     area_name = ""
@@ -84,7 +71,7 @@ def build_area_json(
         }
 
     # Sort rooms deterministically by VNUM
-    sorted_rooms = sorted(graph.rooms.values(), key=lambda r: int(getattr(r, "vnum", 0)))
+    sorted_rooms = sorted(graph.rooms.values(), key=lambda r: int(r.vnum))
 
     rooms_data = []
     for r in sorted_rooms:
@@ -199,7 +186,6 @@ def export_json(data: Dict[str, Any], filepath: Union[str, Path], indent: int = 
 class JSONRenderer:
     """Renderer exporting map data to structured JSON format conforming to BaseRenderer."""
 
-    @overload
     def render(
         self,
         graph: WorldGraph,
@@ -207,63 +193,18 @@ class JSONRenderer:
         output_path: Path | str,
         options: RenderOptions | None = None,
         *,
-        header: AreaHeader | None = None,
-        **extra_options: Any,
+        indent: int = 2,
+        bounds: Optional[Dict[str, int]] = None,
     ) -> Path:
-        ...
-
-    @overload
-    def render(
-        self,
-        graph: dict[int, Any] | list[Any],
-        layout: str | Path,
-        output_path: AreaHeader | Any | None = None,
-        options: Any = None,
-        *,
-        header: AreaHeader | None = None,
-        **extra_options: Any,
-    ) -> Path:
-        ...
-
-    def render(
-        self,
-        graph: Any,
-        layout: Any,
-        output_path: Any = None,
-        options: Any = None,
-        *,
-        header: AreaHeader | None = None,
-        **extra_options: Any,
-    ) -> Path:
-        """Render a solved layout of a WorldGraph to output_path as JSON.
-
-        Primary signature: render(graph, layout, output_path, options=None)
-        Legacy signature: render(rdb, output_path, header=None, **options)
-        """
-        if isinstance(graph, WorldGraph):
-            actual_graph = graph
-            if not isinstance(layout, SolvedLayout):
-                raise TypeError(f"Expected SolvedLayout as second argument, got {type(layout).__name__}")
-            actual_layout = layout
-            if output_path is None:
-                raise TypeError("output_path must be specified")
-            actual_output_path = Path(output_path)
-            actual_options = options
-            indent = extra_options.get("indent", 2)
-            bounds = extra_options.get("bounds")
-        else:
-            # Legacy signature: render(rdb, output_path, header=None, **options)
-            legacy_rdb = graph
-            actual_output_path = Path(layout if isinstance(layout, (str, Path)) else str(layout))
-            legacy_header = header if header is not None else (
-                output_path if isinstance(output_path, (AreaHeader, tuple, list)) or hasattr(output_path, "filename") or hasattr(output_path, "name") else None
-            )
-            actual_graph, actual_layout = adapt_legacy_rdb(legacy_rdb, legacy_header)
-            actual_options = options
-            indent = extra_options.get("indent", 2)
-            bounds = extra_options.get("bounds")
-
-        data = build_area_json(actual_graph, actual_layout, actual_options, bounds=bounds)
+        """Render a solved layout of a WorldGraph to output_path as JSON."""
+        if not isinstance(graph, WorldGraph):
+            raise TypeError(f"Expected WorldGraph as first argument, got {type(graph).__name__}")
+        if not isinstance(layout, SolvedLayout):
+            raise TypeError(f"Expected SolvedLayout as second argument, got {type(layout).__name__}")
+        if output_path is None:
+            raise TypeError("output_path must be specified")
+        actual_output_path = Path(output_path)
+        data = build_area_json(graph, layout, options, bounds=bounds)
         return export_json(data, actual_output_path, indent=indent)
 
 

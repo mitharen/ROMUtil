@@ -5,51 +5,42 @@ import re
 from pathlib import Path
 import pytest
 
-from romutil.models import AreaHeader, ExitDef, Room, RoomDef
+from romutil.models import AreaHeader, ExitDef, RoomDef
 from romutil.renderers import (
     build_area_json,
     export_html,
     export_json,
     generate_html_viewer,
 )
+from romutil.types import Coord3D, SolvedLayout, WorldGraph
 
 
 class TestExporterUnit:
     """Unit tests for exporter serialization and viewer generation."""
 
     def test_build_area_json_schema(self):
-        r1 = Room(
-            RoomDef(
-                vnum=100,
-                name="Hallway",
-                description="Long hallway.",
-                exits=(
-                    ExitDef(direction=0, dst_vnum=101),
-                    ExitDef(direction=1, dst_vnum=102),
-                ),
-            )
+        r1 = RoomDef(
+            vnum=100,
+            name="Hallway",
+            description="Long hallway.",
+            exits=(
+                ExitDef(direction=0, dst_vnum=101),
+                ExitDef(direction=1, dst_vnum=102),
+            ),
         )
-        r1.x, r1.y, r1.z = 0, 1, 0
-        r2 = Room(
-            RoomDef(
-                vnum=101,
-                name="North Room",
-                description="North room.",
-                exits=(ExitDef(direction=3, dst_vnum=100),),
-            )
+        r2 = RoomDef(
+            vnum=101,
+            name="North Room",
+            description="North room.",
+            exits=(ExitDef(direction=3, dst_vnum=100),),
         )
-        r2.x, r2.y, r2.z = 0, 2, 0
-        r3 = Room(
-            RoomDef(
-                vnum=102,
-                name="East Room",
-                description="East room.",
-                exits=(ExitDef(direction=4, dst_vnum=100),),
-            )
+        r3 = RoomDef(
+            vnum=102,
+            name="East Room",
+            description="East room.",
+            exits=(ExitDef(direction=4, dst_vnum=100),),
         )
-        r3.x, r3.y, r3.z = 1, 1, 0
 
-        rdb = {100: r1, 101: r2, 102: r3}
         area_meta = AreaHeader(
             filename="test.are",
             name="Test Area",
@@ -57,8 +48,20 @@ class TestExporterUnit:
             vnum_min=100,
             vnum_max=102,
         )
+        graph = WorldGraph(
+            rooms={100: r1, 101: r2, 102: r3},
+            exits=r1.exits + r2.exits + r3.exits,
+            header=area_meta,
+        )
+        layout = SolvedLayout(
+            coordinates={
+                100: Coord3D(x=0, y=1, z=0),
+                101: Coord3D(x=0, y=2, z=0),
+                102: Coord3D(x=1, y=1, z=0),
+            }
+        )
 
-        data = build_area_json(rdb, area_meta)
+        data = build_area_json(graph, layout)
 
         # 1. Verify Top-Level Structure
         assert isinstance(data, dict)
@@ -97,7 +100,9 @@ class TestExporterUnit:
         assert "one_way" in ex0 and isinstance(ex0["one_way"], bool)
 
     def test_build_area_json_empty(self):
-        data = build_area_json({})
+        graph = WorldGraph(rooms={}, exits=(), header=None)
+        layout = SolvedLayout(coordinates={})
+        data = build_area_json(graph, layout)
         assert data["rooms"] == []
         assert data["bounds"] == {
             "min_x": 0,
@@ -109,14 +114,14 @@ class TestExporterUnit:
         }
         assert data["area"] == {"name": "", "file": ""}
 
-    def test_build_area_json_list_input_and_dummy_filtering(self):
-        r1 = Room(RoomDef(vnum=10, name="Room 10", description="Desc"))
-        r1.x, r1.y, r1.z = 2, 3, 1
-        dummy = Room(RoomDef(vnum=99, name="Dummy", description=""))
-        dummy.dummy = True
+    def test_build_area_json_custom_bounds(self):
+        r1 = RoomDef(vnum=10, name="Room 10", description="Desc")
+        graph = WorldGraph(rooms={10: r1}, exits=())
+        layout = SolvedLayout(coordinates={10: Coord3D(x=2, y=3, z=1)})
 
         data = build_area_json(
-            [r1, dummy],
+            graph,
+            layout,
             bounds={
                 "min_x": 0,
                 "max_x": 5,
@@ -130,18 +135,17 @@ class TestExporterUnit:
         assert data["rooms"][0]["vnum"] == 10
         assert data["bounds"]["max_x"] == 5
 
-    def test_build_area_json_meta_object_or_none(self):
-        class MockMeta:
-            name = "Object Area"
-            filename = "obj.are"
-
-        r = Room(RoomDef(vnum=1, name="Start", description="Desc"))
-        r.x, r.y, r.z = 0, 0, 0
-        data = build_area_json({1: r}, area_meta=MockMeta())
+    def test_build_area_json_header_metadata(self):
+        header = AreaHeader(filename="obj.are", name="Object Area", builder="B", vnum_min=1, vnum_max=1)
+        r = RoomDef(vnum=1, name="Start", description="Desc")
+        graph = WorldGraph(rooms={1: r}, exits=(), header=header)
+        layout = SolvedLayout(coordinates={1: Coord3D(x=0, y=0, z=0)})
+        data = build_area_json(graph, layout)
         assert data["area"]["name"] == "Object Area"
         assert data["area"]["file"] == "obj.are"
 
-        data_none = build_area_json({1: r}, area_meta=None)
+        graph_none = WorldGraph(rooms={1: r}, exits=(), header=None)
+        data_none = build_area_json(graph_none, layout)
         assert data_none["area"]["name"] == ""
         assert data_none["area"]["file"] == ""
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
-import shutil
 import sys
 from typing import Any, Sequence
 
@@ -161,12 +160,6 @@ def main(
             renderer = get_renderer(fmt_name)
             out_file = outbase if outbase.endswith(f".{fmt_name}") else f"{clean_base}.{fmt_name}"
             renderer.render(graph, layout, out_file, options=render_opts)
-            if fmt_name == "svg" and not split_levels:
-                out_file_0 = Path(f"{clean_base}0.svg")
-                try:
-                    shutil.copyfile(out_file, out_file_0)
-                except Exception:
-                    pass
             log.info("Exported %s to %s", fmt_name.upper(), out_file)
 
     sys.exit(0)
@@ -208,9 +201,6 @@ def cli() -> None:
         help="Enable hierarchical decomposition (default: True)",
     )
     args = parser.parse_args()
-
-    if args.areas and str(args.areas[0]).lower() == "map" and not args.areas[0].exists():
-        args.areas = args.areas[1:]
 
     if not args.areas and not args.circle_dir:
         parser.error("At least one area file or --circle-dir must be provided.")

@@ -263,9 +263,9 @@ class TestGalleryAssetsGeneration:
         assert isinstance(elapsed, float)
         assert elapsed >= 0.0
         assert (tmp_path / "smurf.html").exists()
-        assert (tmp_path / "smurf0.svg").exists()
+        assert (tmp_path / "smurf.svg").exists()
         validate_html_viewer_file(tmp_path / "smurf.html")
-        validate_svg_file(tmp_path / "smurf0.svg")
+        validate_svg_file(tmp_path / "smurf.svg")
 
     def test_render_area_failure_raises(self, tmp_path):
         from scripts.build_pages import render_area
@@ -368,9 +368,9 @@ class TestGalleryAssetsGeneration:
         mobfact_path = REPO_ROOT / "tests" / "fixtures" / "areas" / "mobfact.are"
         render_area("test_composite", [grave_path, mobfact_path], is_dir=False, outdir=tmp_path, solver_timeout=15)
         assert (tmp_path / "test_composite.html").exists()
-        assert (tmp_path / "test_composite0.svg").exists()
+        assert (tmp_path / "test_composite.svg").exists()
         html_data = validate_html_viewer_file(tmp_path / "test_composite.html")
-        validate_svg_file(tmp_path / "test_composite0.svg")
+        validate_svg_file(tmp_path / "test_composite.svg")
         room_vnums = {r["vnum"] for r in html_data["rooms"]}
         assert any(3600 <= v <= 3699 for v in room_vnums), "Graveyard rooms missing"
         assert any(9400 <= v <= 9499 for v in room_vnums), "Mob Factory rooms missing"
@@ -430,13 +430,13 @@ class TestGalleryAssetsGeneration:
         assert "<th>Solve Time</th>" in content
         assert re.search(r"<td><code>\d+\.\d{2}s</code></td>", content)
         assert '<a href="test_composite.html">Interactive Viewer</a>' in content
-        assert '<a href="test_composite0.svg">SVG Map</a>' in content
+        assert '<a href="test_composite.svg">SVG Map</a>' in content
         assert "N/A" not in content
 
         assert (tmp_path / "test_composite.html").exists()
-        assert (tmp_path / "test_composite0.svg").exists()
+        assert (tmp_path / "test_composite.svg").exists()
         html_data = validate_html_viewer_file(tmp_path / "test_composite.html")
-        validate_svg_file(tmp_path / "test_composite0.svg")
+        validate_svg_file(tmp_path / "test_composite.svg")
         assert len(html_data["rooms"]) > 0
 
 
@@ -463,7 +463,7 @@ class TestGalleryAssetsGeneration:
         """Verify rendering composite area generates artifacts and resolves cross-area exit 3700<->3001 as internal exit."""
         from scripts.build_pages import render_area
         from romutil.parser import Parser
-        from romutil.models import merge_areas, Room
+        from romutil.models import merge_areas
 
         midgaard_path = REPO_ROOT / "tests" / "fixtures" / "areas" / "midgaard.are"
         school_path = REPO_ROOT / "tests" / "fixtures" / "areas" / "school.are"
@@ -477,7 +477,7 @@ class TestGalleryAssetsGeneration:
         )
 
         html_file = tmp_path / "test_composite_school.html"
-        svg_file = tmp_path / "test_composite_school0.svg"
+        svg_file = tmp_path / "test_composite_school.svg"
         assert html_file.exists()
         assert svg_file.exists()
 
@@ -521,16 +521,13 @@ class TestGalleryAssetsGeneration:
             for fname in ("midgaard.are", "hood.are", "grave.are", "mobfact.are", "school.are")
         ]
         composite_all = merge_areas(areas)
-        composite_rdb = {r.vnum: Room(r) for r in composite_all.rooms}
-        assert 3700 in composite_rdb and not composite_rdb[3700].dummy
-        assert 3001 in composite_rdb and not composite_rdb[3001].dummy
-        ex_down = next(e for e in composite_rdb[3700].exits if e.dst == 3001)
-        ex_up = next(e for e in composite_rdb[3001].exits if e.dst == 3700)
-        assert ex_down.dst == 3001
-        assert ex_up.dst == 3700
-        assert composite_rdb[ex_down.dst].dummy is False
-        assert composite_rdb[ex_up.dst].dummy is False
-        assert ex_down == ex_up
+        composite_rooms = {r.vnum: r for r in composite_all.rooms}
+        assert 3700 in composite_rooms
+        assert 3001 in composite_rooms
+        ex_down = next(e for e in composite_rooms[3700].exits if e.dst_vnum == 3001)
+        ex_up = next(e for e in composite_rooms[3001].exits if e.dst_vnum == 3700)
+        assert ex_down.dst_vnum == 3001
+        assert ex_up.dst_vnum == 3700
 
     def test_composite_showcase_constituents_parsing_and_integrity(self):
         from romutil.parser import parse_file
@@ -567,10 +564,10 @@ class TestGalleryAssetsGeneration:
         assert "<th>Solve Time</th>" in content
         assert re.search(r"<td><code>\d+\.\d{2}s</code></td>", content)
         assert '<a href="smurf.html">Interactive Viewer</a>' in content
-        assert '<a href="smurf0.svg">SVG Map</a>' in content
+        assert '<a href="smurf.svg">SVG Map</a>' in content
         assert "N/A" not in content
         assert (tmp_path / "smurf.html").exists()
-        assert (tmp_path / "smurf0.svg").exists()
+        assert (tmp_path / "smurf.svg").exists()
 
 
 

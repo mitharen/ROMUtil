@@ -8,8 +8,8 @@ from typing import Any, Dict, List, Optional, Union, overload
 import svgwrite
 from svgwrite import cm
 
-from romutil.models import AreaHeader, Direction, Exit, ExitDef, Room, RoomDef
-from romutil.renderers.base import BaseRenderer, adapt_legacy_rdb
+from romutil.models import Direction, ExitDef
+from romutil.renderers.base import BaseRenderer
 from romutil.types import Coord3D, LayoutDiagnostics, RenderOptions, SolvedLayout, SolverStatus, WorldGraph
 
 
@@ -35,13 +35,12 @@ class SVGRenderer:
     def __init__(
         self,
         name: str | Path = "",
-        graph: WorldGraph | Dict[int, Room] | None = None,
-        layout: SolvedLayout | List[Any] | None = None,
+        graph: WorldGraph | None = None,
+        layout: SolvedLayout | None = None,
         options: RenderOptions | None = None,
         target_z: Optional[int] = None,
         *,
-        rdb: Dict[int, Room] | None = None,
-        exits: List[Any] | None = None,
+        exits: Optional[List[Any]] = None,
     ) -> None:
         self.name: str = str(name)
         self.target_z: Optional[int] = target_z
@@ -51,40 +50,17 @@ class SVGRenderer:
         self.colors: Any = _DynamicPalette(self)
         self.custom_exits: Optional[List[Any]] = exits
         self.options: Optional[RenderOptions] = options
-
-        if rdb is not None:
-            self.graph, self.layout = adapt_legacy_rdb(rdb)
-            self.rdb: Dict[int, Room] = rdb
-        elif isinstance(graph, WorldGraph):
-            self.graph = graph
-            if isinstance(layout, SolvedLayout):
-                self.layout = layout
-            else:
-                self.layout = SolvedLayout(
-                    coordinates={},
-                    diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
-                )
-            self.rdb = {}
-        elif isinstance(graph, dict):
-            # Legacy constructor: SVGRenderer(name, rdb, exits, target_z)
-            if isinstance(options, int):
-                self.target_z = options
-                self.options = None
-            self.graph, self.layout = adapt_legacy_rdb(graph)
-            self.rdb = graph
-            if isinstance(layout, list):
-                self.custom_exits = layout
-        else:
-            self.graph = WorldGraph(rooms={}, exits=(), header=None)
-            self.layout = (
-                layout
-                if isinstance(layout, SolvedLayout)
-                else SolvedLayout(
-                    coordinates={},
-                    diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
-                )
+        self.graph: WorldGraph = (
+            graph if isinstance(graph, WorldGraph) else WorldGraph(rooms={}, exits=(), header=None)
+        )
+        self.layout: SolvedLayout = (
+            layout
+            if isinstance(layout, SolvedLayout)
+            else SolvedLayout(
+                coordinates={},
+                diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
             )
-            self.rdb = {}
+        )
 
     def get_unique_elevations(self) -> List[int]:
         if self.layout and self.layout.coordinates:
@@ -127,7 +103,7 @@ class SVGRenderer:
         src_vnum: int | None = None,
     ) -> Optional[tuple[tuple[float, float], tuple[float, float]]]:
         if src_vnum is None:
-            src_vnum = getattr(ex, "src", None)
+            src_vnum = getattr(ex, "src_vnum", getattr(ex, "src", None))
         if src_vnum is None or self.layout is None or src_vnum not in self.layout.coordinates:
             return None
 
@@ -303,7 +279,7 @@ function toggleElevation(z) {
             layer_exit_items: List[tuple[int, Any]] = []
             if self.custom_exits is not None:
                 for ex in self.custom_exits:
-                    s_v = getattr(ex, "src", None)
+                    s_v = getattr(ex, "src_vnum", getattr(ex, "src", None))
                     if s_v is not None and s_v in self.layout.coordinates:
                         layer_exit_items.append((s_v, ex))
             else:
@@ -450,7 +426,6 @@ function toggleElevation(z) {
 
         dwg.save()
 
-    @overload
     def render(
         self,
         graph: WorldGraph,
@@ -458,97 +433,59 @@ function toggleElevation(z) {
         output_path: Path | str,
         options: RenderOptions | None = None,
         *,
-        header: AreaHeader | None = None,
+        target_z: Optional[int] = None,
+        outbase: Optional[str] = None,
+        exits: Optional[List[Any]] = None,
+        split_levels: Optional[bool] = None,
         **extra_options: Any,
     ) -> Path:
-        ...
+        """Render a solved layout of a WorldGraph to output_path as isometric SVG."""
+        if not isinstance(graph, WorldGraph):
+            raise TypeError(f"Expected WorldGraph as first argument, got {type(graph).__name__}")
+        if not isinstance(layout, SolvedLayout):
+            raise TypeError(f"Expected SolvedLayout as second argument, got {type(layout).__name__}")
+        if output_path is None:
+            raise TypeError("output_path must be specified")
+        actual_output_path = Path(output_path)
+        actual_options = options
 
-    @overload
-    def render(
-        self,
-        graph: dict[int, Any] | list[Any],
-        layout: str | Path,
-        output_path: AreaHeader | Any | None = None,
-        options: Any = None,
-        *,
-        header: AreaHeader | None = None,
-        **extra_options: Any,
-    ) -> Path:
-        ...
+        should_split = (
+            actual_options.split_levels if actual_options else False
+        ) if split_levels is None else bool(split_levels)
+        if "split_levels" in extra_options:
+            should_split = bool(extra_options["split_levels"])
 
-    def render(
-        self,
-        graph: Any,
-        layout: Any,
-        output_path: Any = None,
-        options: Any = None,
-        *,
-        header: AreaHeader | None = None,
-        **extra_options: Any,
-    ) -> Path:
-        """Render a solved layout of a WorldGraph to output_path as isometric SVG.
+        actual_target_z = target_z if target_z is not None else extra_options.get("target_z")
+        actual_outbase = outbase if outbase is not None else extra_options.get("outbase")
+        actual_exits = exits if exits is not None else extra_options.get("exits")
 
-        Primary signature: render(graph, layout, output_path, options=None)
-        Legacy signature: render(rdb, output_path, header=None, **options)
-        """
-        if isinstance(graph, WorldGraph):
-            actual_graph = graph
-            if not isinstance(layout, SolvedLayout):
-                raise TypeError(f"Expected SolvedLayout as second argument, got {type(layout).__name__}")
-            actual_layout = layout
-            if output_path is None:
-                raise TypeError("output_path must be specified")
-            actual_output_path = Path(output_path)
-            actual_options = options
-            split_levels = (
-                actual_options.split_levels if actual_options else False
-            ) or bool(extra_options.get("split_levels", False))
-            target_z = extra_options.get("target_z")
-            outbase = extra_options.get("outbase")
-            exits = extra_options.get("exits")
-        else:
-            # Legacy signature: render(rdb, output_path, header=None, **options)
-            legacy_rdb = graph
-            actual_output_path = Path(layout if isinstance(layout, (str, Path)) else str(layout))
-            legacy_header = header if header is not None else (
-                output_path if isinstance(output_path, (AreaHeader, tuple, list)) or hasattr(output_path, "filename") or hasattr(output_path, "name") else None
-            )
-            actual_graph, actual_layout = adapt_legacy_rdb(legacy_rdb, legacy_header)
-            actual_options = options
-            split_levels = (
-                actual_options.split_levels if actual_options else False
-            ) or bool(extra_options.get("split_levels", False))
-            target_z = extra_options.get("target_z")
-            outbase = extra_options.get("outbase")
-            exits = extra_options.get("exits")
-
-        if split_levels:
-            unique_zs = sorted(list(set(int(c.z) for c in actual_layout.coordinates.values())))
+        if should_split:
+            unique_zs = sorted(list(set(int(c.z) for c in layout.coordinates.values())))
             if not unique_zs:
                 unique_zs = [0]
-            base = outbase if outbase else (
+            base = actual_outbase if actual_outbase else (
                 str(actual_output_path)[:-4] if str(actual_output_path).endswith(".svg") else str(actual_output_path)
             )
             for z in unique_zs:
                 level_name = f"{base}_z{z}.svg"
                 renderer = SVGRenderer(
                     name=level_name,
-                    graph=actual_graph,
-                    layout=actual_layout,
+                    graph=graph,
+                    layout=layout,
                     options=actual_options,
                     target_z=z,
-                    exits=exits,
+                    exits=actual_exits,
                 )
                 renderer.plot()
             return actual_output_path
         else:
             renderer = SVGRenderer(
                 name=str(actual_output_path),
-                graph=actual_graph,
-                layout=actual_layout,
+                graph=graph,
+                layout=layout,
                 options=actual_options,
-                target_z=target_z,
-                exits=exits,
+                target_z=actual_target_z,
+                exits=actual_exits,
             )
             renderer.plot()
             return actual_output_path

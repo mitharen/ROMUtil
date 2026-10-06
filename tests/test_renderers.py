@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import romutil
-from romutil.models import AreaHeader, Direction, Exit, ExitDef, Room, RoomDef
+from romutil.models import AreaHeader, Direction, ExitDef, RoomDef
 from romutil.renderers import (
     HTML_TEMPLATE,
     RENDERERS,
@@ -25,44 +25,39 @@ from romutil.renderers import (
     render_map,
 )
 import romutil.renderers.html as html_module
+from romutil.types import (
+    Coord3D,
+    LayoutDiagnostics,
+    SolvedLayout,
+    SolverStatus,
+    WorldGraph,
+)
 
 
 @pytest.fixture
-def sample_rdb() -> tuple[dict[int, Room], AreaHeader]:
-    """Create a sample solved room database with elevation layers."""
-    r1 = Room(
-        RoomDef(
-            vnum=100,
-            name="Ground Room",
-            description="A room on the ground floor.",
-            exits=(
-                ExitDef(direction=0, dst_vnum=101),
-                ExitDef(direction=4, dst_vnum=102),
-            ),
-        )
+def sample_rdb() -> tuple[WorldGraph, SolvedLayout]:
+    """Create a sample solved room graph and layout with elevation layers."""
+    r1 = RoomDef(
+        vnum=100,
+        name="Ground Room",
+        description="A room on the ground floor.",
+        exits=(
+            ExitDef(direction=0, dst_vnum=101),
+            ExitDef(direction=4, dst_vnum=102),
+        ),
     )
-    r1.x, r1.y, r1.z = 0, 0, 0
-
-    r2 = Room(
-        RoomDef(
-            vnum=101,
-            name="North Room",
-            description="A room to the north.",
-            exits=(ExitDef(direction=2, dst_vnum=100),),
-        )
+    r2 = RoomDef(
+        vnum=101,
+        name="North Room",
+        description="A room to the north.",
+        exits=(ExitDef(direction=2, dst_vnum=100),),
     )
-    r2.x, r2.y, r2.z = 0, 1, 0
-
-    r3 = Room(
-        RoomDef(
-            vnum=102,
-            name="Upper Room",
-            description="A room on the second floor.",
-            exits=(ExitDef(direction=5, dst_vnum=100),),
-        )
+    r3 = RoomDef(
+        vnum=102,
+        name="Upper Room",
+        description="A room on the second floor.",
+        exits=(ExitDef(direction=5, dst_vnum=100),),
     )
-    r3.x, r3.y, r3.z = 0, 0, 1
-
     header = AreaHeader(
         filename="sample.are",
         name="Sample Area",
@@ -70,8 +65,25 @@ def sample_rdb() -> tuple[dict[int, Room], AreaHeader]:
         vnum_min=100,
         vnum_max=102,
     )
-    rdb = {100: r1, 101: r2, 102: r3}
-    return rdb, header
+    graph = WorldGraph(
+        rooms={100: r1, 101: r2, 102: r3},
+        exits=(
+            ExitDef(direction=0, dst_vnum=101),
+            ExitDef(direction=4, dst_vnum=102),
+            ExitDef(direction=2, dst_vnum=100),
+            ExitDef(direction=5, dst_vnum=100),
+        ),
+        header=header,
+    )
+    layout = SolvedLayout(
+        coordinates={
+            100: Coord3D(0, 0, 0),
+            101: Coord3D(0, 1, 0),
+            102: Coord3D(0, 0, 1),
+        },
+        diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.01),
+    )
+    return graph, layout
 
 
 class TestBaseRendererProtocol:
@@ -134,7 +146,7 @@ class TestRendererRegistry:
 
     def test_get_renderer_with_custom_duck_type_class(self):
         class CustomClass:
-            def render(self, rdb, output_path, header=None, **options):
+            def render(self, graph, layout, output_path, options=None, **extra_options):
                 return Path(output_path)
 
         renderer = get_renderer(CustomClass)
@@ -157,7 +169,7 @@ class TestRendererRegistry:
 
     def test_custom_renderer_registration(self, tmp_path):
         class MockCustomRenderer:
-            def render(self, rdb, output_path, header=None, **options):
+            def render(self, graph, layout, output_path, options=None, **extra_options):
                 p = Path(output_path)
                 p.write_text("custom", encoding="utf-8")
                 return p
@@ -167,7 +179,12 @@ class TestRendererRegistry:
             r = get_renderer("custom")
             assert isinstance(r, MockCustomRenderer)
             out = tmp_path / "test.custom"
-            res = r.render({}, out)
+            graph = WorldGraph(rooms={}, exits=(), header=None)
+            layout = SolvedLayout(
+                coordinates={},
+                diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
+            )
+            res = r.render(graph, layout, out)
             assert res.exists()
             assert res.read_text(encoding="utf-8") == "custom"
         finally:
@@ -178,9 +195,9 @@ class TestRenderMapDispatcher:
     """Test render_map dispatch and file extension inference."""
 
     def test_render_map_svg_inferred(self, sample_rdb, tmp_path):
-        rdb, header = sample_rdb
+        graph, layout = sample_rdb
         out = tmp_path / "map.svg"
-        result = render_map(rdb, out, header=header)
+        result = render_map(graph, layout, out)
         assert result == out
         assert out.exists()
         content = out.read_text(encoding="utf-8")
@@ -189,9 +206,9 @@ class TestRenderMapDispatcher:
         assert "elevation-1" in content
 
     def test_render_map_json_inferred(self, sample_rdb, tmp_path):
-        rdb, header = sample_rdb
+        graph, layout = sample_rdb
         out = tmp_path / "map.json"
-        result = render_map(rdb, out, header=header)
+        result = render_map(graph, layout, out)
         assert result == out
         assert out.exists()
         data = json.loads(out.read_text(encoding="utf-8"))
@@ -199,9 +216,9 @@ class TestRenderMapDispatcher:
         assert len(data["rooms"]) == 3
 
     def test_render_map_html_inferred(self, sample_rdb, tmp_path):
-        rdb, header = sample_rdb
+        graph, layout = sample_rdb
         out = tmp_path / "viewer.html"
-        result = render_map(rdb, out, header=header)
+        result = render_map(graph, layout, out)
         assert result == out
         assert out.exists()
         content = out.read_text(encoding="utf-8")
@@ -209,37 +226,37 @@ class TestRenderMapDispatcher:
         assert "Sample Area" in content
 
     def test_render_map_explicit_format(self, sample_rdb, tmp_path):
-        rdb, header = sample_rdb
+        graph, layout = sample_rdb
         out = tmp_path / "output_without_ext"
-        result = render_map(rdb, out, fmt="json", header=header)
+        result = render_map(graph, layout, out, fmt="json")
         assert result == out
         assert out.exists()
         data = json.loads(out.read_text(encoding="utf-8"))
         assert len(data["rooms"]) == 3
 
     def test_render_map_default_to_svg_when_no_ext_and_no_fmt(self, sample_rdb, tmp_path):
-        rdb, header = sample_rdb
+        graph, layout = sample_rdb
         out = tmp_path / "output_no_ext"
-        result = render_map(rdb, out, header=header)
+        result = render_map(graph, layout, out)
         assert result == out
         assert out.exists()
         assert "<svg" in out.read_text(encoding="utf-8")
 
     def test_render_map_unsupported_format(self, sample_rdb, tmp_path):
-        rdb, header = sample_rdb
+        graph, layout = sample_rdb
         out = tmp_path / "output.unsupported"
         with pytest.raises(ValueError, match="Unsupported renderer format"):
-            render_map(rdb, out, fmt="unsupported")
+            render_map(graph, layout, out, fmt="unsupported")
 
 
 class TestSVGRenderer:
     """Test SVGRenderer specific functionality and options."""
 
     def test_svg_split_levels(self, sample_rdb, tmp_path):
-        rdb, header = sample_rdb
+        graph, layout = sample_rdb
         out = tmp_path / "test_split.svg"
         renderer = SVGRenderer()
-        result = renderer.render(rdb, out, header=header, split_levels=True)
+        result = renderer.render(graph, layout, out, split_levels=True)
         assert result == out
         z0 = tmp_path / "test_split_z0.svg"
         z1 = tmp_path / "test_split_z1.svg"
@@ -249,21 +266,21 @@ class TestSVGRenderer:
         assert "<svg" in z1.read_text(encoding="utf-8")
 
     def test_svg_split_levels_custom_outbase(self, sample_rdb, tmp_path):
-        rdb, header = sample_rdb
+        graph, layout = sample_rdb
         out = tmp_path / "placeholder.svg"
         custom_base = tmp_path / "custom_base"
         renderer = SVGRenderer()
-        renderer.render(rdb, out, header=header, split_levels=True, outbase=str(custom_base))
+        renderer.render(graph, layout, out, split_levels=True, outbase=str(custom_base))
         z0 = tmp_path / "custom_base_z0.svg"
         z1 = tmp_path / "custom_base_z1.svg"
         assert z0.exists()
         assert z1.exists()
 
     def test_svg_target_z(self, sample_rdb, tmp_path):
-        rdb, header = sample_rdb
+        graph, layout = sample_rdb
         out = tmp_path / "level1.svg"
         renderer = SVGRenderer()
-        result = renderer.render(rdb, out, header=header, target_z=1)
+        result = renderer.render(graph, layout, out, target_z=1)
         assert result == out
         assert out.exists()
         content = out.read_text(encoding="utf-8")
@@ -271,28 +288,45 @@ class TestSVGRenderer:
         assert "elevation-0" not in content
 
     def test_svg_explicit_exits(self, sample_rdb, tmp_path):
-        rdb, header = sample_rdb
+        graph, layout = sample_rdb
+
+        class CustomExit:
+            def __init__(self, src: int, dst: int, direction: Direction):
+                self.src = src
+                self.dst = dst
+                self.direction = direction
+
         exits = [
-            Exit(src=100, dst=101, direction=Direction.north),
+            CustomExit(src=100, dst=101, direction=Direction.north),
         ]
         out = tmp_path / "custom_exits.svg"
         renderer = SVGRenderer()
-        renderer.render(rdb, out, header=header, exits=exits)
+        renderer.render(graph, layout, out, exits=exits)
         assert out.exists()
 
     def test_svg_empty_rooms(self, tmp_path):
         renderer = SVGRenderer()
         out = tmp_path / "empty.svg"
-        renderer.render({}, out)
+        graph = WorldGraph(rooms={}, exits=(), header=None)
+        layout = SolvedLayout(
+            coordinates={},
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
+        )
+        renderer.render(graph, layout, out)
         assert out.exists()
         assert "<svg" in out.read_text(encoding="utf-8")
 
     def test_svg_split_levels_empty_unique_zs(self, tmp_path):
         # Room without coordinates
-        r = Room(RoomDef(vnum=1, name="Void", description="Empty"))
+        r = RoomDef(vnum=1, name="Void", description="Empty")
         out = tmp_path / "empty_split.svg"
         renderer = SVGRenderer()
-        renderer.render({1: r}, out, split_levels=True)
+        graph = WorldGraph(rooms={1: r}, exits=(), header=None)
+        layout = SolvedLayout(
+            coordinates={},
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
+        )
+        renderer.render(graph, layout, out, split_levels=True)
         z0 = tmp_path / "empty_split_z0.svg"
         assert z0.exists()
 
@@ -301,22 +335,22 @@ class TestJSONAndHTMLRenderers:
     """Test JSONRenderer and HTMLRenderer options and behavior."""
 
     def test_json_renderer_options(self, sample_rdb, tmp_path):
-        rdb, header = sample_rdb
+        graph, layout = sample_rdb
         out = tmp_path / "custom.json"
         renderer = JSONRenderer()
         custom_bounds = {"min_x": -5, "max_x": 5, "min_y": -5, "max_y": 5, "min_z": 0, "max_z": 1}
-        renderer.render(rdb, out, header=header, indent=4, bounds=custom_bounds)
+        renderer.render(graph, layout, out, indent=4, bounds=custom_bounds)
         assert out.exists()
         data = json.loads(out.read_text(encoding="utf-8"))
         assert data["bounds"]["min_x"] == -5
         assert data["bounds"]["max_x"] == 5
 
     def test_html_renderer_options(self, sample_rdb, tmp_path):
-        rdb, header = sample_rdb
+        graph, layout = sample_rdb
         out = tmp_path / "custom.html"
         renderer = HTMLRenderer()
         custom_bounds = {"min_x": -2, "max_x": 8, "min_y": 0, "max_y": 10, "min_z": 0, "max_z": 2}
-        renderer.render(rdb, out, header=header, title="Custom Title", bounds=custom_bounds)
+        renderer.render(graph, layout, out, title="Custom Title", bounds=custom_bounds)
         assert out.exists()
         content = out.read_text(encoding="utf-8")
         assert "Custom Title" in content
@@ -369,27 +403,32 @@ class TestSVGRendererDelegation:
     """Test that render_map delegates presentation rendering cleanly."""
 
     def test_render_map_delegates_to_svg_renderer(self, sample_rdb, tmp_path):
-        rdb, header = sample_rdb
+        graph, layout = sample_rdb
         out = tmp_path / "graph_output.svg"
-        render_map(rdb, out, fmt="svg", header=header)
+        render_map(graph, layout, out, fmt="svg")
         assert out.exists()
         content = out.read_text(encoding="utf-8")
         assert "<svg" in content
         assert "elevation-0" in content
 
     def test_render_map_split_levels(self, sample_rdb, tmp_path):
-        rdb, header = sample_rdb
+        graph, layout = sample_rdb
         out = tmp_path / "graph_split.svg"
-        render_map(rdb, out, fmt="svg", header=header, split_levels=True)
+        render_map(graph, layout, out, fmt="svg", split_levels=True)
         z0 = tmp_path / "graph_split_z0.svg"
         z1 = tmp_path / "graph_split_z1.svg"
         assert z0.exists()
         assert z1.exists()
 
     def test_render_map_empty_svg(self, tmp_path):
-        # Empty rdb should render empty SVG
+        # Empty graph and layout should render empty SVG
         out = tmp_path / "empty.svg"
-        render_map({}, out, fmt="svg")
+        graph = WorldGraph(rooms={}, exits=(), header=None)
+        layout = SolvedLayout(
+            coordinates={},
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
+        )
+        render_map(graph, layout, out, fmt="svg")
         assert out.exists()
 
 
@@ -397,53 +436,37 @@ class TestWebViewerVisualAndUsabilityOptimizations:
     """Unit and regression tests for Task 9c web viewer visual & usability enhancements."""
 
     @pytest.fixture
-    def multi_floor_rdb(self) -> tuple[dict[int, Room], AreaHeader]:
+    def multi_floor_rdb(self) -> tuple[WorldGraph, SolvedLayout]:
         """Create a multi-floor room database with one-way and relaxed exits."""
-        r1 = Room(
-            RoomDef(
-                vnum=100,
-                name="Ground Hall",
-                description="Grand hall on the ground floor.",
-                exits=(
-                    ExitDef(direction=0, dst_vnum=101),  # Two-way north
-                    ExitDef(direction=4, dst_vnum=200),  # Inter-floor up (Z=0 -> Z=1)
-                    ExitDef(direction=1, dst_vnum=105),  # One-way east (no return)
-                    ExitDef(direction=2, dst_vnum=999),  # Stub south (external)
-                ),
-            )
+        r1 = RoomDef(
+            vnum=100,
+            name="Ground Hall",
+            description="Grand hall on the ground floor.",
+            exits=(
+                ExitDef(direction=0, dst_vnum=101),  # Two-way north
+                ExitDef(direction=4, dst_vnum=200),  # Inter-floor up (Z=0 -> Z=1)
+                ExitDef(direction=1, dst_vnum=105),  # One-way east (no return)
+                ExitDef(direction=2, dst_vnum=999),  # Stub south (external)
+            ),
         )
-        r1.x, r1.y, r1.z = 0, 0, 0
-
-        r2 = Room(
-            RoomDef(
-                vnum=101,
-                name="North Antechamber",
-                description="Antechamber north of the hall.",
-                exits=(ExitDef(direction=2, dst_vnum=100),),
-            )
+        r2 = RoomDef(
+            vnum=101,
+            name="North Antechamber",
+            description="Antechamber north of the hall.",
+            exits=(ExitDef(direction=2, dst_vnum=100),),
         )
-        r2.x, r2.y, r2.z = 0, 1, 0
-
-        r3 = Room(
-            RoomDef(
-                vnum=200,
-                name="Tower Balcony",
-                description="Upper balcony overlooking the courtyard.",
-                exits=(ExitDef(direction=5, dst_vnum=100),),  # Inter-floor down (Z=1 -> Z=0)
-            )
+        r3 = RoomDef(
+            vnum=200,
+            name="Tower Balcony",
+            description="Upper balcony overlooking the courtyard.",
+            exits=(ExitDef(direction=5, dst_vnum=100),),  # Inter-floor down (Z=1 -> Z=0)
         )
-        r3.x, r3.y, r3.z = 0, 0, 1
-
-        r4 = Room(
-            RoomDef(
-                vnum=105,
-                name="Secret Cellar",
-                description="A one-way trap cellar with no reciprocal return exit.",
-                exits=(),  # No exits back to 100
-            )
+        r4 = RoomDef(
+            vnum=105,
+            name="Secret Cellar",
+            description="A one-way trap cellar with no reciprocal return exit.",
+            exits=(),  # No exits back to 100
         )
-        r4.x, r4.y, r4.z = 2, 0, 0
-
         header = AreaHeader(
             filename="tower.are",
             name="The Mystic Tower",
@@ -451,13 +474,33 @@ class TestWebViewerVisualAndUsabilityOptimizations:
             vnum_min=100,
             vnum_max=200,
         )
-        rdb = {100: r1, 101: r2, 200: r3, 105: r4}
-        return rdb, header
+        graph = WorldGraph(
+            rooms={100: r1, 101: r2, 200: r3, 105: r4},
+            exits=(
+                ExitDef(direction=0, dst_vnum=101),
+                ExitDef(direction=4, dst_vnum=200),
+                ExitDef(direction=1, dst_vnum=105),
+                ExitDef(direction=2, dst_vnum=999),
+                ExitDef(direction=2, dst_vnum=100),
+                ExitDef(direction=5, dst_vnum=100),
+            ),
+            header=header,
+        )
+        layout = SolvedLayout(
+            coordinates={
+                100: Coord3D(0, 0, 0),
+                101: Coord3D(0, 1, 0),
+                200: Coord3D(0, 0, 1),
+                105: Coord3D(2, 0, 0),
+            },
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.01),
+        )
+        return graph, layout
 
     def test_viewport_auto_centering_logic(self, multi_floor_rdb):
         """Verify that generated HTML incorporates bounding box and centroid auto-centering logic."""
-        rdb, header = multi_floor_rdb
-        data = build_area_json(rdb, area_meta=header)
+        graph, layout = multi_floor_rdb
+        data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
 
         # 1. Verify centroid and bounds computation function exists
@@ -479,8 +522,8 @@ class TestWebViewerVisualAndUsabilityOptimizations:
 
     def test_dual_end_elevation_gradient_definitions(self, multi_floor_rdb):
         """Verify that inter-floor exits generate dual-end elevation gradients."""
-        rdb, header = multi_floor_rdb
-        data = build_area_json(rdb, area_meta=header)
+        graph, layout = multi_floor_rdb
+        data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
 
         # 1. Verify linearGradient creation in defs for inter-floor transitions
@@ -497,8 +540,8 @@ class TestWebViewerVisualAndUsabilityOptimizations:
 
     def test_inclusive_floor_filtering_predicate(self, multi_floor_rdb):
         """Verify inclusive floor filter predicate where exits are visible if either endpoint matches."""
-        rdb, header = multi_floor_rdb
-        data = build_area_json(rdb, area_meta=header)
+        graph, layout = multi_floor_rdb
+        data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
 
         # 1. Verify exit lines store endpoint elevation attributes
@@ -510,8 +553,8 @@ class TestWebViewerVisualAndUsabilityOptimizations:
 
     def test_contextual_tooltips_markup_and_explanations(self, multi_floor_rdb):
         """Verify clear, accessible tooltips for one-way red exits and boundary/relaxation warnings."""
-        rdb, header = multi_floor_rdb
-        data = build_area_json(rdb, area_meta=header)
+        graph, layout = multi_floor_rdb
+        data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
 
         # 1. Exact tooltip wording constants embedded in script
@@ -529,8 +572,8 @@ class TestWebViewerVisualAndUsabilityOptimizations:
 
     def test_incoming_oneway_exit_indexing_and_inspector(self, multi_floor_rdb):
         """Verify incoming one-way exits are indexed and presented with jump-to navigation in sidebar."""
-        rdb, header = multi_floor_rdb
-        data = build_area_json(rdb, area_meta=header)
+        graph, layout = multi_floor_rdb
+        data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
 
         # 1. Reverse topological index for incoming one-way exits
@@ -548,8 +591,8 @@ class TestWebViewerVisualAndUsabilityOptimizations:
 
     def test_interactive_edge_selection_markup_and_handlers(self, multi_floor_rdb):
         """Verify selectEdge handler, edge click listeners, CSS rules, and edge inspector card."""
-        rdb, header = multi_floor_rdb
-        data = build_area_json(rdb, area_meta=header)
+        graph, layout = multi_floor_rdb
+        data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
 
         # 1. Assert selectEdge function and click event listeners are present on .exit-line
@@ -580,8 +623,8 @@ class TestWebViewerVisualAndUsabilityOptimizations:
 
     def test_room_selection_highlights_attached_edges(self, multi_floor_rdb):
         """Verify selectRoom queries attached exit lines and toggles highlighted and connected-neighbor."""
-        rdb, header = multi_floor_rdb
-        data = build_area_json(rdb, area_meta=header)
+        graph, layout = multi_floor_rdb
+        data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
 
         # 1. Assert selectRoom queries/iterates attached exit lines (data-src / data-dst) and toggles highlighted
@@ -597,8 +640,8 @@ class TestWebViewerVisualAndUsabilityOptimizations:
 
     def test_canvas_click_deselection(self, multi_floor_rdb):
         """Assert canvas/viewport click listener clears room and edge selections."""
-        rdb, header = multi_floor_rdb
-        data = build_area_json(rdb, area_meta=header)
+        graph, layout = multi_floor_rdb
+        data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
 
         # 1. Assert canvas/viewport click listener is present
@@ -614,10 +657,10 @@ class TestWebViewerVisualAndUsabilityOptimizations:
 
     def test_standalone_html_export_end_to_end(self, multi_floor_rdb, tmp_path):
         """End-to-end integration test writing HTML viewer to disk and verifying all enhancements."""
-        rdb, header = multi_floor_rdb
+        graph, layout = multi_floor_rdb
         out_file = tmp_path / "interactive_map.html"
         renderer = HTMLRenderer()
-        result = renderer.render(rdb, out_file, header=header, title="Interactive Tower")
+        result = renderer.render(graph, layout, out_file, title="Interactive Tower")
 
         assert result == out_file
         assert out_file.exists()
@@ -644,8 +687,8 @@ class TestWebViewerVisualAndUsabilityOptimizations:
 
     def test_arbitrary_multi_floor_selection(self, multi_floor_rdb):
         """Verify multi-floor level selection controls, active floor set, and legend toggling (Task 9h)."""
-        rdb, header = multi_floor_rdb
-        data = build_area_json(rdb, area_meta=header)
+        graph, layout = multi_floor_rdb
+        data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
 
         # 1. Verify floor selector container and pills markup
@@ -673,8 +716,8 @@ class TestWebViewerVisualAndUsabilityOptimizations:
 
     def test_collapsible_sidebar_controls_and_layout(self, multi_floor_rdb):
         """Verify collapsible sidebar toggle button, expand tab, and collapsed CSS layout (Task 9h)."""
-        rdb, header = multi_floor_rdb
-        data = build_area_json(rdb, area_meta=header)
+        graph, layout = multi_floor_rdb
+        data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
 
         # 1. Verify toggle/collapse/expand button markup and accessibility attributes
@@ -698,8 +741,8 @@ class TestWebViewerVisualAndUsabilityOptimizations:
 
     def test_minimap_drag_navigation_and_cursors(self, multi_floor_rdb):
         """Verify minimap drag-scroll event listeners, coordinate mapping math, and cursor styles (Task 9h)."""
-        rdb, header = multi_floor_rdb
-        data = build_area_json(rdb, area_meta=header)
+        graph, layout = multi_floor_rdb
+        data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
 
         # 1. Verify interactive mousedown, mousemove, mouseup, mouseleave listeners on minimap
@@ -723,8 +766,8 @@ class TestWebViewerVisualAndUsabilityOptimizations:
 
     def test_mobile_touch_gestures_and_pinch_zoom(self, multi_floor_rdb):
         """Verify mobile touch drag-to-pan, minimap touch navigation, and pinch-to-zoom (Task 9i)."""
-        rdb, header = multi_floor_rdb
-        data = build_area_json(rdb, area_meta=header)
+        graph, layout = multi_floor_rdb
+        data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
 
         # 1. Verify touch-action: none is present in CSS styling for #map-container, #map-svg, and #minimap
@@ -761,7 +804,12 @@ class TestWebViewerVisualAndUsabilityOptimizations:
 
     def test_mobile_touch_empty_area_support(self):
         """Verify touch listeners and touch-action CSS are present even on empty room databases."""
-        data = build_area_json({})
+        graph = WorldGraph(rooms={}, exits=(), header=None)
+        layout = SolvedLayout(
+            coordinates={},
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
+        )
+        data = build_area_json(graph, layout)
         html = generate_html_viewer(data)
         assert "touch-action: none;" in html
         assert "#map-container" in html
@@ -776,15 +824,8 @@ class TestAreaProvenanceSerialization:
 
     def test_area_provenance_json_serialization_multi_area(self):
         """Verify area_name and area_file are serialized per room in multi-area databases."""
-        r1 = Room(
-            RoomDef(vnum=100, name="Midgaard Gate", description="Gate", area_name="Midgaard", area_file="midgaard.are")
-        )
-        r1.x, r1.y, r1.z = 0, 0, 0
-        r2 = Room(
-            RoomDef(vnum=200, name="Graveyard Entrance", description="Entrance", area_name="Graveyard", area_file="grave.are")
-        )
-        r2.x, r2.y, r2.z = 1, 0, 0
-
+        r1 = RoomDef(vnum=100, name="Midgaard Gate", description="Gate", area_name="Midgaard", area_file="midgaard.are")
+        r2 = RoomDef(vnum=200, name="Graveyard Entrance", description="Entrance", area_name="Graveyard", area_file="grave.are")
         header = AreaHeader(
             filename="composite.are",
             name="Midgaard Metropolitan",
@@ -792,7 +833,12 @@ class TestAreaProvenanceSerialization:
             vnum_min=100,
             vnum_max=200,
         )
-        data = build_area_json({100: r1, 200: r2}, area_meta=header)
+        graph = WorldGraph(rooms={100: r1, 200: r2}, exits=(), header=header)
+        layout = SolvedLayout(
+            coordinates={100: Coord3D(0, 0, 0), 200: Coord3D(1, 0, 0)},
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
+        )
+        data = build_area_json(graph, layout)
 
         assert data["area"]["name"] == "Midgaard Metropolitan"
         assert data["area"]["file"] == "composite.are"
@@ -805,9 +851,7 @@ class TestAreaProvenanceSerialization:
 
     def test_area_provenance_json_fallback_to_header(self):
         """Verify rooms without explicit area provenance fallback to header metadata."""
-        r1 = Room(RoomDef(vnum=10, name="Single Room", description="Desc"))
-        r1.x, r1.y, r1.z = 0, 0, 0
-
+        r1 = RoomDef(vnum=10, name="Single Room", description="Desc")
         header = AreaHeader(
             filename="single.are",
             name="Single Domain",
@@ -815,7 +859,12 @@ class TestAreaProvenanceSerialization:
             vnum_min=10,
             vnum_max=10,
         )
-        data = build_area_json({10: r1}, area_meta=header)
+        graph = WorldGraph(rooms={10: r1}, exits=(), header=header)
+        layout = SolvedLayout(
+            coordinates={10: Coord3D(0, 0, 0)},
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
+        )
+        data = build_area_json(graph, layout)
 
         assert len(data["rooms"]) == 1
         assert data["rooms"][0]["area_name"] == "Single Domain"
@@ -827,19 +876,9 @@ class TestMultiAreaViewerUI:
 
     @pytest.fixture
     def composite_viewer_html(self) -> str:
-        r1 = Room(
-            RoomDef(vnum=100, name="Town Square", description="A lively square.", area_name="Midgaard", area_file="midgaard.are")
-        )
-        r1.x, r1.y, r1.z = 0, 0, 0
-        r2 = Room(
-            RoomDef(vnum=200, name="Cemetery Gate", description="A dark gate.", area_name="Graveyard", area_file="grave.are")
-        )
-        r2.x, r2.y, r2.z = 1, 0, 0
-        r3 = Room(
-            RoomDef(vnum=300, name="Assembly Line", description="Factory machines.", area_name="Mob Factory", area_file="mobfact.are")
-        )
-        r3.x, r3.y, r3.z = 2, 0, 0
-
+        r1 = RoomDef(vnum=100, name="Town Square", description="A lively square.", area_name="Midgaard", area_file="midgaard.are")
+        r2 = RoomDef(vnum=200, name="Cemetery Gate", description="A dark gate.", area_name="Graveyard", area_file="grave.are")
+        r3 = RoomDef(vnum=300, name="Assembly Line", description="Factory machines.", area_name="Mob Factory", area_file="mobfact.are")
         header = AreaHeader(
             filename="composite.are",
             name="Midgaard + Graveyard + Mob Factory",
@@ -847,7 +886,16 @@ class TestMultiAreaViewerUI:
             vnum_min=100,
             vnum_max=300,
         )
-        data = build_area_json({100: r1, 200: r2, 300: r3}, area_meta=header)
+        graph = WorldGraph(rooms={100: r1, 200: r2, 300: r3}, exits=(), header=header)
+        layout = SolvedLayout(
+            coordinates={
+                100: Coord3D(0, 0, 0),
+                200: Coord3D(1, 0, 0),
+                300: Coord3D(2, 0, 0),
+            },
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
+        )
+        data = build_area_json(graph, layout)
         return generate_html_viewer(data)
 
     def test_zone_selector_and_legend_markup_present(self, composite_viewer_html: str):

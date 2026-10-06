@@ -10,9 +10,7 @@ from romutil.models import (
     AreaData,
     AreaHeader,
     Direction,
-    Exit,
     ExitDef,
-    Room,
     RoomDef,
     merge_areas,
 )
@@ -128,7 +126,7 @@ class TestCliCoverage:
             assert exc.value.code == 0
             assert (tmp_path / "fallback_out.json").exists()
 
-    def test_main_split_levels_and_copy_exception(self, tmp_path, monkeypatch):
+    def test_main_split_levels(self, tmp_path):
         are_file = FIXTURES_DIR / "rom24.are"
         out = str(tmp_path / "split_test")
 
@@ -137,13 +135,7 @@ class TestCliCoverage:
             main([are_file], out, split_levels=True, fmt="svg")
         assert exc.value.code == 0
 
-        # copyfile exception is caught and ignored
-        import shutil
-
-        def fail_copy(src, dst):
-            raise OSError("Permission denied")
-
-        monkeypatch.setattr(shutil, "copyfile", fail_copy)
+        # split_levels=False
         with pytest.raises(SystemExit) as exc:
             main([are_file], out, split_levels=False, fmt="svg")
         assert exc.value.code == 0
@@ -168,12 +160,6 @@ class TestCliCoverage:
     def test_cli_branches(self, tmp_path, monkeypatch):
         are_file = FIXTURES_DIR / "rom24.are"
         out = str(tmp_path / "cli_out")
-
-        # legacy 'map' token
-        monkeypatch.setattr("sys.argv", ["romutil", "map", str(are_file), "-outbase", out])
-        with pytest.raises(SystemExit) as exc:
-            cli()
-        assert exc.value.code == 0
 
         # debug flag
         monkeypatch.setattr("sys.argv", ["romutil", str(are_file), "-outbase", out, "-d"])
@@ -211,34 +197,6 @@ class TestCliCoverage:
 
 class TestModelEdgeCases:
     """Targeted coverage tests for models.py methods."""
-
-    def test_exit_equality_and_containment(self):
-        ex1 = Exit(src=1, dst=2, direction=Direction.north)
-        ex2 = Exit(src=1, dst=2, direction=Direction.north)
-        ex_recip = Exit(src=2, dst=1, direction=Direction.south)
-        ex_diff = Exit(src=1, dst=3, direction=Direction.north)
-
-        assert ex1 == ex2
-        assert ex1 == ex_recip
-        assert ex1 != ex_diff
-        assert ex1 != "not an exit"
-
-        assert 1 in ex1
-        assert 2 in ex1
-        assert 99 not in ex1
-
-    def test_room_methods(self):
-        r_def = RoomDef(vnum=10, name="R10", description="Desc")
-        room = Room(r_def)
-        ex = Exit(src=10, dst=20, direction=Direction.east)
-        room.exits = [ex]
-
-        room.replace_exit(orig=20, replacement=30, distance=2)
-        assert room.exits[0].dst == 30
-        assert room.exits[0].distance == 3
-
-        repr_str = repr(room)
-        assert "10: R10" in repr_str
 
     def test_merge_areas_edge_cases(self):
         # Empty areas list
