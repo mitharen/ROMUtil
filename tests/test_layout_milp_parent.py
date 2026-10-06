@@ -26,7 +26,14 @@ from romutil.layout import (
     solve_leaf_cluster,
     solve_parent_cluster,
 )
-from romutil.layout.geometry.primitives import BoundingBox3D
+from romutil.layout.geometry import (
+    BoundingBox3D,
+    Segment3D,
+    point_in_segment_interior,
+    segment_box_penetration,
+    segment_room_penetration,
+    segments_intersect_3d,
+)
 from romutil.layout.milp.parent import (
     _boxes_intersect,
     _get_child_bbox_corners,
@@ -632,6 +639,329 @@ class TestParentFallbackAndRobustness:
         box1 = (off1.x, off1.x + 1, off1.y, off1.y + 1, off1.z, off1.z + 1)
         box2 = (off2.x, off2.x + 1, off2.y, off2.y + 1, off2.z, off2.z + 1)
         assert not _boxes_intersect(box1, box2)
+
+    def test_stretched_gateway_corridor_avoids_piercing_third_party_room(self) -> None:
+        """A stretched gateway corridor avoids piercing a third-party parent room along its line of sight."""
+        parent_rooms = [1, 2]
+        child_rooms = [3]
+        all_rooms = [1, 2, 3]
+
+        edges = [(1, 3, Direction.east, 4)]
+        graph = _make_graph(all_rooms, edges)
+
+        child_node = SolveTreeNode(
+            node_id="child_box",
+            node_type="leaf",
+            rooms=frozenset(child_rooms),
+        )
+        child_sol = NodeSolution(
+            node_id="child_box",
+            local_coordinates={3: Coord3D(0, 0, 0)},
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+        )
+
+        parent_node = SolveTreeNode(
+            node_id="parent_cluster",
+            node_type="block",
+            rooms=frozenset(parent_rooms),
+            children=(child_node,),
+        )
+
+        sol = solve_parent_cluster(parent_node, {child_node.node_id: child_sol}, graph)
+
+        p1 = sol.local_coordinates[1]
+        p2 = sol.local_coordinates[2]
+        c_off = sol.metadata["child_offsets"][child_node.node_id]
+        p3 = Coord3D(c_off.x, c_off.y, c_off.z)
+
+        gateway_seg = Segment3D(p1, p3)
+
+        assert not point_in_segment_interior(p2, gateway_seg)
+        assert not segment_room_penetration(gateway_seg, p2)
+
+    def test_gateway_corridor_avoids_piercing_sibling_child_box(self) -> None:
+        """A gateway corridor entering child k avoids piercing sibling child macro-box j."""
+        parent_rooms = [1]
+        child_k_rooms = [2]
+        child_j_rooms = [3, 4]
+        all_rooms = [1, 2, 3, 4]
+
+        edges = [
+            (1, 2, Direction.east, 4),
+            (3, 4, Direction.north, 1),
+        ]
+        graph = _make_graph(all_rooms, edges)
+
+        child_k = SolveTreeNode(node_id="child_k", node_type="leaf", rooms=frozenset(child_k_rooms))
+        child_k_sol = NodeSolution(
+            node_id="child_k",
+            local_coordinates={2: Coord3D(0, 0, 0)},
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+        )
+
+        child_j = SolveTreeNode(node_id="child_j", node_type="leaf", rooms=frozenset(child_j_rooms))
+        child_j_sol = NodeSolution(
+            node_id="child_j",
+            local_coordinates={3: Coord3D(0, 0, 0), 4: Coord3D(0, 1, 0)},
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 1, 0)),
+        )
+
+        parent_node = SolveTreeNode(
+            node_id="parent_siblings",
+            node_type="block",
+            rooms=frozenset(parent_rooms),
+            children=(child_k, child_j),
+        )
+
+        sol = solve_parent_cluster(
+            parent_node,
+            {child_k.node_id: child_k_sol, child_j.node_id: child_j_sol},
+            graph,
+        )
+
+        p1 = sol.local_coordinates[1]
+        off_k = sol.metadata["child_offsets"][child_k.node_id]
+        p2 = Coord3D(off_k.x, off_k.y, off_k.z)
+
+        gateway_seg = Segment3D(p1, p2)
+
+        off_j = sol.metadata["child_offsets"][child_j.node_id]
+        box_j = BoundingBox3D(
+            min_x=off_j.x,
+            max_x=off_j.x,
+            min_y=off_j.y,
+            max_y=off_j.y + 1,
+            min_z=off_j.z,
+            max_z=off_j.z,
+        )
+
+        assert not segment_box_penetration(gateway_seg, box_j)
+
+    def test_crossing_perpendicular_corridors_separated_in_3d(self) -> None:
+        """Perpendicular non-incident doorway corridors separate onto distinct Z coordinates or non-overlapping spans."""
+        parent_rooms = [1, 3]
+        child_1_rooms = [2]
+        child_2_rooms = [4]
+        all_rooms = [1, 2, 3, 4]
+
+        edges = [
+            (1, 2, Direction.east, 4),
+            (3, 4, Direction.north, 4),
+        ]
+        graph = _make_graph(all_rooms, edges)
+
+        child_1 = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset(child_1_rooms))
+        child_1_sol = NodeSolution(
+            node_id="c1",
+            local_coordinates={2: Coord3D(0, 0, 0)},
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+        )
+
+        child_2 = SolveTreeNode(node_id="c2", node_type="leaf", rooms=frozenset(child_2_rooms))
+        child_2_sol = NodeSolution(
+            node_id="c2",
+            local_coordinates={4: Coord3D(0, 0, 0)},
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+        )
+
+        parent_node = SolveTreeNode(
+            node_id="p_cross",
+            node_type="block",
+            rooms=frozenset(parent_rooms),
+            children=(child_1, child_2),
+        )
+
+        sol = solve_parent_cluster(
+            parent_node,
+            {child_1.node_id: child_1_sol, child_2.node_id: child_2_sol},
+            graph,
+        )
+
+        p1 = sol.local_coordinates[1]
+        off1 = sol.metadata["child_offsets"][child_1.node_id]
+        p2 = Coord3D(off1.x, off1.y, off1.z)
+
+        p3 = sol.local_coordinates[3]
+        off2 = sol.metadata["child_offsets"][child_2.node_id]
+        p4 = Coord3D(off2.x, off2.y, off2.z)
+
+        seg1 = Segment3D(p1, p2)
+        seg2 = Segment3D(p3, p4)
+
+        assert not segments_intersect_3d(seg1, seg2)
+
+    def test_crossing_doorway_and_internal_corridor_separated_in_3d(self) -> None:
+        """Perpendicular doorway corridor and internal parent street separate cleanly."""
+        parent_rooms = [1, 3, 4]
+        child_rooms = [2]
+        all_rooms = [1, 2, 3, 4]
+
+        edges = [
+            (3, 4, Direction.north, 4),
+            (1, 2, Direction.east, 4),
+        ]
+        graph = _make_graph(all_rooms, edges)
+
+        child = SolveTreeNode(node_id="c_gw", node_type="leaf", rooms=frozenset(child_rooms))
+        child_sol = NodeSolution(
+            node_id="c_gw",
+            local_coordinates={2: Coord3D(0, 0, 0)},
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+        )
+
+        parent_node = SolveTreeNode(
+            node_id="p_gw_int",
+            node_type="block",
+            rooms=frozenset(parent_rooms),
+            children=(child,),
+        )
+
+        sol = solve_parent_cluster(parent_node, {child.node_id: child_sol}, graph)
+
+        p1 = sol.local_coordinates[1]
+        off = sol.metadata["child_offsets"][child.node_id]
+        p2 = Coord3D(off.x, off.y, off.z)
+
+        p3 = sol.local_coordinates[3]
+        p4 = sol.local_coordinates[4]
+
+        gw_seg = Segment3D(p1, p2)
+        int_seg = Segment3D(p3, p4)
+
+        assert not segments_intersect_3d(gw_seg, int_seg)
+
+    def test_fallback_corridor_clearance_and_sibling_box_avoidance(self) -> None:
+        """Deterministic fallback places child boxes without corridor piercing."""
+        parent_rooms = [1, 2]
+        all_rooms = [1, 2, 3, 4]
+
+        edges = [
+            (2, 1, Direction.north, 1),
+            (1, 3, Direction.east, 3),
+            (2, 4, Direction.east, 3),
+        ]
+        graph = _make_graph(all_rooms, edges)
+
+        c1 = SolveTreeNode(node_id="fb_c1", node_type="leaf", rooms=frozenset({3}))
+        c2 = SolveTreeNode(node_id="fb_c2", node_type="leaf", rooms=frozenset({4}))
+        sol1 = NodeSolution(node_id="fb_c1", local_coordinates={3: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
+        sol2 = NodeSolution(node_id="fb_c2", local_coordinates={4: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
+
+        parent = SolveTreeNode(node_id="p_fb_corr", node_type="block", rooms=frozenset(parent_rooms), children=(c1, c2))
+
+        sol = _solve_parent_fallback(parent, {c1.node_id: sol1, c2.node_id: sol2}, graph)
+
+        p1 = sol.local_coordinates[1]
+        p2 = sol.local_coordinates[2]
+        off1 = sol.metadata["child_offsets"]["fb_c1"]
+        off2 = sol.metadata["child_offsets"]["fb_c2"]
+
+        seg1 = Segment3D(p1, Coord3D(off1.x, off1.y, off1.z))
+        seg2 = Segment3D(p2, Coord3D(off2.x, off2.y, off2.z))
+
+        assert not point_in_segment_interior(p2, seg1)
+        assert not point_in_segment_interior(p1, seg2)
+        assert not segments_intersect_3d(seg1, seg2)
+
+    def test_gateway_corridor_directions_west_south_vertical(self) -> None:
+        """Gateway corridors along West, South, and Up/Down directions enforce clearance."""
+        for d in [Direction.west, Direction.south, Direction.up, Direction.down]:
+            parent_rooms = [1, 2]
+            child_rooms = [3]
+            all_rooms = [1, 2, 3]
+            edges = [(1, 3, d, 4)]
+            graph = _make_graph(all_rooms, edges)
+
+            child_node = SolveTreeNode(node_id=f"c_{d.name}", node_type="leaf", rooms=frozenset(child_rooms))
+            child_sol = NodeSolution(
+                node_id=f"c_{d.name}",
+                local_coordinates={3: Coord3D(0, 0, 0)},
+                bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+            )
+
+            parent_node = SolveTreeNode(
+                node_id=f"p_{d.name}",
+                node_type="block",
+                rooms=frozenset(parent_rooms),
+                children=(child_node,),
+            )
+
+            sol = solve_parent_cluster(parent_node, {child_node.node_id: child_sol}, graph)
+            p1 = sol.local_coordinates[1]
+            p2 = sol.local_coordinates[2]
+            c_off = sol.metadata["child_offsets"][child_node.node_id]
+            p3 = Coord3D(c_off.x, c_off.y, c_off.z)
+
+            seg = Segment3D(p1, p3)
+            assert not point_in_segment_interior(p2, seg)
+
+    def test_gateway_corridor_sibling_box_other_directions(self) -> None:
+        """Gateway corridor vs sibling box for West, South, Up, Down directions."""
+        for d in [Direction.west, Direction.south, Direction.up, Direction.down]:
+            parent_rooms = [1]
+            edges = [(1, 2, d, 4)]
+            graph = _make_graph([1, 2, 3], edges)
+
+            child_k = SolveTreeNode(node_id="ck", node_type="leaf", rooms=frozenset({2}))
+            child_k_sol = NodeSolution(
+                node_id="ck",
+                local_coordinates={2: Coord3D(0, 0, 0)},
+                bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+            )
+
+            child_j = SolveTreeNode(node_id="cj", node_type="leaf", rooms=frozenset({3}))
+            child_j_sol = NodeSolution(
+                node_id="cj",
+                local_coordinates={3: Coord3D(0, 0, 0)},
+                bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+            )
+
+            parent_node = SolveTreeNode(
+                node_id="p_sib_dir",
+                node_type="block",
+                rooms=frozenset(parent_rooms),
+                children=(child_k, child_j),
+            )
+
+            sol = solve_parent_cluster(parent_node, {"ck": child_k_sol, "cj": child_j_sol}, graph)
+            p1 = sol.local_coordinates[1]
+            off_k = sol.metadata["child_offsets"]["ck"]
+            p2 = Coord3D(off_k.x, off_k.y, off_k.z)
+            seg = Segment3D(p1, p2)
+
+            off_j = sol.metadata["child_offsets"]["cj"]
+            box_j = BoundingBox3D(off_j.x, off_j.x, off_j.y, off_j.y, off_j.z, off_j.z)
+            assert not segment_box_penetration(seg, box_j)
+
+    def test_crossing_perpendicular_vertical_corridors(self) -> None:
+        """Crossing separation between vertical and horizontal corridors."""
+        parent_rooms = [1, 3]
+        edges = [
+            (1, 2, Direction.east, 4),
+            (3, 4, Direction.up, 4),
+        ]
+        graph = _make_graph([1, 2, 3, 4], edges)
+
+        c1 = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({2}))
+        c1_sol = NodeSolution(node_id="c1", local_coordinates={2: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
+
+        c2 = SolveTreeNode(node_id="c2", node_type="leaf", rooms=frozenset({4}))
+        c2_sol = NodeSolution(node_id="c2", local_coordinates={4: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
+
+        parent = SolveTreeNode(node_id="p_v_cross", node_type="block", rooms=frozenset(parent_rooms), children=(c1, c2))
+        sol = solve_parent_cluster(parent, {"c1": c1_sol, "c2": c2_sol}, graph)
+
+        p1 = sol.local_coordinates[1]
+        off1 = sol.metadata["child_offsets"]["c1"]
+        p2 = Coord3D(off1.x, off1.y, off1.z)
+
+        p3 = sol.local_coordinates[3]
+        off2 = sol.metadata["child_offsets"]["c2"]
+        p4 = Coord3D(off2.x, off2.y, off2.z)
+
+        seg1 = Segment3D(p1, p2)
+        seg2 = Segment3D(p3, p4)
+        assert not segments_intersect_3d(seg1, seg2)
 
 
 class TestHierarchicalTreeSolver:

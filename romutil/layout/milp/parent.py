@@ -8,7 +8,12 @@ from typing import Any, Mapping, Sequence
 import pyomo.environ as pyo
 from pyomo.opt import SolverStatus as PyomoSolverStatus, TerminationCondition
 
-from romutil.layout.geometry.primitives import BoundingBox3D
+from romutil.layout.geometry import (
+    BoundingBox3D,
+    Segment3D,
+    point_in_segment_interior,
+    segment_box_penetration,
+)
 from romutil.layout.ir import (
     LayoutEdge,
     LayoutGraph,
@@ -172,6 +177,8 @@ def _solve_parent_fallback(
                     parent_coords[a][2] - c_coords[a].z,
                 )
 
+        doorway_info: tuple[int, int, tuple[int, int, int]] | None = None
+
         # Check doorway / bridge edge alignment
         if target_pos is None and parent_coords:
             for edge in graph.edges:
@@ -185,6 +192,7 @@ def _solve_parent_fallback(
                         cv = c_coords[edge.dst]
                         target_pos = (pu[0] + w * dx - cv.x, pu[1] + w * dy - cv.y, pu[2] + w * dz - cv.z)
                         step_dir = (dx, dy, dz) if (dx, dy, dz) != (0, 0, 0) else (1, 0, 0)
+                        doorway_info = (edge.src, edge.dst, (dx, dy, dz))
                         break
                     except ValueError:
                         pass
@@ -196,6 +204,7 @@ def _solve_parent_fallback(
                         cv = c_coords[edge.src]
                         target_pos = (pu[0] - w * dx - cv.x, pu[1] - w * dy - cv.y, pu[2] - w * dz - cv.z)
                         step_dir = (-dx, -dy, -dz) if (-dx, -dy, -dz) != (0, 0, 0) else (1, 0, 0)
+                        doorway_info = (edge.dst, edge.src, (-dx, -dy, -dz))
                         break
                     except ValueError:
                         pass
@@ -211,7 +220,7 @@ def _solve_parent_fallback(
 
         cx, cy, cz = target_pos
 
-        # Ensure macro-box separation against already placed disjoint children
+        # Ensure macro-box separation and corridor clearance against already placed disjoint children
         if c_bbox is not None:
             curr_box = (
                 cx + c_bbox[0],
@@ -222,6 +231,7 @@ def _solve_parent_fallback(
                 cz + c_bbox[5],
             )
             collided = True
+            step_count = 0
             while collided:
                 collided = False
                 for prev_id, prev_box in placed_boxes:
@@ -230,21 +240,55 @@ def _solve_parent_fallback(
                     shared = set(c_coords.keys()) & set(prev_coords.keys())
                     if not shared and _boxes_intersect(curr_box, prev_box):
                         collided = True
+                        break
+
+                if not collided and doorway_info is not None:
+                    u_src, v_dst, _ = doorway_info
+                    pu = parent_coords[u_src]
+                    cv = c_coords[v_dst]
+                    pv = (cx + cv.x, cy + cv.y, cz + cv.z)
+                    seg = Segment3D(Coord3D(*pu), Coord3D(*pv))
+
+                    for pr, pr_pos in parent_coords.items():
+                        if pr != u_src and pr not in c_coords:
+                            if point_in_segment_interior(Coord3D(*pr_pos), seg):
+                                collided = True
+                                break
+
+                    if not collided:
+                        for prev_id, prev_box in placed_boxes:
+                            prev_sol = child_solutions.get(prev_id)
+                            prev_coords = prev_sol.local_coordinates if prev_sol else {}
+                            shared = set(c_coords.keys()) & set(prev_coords.keys())
+                            if not shared and u_src not in prev_coords:
+                                pbox = BoundingBox3D(
+                                    prev_box[0], prev_box[1], prev_box[2], prev_box[3], prev_box[4], prev_box[5]
+                                )
+                                if segment_box_penetration(seg, pbox):
+                                    collided = True
+                                    break
+
+                if collided:
+                    step_count += 1
+                    if step_count > 50:
+                        step_x = 0 if step_dir[0] != 0 else 1
+                        step_y = 1 if step_dir[1] == 0 else 0
+                        step_z = 0
+                    else:
                         step_x = step_dir[0] if step_dir[0] != 0 else 1
                         step_y = step_dir[1]
                         step_z = step_dir[2]
-                        cx += step_x
-                        cy += step_y
-                        cz += step_z
-                        curr_box = (
-                            cx + c_bbox[0],
-                            cx + c_bbox[1],
-                            cy + c_bbox[2],
-                            cy + c_bbox[3],
-                            cz + c_bbox[4],
-                            cz + c_bbox[5],
-                        )
-                        break
+                    cx += step_x
+                    cy += step_y
+                    cz += step_z
+                    curr_box = (
+                        cx + c_bbox[0],
+                        cx + c_bbox[1],
+                        cy + c_bbox[2],
+                        cy + c_bbox[3],
+                        cz + c_bbox[4],
+                        cz + c_bbox[5],
+                    )
             placed_boxes.append((child.node_id, curr_box))
 
         raw_child_offsets[child.node_id] = (cx, cy, cz)
@@ -682,6 +726,287 @@ def solve_parent_cluster(
                     (model.cz[cid] + box[4]) - model.z[u]
                     >= 1 - 2 * m_big * (1 - model.rc_bd[u, cid])
                 )
+
+        # Gateway corridor vs. third-party room non-penetration
+        gw_room_pairs: list[tuple[int, int]] = []
+        if rooms and doorway_edges:
+            for j, (c_id, u, v, _, _) in enumerate(doorway_edges):
+                c_sol = child_solutions.get(c_id)
+                c_coords = c_sol.local_coordinates if c_sol else {}
+                for w in rooms:
+                    if w != u and w not in c_coords:
+                        gw_room_pairs.append((j, w))
+
+        if gw_room_pairs:
+            model.gwr_b0 = pyo.Var(gw_room_pairs, domain=pyo.Binary)
+            model.gwr_b1 = pyo.Var(gw_room_pairs, domain=pyo.Binary)
+            model.gwr_b2 = pyo.Var(gw_room_pairs, domain=pyo.Binary)
+            model.gwr_b3 = pyo.Var(gw_room_pairs, domain=pyo.Binary)
+            model.gwr_b4 = pyo.Var(gw_room_pairs, domain=pyo.Binary)
+            model.gwr_b5 = pyo.Var(gw_room_pairs, domain=pyo.Binary)
+
+            model.gwr_sep = pyo.ConstraintList()
+
+            for j, w in gw_room_pairs:
+                c_id, u, v, (dx, dy, dz), _ = doorway_edges[j]
+                cv = child_solutions[c_id].local_coordinates[v]
+
+                model.gwr_sep.add(
+                    model.gwr_b0[j, w]
+                    + model.gwr_b1[j, w]
+                    + model.gwr_b2[j, w]
+                    + model.gwr_b3[j, w]
+                    + model.gwr_b4[j, w]
+                    + model.gwr_b5[j, w]
+                    >= 1
+                )
+
+                if dx != 0:
+                    model.gwr_sep.add(model.y[w] - model.y[u] >= 1 - 2 * m_big * (1 - model.gwr_b0[j, w]))
+                    model.gwr_sep.add(model.y[u] - model.y[w] >= 1 - 2 * m_big * (1 - model.gwr_b1[j, w]))
+                    model.gwr_sep.add(model.z[w] - model.z[u] >= 1 - 2 * m_big * (1 - model.gwr_b2[j, w]))
+                    model.gwr_sep.add(model.z[u] - model.z[w] >= 1 - 2 * m_big * (1 - model.gwr_b3[j, w]))
+                    if dx > 0:
+                        model.gwr_sep.add(model.x[u] - model.x[w] >= 0 - 2 * m_big * (1 - model.gwr_b4[j, w]))
+                        model.gwr_sep.add(model.x[w] - (model.cx[c_id] + cv.x) >= 0 - 2 * m_big * (1 - model.gwr_b5[j, w]))
+                    else:
+                        model.gwr_sep.add(model.x[w] - model.x[u] >= 0 - 2 * m_big * (1 - model.gwr_b4[j, w]))
+                        model.gwr_sep.add((model.cx[c_id] + cv.x) - model.x[w] >= 0 - 2 * m_big * (1 - model.gwr_b5[j, w]))
+                elif dy != 0:
+                    model.gwr_sep.add(model.x[w] - model.x[u] >= 1 - 2 * m_big * (1 - model.gwr_b0[j, w]))
+                    model.gwr_sep.add(model.x[u] - model.x[w] >= 1 - 2 * m_big * (1 - model.gwr_b1[j, w]))
+                    model.gwr_sep.add(model.z[w] - model.z[u] >= 1 - 2 * m_big * (1 - model.gwr_b2[j, w]))
+                    model.gwr_sep.add(model.z[u] - model.z[w] >= 1 - 2 * m_big * (1 - model.gwr_b3[j, w]))
+                    if dy > 0:
+                        model.gwr_sep.add(model.y[u] - model.y[w] >= 0 - 2 * m_big * (1 - model.gwr_b4[j, w]))
+                        model.gwr_sep.add(model.y[w] - (model.cy[c_id] + cv.y) >= 0 - 2 * m_big * (1 - model.gwr_b5[j, w]))
+                    else:
+                        model.gwr_sep.add(model.y[w] - model.y[u] >= 0 - 2 * m_big * (1 - model.gwr_b4[j, w]))
+                        model.gwr_sep.add((model.cy[c_id] + cv.y) - model.y[w] >= 0 - 2 * m_big * (1 - model.gwr_b5[j, w]))
+                else:  # dz != 0
+                    model.gwr_sep.add(model.x[w] - model.x[u] >= 1 - 2 * m_big * (1 - model.gwr_b0[j, w]))
+                    model.gwr_sep.add(model.x[u] - model.x[w] >= 1 - 2 * m_big * (1 - model.gwr_b1[j, w]))
+                    model.gwr_sep.add(model.y[w] - model.y[u] >= 1 - 2 * m_big * (1 - model.gwr_b2[j, w]))
+                    model.gwr_sep.add(model.y[u] - model.y[w] >= 1 - 2 * m_big * (1 - model.gwr_b3[j, w]))
+                    if dz > 0:
+                        model.gwr_sep.add(model.z[u] - model.z[w] >= 0 - 2 * m_big * (1 - model.gwr_b4[j, w]))
+                        model.gwr_sep.add(model.z[w] - (model.cz[c_id] + cv.z) >= 0 - 2 * m_big * (1 - model.gwr_b5[j, w]))
+                    else:
+                        model.gwr_sep.add(model.z[w] - model.z[u] >= 0 - 2 * m_big * (1 - model.gwr_b4[j, w]))
+                        model.gwr_sep.add((model.cz[c_id] + cv.z) - model.z[w] >= 0 - 2 * m_big * (1 - model.gwr_b5[j, w]))
+
+        # Gateway corridor vs. sibling child macro-box non-penetration
+        gw_sibling_pairs: list[tuple[int, str]] = []
+        if doorway_edges and len(children) > 1:
+            for j, (c_id, u, v, _, _) in enumerate(doorway_edges):
+                c_sol = child_solutions.get(c_id)
+                for s_child in children:
+                    s_id = s_child.node_id
+                    if s_id == c_id:
+                        continue
+                    s_sol = child_solutions.get(s_id)
+                    if not s_sol or s_sol.bounding_box is None:
+                        continue
+                    if c_sol:
+                        shared = set(c_sol.local_coordinates.keys()) & set(s_sol.local_coordinates.keys())
+                        if shared:
+                            continue
+                    if u in s_sol.local_coordinates:
+                        continue
+                    if _get_child_bbox_corners(s_sol.bounding_box) is not None:
+                        gw_sibling_pairs.append((j, s_id))
+
+        if gw_sibling_pairs:
+            model.gws_br = pyo.Var(gw_sibling_pairs, domain=pyo.Binary)
+            model.gws_bl = pyo.Var(gw_sibling_pairs, domain=pyo.Binary)
+            model.gws_ba = pyo.Var(gw_sibling_pairs, domain=pyo.Binary)
+            model.gws_bb = pyo.Var(gw_sibling_pairs, domain=pyo.Binary)
+            model.gws_bu = pyo.Var(gw_sibling_pairs, domain=pyo.Binary)
+            model.gws_bd = pyo.Var(gw_sibling_pairs, domain=pyo.Binary)
+
+            model.gws_sep = pyo.ConstraintList()
+
+            for j, s_id in gw_sibling_pairs:
+                c_id, u, v, (dx, dy, dz), _ = doorway_edges[j]
+                cv = child_solutions[c_id].local_coordinates[v]
+                s_box = _get_child_bbox_corners(child_solutions[s_id].bounding_box)
+                assert s_box is not None
+
+                model.gws_sep.add(
+                    model.gws_br[j, s_id]
+                    + model.gws_bl[j, s_id]
+                    + model.gws_ba[j, s_id]
+                    + model.gws_bb[j, s_id]
+                    + model.gws_bu[j, s_id]
+                    + model.gws_bd[j, s_id]
+                    >= 1
+                )
+
+                if dx == 1:
+                    c_min_x, c_max_x = model.x[u], model.cx[c_id] + cv.x
+                    c_min_y, c_max_y = model.y[u], model.y[u]
+                    c_min_z, c_max_z = model.z[u], model.z[u]
+                elif dx == -1:
+                    c_min_x, c_max_x = model.cx[c_id] + cv.x, model.x[u]
+                    c_min_y, c_max_y = model.y[u], model.y[u]
+                    c_min_z, c_max_z = model.z[u], model.z[u]
+                elif dy == 1:
+                    c_min_x, c_max_x = model.x[u], model.x[u]
+                    c_min_y, c_max_y = model.y[u], model.cy[c_id] + cv.y
+                    c_min_z, c_max_z = model.z[u], model.z[u]
+                elif dy == -1:
+                    c_min_x, c_max_x = model.x[u], model.x[u]
+                    c_min_y, c_max_y = model.cy[c_id] + cv.y, model.y[u]
+                    c_min_z, c_max_z = model.z[u], model.z[u]
+                elif dz == 1:
+                    c_min_x, c_max_x = model.x[u], model.x[u]
+                    c_min_y, c_max_y = model.y[u], model.y[u]
+                    c_min_z, c_max_z = model.z[u], model.cz[c_id] + cv.z
+                else:  # dz == -1
+                    c_min_x, c_max_x = model.x[u], model.x[u]
+                    c_min_y, c_max_y = model.y[u], model.y[u]
+                    c_min_z, c_max_z = model.cz[c_id] + cv.z, model.z[u]
+
+                s_min_x = model.cx[s_id] + s_box[0]
+                s_max_x = model.cx[s_id] + s_box[1]
+                s_min_y = model.cy[s_id] + s_box[2]
+                s_max_y = model.cy[s_id] + s_box[3]
+                s_min_z = model.cz[s_id] + s_box[4]
+                s_max_z = model.cz[s_id] + s_box[5]
+
+                # Right
+                model.gws_sep.add(c_min_x - s_max_x >= 1 - 2 * m_big * (1 - model.gws_br[j, s_id]))
+                # Left
+                model.gws_sep.add(s_min_x - c_max_x >= 1 - 2 * m_big * (1 - model.gws_bl[j, s_id]))
+                # Ahead
+                model.gws_sep.add(c_min_y - s_max_y >= 1 - 2 * m_big * (1 - model.gws_ba[j, s_id]))
+                # Behind
+                model.gws_sep.add(s_min_y - c_max_y >= 1 - 2 * m_big * (1 - model.gws_bb[j, s_id]))
+                # Up
+                model.gws_sep.add(c_min_z - s_max_z >= 1 - 2 * m_big * (1 - model.gws_bu[j, s_id]))
+                # Down
+                model.gws_sep.add(s_min_z - c_max_z >= 1 - 2 * m_big * (1 - model.gws_bd[j, s_id]))
+
+        # Corridor crossing separation (between perpendicular non-incident corridors)
+        gw_corridor_descriptors = []
+        for j, (c_id, u, v, (dx, dy, dz), _) in enumerate(doorway_edges):
+            if sum(1 for d in (dx, dy, dz) if d != 0) != 1:
+                continue
+            cv = child_solutions[c_id].local_coordinates[v]
+            if dx != 0:
+                act = "x"
+                c_min = model.x[u] if dx > 0 else model.cx[c_id] + cv.x
+                c_max = model.cx[c_id] + cv.x if dx > 0 else model.x[u]
+                coords = {"y": model.y[u], "z": model.z[u]}
+            elif dy != 0:
+                act = "y"
+                c_min = model.y[u] if dy > 0 else model.cy[c_id] + cv.y
+                c_max = model.cy[c_id] + cv.y if dy > 0 else model.y[u]
+                coords = {"x": model.x[u], "z": model.z[u]}
+            else:
+                act = "z"
+                c_min = model.z[u] if dz > 0 else model.cz[c_id] + cv.z
+                c_max = model.cz[c_id] + cv.z if dz > 0 else model.z[u]
+                coords = {"x": model.x[u], "y": model.y[u]}
+            gw_corridor_descriptors.append({
+                "type": "gw",
+                "index": j,
+                "u": u,
+                "c_id": c_id,
+                "v": v,
+                "act": act,
+                "min": c_min,
+                "max": c_max,
+                "coords": coords,
+            })
+
+        int_corridor_descriptors = []
+        for i, (edge, (dx, dy, dz)) in enumerate(internal_edges):
+            if sum(1 for d in (dx, dy, dz) if d != 0) != 1:
+                continue
+            if dx != 0:
+                act = "x"
+                c_min = model.x[edge.src] if dx > 0 else model.x[edge.dst]
+                c_max = model.x[edge.dst] if dx > 0 else model.x[edge.src]
+                coords = {"y": model.y[edge.src], "z": model.z[edge.src]}
+            elif dy != 0:
+                act = "y"
+                c_min = model.y[edge.src] if dy > 0 else model.y[edge.dst]
+                c_max = model.y[edge.dst] if dy > 0 else model.y[edge.src]
+                coords = {"x": model.x[edge.src], "z": model.z[edge.src]}
+            else:
+                act = "z"
+                c_min = model.z[edge.src] if dz > 0 else model.z[edge.dst]
+                c_max = model.z[edge.dst] if dz > 0 else model.z[edge.src]
+                coords = {"x": model.x[edge.src], "y": model.y[edge.src]}
+            int_corridor_descriptors.append({
+                "type": "int",
+                "index": i,
+                "src": edge.src,
+                "dst": edge.dst,
+                "act": act,
+                "min": c_min,
+                "max": c_max,
+                "coords": coords,
+            })
+
+        crossing_pairs: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+
+        # 1. Doorway vs. Internal parent streets
+        for gw in gw_corridor_descriptors:
+            for ic in int_corridor_descriptors:
+                if gw["act"] != ic["act"] and gw["u"] not in (ic["src"], ic["dst"]):
+                    pkey = f"gw{gw['index']}_int{ic['index']}"
+                    crossing_pairs.append((pkey, gw, ic))
+
+        # 2. Doorway vs. Doorway
+        for j1 in range(len(gw_corridor_descriptors)):
+            for j2 in range(j1 + 1, len(gw_corridor_descriptors)):
+                gw1 = gw_corridor_descriptors[j1]
+                gw2 = gw_corridor_descriptors[j2]
+                if gw1["act"] != gw2["act"]:
+                    incident = gw1["u"] == gw2["u"] or (gw1["c_id"] == gw2["c_id"] and gw1["v"] == gw2["v"])
+                    if not incident:
+                        pkey = f"gw{j1}_gw{j2}"
+                        crossing_pairs.append((pkey, gw1, gw2))
+
+        if crossing_pairs:
+            crossing_keys = [p[0] for p in crossing_pairs]
+            model.cc_b0 = pyo.Var(crossing_keys, domain=pyo.Binary)
+            model.cc_b1 = pyo.Var(crossing_keys, domain=pyo.Binary)
+            model.cc_b2 = pyo.Var(crossing_keys, domain=pyo.Binary)
+            model.cc_b3 = pyo.Var(crossing_keys, domain=pyo.Binary)
+            model.cc_b4 = pyo.Var(crossing_keys, domain=pyo.Binary)
+            model.cc_b5 = pyo.Var(crossing_keys, domain=pyo.Binary)
+
+            model.cc_sep = pyo.ConstraintList()
+
+            for pkey, c1, c2 in crossing_pairs:
+                a1 = c1["act"]
+                a2 = c2["act"]
+                a3 = next(iter({"x", "y", "z"} - {a1, a2}))
+
+                model.cc_sep.add(
+                    model.cc_b0[pkey]
+                    + model.cc_b1[pkey]
+                    + model.cc_b2[pkey]
+                    + model.cc_b3[pkey]
+                    + model.cc_b4[pkey]
+                    + model.cc_b5[pkey]
+                    >= 1
+                )
+
+                # Transverse/vertical separation along a3
+                model.cc_sep.add(c1["coords"][a3] - c2["coords"][a3] >= 1 - 2 * m_big * (1 - model.cc_b0[pkey]))
+                model.cc_sep.add(c2["coords"][a3] - c1["coords"][a3] >= 1 - 2 * m_big * (1 - model.cc_b1[pkey]))
+
+                # Planar clearance along a1 (c2 is at constant coordinate c2["coords"][a1])
+                model.cc_sep.add(c2["coords"][a1] - c1["max"] >= 1 - 2 * m_big * (1 - model.cc_b2[pkey]))
+                model.cc_sep.add(c1["min"] - c2["coords"][a1] >= 1 - 2 * m_big * (1 - model.cc_b3[pkey]))
+
+                # Planar clearance along a2 (c1 is at constant coordinate c1["coords"][a2])
+                model.cc_sep.add(c1["coords"][a2] - c2["max"] >= 1 - 2 * m_big * (1 - model.cc_b4[pkey]))
+                model.cc_sep.add(c2["min"] - c1["coords"][a2] >= 1 - 2 * m_big * (1 - model.cc_b5[pkey]))
 
         # Parent bounding box variables and constraints
         model.x_min = pyo.Var(domain=pyo.Integers, bounds=(-m_coord, m_coord))
