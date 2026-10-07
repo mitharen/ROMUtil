@@ -1377,3 +1377,118 @@ class TestDirectlyObservableCutAlignment:
         # (cy + c10.y) - y[2] == L * dy(1) >= 2 -> child is north of room 2
         assert c10_world.x == p2_coord.x
         assert c10_world.y >= p2_coord.y + 2
+
+    def test_split_pair_corridor_elastic_stretching(self) -> None:
+        """Split-pair child corridor stretches elastically when forced by parent layout."""
+        # Split-pair container with poles 1 and 2
+        # Child contains rooms 1, 2, 3 with nominal span 2 along North
+        s_child = SolveTreeNode(
+            node_id="s_child",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 3}),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (1, 2),
+                "cut_contract": SplitPairCut(poles=(1, 2)),
+            },
+        )
+        child_sol = NodeSolution(
+            node_id="s_child",
+            local_coordinates={
+                1: Coord3D(0, 0, 0),
+                2: Coord3D(0, 2, 0),
+                3: Coord3D(0, 1, 0),
+            },
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 2, 0)),
+        )
+
+        parent = SolveTreeNode(
+            node_id="split_parent",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2, 4, 5}),
+            children=(s_child,),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (1, 2),
+                "cut_contract": SplitPairCut(poles=(1, 2)),
+            },
+        )
+
+        # Parent has intermediate path forcing distance between 1 and 2 to be at least 5
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4, 5],
+            edges=[
+                (1, 4, Direction.east, 1),
+                (4, 5, Direction.north, 5),
+                (5, 2, Direction.west, 1),
+            ],
+        )
+
+        parent_sol = solve_parent_cluster(parent, {"s_child": child_sol}, graph)
+        p1 = parent_sol.local_coordinates[1]
+        p2 = parent_sol.local_coordinates[2]
+        c_off = parent_sol.metadata["child_offsets"]["s_child"]
+
+        # Pole 1 is pinned at child origin
+        assert p1.x == c_off.x + child_sol.local_coordinates[1].x
+        assert p1.y == c_off.y + child_sol.local_coordinates[1].y
+        assert p1.z == c_off.z + child_sol.local_coordinates[1].z
+
+        # Pole 2 stretches along north axis beyond nominal child span (2 -> >= 5)
+        assert p2.x == p1.x
+        assert p2.z == p1.z
+        assert p2.y >= p1.y + 5
+
+    def test_child_child_bridge_elastic_edge(self) -> None:
+        """Child-child bridge edge positions sibling child relative to aligned child."""
+        c1 = SolveTreeNode(
+            node_id="c1",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({10, 11}),
+        )
+        c2 = SolveTreeNode(
+            node_id="c2",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({20, 21}),
+            metadata={
+                "cut_type": CutType.BRIDGE,
+                "bridge_edge": (11, 20),
+                "direction": int(Direction.north),
+                "weight": 3,
+                "cut_contract": BridgeCut(bridge_edge=(11, 20), direction=int(Direction.north), weight=3),
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="parent_two_children",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset(),
+            children=(c1, c2),
+        )
+
+        c1_sol = NodeSolution(
+            node_id="c1",
+            local_coordinates={10: Coord3D(0, 0, 0), 11: Coord3D(1, 0, 0)},
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 0, 0)),
+        )
+        c2_sol = NodeSolution(
+            node_id="c2",
+            local_coordinates={20: Coord3D(0, 0, 0), 21: Coord3D(0, 1, 0)},
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 1, 0)),
+        )
+
+        graph = _make_graph(
+            rooms=[10, 11, 20, 21],
+            edges=[(10, 11, Direction.east, 1), (20, 21, Direction.north, 1)],
+        )
+
+        parent_sol = solve_parent_cluster(parent, {"c1": c1_sol, "c2": c2_sol}, graph)
+        off1 = parent_sol.metadata["child_offsets"]["c1"]
+        off2 = parent_sol.metadata["child_offsets"]["c2"]
+
+        pos_11 = Coord3D(off1.x + 1, off1.y + 0, off1.z + 0)
+        pos_20 = Coord3D(off2.x + 0, off2.y + 0, off2.z + 0)
+
+        # Bridge North with length >= 3
+        assert pos_20.x == pos_11.x
+        assert pos_20.y >= pos_11.y + 3
+        assert pos_20.z == pos_11.z
