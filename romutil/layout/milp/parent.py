@@ -10,11 +10,15 @@ from pyomo.opt import SolverStatus as PyomoSolverStatus, TerminationCondition
 
 from romutil.layout.geometry import BoundingBox3D
 from romutil.layout.ir import (
+    ArticulationPointCut,
+    BridgeCut,
+    CutType,
     LayoutEdge,
     LayoutGraph,
     NodeSolution,
     SolveTree,
     SolveTreeNode,
+    SplitPairCut,
     TreeSolution,
 )
 from romutil.layout.milp.constraints import add_disjunctive_box_separation
@@ -164,27 +168,54 @@ def solve_parent_cluster(
         model.align_x = pyo.ConstraintList()
         model.align_y = pyo.ConstraintList()
         model.align_z = pyo.ConstraintList()
-
-        cut_type = node.metadata.get("cut_type")
-        poles = tuple(node.metadata.get("poles", ()))
-        is_split_pair = (
-            cut_type == "split_pair"
-            and len(poles) == 2
-            and all(p in room_set for p in poles)
-        )
-
         aligned_children: set[str] = set()
 
-        if is_split_pair:
-            p0, p1 = poles[0], poles[1]
-            split_children = [
-                c
-                for c in children
-                if c.node_id in child_solutions
-                and p0 in child_solutions[c.node_id].local_coordinates
-                and p1 in child_solutions[c.node_id].local_coordinates
-            ]
-            if split_children:
+        # 2-cut split-pair alignment
+        split_children_by_poles: dict[tuple[int, int], list[SolveTreeNode]] = {}
+        for child in children:
+            if child.node_id not in child_solutions:
+                continue
+            poles: tuple[int, int] | None = None
+            contract = child.cut_contract
+            if isinstance(contract, SplitPairCut):
+                poles = contract.poles
+            elif child.cut_type == CutType.SPLIT_PAIR or child.metadata.get("cut_type") in (CutType.SPLIT_PAIR, "split_pair") or "poles" in child.metadata:
+                raw_poles = child.metadata.get("poles")
+                if raw_poles and len(raw_poles) == 2:
+                    poles = (int(raw_poles[0]), int(raw_poles[1]))
+
+            if poles is not None:
+                p0, p1 = poles[0], poles[1]
+                c_coords = child_solutions[child.node_id].local_coordinates
+                if p0 in room_set and p1 in room_set and p0 in c_coords and p1 in c_coords:
+                    can_pair = (min(p0, p1), max(p0, p1))
+                    split_children_by_poles.setdefault(can_pair, []).append(child)
+
+        # Also support legacy parent metadata where poles were stored directly on the container node
+        if node.cut_type in (CutType.SPLIT_PAIR, "split_pair") or "poles" in node.metadata:
+            raw_node_poles = node.metadata.get("poles")
+            if raw_node_poles and len(raw_node_poles) == 2:
+                np0, np1 = int(raw_node_poles[0]), int(raw_node_poles[1])
+                if np0 in room_set and np1 in room_set:
+                    can_pair = (min(np0, np1), max(np0, np1))
+                    for child in children:
+                        if child.node_id in child_solutions:
+                            c_coords = child_solutions[child.node_id].local_coordinates
+                            if np0 in c_coords and np1 in c_coords:
+                                if child not in split_children_by_poles.get(can_pair, []):
+                                    split_children_by_poles.setdefault(can_pair, []).append(child)
+
+        is_split_pair_container = (
+            node.cut_type == CutType.SPLIT_PAIR
+            or node.metadata.get("cut_type") in (CutType.SPLIT_PAIR, "split_pair")
+        )
+
+        for (p0, p1), split_children in split_children_by_poles.items():
+            if not split_children:
+                continue
+
+            primary_disp: tuple[int, int, int] | None = None
+            if is_split_pair_container:
                 def _span(c: SolveTreeNode) -> int:
                     c_coords = child_solutions[c.node_id].local_coordinates
                     c0, c1 = c_coords[p0], c_coords[p1]
@@ -199,23 +230,23 @@ def solve_parent_cluster(
                     pc1_prim.z - pc0_prim.z,
                 )
 
-                for child in split_children:
-                    c_sol = child_solutions[child.node_id]
-                    pc0 = c_sol.local_coordinates[p0]
-                    model.align_x.add(model.x[p0] == model.cx[child.node_id] + pc0.x)
-                    model.align_y.add(model.y[p0] == model.cy[child.node_id] + pc0.y)
-                    model.align_z.add(model.z[p0] == model.cz[child.node_id] + pc0.z)
-                    gateway_anchors[child.node_id].add(p0)
+            for child in split_children:
+                c_sol = child_solutions[child.node_id]
+                pc0 = c_sol.local_coordinates[p0]
+                model.align_x.add(model.x[p0] == model.cx[child.node_id] + pc0.x)
+                model.align_y.add(model.y[p0] == model.cy[child.node_id] + pc0.y)
+                model.align_z.add(model.z[p0] == model.cz[child.node_id] + pc0.z)
+                gateway_anchors[child.node_id].add(p0)
 
-                    pc1 = c_sol.local_coordinates[p1]
-                    child_disp = (pc1.x - pc0.x, pc1.y - pc0.y, pc1.z - pc0.z)
-                    if child_disp == primary_disp:
-                        model.align_x.add(model.x[p1] == model.cx[child.node_id] + pc1.x)
-                        model.align_y.add(model.y[p1] == model.cy[child.node_id] + pc1.y)
-                        model.align_z.add(model.z[p1] == model.cz[child.node_id] + pc1.z)
-                        gateway_anchors[child.node_id].add(p1)
+                pc1 = c_sol.local_coordinates[p1]
+                child_disp = (pc1.x - pc0.x, pc1.y - pc0.y, pc1.z - pc0.z)
+                if primary_disp is not None and child_disp == primary_disp:
+                    model.align_x.add(model.x[p1] == model.cx[child.node_id] + pc1.x)
+                    model.align_y.add(model.y[p1] == model.cy[child.node_id] + pc1.y)
+                    model.align_z.add(model.z[p1] == model.cz[child.node_id] + pc1.z)
+                    gateway_anchors[child.node_id].add(p1)
 
-                    aligned_children.add(child.node_id)
+                aligned_children.add(child.node_id)
 
         # 1-cut articulation point alignment
         for child in children:
@@ -225,11 +256,15 @@ def solve_parent_cluster(
             if not c_sol:
                 continue
             c_coords = c_sol.local_coordinates
-            a = child.metadata.get("anchor_vnum")
-            if a is None:
-                common = room_set & set(c_coords.keys())
-                if len(common) == 1:
-                    a = next(iter(common))
+            a: int | None = None
+            contract = child.cut_contract
+            if isinstance(contract, ArticulationPointCut):
+                a = contract.anchor_vnum
+            elif child.cut_type == CutType.ARTICULATION_POINT or child.metadata.get("cut_type") in (CutType.ARTICULATION_POINT, "articulation_point") or "anchor_vnum" in child.metadata:
+                raw_a = child.metadata.get("anchor_vnum")
+                if raw_a is not None:
+                    a = int(raw_a)
+
             if a is not None and a in room_set and a in c_coords:
                 pc = c_coords[a]
                 model.align_x.add(model.x[a] == model.cx[child.node_id] + pc.x)
@@ -247,6 +282,31 @@ def solve_parent_cluster(
             if not c_sol:
                 continue
             c_coords = c_sol.local_coordinates
+
+            contract = child.cut_contract
+            if isinstance(contract, BridgeCut):
+                u, v = contract.bridge_edge
+                dir_val = contract.direction
+                weight = contract.weight
+                if u in room_set and v in c_coords:
+                    try:
+                        disp = direction_to_displacement(dir_val)
+                        doorway_edges.append((child.node_id, u, v, disp, weight))
+                        gateway_anchors[child.node_id].add(u)
+                        aligned_children.add(child.node_id)
+                        continue
+                    except ValueError:
+                        pass
+                elif v in room_set and u in c_coords:
+                    try:
+                        disp = direction_to_displacement(dir_val)
+                        rev_disp = (-disp[0], -disp[1], -disp[2])
+                        doorway_edges.append((child.node_id, v, u, rev_disp, weight))
+                        gateway_anchors[child.node_id].add(v)
+                        aligned_children.add(child.node_id)
+                        continue
+                    except ValueError:
+                        pass
 
             for edge in graph.edges:
                 if edge.cut:
@@ -330,23 +390,56 @@ def solve_parent_cluster(
 
         # Parent room vs child box clearance
         rc_pairs: list[tuple[int, str]] = []
+        rc_room_pairs: list[tuple[int, tuple[str, int]]] = []
         if rooms:
             for child in children:
                 c_sol = child_solutions.get(child.node_id)
                 if c_sol and c_sol.bounding_box is not None:
                     anchors = gateway_anchors[child.node_id]
-                    for u in rooms:
-                        if u not in anchors and u not in c_sol.local_coordinates:
-                            rc_pairs.append((u, child.node_id))
+                    is_split_child = (
+                        child.cut_type == CutType.SPLIT_PAIR
+                        or isinstance(child.cut_contract, SplitPairCut)
+                        or child.metadata.get("cut_type") in (CutType.SPLIT_PAIR, "split_pair")
+                        or len(child.metadata.get("poles", ())) == 2
+                    )
+                    if is_split_child:
+                        for u in rooms:
+                            if u not in anchors and u not in c_sol.local_coordinates:
+                                for v in c_sol.local_coordinates:
+                                    if v not in room_set:
+                                        rc_room_pairs.append((u, (child.node_id, v)))
+                    else:
+                        for u in rooms:
+                            if u not in anchors and u not in c_sol.local_coordinates:
+                                rc_pairs.append((u, child.node_id))
 
-        add_disjunctive_box_separation(
-            model=model,
-            pairs=rc_pairs,
-            get_box_a=_room_box,
-            get_box_b=_child_box,
-            prefix="rc",
-            m_big=m_big,
-        )
+        if rc_pairs:
+            add_disjunctive_box_separation(
+                model=model,
+                pairs=rc_pairs,
+                get_box_a=_room_box,
+                get_box_b=_child_box,
+                prefix="rc",
+                m_big=m_big,
+            )
+
+        if rc_room_pairs:
+            def _child_room_box(target: tuple[str, int]) -> tuple[Any, Any, Any, Any, Any, Any]:
+                cid, v = target
+                c_loc = child_solutions[cid].local_coordinates[v]
+                target_x = model.cx[cid] + c_loc.x
+                target_y = model.cy[cid] + c_loc.y
+                target_z = model.cz[cid] + c_loc.z
+                return (target_x, target_x, target_y, target_y, target_z, target_z)
+
+            add_disjunctive_box_separation(
+                model=model,
+                pairs=rc_room_pairs,
+                get_box_a=_room_box,
+                get_box_b=_child_room_box,
+                prefix="rcr",
+                m_big=m_big,
+            )
 
 
         # Gateway corridor box helpers
@@ -751,16 +844,30 @@ class HierarchicalTreeSolver(TreeSolver):
                 child_sol = _solve_node(child, g)
                 child_solutions_map[child.node_id] = child_sol
 
-            cut_type = node.metadata.get("cut_type")
+            pole_groups: dict[tuple[int, int], list[SolveTreeNode]] = {}
+            for c in node.children:
+                contract = c.cut_contract
+                if isinstance(contract, SplitPairCut):
+                    p_can = (min(contract.poles), max(contract.poles))
+                    if (
+                        p_can[0] in child_solutions_map[c.node_id].local_coordinates
+                        and p_can[1] in child_solutions_map[c.node_id].local_coordinates
+                    ):
+                        pole_groups.setdefault(p_can, []).append(c)
+
+            cut_type = node.cut_type or node.metadata.get("cut_type")
             poles = tuple(node.metadata.get("poles", ()))
-            if cut_type == "split_pair" and len(poles) == 2:
-                p0, p1 = poles[0], poles[1]
-                split_children = [
-                    c
-                    for c in node.children
-                    if p0 in child_solutions_map[c.node_id].local_coordinates
-                    and p1 in child_solutions_map[c.node_id].local_coordinates
-                ]
+            if (cut_type == CutType.SPLIT_PAIR or cut_type == "split_pair") and len(poles) == 2:
+                p_can = (min(poles[0], poles[1]), max(poles[0], poles[1]))
+                for c in node.children:
+                    if (
+                        p_can[0] in child_solutions_map[c.node_id].local_coordinates
+                        and p_can[1] in child_solutions_map[c.node_id].local_coordinates
+                    ):
+                        if c not in pole_groups.get(p_can, []):
+                            pole_groups.setdefault(p_can, []).append(c)
+
+            for (p0, p1), split_children in pole_groups.items():
                 if len(split_children) > 1:
                     max_dx = max(
                         abs(child_solutions_map[c.node_id].local_coordinates[p1].x - child_solutions_map[c.node_id].local_coordinates[p0].x)

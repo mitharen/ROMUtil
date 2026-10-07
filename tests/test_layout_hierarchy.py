@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from romutil.layout import (
+    ArticulationPointCut,
     BlockCutTreeBuilder,
     HierarchicalLayoutSolver,
     LayoutEdge,
@@ -211,6 +212,7 @@ class TestBlockCutTreeOneCuts:
         assert child.metadata == {
             "cut_type": "articulation_point",
             "anchor_vnum": 3,
+            "cut_contract": ArticulationPointCut(anchor_vnum=3),
         }
 
     def test_bridge_barbell_graph(self) -> None:
@@ -237,6 +239,7 @@ class TestBlockCutTreeOneCuts:
         assert bridge_node.metadata == {
             "cut_type": "articulation_point",
             "anchor_vnum": 3,
+            "cut_contract": ArticulationPointCut(anchor_vnum=3),
         }
         assert len(bridge_node.children) == 1
 
@@ -247,6 +250,7 @@ class TestBlockCutTreeOneCuts:
         assert t2_node.metadata == {
             "cut_type": "articulation_point",
             "anchor_vnum": 4,
+            "cut_contract": ArticulationPointCut(anchor_vnum=4),
         }
         assert t2_node.children == ()
 
@@ -313,11 +317,19 @@ class TestBlockCutTreeOneCuts:
         c1, c2 = root.children
         assert c1.node_id == "comp_0_block_1"
         assert c1.rooms == frozenset({3, 4, 10})
-        assert c1.metadata == {"cut_type": "articulation_point", "anchor_vnum": 10}
+        assert c1.metadata == {
+            "cut_type": "articulation_point",
+            "anchor_vnum": 10,
+            "cut_contract": ArticulationPointCut(anchor_vnum=10),
+        }
 
         assert c2.node_id == "comp_0_block_2"
         assert c2.rooms == frozenset({5, 6, 10})
-        assert c2.metadata == {"cut_type": "articulation_point", "anchor_vnum": 10}
+        assert c2.metadata == {
+            "cut_type": "articulation_point",
+            "anchor_vnum": 10,
+            "cut_contract": ArticulationPointCut(anchor_vnum=10),
+        }
 
     def test_primary_largest_block_root_selection(self) -> None:
         # 3-node block {10, 1, 2} sharing vertex 10 with 4-node block {10, 20, 21, 22}

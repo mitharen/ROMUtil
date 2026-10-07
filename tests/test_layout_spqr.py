@@ -7,14 +7,17 @@ import pytest
 
 from romutil.layout import (
     BlockCutTreeBuilder,
+    CutType,
     HierarchicalLayoutSolver,
     LayoutEdge,
     LayoutGraph,
     SimplifiedGraph,
     SolveTree,
     SolveTreeNode,
+    SplitPairCut,
     SpqrTreeBuilder,
     TreeBuilder,
+    TreeNodeType,
     build_block_spqr_tree,
 )
 from romutil.models import Direction, Exit, Room
@@ -180,12 +183,40 @@ class TestBuildBlockSpqrTree:
                     edges.append(LayoutEdge(src=u, dst=v, direction=Direction.north))
 
         tree_node = build_block_spqr_tree(frozenset({1, 2, 3, 4, 5, 6}), edges)
-        assert tree_node.node_type == "split_pair_container"
+        assert tree_node.node_type == TreeNodeType.SPLIT_PAIR_CONTAINER
         assert tree_node.rooms == frozenset({1, 2})
         assert set(tree_node.metadata.get("poles", ())) == {1, 2}
         assert len(tree_node.children) == 2
         for child in tree_node.children:
-            assert child.node_type == "rigid_cluster"
+            assert child.node_type == TreeNodeType.RIGID_CLUSTER
+            assert child.cut_type == CutType.SPLIT_PAIR
+            assert isinstance(child.cut_contract, SplitPairCut)
+            assert set(child.cut_contract.poles) == {1, 2}
+
+    def test_subdivided_k4_series_child_preserves_poles(self) -> None:
+        """K_4 with subdivided edge produces R-node root with S-node child attaching via typed split pair."""
+        # K_4 has (1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4).
+        # Subdivide (1, 2) through node 5: replace (1, 2) with (1, 5) and (5, 2).
+        edges = [
+            LayoutEdge(src=1, dst=5, direction=Direction.north),
+            LayoutEdge(src=5, dst=2, direction=Direction.north),
+            LayoutEdge(src=1, dst=3, direction=Direction.north),
+            LayoutEdge(src=1, dst=4, direction=Direction.north),
+            LayoutEdge(src=2, dst=3, direction=Direction.north),
+            LayoutEdge(src=2, dst=4, direction=Direction.north),
+            LayoutEdge(src=3, dst=4, direction=Direction.north),
+        ]
+        root = build_block_spqr_tree(frozenset({1, 2, 3, 4, 5}), edges)
+        assert root.node_type == TreeNodeType.RIGID_CLUSTER
+        assert {1, 2, 3, 4} <= set(root.rooms)
+        assert len(root.children) == 1
+        s_child = root.children[0]
+        assert s_child.node_type == TreeNodeType.SERIES_LOOP
+        assert s_child.cut_type == CutType.SPLIT_PAIR
+        assert isinstance(s_child.cut_contract, SplitPairCut)
+        assert set(s_child.cut_contract.poles) == {1, 2}
+        assert s_child.cut_contract.poles[0] in root.rooms
+        assert s_child.cut_contract.poles[1] in root.rooms
 
 
 class TestSpqrTreeBuilder:
