@@ -22,13 +22,18 @@ from romutil.layout.hierarchy import (
     build_block_spqr_tree,
 )
 from romutil.layout.ir import (
+    ArticulationPointCut,
+    BridgeCut,
     CorridorSegment,
+    CutType,
     LayoutEdge,
     LayoutGraph,
     NodeSolution,
     SimplifiedGraph,
     SolveTree,
     SolveTreeNode,
+    SplitPairCut,
+    TreeNodeType,
     TreeSolution,
 )
 from romutil.layout.milp import (
@@ -57,10 +62,13 @@ from romutil.types import LayoutSolverError
 production = HierarchicalLayoutSolver.production
 
 __all__ = [
+    "ArticulationPointCut",
     "BlockCutTreeBuilder",
     "BoundingBox3D",
+    "BridgeCut",
     "ChainedSimplifier",
     "CorridorSegment",
+    "CutType",
     "GraphSimplifier",
     "HallwayCompactor",
     "HierarchicalLayoutAssembler",
@@ -80,8 +88,10 @@ __all__ = [
     "SimplifiedGraph",
     "SolveTree",
     "SolveTreeNode",
+    "SplitPairCut",
     "SpqrTreeBuilder",
     "TreeBuilder",
+    "TreeNodeType",
     "TreeSolution",
     "TreeSolver",
     "WarpSeverer",

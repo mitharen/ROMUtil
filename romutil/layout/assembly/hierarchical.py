@@ -94,7 +94,7 @@ def _collect_subtree_local_coords(
 
     if node_sol is not None:
         for u in node.rooms:
-            if u in node_sol.local_coordinates:
+            if u in node_sol.local_coordinates and u not in coords:
                 loc = node_sol.local_coordinates[u]
                 coords[u] = Coord3D(origin.x + loc.x, origin.y + loc.y, origin.z + loc.z)
         for u, loc in node_sol.local_coordinates.items():
@@ -105,7 +105,9 @@ def _collect_subtree_local_coords(
         c_offset = _parse_offset(child_offsets_meta.get(child.node_id, Coord3D(0, 0, 0)))
         child_origin = Coord3D(origin.x + c_offset.x, origin.y + c_offset.y, origin.z + c_offset.z)
         child_coords = _collect_subtree_local_coords(child, solution, child_origin)
-        coords.update(child_coords)
+        for k, v in child_coords.items():
+            if k not in coords:
+                coords[k] = v
 
     return coords
 
@@ -142,7 +144,7 @@ class HierarchicalLayoutAssembler(LayoutAssembler):
 
             if node_sol is not None:
                 for u in node.rooms:
-                    if u in node_sol.local_coordinates:
+                    if u in node_sol.local_coordinates and u not in global_coords:
                         loc = node_sol.local_coordinates[u]
                         global_coords[u] = Coord3D(origin.x + loc.x, origin.y + loc.y, origin.z + loc.z)
                 for u, loc in node_sol.local_coordinates.items():

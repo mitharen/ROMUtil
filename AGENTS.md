@@ -21,4 +21,4 @@
 - **Visual Impact Verification on Task Completion**:
   - Whenever a task affecting parsing, layout, or rendering is merged into `main`, the coordinator must automatically produce local example outputs to enable visual inspection of the changes.
   - Build local map outputs using `uv run python scripts/build_pages.py --solver-timeout 10` (or targeted `romutil` CLI invocations) outputting to `_site/`.
-  - Provide direct clickable `file://` links to key outputs (e.g., `[Site Index](file:///home/user/proj/ROMUtil/_site/index.html)`, `[Midgaard HTML](file:///home/user/proj/ROMUtil/_site/midgaard.html)`, `[Midgaard Metropolitan HTML](file:///home/user/proj/ROMUtil/_site/midgaard_metropolitan.html)`) in the completion summary for user review.
+  - Provide direct clickable `file://` links to key outputs (e.g., `[Site Index](file:///path/to/ROMUtil/_site/index.html)`, `[Midgaard HTML](file:///path/to/ROMUtil/_site/midgaard.html)`, `[Midgaard Metropolitan HTML](file:///path/to/ROMUtil/_site/midgaard_metropolitan.html)`) in the completion summary for user review.

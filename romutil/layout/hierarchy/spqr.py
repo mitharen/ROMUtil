@@ -8,7 +8,15 @@ from typing import Any, Sequence, cast
 import spqrtree
 
 from romutil.layout.hierarchy.block_cut import BlockCutTreeBuilder
-from romutil.layout.ir import LayoutEdge, SimplifiedGraph, SolveTree, SolveTreeNode
+from romutil.layout.ir import (
+    CutType,
+    LayoutEdge,
+    SimplifiedGraph,
+    SolveTree,
+    SolveTreeNode,
+    SplitPairCut,
+    TreeNodeType,
+)
 from romutil.layout.protocols import TreeBuilder
 from romutil.types import LayoutOptions
 
@@ -22,7 +30,7 @@ def build_block_spqr_tree(
     if not block_nodes:
         return SolveTreeNode(
             node_id=f"{node_id_prefix}_0",
-            node_type="rigid_cluster",
+            node_type=TreeNodeType.RIGID_CLUSTER,
             rooms=frozenset(),
         )
 
@@ -44,7 +52,7 @@ def build_block_spqr_tree(
 
     counter = 0
 
-    def _convert(spqr_node: spqrtree.SPQRNode) -> SolveTreeNode:
+    def _convert(spqr_node: spqrtree.SPQRNode, parent: spqrtree.SPQRNode | None = None) -> SolveTreeNode:
         nonlocal counter
         node_id = f"{node_id_prefix}_{counter}"
         counter += 1
@@ -60,30 +68,49 @@ def build_block_spqr_tree(
                 _get_vertices(c),
             ),
         )
-        converted_children = tuple(_convert(c) for c in sorted_children)
+        converted_children = tuple(_convert(c, parent=spqr_node) for c in sorted_children)
+
+        # Determine attachment poles to parent component
+        if parent is not None:
+            parent_v = set(parent.skeleton.vertices if parent.skeleton else parent.poles)
+            child_v = set(spqr_node.skeleton.vertices if spqr_node.skeleton else spqr_node.poles)
+            shared = parent_v & child_v
+            if len(shared) == 2:
+                attachment_poles = tuple(sorted(cast(int, v) for v in shared))
+            elif spqr_node.poles:
+                attachment_poles = tuple(cast(int, v) for v in spqr_node.poles)
+            else:
+                attachment_poles = ()
+        elif spqr_node.poles:
+            attachment_poles = tuple(cast(int, v) for v in spqr_node.poles)
+        else:
+            attachment_poles = ()
 
         rooms: frozenset[int]
-        metadata: dict[str, Any]
+        metadata: dict[str, Any] = {}
         if spqr_node.type == spqrtree.NodeType.R:
-            node_type = "rigid_cluster"
+            node_type = TreeNodeType.RIGID_CLUSTER
             rooms = frozenset(cast(int, v) for v in spqr_node.skeleton.vertices)
-            metadata = {}
         elif spqr_node.type == spqrtree.NodeType.S:
-            node_type = "series_loop"
+            node_type = TreeNodeType.SERIES_LOOP
             rooms = frozenset(cast(int, v) for v in spqr_node.skeleton.vertices)
-            metadata = {}
         elif spqr_node.type == spqrtree.NodeType.P:
-            node_type = "split_pair_container"
-            rooms = frozenset(cast(int, v) for v in spqr_node.poles)
-            metadata = {
-                "cut_type": "split_pair",
-                "poles": tuple(cast(int, v) for v in spqr_node.poles),
-            }
+            node_type = TreeNodeType.SPLIT_PAIR_CONTAINER
+            poles_to_use = attachment_poles if len(attachment_poles) == 2 else tuple(cast(int, v) for v in spqr_node.poles)
+            rooms = frozenset(cast(int, v) for v in poles_to_use)
+            if len(poles_to_use) == 2:
+                metadata["cut_type"] = CutType.SPLIT_PAIR
+                metadata["poles"] = poles_to_use
+                metadata["cut_contract"] = SplitPairCut(poles=poles_to_use)
         else:
-            node_type = "rigid_cluster"
+            node_type = TreeNodeType.RIGID_CLUSTER
             source = spqr_node.skeleton.vertices if spqr_node.skeleton.vertices else spqr_node.poles
             rooms = frozenset(cast(int, v) for v in source)
-            metadata = {}
+
+        if parent is not None and len(attachment_poles) == 2:
+            metadata["cut_type"] = CutType.SPLIT_PAIR
+            metadata["poles"] = attachment_poles
+            metadata["cut_contract"] = SplitPairCut(poles=attachment_poles)
 
         return SolveTreeNode(
             node_id=node_id,
@@ -95,11 +122,11 @@ def build_block_spqr_tree(
 
     try:
         spqr_tree_root = spqrtree.build_spqr_tree(multigraph)
-        return _convert(spqr_tree_root)
+        return _convert(spqr_tree_root, parent=None)
     except (ValueError, IndexError, RuntimeError):
         return SolveTreeNode(
             node_id=f"{node_id_prefix}_0",
-            node_type="rigid_cluster",
+            node_type=TreeNodeType.RIGID_CLUSTER,
             rooms=block_nodes,
         )
 
@@ -168,13 +195,13 @@ class SpqrTreeBuilder(TreeBuilder):
         """Decompose a simplified graph into a hierarchical SolveTree with SPQR decomposition."""
         block_cut_tree = self._block_cut_builder.build_tree(simplified, options)
 
-        if block_cut_tree.root.node_type == "empty":
+        if block_cut_tree.root.node_type == TreeNodeType.EMPTY:
             return block_cut_tree
 
         edges = simplified.graph.edges
 
         def _transform_node(node: SolveTreeNode) -> SolveTreeNode:
-            if node.node_type == "world_root":
+            if node.node_type == TreeNodeType.WORLD_ROOT:
                 transformed_children = tuple(_transform_node(child) for child in node.children)
                 return SolveTreeNode(
                     node_id=node.node_id,
@@ -187,7 +214,7 @@ class SpqrTreeBuilder(TreeBuilder):
             # First, recursively process articulation children
             child_nodes: list[SolveTreeNode] = [_transform_node(child) for child in node.children]
 
-            if len(node.rooms) >= 4 and node.node_type in ("block", "biconnected_block"):
+            if len(node.rooms) >= 4 and node.node_type in (TreeNodeType.BLOCK, TreeNodeType.BICONNECTED_BLOCK):
                 spqr_root = build_block_spqr_tree(
                     block_nodes=frozenset(node.rooms),
                     edges=edges,
@@ -214,7 +241,7 @@ class SpqrTreeBuilder(TreeBuilder):
             )
 
         new_root = _transform_node(block_cut_tree.root)
-        if new_root.node_type == "world_root":
+        if new_root.node_type == TreeNodeType.WORLD_ROOT:
             components = new_root.children
         else:
             components = (new_root,)

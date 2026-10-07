@@ -9,20 +9,25 @@ import pytest
 from pyomo.opt import SolverStatus as PyomoSolverStatus, TerminationCondition
 
 from romutil.layout import (
+    ArticulationPointCut,
     BlockCutTreeBuilder,
+    BridgeCut,
+    CutType,
     HierarchicalLayoutSolver,
     HierarchicalTreeSolver,
     LayoutEdge,
     LayoutGraph,
     LeafTreeSolver,
     NodeSolution,
+    ParentClusterSolver,
     SimplifiedGraph,
     SolveTree,
     SolveTreeNode,
+    SplitPairCut,
     SpqrTreeBuilder,
+    TreeNodeType,
     TreeSolution,
     TreeSolver,
-    ParentClusterSolver,
     build_block_spqr_tree,
     solve_leaf_cluster,
     solve_parent_cluster,
@@ -1231,3 +1236,144 @@ class TestParentComprehensiveEdgeCoverage:
         assert "l1" in solution.node_solutions
         assert "l2" in solution.node_solutions
         assert "p_nested" in solution.node_solutions
+
+
+class TestDirectlyObservableCutAlignment:
+    """Tests verifying directly observable split-pair, articulation, and bridge alignments."""
+
+    def test_r_node_parent_aligns_s_node_split_child(self) -> None:
+        """R-node parent aligns S-node child at split poles without falling through."""
+        # Parent R-node contains rooms 1, 2, 3
+        # S-node child attaches at poles (1, 2) and contains rooms 1, 2, 4
+        s_child = SolveTreeNode(
+            node_id="s_child",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 4}),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (1, 2),
+                "cut_contract": SplitPairCut(poles=(1, 2)),
+            },
+        )
+        r_parent = SolveTreeNode(
+            node_id="r_parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3}),
+            children=(s_child,),
+        )
+
+        child_sol = NodeSolution(
+            node_id="s_child",
+            local_coordinates={
+                1: Coord3D(0, 0, 0),
+                2: Coord3D(0, 2, 0),
+                4: Coord3D(0, 1, 0),
+            },
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 2, 0)),
+        )
+
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4],
+            edges=[
+                (1, 3, Direction.east, 1),
+                (3, 2, Direction.north, 2),
+            ],
+        )
+
+        parent_sol = solve_parent_cluster(r_parent, {"s_child": child_sol}, graph)
+
+        child_offsets = parent_sol.metadata.get("child_offsets", {})
+        assert "s_child" in child_offsets
+        c_offset = child_offsets["s_child"]
+
+        # Pole 1 in parent must align with child pole 1: model.x[1] == cx + pc1.x
+        p1_coord = parent_sol.local_coordinates[1]
+        assert p1_coord.x == c_offset.x + 0
+        assert p1_coord.y == c_offset.y + 0
+        assert p1_coord.z == c_offset.z + 0
+
+    def test_parent_aligns_articulation_point_child_via_contract(self) -> None:
+        """Parent container aligns articulation child using typed ArticulationPointCut."""
+        art_child = SolveTreeNode(
+            node_id="art_child",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({2, 5}),
+            metadata={
+                "cut_type": CutType.ARTICULATION_POINT,
+                "anchor_vnum": 2,
+                "cut_contract": ArticulationPointCut(anchor_vnum=2),
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="parent_art",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1, 2}),
+            children=(art_child,),
+        )
+
+        child_sol = NodeSolution(
+            node_id="art_child",
+            local_coordinates={
+                2: Coord3D(1, 1, 0),
+                5: Coord3D(2, 1, 0),
+            },
+            bounding_box=(Coord3D(1, 1, 0), Coord3D(2, 1, 0)),
+        )
+
+        graph = _make_graph(
+            rooms=[1, 2, 5],
+            edges=[(1, 2, Direction.north, 1)],
+        )
+
+        parent_sol = solve_parent_cluster(parent, {"art_child": child_sol}, graph)
+        c_offset = parent_sol.metadata["child_offsets"]["art_child"]
+        p2_coord = parent_sol.local_coordinates[2]
+
+        assert p2_coord.x == c_offset.x + 1
+        assert p2_coord.y == c_offset.y + 1
+        assert p2_coord.z == c_offset.z + 0
+
+    def test_parent_aligns_bridge_child_via_contract(self) -> None:
+        """Parent container aligns bridge child using typed BridgeCut."""
+        bridge_child = SolveTreeNode(
+            node_id="br_child",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({10, 11}),
+            metadata={
+                "cut_type": CutType.BRIDGE,
+                "bridge_edge": (2, 10),
+                "direction": int(Direction.north),
+                "weight": 2,
+                "cut_contract": BridgeCut(bridge_edge=(2, 10), direction=int(Direction.north), weight=2),
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="parent_br",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1, 2}),
+            children=(bridge_child,),
+        )
+
+        child_sol = NodeSolution(
+            node_id="br_child",
+            local_coordinates={
+                10: Coord3D(0, 0, 0),
+                11: Coord3D(1, 0, 0),
+            },
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 0, 0)),
+        )
+
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11],
+            edges=[(1, 2, Direction.east, 1)],
+        )
+
+        parent_sol = solve_parent_cluster(parent, {"br_child": child_sol}, graph)
+        c_offset = parent_sol.metadata["child_offsets"]["br_child"]
+        p2_coord = parent_sol.local_coordinates[2]
+        c10_world = Coord3D(c_offset.x + 0, c_offset.y + 0, c_offset.z + 0)
+
+        # Bridge constraint: (cx + c10.x) - x[2] == L * dx(0) -> x aligns
+        # (cy + c10.y) - y[2] == L * dy(1) >= 2 -> child is north of room 2
+        assert c10_world.x == p2_coord.x
+        assert c10_world.y >= p2_coord.y + 2

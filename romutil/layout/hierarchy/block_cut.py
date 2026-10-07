@@ -7,7 +7,15 @@ from typing import Any
 
 import networkx as nx
 
-from romutil.layout.ir import SimplifiedGraph, SolveTree, SolveTreeNode
+from romutil.layout.ir import (
+    ArticulationPointCut,
+    BridgeCut,
+    CutType,
+    SimplifiedGraph,
+    SolveTree,
+    SolveTreeNode,
+    TreeNodeType,
+)
 from romutil.layout.protocols import TreeBuilder
 from romutil.types import LayoutOptions
 
@@ -25,7 +33,7 @@ class BlockCutTreeBuilder(TreeBuilder):
             return SolveTree(
                 root=SolveTreeNode(
                     node_id="empty",
-                    node_type="empty",
+                    node_type=TreeNodeType.EMPTY,
                     rooms=frozenset(),
                 ),
                 graph=simplified.graph,
@@ -53,7 +61,7 @@ class BlockCutTreeBuilder(TreeBuilder):
 
         world_root = SolveTreeNode(
             node_id="world_root",
-            node_type="world_root",
+            node_type=TreeNodeType.WORLD_ROOT,
             rooms=frozenset(),
             children=tuple(comp_nodes),
         )
@@ -69,7 +77,7 @@ class BlockCutTreeBuilder(TreeBuilder):
         if len(raw_blocks) <= 1:
             return SolveTreeNode(
                 node_id=f"comp_{comp_idx}_block_0",
-                node_type="biconnected_block",
+                node_type=TreeNodeType.BICONNECTED_BLOCK,
                 rooms=frozenset(comp_graph.nodes),
             )
 
@@ -124,13 +132,14 @@ class BlockCutTreeBuilder(TreeBuilder):
             meta: dict[str, Any] = {}
             if anchor is not None:
                 meta = {
-                    "cut_type": "articulation_point",
+                    "cut_type": CutType.ARTICULATION_POINT,
                     "anchor_vnum": anchor,
+                    "cut_contract": ArticulationPointCut(anchor_vnum=anchor),
                 }
 
             return SolveTreeNode(
                 node_id=curr_id,
-                node_type="block",
+                node_type=TreeNodeType.BLOCK,
                 rooms=blocks[b_idx],
                 children=tuple(child_nodes),
                 metadata=meta,

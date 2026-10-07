@@ -938,3 +938,74 @@ class TestHierarchicalLayoutPipelineIntegration:
         assert min(c.x for c in solved.coordinates.values()) == 0
         assert min(c.y for c in solved.coordinates.values()) == 0
         assert min(c.z for c in solved.coordinates.values()) == 0
+
+
+class TestHierarchicalAssemblerDataOwnership:
+    """Tests verifying canonical top-down ancestor room ownership during coordinate assembly."""
+
+    def test_parent_coordinates_authoritative_over_child_coordinates(self) -> None:
+        """Ancestor container room coordinates take precedence over child local coordinates."""
+        assembler = HierarchicalLayoutAssembler()
+
+        # Room 10 is a boundary room shared between parent and child.
+        # Parent places room 10 at (10, 20, 0) and room 11 at (11, 20, 0).
+        # Child contains room 10 with drifted local coordinate (0, 0, 0) and child room 12 at (1, 0, 0).
+        child_node = SolveTreeNode(
+            node_id="child_1",
+            node_type="series_loop",
+            rooms=frozenset({10, 12}),
+        )
+        parent_node = SolveTreeNode(
+            node_id="parent_root",
+            node_type="rigid_cluster",
+            rooms=frozenset({10, 11}),
+            children=(child_node,),
+        )
+        tree = SolveTree(root=parent_node, components=(parent_node,))
+
+        solution = TreeSolution(
+            node_solutions={
+                "parent_root": NodeSolution(
+                    node_id="parent_root",
+                    local_coordinates={
+                        10: Coord3D(10, 20, 0),
+                        11: Coord3D(11, 20, 0),
+                    },
+                    metadata={"child_offsets": {"child_1": Coord3D(5, 5, 0)}},
+                ),
+                "child_1": NodeSolution(
+                    node_id="child_1",
+                    local_coordinates={
+                        10: Coord3D(0, 0, 0),  # Attempting to overwrite 10 to child_origin + (0, 0, 0)
+                        12: Coord3D(1, 0, 0),
+                    },
+                ),
+            }
+        )
+
+        simplified = SimplifiedGraph(
+            graph=LayoutGraph(
+                rooms={
+                    10: _make_dummy_room(10),
+                    11: _make_dummy_room(11),
+                    12: _make_dummy_room(12),
+                },
+                edges=(),
+            )
+        )
+
+        layout = assembler.assemble(tree, solution, simplified)
+
+        # Before normalization:
+        # parent placed 10 at (10, 20, 0), 11 at (11, 20, 0).
+        # child origin is (5, 5, 0). child placed 12 at (5 + 1, 5 + 0, 0) = (6, 5, 0).
+        # If parent is authoritative for 10:
+        # 10 is at (10, 20, 0).
+        # Normalization subtracts min_x=6, min_y=5, min_z=0:
+        # 10 normalized: (10 - 6, 20 - 5, 0) = (4, 15, 0).
+        # 11 normalized: (11 - 6, 20 - 5, 0) = (5, 15, 0).
+        # 12 normalized: (6 - 6, 5 - 5, 0) = (0, 0, 0).
+        # Vector from 10 to 11 is (1, 0, 0), preserving parent geometry.
+        assert layout.coordinates[10] == Coord3D(4, 15, 0)
+        assert layout.coordinates[11] == Coord3D(5, 15, 0)
+        assert layout.coordinates[12] == Coord3D(0, 0, 0)
