@@ -182,51 +182,55 @@ class TestSolveTreeNodeDomainProperties:
 
 
 class TestNodeSolution:
-    """Tests for NodeSolution data structure and sub_boxes normalization."""
+    """Tests for NodeSolution data structure, sub_boxes normalization, and bounding_box property."""
 
-    def test_sub_boxes_default_from_bounding_box_tuple(self) -> None:
-        """When sub_boxes is omitted, it defaults to a 1-tuple of BoundingBox3D from bounding_box."""
+    def test_sub_boxes_default_empty(self) -> None:
+        """When sub_boxes is omitted, it defaults to an empty tuple and bounding_box is None."""
         sol = NodeSolution(
             node_id="n1",
             local_coordinates={1: Coord3D(0, 0, 0)},
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(2, 2, 2)),
         )
-        assert len(sol.sub_boxes) == 1
-        sb = sol.sub_boxes[0]
-        assert isinstance(sb, BoundingBox3D)
-        assert (sb.min_x, sb.max_x, sb.min_y, sb.max_y, sb.min_z, sb.max_z) == (0, 2, 0, 2, 0, 2)
+        assert sol.sub_boxes == ()
+        assert sol.bounding_box is None
 
-    def test_sub_boxes_default_from_bounding_box_instance(self) -> None:
-        """When sub_boxes is omitted and bounding_box is BoundingBox3D, it is wrapped in a tuple."""
-        box = BoundingBox3D(min_x=1, max_x=3, min_y=2, max_y=4, min_z=0, max_z=1)
+    def test_sub_boxes_sequence_normalized_to_tuple(self) -> None:
+        """Sequence passed to sub_boxes is normalized to a tuple."""
+        box1 = BoundingBox3D(min_x=0, max_x=1, min_y=0, max_y=1, min_z=0, max_z=0)
+        box2 = BoundingBox3D(min_x=2, max_x=3, min_y=0, max_y=1, min_z=0, max_z=0)
         sol = NodeSolution(
             node_id="n2",
-            local_coordinates={1: Coord3D(1, 2, 0)},
-            bounding_box=box,  # type: ignore[arg-type]
+            local_coordinates={},
+            sub_boxes=[box1, box2],
         )
-        assert sol.sub_boxes == (box,)
+        assert isinstance(sol.sub_boxes, tuple)
+        assert sol.sub_boxes == (box1, box2)
 
-    def test_sub_boxes_empty_when_no_bounding_box(self) -> None:
-        """When bounding_box is None and sub_boxes omitted, sub_boxes is empty tuple."""
+    def test_bounding_box_derived_property(self) -> None:
+        """Bounding box dynamically computes the minimal enclosing box across all sub-boxes."""
+        box1 = BoundingBox3D(min_x=1, max_x=3, min_y=2, max_y=4, min_z=0, max_z=1)
+        box2 = BoundingBox3D(min_x=0, max_x=2, min_y=3, max_y=5, min_z=-1, max_z=2)
         sol = NodeSolution(
             node_id="n3",
             local_coordinates={},
-            bounding_box=None,
+            sub_boxes=(box1, box2),
         )
-        assert sol.sub_boxes == ()
+        bbox = sol.bounding_box
+        assert bbox is not None
+        assert bbox == BoundingBox3D(
+            min_x=0,
+            max_x=3,
+            min_y=2,
+            max_y=5,
+            min_z=-1,
+            max_z=2,
+        )
 
-    def test_explicit_sub_boxes_conversion(self) -> None:
-        """Explicit sub_boxes converts tuples to BoundingBox3D instances and normalizes to tuple."""
-        box1 = (Coord3D(0, 0, 0), Coord3D(1, 0, 0))
-        box2 = BoundingBox3D(min_x=0, max_x=0, min_y=1, max_y=2, min_z=0, max_z=0)
+    def test_single_sub_box_bounding_box(self) -> None:
+        """Single sub_box returns matching minimal enclosing bounding box."""
+        box = BoundingBox3D(min_x=0, max_x=5, min_y=1, max_y=2, min_z=3, max_z=4)
         sol = NodeSolution(
             node_id="n4",
             local_coordinates={},
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 2, 0)),
-            sub_boxes=[box1, box2],  # list input with mixed types
+            sub_boxes=(box,),
         )
-        assert isinstance(sol.sub_boxes, tuple)
-        assert len(sol.sub_boxes) == 2
-        assert all(isinstance(b, BoundingBox3D) for b in sol.sub_boxes)
-        assert sol.sub_boxes[0].max_x == 1
-        assert sol.sub_boxes[1].max_y == 2
+        assert sol.bounding_box == box
