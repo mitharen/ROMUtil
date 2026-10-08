@@ -232,8 +232,8 @@ Assigns local 3D coordinates to rooms within each `SolveTreeNode` through Mixed-
   - **Spatial Non-Overlap Invariants**: Pairwise disjunctive separation constraints prevent coincident room placements:
     $$x_v - x_u + M_{\text{sep}}^x (1 - d_{\text{east}}) \ge 1$$
     $$\sum_{d \in \mathcal{D}_{\text{active}}} d_{\text{dir}} \ge 1, \quad d_{\text{dir}} \in \{0, 1\}$$
-  - **Child Container Embedding**: Aligns boundary gateway rooms across adjacent child components so shared articulation and split-pair ports coincide, enforces Big-M macro-box clearance constraints between child bounding boxes to eliminate spatial interpenetration, and records relative child translation vectors `child_offsets` in `NodeSolution.metadata`.
-  - Generates a `NodeSolution` containing local coordinates, child offsets in metadata, and an axis-aligned 3D `BoundingBox3D`.
+  - **Child Container Embedding & Sub-Box Decomposition**: Aligns boundary gateway rooms across adjacent child components so shared articulation and split-pair ports coincide. For non-convex or concave child clusters, decomposes the child layout into minimal disjoint pure orthogonal sub-boxes (`BoundingBox3D`) via greedy maximal-volume partitioning, enforcing fine-grained Big-M clearance constraints against each sub-box independently to permit parent rooms and sibling clusters to navigate concave cluster geometries without interpenetration.
+  - Generates a `NodeSolution` containing local coordinates, child offsets in metadata, an enclosing `bounding_box`, and decomposed `sub_boxes`.
 - **`HierarchicalTreeSolver`**:
   - Coordinates bottom-up leaf-to-root solving across the entire `SolveTree`, aggregating individual `NodeSolution` records into a unified `TreeSolution`.
 
