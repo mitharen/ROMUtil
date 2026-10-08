@@ -9,6 +9,7 @@ import pytest
 
 from romutil.interfaces import BaseLayoutSolver
 from romutil.layout import (
+    BoundingBox3D,
     CorridorSegment,
     GraphSimplifier,
     HierarchicalLayoutSolver,
@@ -175,14 +176,16 @@ class TestLayoutIR:
 
     def test_node_solution_and_tree_solution(self) -> None:
         coord = Coord3D(1, 2, 3)
-        bbox = (Coord3D(0, 0, 0), Coord3D(2, 2, 2))
-        node_sol = NodeSolution(node_id="n1", local_coordinates={10: coord}, bounding_box=bbox)
+        bbox = BoundingBox3D(min_x=0, max_x=2, min_y=0, max_y=2, min_z=0, max_z=2)
+        node_sol = NodeSolution(node_id="n1", local_coordinates={10: coord}, sub_boxes=(bbox,))
         assert node_sol.node_id == "n1"
         assert node_sol.local_coordinates[10] == coord
         assert node_sol.bounding_box == bbox
+        assert node_sol.sub_boxes == (bbox,)
 
         default_sol = NodeSolution(node_id="n2", local_coordinates={})
         assert default_sol.bounding_box is None
+        assert default_sol.sub_boxes == ()
 
         with pytest.raises(FrozenInstanceError):
             node_sol.node_id = "n3"  # type: ignore[misc]

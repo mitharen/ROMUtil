@@ -224,47 +224,26 @@ class NodeSolution:
 
     node_id: str
     local_coordinates: Mapping[int, Coord3D]
-    bounding_box: tuple[Coord3D, Coord3D] | None = None
-    sub_boxes: Sequence[BoundingBox3D | tuple[Coord3D, Coord3D]] = field(default_factory=tuple)
+    sub_boxes: tuple[BoundingBox3D, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not self.sub_boxes and self.bounding_box is not None:
-            if isinstance(self.bounding_box, BoundingBox3D):
-                boxes: tuple[BoundingBox3D, ...] = (self.bounding_box,)
-            else:
-                p1, p2 = self.bounding_box
-                boxes = (
-                    BoundingBox3D(
-                        min_x=min(p1.x, p2.x),
-                        max_x=max(p1.x, p2.x),
-                        min_y=min(p1.y, p2.y),
-                        max_y=max(p1.y, p2.y),
-                        min_z=min(p1.z, p2.z),
-                        max_z=max(p1.z, p2.z),
-                    ),
-                )
-            object.__setattr__(self, "sub_boxes", boxes)
-        elif self.sub_boxes:
-            boxes_list: list[BoundingBox3D] = []
-            for sb in self.sub_boxes:
-                if isinstance(sb, BoundingBox3D):
-                    boxes_list.append(sb)
-                else:
-                    p1, p2 = sb
-                    boxes_list.append(
-                        BoundingBox3D(
-                            min_x=min(p1.x, p2.x),
-                            max_x=max(p1.x, p2.x),
-                            min_y=min(p1.y, p2.y),
-                            max_y=max(p1.y, p2.y),
-                            min_z=min(p1.z, p2.z),
-                            max_z=max(p1.z, p2.z),
-                        )
-                    )
-            object.__setattr__(self, "sub_boxes", tuple(boxes_list))
-        elif not isinstance(self.sub_boxes, tuple):
+        if not isinstance(self.sub_boxes, tuple):
             object.__setattr__(self, "sub_boxes", tuple(self.sub_boxes))
+
+    @property
+    def bounding_box(self) -> BoundingBox3D | None:
+        """Compute the minimal enclosing 3D bounding box over all sub-boxes."""
+        if not self.sub_boxes:
+            return None
+        return BoundingBox3D(
+            min_x=min(b.min_x for b in self.sub_boxes),
+            max_x=max(b.max_x for b in self.sub_boxes),
+            min_y=min(b.min_y for b in self.sub_boxes),
+            max_y=max(b.max_y for b in self.sub_boxes),
+            min_z=min(b.min_z for b in self.sub_boxes),
+            max_z=max(b.max_z for b in self.sub_boxes),
+        )
 
 
 @dataclass(frozen=True)

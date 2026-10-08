@@ -38,9 +38,6 @@ from romutil.layout.geometry import (
     segment_room_penetration,
     segments_intersect_3d,
 )
-from romutil.layout.milp.cluster import (
-    _get_child_bbox_corners,
-)
 from romutil.models import Direction, Exit, Room
 from romutil.types import (
     Coord3D,
@@ -103,7 +100,7 @@ class TestParentClusterMILP:
         sol = solve_cluster(node, {}, graph)
 
         assert sol.local_coordinates == {10: Coord3D(0, 0, 0)}
-        assert sol.bounding_box == (Coord3D(0, 0, 0), Coord3D(0, 0, 0))
+        assert sol.bounding_box == BoundingBox3D(0, 0, 0, 0, 0, 0)
         assert sol.metadata == {"child_offsets": {}}
 
     def test_1cut_gateway_articulation_alignment(self) -> None:
@@ -230,24 +227,24 @@ class TestParentClusterMILP:
         off2 = parent_sol.metadata["child_offsets"][child2.node_id]
 
         assert sol1.bounding_box is not None and sol2.bounding_box is not None
-        b1_min, b1_max = sol1.bounding_box
-        b2_min, b2_max = sol2.bounding_box
+        b1 = sol1.bounding_box
+        b2 = sol2.bounding_box
 
         box1 = BoundingBox3D(
-            min_x=off1.x + b1_min.x,
-            max_x=off1.x + b1_max.x,
-            min_y=off1.y + b1_min.y,
-            max_y=off1.y + b1_max.y,
-            min_z=off1.z + b1_min.z,
-            max_z=off1.z + b1_max.z,
+            min_x=off1.x + b1.min_x,
+            max_x=off1.x + b1.max_x,
+            min_y=off1.y + b1.min_y,
+            max_y=off1.y + b1.max_y,
+            min_z=off1.z + b1.min_z,
+            max_z=off1.z + b1.max_z,
         )
         box2 = BoundingBox3D(
-            min_x=off2.x + b2_min.x,
-            max_x=off2.x + b2_max.x,
-            min_y=off2.y + b2_min.y,
-            max_y=off2.y + b2_max.y,
-            min_z=off2.z + b2_min.z,
-            max_z=off2.z + b2_max.z,
+            min_x=off2.x + b2.min_x,
+            max_x=off2.x + b2.max_x,
+            min_y=off2.y + b2.min_y,
+            max_y=off2.y + b2.max_y,
+            min_z=off2.z + b2.min_z,
+            max_z=off2.z + b2.max_z,
         )
 
         # Must not intersect
@@ -358,24 +355,24 @@ class TestParentClusterMILP:
         off2 = parent_sol.metadata["child_offsets"][child2.node_id]
 
         assert sol1.bounding_box is not None and sol2.bounding_box is not None
-        b1_min, b1_max = sol1.bounding_box
-        b2_min, b2_max = sol2.bounding_box
+        b1 = sol1.bounding_box
+        b2 = sol2.bounding_box
 
         box1 = BoundingBox3D(
-            min_x=off1.x + b1_min.x,
-            max_x=off1.x + b1_max.x,
-            min_y=off1.y + b1_min.y,
-            max_y=off1.y + b1_max.y,
-            min_z=off1.z + b1_min.z,
-            max_z=off1.z + b1_max.z,
+            min_x=off1.x + b1.min_x,
+            max_x=off1.x + b1.max_x,
+            min_y=off1.y + b1.min_y,
+            max_y=off1.y + b1.max_y,
+            min_z=off1.z + b1.min_z,
+            max_z=off1.z + b1.max_z,
         )
         box2 = BoundingBox3D(
-            min_x=off2.x + b2_min.x,
-            max_x=off2.x + b2_max.x,
-            min_y=off2.y + b2_min.y,
-            max_y=off2.y + b2_max.y,
-            min_z=off2.z + b2_min.z,
-            max_z=off2.z + b2_max.z,
+            min_x=off2.x + b2.min_x,
+            max_x=off2.x + b2.max_x,
+            min_y=off2.y + b2.min_y,
+            max_y=off2.y + b2.max_y,
+            min_z=off2.z + b2.min_z,
+            max_z=off2.z + b2.max_z,
         )
 
         assert not box1.intersects(box2)
@@ -426,31 +423,31 @@ class TestParentClusterMILP:
         off2 = root_sol.metadata["child_offsets"][comp2.node_id]
 
         assert sol1.bounding_box is not None and sol2.bounding_box is not None
-        b1_min, b1_max = sol1.bounding_box
-        b2_min, b2_max = sol2.bounding_box
+        b1 = sol1.bounding_box
+        b2 = sol2.bounding_box
 
         box1 = BoundingBox3D(
-            min_x=off1.x + b1_min.x,
-            max_x=off1.x + b1_max.x,
-            min_y=off1.y + b1_min.y,
-            max_y=off1.y + b1_max.y,
-            min_z=off1.z + b1_min.z,
-            max_z=off1.z + b1_max.z,
+            min_x=off1.x + b1.min_x,
+            max_x=off1.x + b1.max_x,
+            min_y=off1.y + b1.min_y,
+            max_y=off1.y + b1.max_y,
+            min_z=off1.z + b1.min_z,
+            max_z=off1.z + b1.max_z,
         )
         box2 = BoundingBox3D(
-            min_x=off2.x + b2_min.x,
-            max_x=off2.x + b2_max.x,
-            min_y=off2.y + b2_min.y,
-            max_y=off2.y + b2_max.y,
-            min_z=off2.z + b2_min.z,
-            max_z=off2.z + b2_max.z,
+            min_x=off2.x + b2.min_x,
+            max_x=off2.x + b2.max_x,
+            min_y=off2.y + b2.min_y,
+            max_y=off2.y + b2.max_y,
+            min_z=off2.z + b2.min_z,
+            max_z=off2.z + b2.max_z,
         )
 
         assert not box1.intersects(box2)
 
         # Min corner of overall bounding box must be at (0, 0, 0)
-        root_min, _ = root_sol.bounding_box
-        assert root_min == Coord3D(0, 0, 0)
+        assert root_sol.bounding_box is not None
+        assert (root_sol.bounding_box.min_x, root_sol.bounding_box.min_y, root_sol.bounding_box.min_z) == (0, 0, 0)
 
     def test_reverse_doorway_edge_alignment(self) -> None:
         """1-Cut doorway edge directed from child to parent (reverse) aligns correctly."""
@@ -484,15 +481,7 @@ class TestParentClusterMILP:
 
 
 class TestParentFallbackAndRobustness:
-    """Unit tests verifying fail-fast behavior, geometry helpers, and error handling."""
-
-    def test_geometry_helpers(self) -> None:
-        """Verify _get_child_bbox_corners helper."""
-        assert _get_child_bbox_corners(None) is None
-        bb = BoundingBox3D(min_x=1, max_x=2, min_y=3, max_y=4, min_z=5, max_z=6)
-        assert _get_child_bbox_corners(bb) == (1, 2, 3, 4, 5, 6)
-        tup_bb = (Coord3D(1, 3, 5), Coord3D(2, 4, 6))
-        assert _get_child_bbox_corners(tup_bb) == (1, 2, 3, 4, 5, 6)
+    """Unit tests verifying fail-fast behavior, solver fallback, and error handling."""
 
     def test_solve_empty_node(self) -> None:
         """Solving completely empty node returns clean empty NodeSolution."""
@@ -542,7 +531,7 @@ class TestParentFallbackAndRobustness:
         edges = [(1, 2, Direction.east, 1)]
         graph = _make_graph(parent_rooms, edges)
         child = SolveTreeNode(node_id="c_exc", node_type="leaf", rooms=frozenset({3}))
-        child_sol = NodeSolution(node_id="c_exc", local_coordinates={3: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
+        child_sol = NodeSolution(node_id="c_exc", local_coordinates={3: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
 
         parent = SolveTreeNode(node_id="p_exc", node_type="block", rooms=frozenset(parent_rooms), children=(child,))
 
@@ -556,7 +545,7 @@ class TestParentFallbackAndRobustness:
         edges = [(1, 2, Direction.east, 1)]
         graph = _make_graph(parent_rooms, edges)
         child = SolveTreeNode(node_id="c_inf", node_type="leaf", rooms=frozenset({3}))
-        child_sol = NodeSolution(node_id="c_inf", local_coordinates={3: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
+        child_sol = NodeSolution(node_id="c_inf", local_coordinates={3: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
 
         parent = SolveTreeNode(node_id="p_inf", node_type="block", rooms=frozenset(parent_rooms), children=(child,))
 
@@ -577,7 +566,7 @@ class TestParentFallbackAndRobustness:
         edges = [(1, 2, Direction.east, 1)]
         graph = _make_graph(parent_rooms, edges)
         child = SolveTreeNode(node_id="c_none", node_type="leaf", rooms=frozenset({3}))
-        child_sol = NodeSolution(node_id="c_none", local_coordinates={3: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
+        child_sol = NodeSolution(node_id="c_none", local_coordinates={3: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
 
         parent = SolveTreeNode(node_id="p_none", node_type="block", rooms=frozenset(parent_rooms), children=(child,))
 
@@ -599,7 +588,7 @@ class TestParentFallbackAndRobustness:
         edges = [(1, 2, Direction.east, 1)]
         graph = _make_graph(parent_rooms, edges)
         child = SolveTreeNode(node_id="c_to", node_type="leaf", rooms=frozenset({3}))
-        child_sol = NodeSolution(node_id="c_to", local_coordinates={3: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
+        child_sol = NodeSolution(node_id="c_to", local_coordinates={3: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
         parent = SolveTreeNode(node_id="p_to", node_type="block", rooms=frozenset(parent_rooms), children=(child,))
         opts = LayoutOptions(timeout_seconds=30)
 
@@ -630,8 +619,8 @@ class TestParentFallbackAndRobustness:
         """MILP separates multiple unconnected children whose default placements collide."""
         c1 = SolveTreeNode(node_id="fb_c1", node_type="leaf", rooms=frozenset({1}))
         c2 = SolveTreeNode(node_id="fb_c2", node_type="leaf", rooms=frozenset({2}))
-        sol1 = NodeSolution(node_id="fb_c1", local_coordinates={1: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 1, 1)))
-        sol2 = NodeSolution(node_id="fb_c2", local_coordinates={2: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 1, 1)))
+        sol1 = NodeSolution(node_id="fb_c1", local_coordinates={1: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 1),))
+        sol2 = NodeSolution(node_id="fb_c2", local_coordinates={2: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 1),))
 
         parent = SolveTreeNode(node_id="p_fb_boxes", node_type="container", rooms=frozenset(), children=(c1, c2))
         graph = LayoutGraph(rooms={}, edges=())
@@ -666,7 +655,7 @@ class TestParentFallbackAndRobustness:
         child_sol = NodeSolution(
             node_id="child_box",
             local_coordinates={3: Coord3D(0, 0, 0)},
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+            sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),),
         )
 
         parent_node = SolveTreeNode(
@@ -705,14 +694,14 @@ class TestParentFallbackAndRobustness:
         child_k_sol = NodeSolution(
             node_id="child_k",
             local_coordinates={2: Coord3D(0, 0, 0)},
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+            sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),),
         )
 
         child_j = SolveTreeNode(node_id="child_j", node_type="leaf", rooms=frozenset(child_j_rooms))
         child_j_sol = NodeSolution(
             node_id="child_j",
             local_coordinates={3: Coord3D(0, 0, 0), 4: Coord3D(0, 1, 0)},
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 1, 0)),
+            sub_boxes=(BoundingBox3D(0, 0, 0, 1, 0, 0),),
         )
 
         parent_node = SolveTreeNode(
@@ -763,14 +752,14 @@ class TestParentFallbackAndRobustness:
         child_1_sol = NodeSolution(
             node_id="c1",
             local_coordinates={2: Coord3D(0, 0, 0)},
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+            sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),),
         )
 
         child_2 = SolveTreeNode(node_id="c2", node_type="leaf", rooms=frozenset(child_2_rooms))
         child_2_sol = NodeSolution(
             node_id="c2",
             local_coordinates={4: Coord3D(0, 0, 0)},
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+            sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),),
         )
 
         parent_node = SolveTreeNode(
@@ -815,7 +804,7 @@ class TestParentFallbackAndRobustness:
         child_sol = NodeSolution(
             node_id="c_gw",
             local_coordinates={2: Coord3D(0, 0, 0)},
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+            sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),),
         )
 
         parent_node = SolveTreeNode(
@@ -853,8 +842,8 @@ class TestParentFallbackAndRobustness:
 
         c1 = SolveTreeNode(node_id="fb_c1", node_type="leaf", rooms=frozenset({3}))
         c2 = SolveTreeNode(node_id="fb_c2", node_type="leaf", rooms=frozenset({4}))
-        sol1 = NodeSolution(node_id="fb_c1", local_coordinates={3: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
-        sol2 = NodeSolution(node_id="fb_c2", local_coordinates={4: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
+        sol1 = NodeSolution(node_id="fb_c1", local_coordinates={3: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
+        sol2 = NodeSolution(node_id="fb_c2", local_coordinates={4: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
 
         parent = SolveTreeNode(node_id="p_fb_corr", node_type="block", rooms=frozenset(parent_rooms), children=(c1, c2))
 
@@ -885,7 +874,7 @@ class TestParentFallbackAndRobustness:
             child_sol = NodeSolution(
                 node_id=f"c_{d.name}",
                 local_coordinates={3: Coord3D(0, 0, 0)},
-                bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+                sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),),
             )
 
             parent_node = SolveTreeNode(
@@ -915,14 +904,14 @@ class TestParentFallbackAndRobustness:
             child_k_sol = NodeSolution(
                 node_id="ck",
                 local_coordinates={2: Coord3D(0, 0, 0)},
-                bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+                sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),),
             )
 
             child_j = SolveTreeNode(node_id="cj", node_type="leaf", rooms=frozenset({3}))
             child_j_sol = NodeSolution(
                 node_id="cj",
                 local_coordinates={3: Coord3D(0, 0, 0)},
-                bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+                sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),),
             )
 
             parent_node = SolveTreeNode(
@@ -952,10 +941,10 @@ class TestParentFallbackAndRobustness:
         graph = _make_graph([1, 2, 3, 4], edges)
 
         c1 = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({2}))
-        c1_sol = NodeSolution(node_id="c1", local_coordinates={2: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
+        c1_sol = NodeSolution(node_id="c1", local_coordinates={2: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
 
         c2 = SolveTreeNode(node_id="c2", node_type="leaf", rooms=frozenset({4}))
-        c2_sol = NodeSolution(node_id="c2", local_coordinates={4: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
+        c2_sol = NodeSolution(node_id="c2", local_coordinates={4: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
 
         parent = SolveTreeNode(node_id="p_v_cross", node_type="block", rooms=frozenset(parent_rooms), children=(c1, c2))
         sol = solve_cluster(parent, {"c1": c1_sol, "c2": c2_sol}, graph)
@@ -1123,7 +1112,7 @@ class TestParentComprehensiveEdgeCoverage:
         child = SolveTreeNode(node_id="c_unavail", node_type="leaf", rooms=frozenset({2}))
         parent = SolveTreeNode(node_id="p_unavail", node_type="block", rooms=frozenset({1}), children=(child,))
         graph = _make_graph([1, 2], [])
-        c_sol = NodeSolution(node_id="c_unavail", local_coordinates={2: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
+        c_sol = NodeSolution(node_id="c_unavail", local_coordinates={2: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
 
         mock_solver = MagicMock()
         mock_solver.available.return_value = False
@@ -1140,7 +1129,7 @@ class TestParentComprehensiveEdgeCoverage:
             LayoutEdge(src=2, dst=3, direction=Direction.north, weight=1),
         ]
         graph = LayoutGraph(rooms={v: _make_room(v) for v in [1, 2, 3]}, edges=tuple(edges))
-        c_sol = NodeSolution(node_id="c_common", local_coordinates={2: Coord3D(0, 0, 0), 3: Coord3D(0, 1, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 1, 0)))
+        c_sol = NodeSolution(node_id="c_common", local_coordinates={2: Coord3D(0, 0, 0), 3: Coord3D(0, 1, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 1, 0, 0),))
         sol = solve_cluster(parent, {"c_common": c_sol}, graph)
         assert 1 in sol.local_coordinates
         assert 2 in sol.local_coordinates
@@ -1158,8 +1147,8 @@ class TestParentComprehensiveEdgeCoverage:
         graph = LayoutGraph(rooms={v: _make_room(v) for v in [1, 2, 3, 4]}, edges=tuple(edges))
         child1 = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({3}))
         child2 = SolveTreeNode(node_id="c2", node_type="leaf", rooms=frozenset({4}))
-        c_sol1 = NodeSolution(node_id="c1", local_coordinates={3: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
-        c_sol2 = NodeSolution(node_id="c2", local_coordinates={4: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
+        c_sol1 = NodeSolution(node_id="c1", local_coordinates={3: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
+        c_sol2 = NodeSolution(node_id="c2", local_coordinates={4: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
 
         parent = SolveTreeNode(
             node_id="p_edges",
@@ -1174,7 +1163,7 @@ class TestParentComprehensiveEdgeCoverage:
         """MILP handles children without solutions or without bounding boxes."""
         c_no_sol = SolveTreeNode(node_id="c_no_sol", node_type="leaf", rooms=frozenset({10}))
         c_no_box = SolveTreeNode(node_id="c_no_box", node_type="leaf", rooms=frozenset())
-        sol_no_box = NodeSolution(node_id="c_no_box", local_coordinates={}, bounding_box=None)
+        sol_no_box = NodeSolution(node_id="c_no_box", local_coordinates={})
 
         parent = SolveTreeNode(
             node_id="p_no_box",
@@ -1190,7 +1179,7 @@ class TestParentComprehensiveEdgeCoverage:
         """pyo.value returning None for child offset raises LayoutSolverError."""
         child = SolveTreeNode(node_id="c_none", node_type="leaf", rooms=frozenset({2}))
         parent = SolveTreeNode(node_id="p_none_c", node_type="block", rooms=frozenset({1}), children=(child,))
-        c_sol = NodeSolution(node_id="c_none", local_coordinates={2: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
+        c_sol = NodeSolution(node_id="c_none", local_coordinates={2: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
         graph = _make_graph([1, 2], [])
 
         mock_solver = MagicMock()
@@ -1210,7 +1199,7 @@ class TestParentComprehensiveEdgeCoverage:
         """Exception during solver.solve raises LayoutSolverError."""
         child = SolveTreeNode(node_id="c_exc_solve", node_type="leaf", rooms=frozenset({2}))
         parent = SolveTreeNode(node_id="p_exc_solve", node_type="block", rooms=frozenset({1}), children=(child,))
-        c_sol = NodeSolution(node_id="c_exc_solve", local_coordinates={2: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
+        c_sol = NodeSolution(node_id="c_exc_solve", local_coordinates={2: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
         graph = _make_graph([1, 2], [])
 
         mock_solver = MagicMock()
@@ -1245,7 +1234,7 @@ class TestParentComprehensiveEdgeCoverage:
         child_sol = solve_cluster(child_node, graph_child)
 
         # Child bounding box covers (0,0,0) to (1,1,0), but decomposes into 2 disjoint sub-boxes
-        assert child_sol.bounding_box == (Coord3D(0, 0, 0), Coord3D(1, 1, 0))
+        assert child_sol.bounding_box == BoundingBox3D(0, 1, 0, 1, 0, 0)
         assert len(child_sol.sub_boxes) == 2
 
         # Parent cluster: rooms 2 and 4 with edge 2 -N-> 4
@@ -1281,13 +1270,15 @@ class TestParentComprehensiveEdgeCoverage:
             assert p_r4 != cpt
 
         # 2. Room 4 is inside the overall convex bounding box of the child
+        child_bbox = child_sol.bounding_box
+        assert child_bbox is not None
         child_full_box = BoundingBox3D(
-            min_x=c_off.x + child_sol.bounding_box[0].x,
-            max_x=c_off.x + child_sol.bounding_box[1].x,
-            min_y=c_off.y + child_sol.bounding_box[0].y,
-            max_y=c_off.y + child_sol.bounding_box[1].y,
-            min_z=c_off.z + child_sol.bounding_box[0].z,
-            max_z=c_off.z + child_sol.bounding_box[1].z,
+            min_x=c_off.x + child_bbox.min_x,
+            max_x=c_off.x + child_bbox.max_x,
+            min_y=c_off.y + child_bbox.min_y,
+            max_y=c_off.y + child_bbox.max_y,
+            min_z=c_off.z + child_bbox.min_z,
+            max_z=c_off.z + child_bbox.max_z,
         )
         assert child_full_box.contains_point(p_r4)
 
@@ -1354,7 +1345,7 @@ class TestDirectlyObservableCutAlignment:
                 2: Coord3D(0, 2, 0),
                 4: Coord3D(0, 1, 0),
             },
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 2, 0)),
+            sub_boxes=(BoundingBox3D(0, 0, 0, 2, 0, 0),),
         )
 
         graph = _make_graph(
@@ -1402,7 +1393,7 @@ class TestDirectlyObservableCutAlignment:
                 2: Coord3D(1, 1, 0),
                 5: Coord3D(2, 1, 0),
             },
-            bounding_box=(Coord3D(1, 1, 0), Coord3D(2, 1, 0)),
+            sub_boxes=(BoundingBox3D(1, 2, 1, 1, 0, 0),),
         )
 
         graph = _make_graph(
@@ -1445,7 +1436,7 @@ class TestDirectlyObservableCutAlignment:
                 10: Coord3D(0, 0, 0),
                 11: Coord3D(1, 0, 0),
             },
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 0, 0)),
+            sub_boxes=(BoundingBox3D(0, 1, 0, 0, 0, 0),),
         )
 
         graph = _make_graph(
@@ -1484,7 +1475,7 @@ class TestDirectlyObservableCutAlignment:
                 2: Coord3D(0, 2, 0),
                 3: Coord3D(0, 1, 0),
             },
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 2, 0)),
+            sub_boxes=(BoundingBox3D(0, 0, 0, 2, 0, 0),),
         )
 
         parent = SolveTreeNode(
@@ -1553,12 +1544,12 @@ class TestDirectlyObservableCutAlignment:
         c1_sol = NodeSolution(
             node_id="c1",
             local_coordinates={10: Coord3D(0, 0, 0), 11: Coord3D(1, 0, 0)},
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 0, 0)),
+            sub_boxes=(BoundingBox3D(0, 1, 0, 0, 0, 0),),
         )
         c2_sol = NodeSolution(
             node_id="c2",
             local_coordinates={20: Coord3D(0, 0, 0), 21: Coord3D(0, 1, 0)},
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 1, 0)),
+            sub_boxes=(BoundingBox3D(0, 0, 0, 1, 0, 0),),
         )
 
         graph = _make_graph(
@@ -1614,12 +1605,12 @@ class TestDirectlyObservableCutAlignment:
         sol1 = NodeSolution(
             node_id="c1",
             local_coordinates={100: Coord3D(0, 0, 0), 101: Coord3D(1, 0, 0)},
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 0, 0)),
+            sub_boxes=(BoundingBox3D(0, 1, 0, 0, 0, 0),),
         )
         sol2 = NodeSolution(
             node_id="c2",
             local_coordinates={100: Coord3D(0, 0, 0), 101: Coord3D(0, 2, 0)},
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 2, 0)),
+            sub_boxes=(BoundingBox3D(0, 0, 0, 2, 0, 0),),
         )
         graph = _make_graph(rooms=[100, 101], edges=[(100, 101, Direction.east, 1)])
         parent_sol = solve_cluster(parent, {"c1": sol1, "c2": sol2}, graph)
@@ -1653,7 +1644,7 @@ class TestDirectlyObservableCutAlignment:
                 201: Coord3D(2, 0, 0),
                 202: Coord3D(1, 1, 0),
             },
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(2, 1, 0)),
+            sub_boxes=(BoundingBox3D(0, 2, 0, 1, 0, 0),),
         )
         graph = _make_graph(
             rooms=[200, 201, 202, 300, 301],
@@ -1712,12 +1703,12 @@ class TestDirectlyObservableCutAlignment:
         c1_sol = NodeSolution(
             node_id="c1",
             local_coordinates={10: Coord3D(0, 0, 0), 11: Coord3D(1, 0, 0)},
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 0, 0)),
+            sub_boxes=(BoundingBox3D(0, 1, 0, 0, 0, 0),),
         )
         c2_sol = NodeSolution(
             node_id="c2",
             local_coordinates={20: Coord3D(0, 0, 0), 21: Coord3D(1, 0, 0)},
-            bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 0, 0)),
+            sub_boxes=(BoundingBox3D(0, 1, 0, 0, 0, 0),),
         )
         graph = _make_graph(
             rooms=[10, 11, 20, 21],
@@ -1752,10 +1743,8 @@ class TestDirectlyObservableCutAlignment:
         child_sol = solve_cluster(split_child, {}, graph)
         # Pole 1 and Pole 2 are excluded; only interior room 3 determines bounding box
         assert child_sol.bounding_box is not None
-        min_box, max_box = child_sol.bounding_box
         loc3 = child_sol.local_coordinates[3]
-        assert min_box == loc3
-        assert max_box == loc3
+        assert child_sol.bounding_box == BoundingBox3D(loc3.x, loc3.x, loc3.y, loc3.y, loc3.z, loc3.z)
 
     def test_child_bounding_box_none_when_all_rooms_are_boundary_ports(self) -> None:
         """Child bounding box is None when all constituent rooms are boundary gateway ports."""
@@ -1809,12 +1798,12 @@ class TestDirectlyObservableCutAlignment:
         c1_sol = NodeSolution(
             node_id="c1",
             local_coordinates={100: Coord3D(0, 0, 0), 101: Coord3D(2, 0, 0)},
-            bounding_box=(Coord3D(2, 0, 0), Coord3D(2, 0, 0)),
+            sub_boxes=(BoundingBox3D(2, 2, 0, 0, 0, 0),),
         )
         c2_sol = NodeSolution(
             node_id="c2",
             local_coordinates={100: Coord3D(0, 0, 0), 102: Coord3D(0, 2, 0)},
-            bounding_box=(Coord3D(0, 2, 0), Coord3D(0, 2, 0)),
+            sub_boxes=(BoundingBox3D(0, 0, 2, 2, 0, 0),),
         )
         graph = _make_graph(
             rooms=[100, 101, 102],
@@ -1848,7 +1837,7 @@ class TestClusterPrimitives:
 
         assert sol.node_id == "single"
         assert sol.local_coordinates == {42: Coord3D(0, 0, 0)}
-        assert sol.bounding_box == (Coord3D(0, 0, 0), Coord3D(0, 0, 0))
+        assert sol.bounding_box == BoundingBox3D(0, 0, 0, 0, 0, 0)
 
     def test_solve_cluster_default_arguments(self) -> None:
         """Calling solve_cluster without child_solutions or graph uses sensible empty defaults."""
@@ -1871,7 +1860,7 @@ class TestClusterPrimitives:
 
         assert sol.local_coordinates[1] == Coord3D(0, 0, 0)
         assert sol.local_coordinates[2] == Coord3D(1, 0, 0)
-        assert sol.bounding_box == (Coord3D(0, 0, 0), Coord3D(1, 0, 0))
+        assert sol.bounding_box == BoundingBox3D(0, 1, 0, 0, 0, 0)
 
     def test_rectilinear_loop_square(self) -> None:
         """Rectilinear loop (4-room cycle North, East, South, West) -> exact compact square layout."""
@@ -1894,7 +1883,7 @@ class TestClusterPrimitives:
         assert coords[2] == Coord3D(0, 1, 0)
         assert coords[3] == Coord3D(1, 1, 0)
         assert coords[4] == Coord3D(1, 0, 0)
-        assert sol.bounding_box == (Coord3D(0, 0, 0), Coord3D(1, 1, 0))
+        assert sol.bounding_box == BoundingBox3D(0, 1, 0, 1, 0, 0)
 
     def test_3d_cube_layer_separation(self) -> None:
         """3D cube or vertical steps (with Up/Down exits) -> vertical layer separation."""
@@ -1911,7 +1900,7 @@ class TestClusterPrimitives:
         assert coords[1] == Coord3D(0, 0, 0)
         assert coords[2] == Coord3D(0, 0, 1)
         assert coords[3] == Coord3D(1, 0, 1)
-        assert sol.bounding_box == (Coord3D(0, 0, 0), Coord3D(1, 0, 1))
+        assert sol.bounding_box == BoundingBox3D(0, 1, 0, 0, 0, 1)
 
     def test_hard_room_non_overlap(self) -> None:
         """Hard non-overlap collision test: rooms cannot overlap at the same (x, y, z)."""

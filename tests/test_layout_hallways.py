@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from romutil.layout import (
+    BoundingBox3D,
     CorridorSegment,
     GraphSimplifier,
     HallwayCompactor,
@@ -524,7 +525,7 @@ class TestPipelineIntegration:
                 node_sol = NodeSolution(
                     node_id="root",
                     local_coordinates=coords,
-                    bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 2, 0)),
+                    sub_boxes=(BoundingBox3D(min_x=0, max_x=0, min_y=0, max_y=2, min_z=0, max_z=0),),
                 )
                 return TreeSolution(node_solutions={"root": node_sol})
 

@@ -6,6 +6,7 @@ import pytest
 
 from romutil.layout.assembly import HierarchicalLayoutAssembler
 from romutil.layout.engine import HierarchicalLayoutSolver
+from romutil.layout.geometry.primitives import BoundingBox3D
 from romutil.layout.hierarchy import SpqrTreeBuilder
 from romutil.layout.ir import (
     CorridorSegment,
@@ -153,7 +154,7 @@ class TestSingleLeafCluster:
                         10: Coord3D(100, 200, 300),
                         20: Coord3D(101, 200, 300),
                     },
-                    bounding_box=(Coord3D(100, 200, 300), Coord3D(101, 200, 300)),
+                    sub_boxes=(BoundingBox3D(100, 101, 200, 200, 300, 300),),
                 )
             }
         )
@@ -189,13 +190,13 @@ class TestParentChildCoordinateAccumulation:
                 "parent": NodeSolution(
                     node_id="parent",
                     local_coordinates={1: Coord3D(0, 0, 0)},
-                    bounding_box=(Coord3D(0, 0, 0), Coord3D(10, 5, 0)),
+                    sub_boxes=(BoundingBox3D(0, 10, 0, 5, 0, 0),),
                     metadata={"child_offsets": {"child": Coord3D(5, 2, 1)}},
                 ),
                 "child": NodeSolution(
                     node_id="child",
                     local_coordinates={2: Coord3D(1, 1, 0)},
-                    bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 1, 0)),
+                    sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 0),),
                 ),
             }
         )
@@ -468,12 +469,12 @@ class TestMultiComponentLayout:
                 "comp1": NodeSolution(
                     node_id="comp1",
                     local_coordinates={1: Coord3D(0, 0, 0), 2: Coord3D(1, 0, 0)},
-                    bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 0, 0)),
+                    sub_boxes=(BoundingBox3D(0, 1, 0, 0, 0, 0),),
                 ),
                 "comp2": NodeSolution(
                     node_id="comp2",
                     local_coordinates={3: Coord3D(0, 0, 0), 4: Coord3D(1, 0, 0)},
-                    bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 0, 0)),
+                    sub_boxes=(BoundingBox3D(0, 1, 0, 0, 0, 0),),
                 ),
             }
         )
@@ -537,7 +538,6 @@ class TestMultiComponentLayout:
                     node_id="c2",
                     local_coordinates={2: Coord3D(0, 0, 0)},
                     metadata={"child_offsets": {"c2_leaf": Coord3D(2, 0, 0)}},
-                    bounding_box=None,
                 ),
                 "c2_leaf": NodeSolution(
                     node_id="c2_leaf",
@@ -598,7 +598,7 @@ class TestUnvisitedNodesInSolution:
                 "unattached": NodeSolution(
                     node_id="unattached",
                     local_coordinates={2: Coord3D(0, 0, 0)},
-                    bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)),
+                    sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),),
                 ),
             }
         )
@@ -624,7 +624,6 @@ class TestUnvisitedNodesInSolution:
                 "unattached_nobox": NodeSolution(
                     node_id="unattached_nobox",
                     local_coordinates={2: Coord3D(1, 0, 0)},
-                    bounding_box=None,
                 ),
             }
         )
@@ -674,7 +673,6 @@ class TestUnvisitedNodesInSolution:
                 "unattached": NodeSolution(
                     node_id="unattached",
                     local_coordinates={1: Coord3D(5, 5, 5)},
-                    bounding_box=None,
                 )
             }
         )
@@ -693,7 +691,6 @@ class TestUnvisitedNodesInSolution:
                 "c2": NodeSolution(
                     node_id="c2",
                     local_coordinates={2: Coord3D(0, 0, 0), 3: Coord3D(1, 0, 0)},
-                    bounding_box=None,
                 ),
             }
         )

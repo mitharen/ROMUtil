@@ -169,7 +169,7 @@ class HierarchicalLayoutAssembler(LayoutAssembler):
             if comp.node_id not in visited_nodes:
                 node_sol = solution.node_solutions.get(comp.node_id)
                 if node_sol and node_sol.bounding_box is not None:
-                    min_x = node_sol.bounding_box[0].x
+                    min_x = node_sol.bounding_box.min_x
                 else:
                     local_coords = _collect_subtree_local_coords(comp, solution, Coord3D(0, 0, 0))
                     min_x = min((c.x for c in local_coords.values()), default=0)
@@ -189,7 +189,7 @@ class HierarchicalLayoutAssembler(LayoutAssembler):
                 if not node_sol.local_coordinates:
                     continue
                 if node_sol.bounding_box is not None:
-                    min_x = node_sol.bounding_box[0].x
+                    min_x = node_sol.bounding_box.min_x
                 else:
                     min_x = min(c.x for c in node_sol.local_coordinates.values())
 

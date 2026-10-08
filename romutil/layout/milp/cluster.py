@@ -44,18 +44,6 @@ from romutil.models import Room
 from romutil.types import Coord3D, LayoutOptions, LayoutSolverError, SolverStatus
 
 
-def _get_child_bbox_corners(
-    bbox: tuple[Coord3D, Coord3D] | BoundingBox3D | None,
-) -> tuple[int, int, int, int, int, int] | None:
-    """Extract (min_x, max_x, min_y, max_y, min_z, max_z) integer boundaries from a bounding box."""
-    if bbox is None:
-        return None
-    if isinstance(bbox, BoundingBox3D):
-        return (bbox.min_x, bbox.max_x, bbox.min_y, bbox.max_y, bbox.min_z, bbox.max_z)
-    min_pt, max_pt = bbox
-    return (min_pt.x, max_pt.x, min_pt.y, max_pt.y, min_pt.z, max_pt.z)
-
-
 def _get_child_boundary_ports(child: SolveTreeNode) -> set[int]:
     """Return the set of room IDs that act as boundary ports for this child."""
     ports: set[int] = set()
@@ -92,7 +80,7 @@ def solve_cluster(
         solver_name: Pyomo MILP solver name (defaults to 'cbc').
 
     Returns:
-        NodeSolution containing local coordinates, child offsets in metadata, and bounding box.
+        NodeSolution containing local coordinates, child offsets in metadata, and decomposed sub-boxes.
     """
     if isinstance(child_solutions, LayoutGraph):
         graph = child_solutions
@@ -109,18 +97,22 @@ def solve_cluster(
         return NodeSolution(
             node_id=node.node_id,
             local_coordinates={},
-            bounding_box=None,
+            sub_boxes=(),
             metadata={"child_offsets": {}},
         )
 
     if len(rooms) == 1 and not children:
         r = rooms[0]
         boundary_ports = _get_child_boundary_ports(node)
-        bbox = None if r in boundary_ports else (Coord3D(0, 0, 0), Coord3D(0, 0, 0))
+        sub_boxes = (
+            ()
+            if r in boundary_ports
+            else (BoundingBox3D(min_x=0, max_x=0, min_y=0, max_y=0, min_z=0, max_z=0),)
+        )
         return NodeSolution(
             node_id=node.node_id,
             local_coordinates={r: Coord3D(0, 0, 0)},
-            bounding_box=bbox,
+            sub_boxes=sub_boxes,
             metadata={"child_offsets": {}},
         )
 
@@ -1037,14 +1029,14 @@ def solve_cluster(
         for child in children:
             cid = child.node_id
             c_sol = child_solutions.get(cid)
-            box = _get_child_bbox_corners(c_sol.bounding_box) if c_sol else None
-            if box:
-                model.bbox_bounds.add(model.x_max >= model.cx[cid] + box[1])
-                model.bbox_bounds.add(model.x_min <= model.cx[cid] + box[0])
-                model.bbox_bounds.add(model.y_max >= model.cy[cid] + box[3])
-                model.bbox_bounds.add(model.y_min <= model.cy[cid] + box[2])
-                model.bbox_bounds.add(model.z_max >= model.cz[cid] + box[5])
-                model.bbox_bounds.add(model.z_min <= model.cz[cid] + box[4])
+            box = c_sol.bounding_box if c_sol else None
+            if box is not None:
+                model.bbox_bounds.add(model.x_max >= model.cx[cid] + box.max_x)
+                model.bbox_bounds.add(model.x_min <= model.cx[cid] + box.min_x)
+                model.bbox_bounds.add(model.y_max >= model.cy[cid] + box.max_y)
+                model.bbox_bounds.add(model.y_min <= model.cy[cid] + box.min_y)
+                model.bbox_bounds.add(model.z_max >= model.cz[cid] + box.max_z)
+                model.bbox_bounds.add(model.z_min <= model.cz[cid] + box.min_z)
             else:
                 model.bbox_bounds.add(model.x_max >= model.cx[cid])
                 model.bbox_bounds.add(model.x_min <= model.cx[cid])
@@ -1137,10 +1129,10 @@ def solve_cluster(
             cid = child.node_id
             cx, cy, cz = raw_child_offsets[cid]
             c_sol = child_solutions.get(cid)
-            box = _get_child_bbox_corners(c_sol.bounding_box) if c_sol else None
-            if box:
-                all_pts.append((cx + box[0], cy + box[2], cz + box[4]))
-                all_pts.append((cx + box[1], cy + box[3], cz + box[5]))
+            box = c_sol.bounding_box if c_sol else None
+            if box is not None:
+                all_pts.append((cx + box.min_x, cy + box.min_y, cz + box.min_z))
+                all_pts.append((cx + box.max_x, cy + box.max_y, cz + box.max_z))
             else:
                 all_pts.append((cx, cy, cz))
 
@@ -1179,17 +1171,12 @@ def solve_cluster(
 
         if interior_cells:
             enc = BoundingBox3D.from_coordinates(interior_cells)
-            parent_bbox: tuple[Coord3D, Coord3D] | None = (
-                Coord3D(enc.min_x, enc.min_y, enc.min_z),
-                Coord3D(enc.max_x, enc.max_y, enc.max_z),
-            )
             if not children:
                 sub_boxes = decompose_into_orthogonal_sub_boxes(interior_cells)
             else:
                 sub_boxes = (enc,)
         else:
             sub_boxes = ()
-            parent_bbox = None
 
         solver_status = SolverStatus.FEASIBLE
         if results.solver.termination_condition == TerminationCondition.optimal:
@@ -1203,7 +1190,6 @@ def solve_cluster(
         return NodeSolution(
             node_id=node.node_id,
             local_coordinates=norm_parent_coords,
-            bounding_box=parent_bbox,
             sub_boxes=sub_boxes,
             metadata={"child_offsets": norm_child_offsets, "status": solver_status},
         )
