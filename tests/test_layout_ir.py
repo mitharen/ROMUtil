@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import pytest
 
+from romutil.layout.geometry import BoundingBox3D
 from romutil.layout.ir import (
     ArticulationPointCut,
     BridgeCut,
     CutType,
     LayoutEdge,
     LayoutGraph,
+    NodeSolution,
     SolveTreeNode,
     SplitPairCut,
     TreeNodeType,
 )
 from romutil.models import Room
+from romutil.types import Coord3D
 
 
 class TestDomainEnums:
@@ -176,3 +179,54 @@ class TestSolveTreeNodeDomainProperties:
         )
         assert node.cut_type is None
         assert node.cut_contract is None
+
+
+class TestNodeSolution:
+    """Tests for NodeSolution data structure and sub_boxes normalization."""
+
+    def test_sub_boxes_default_from_bounding_box_tuple(self) -> None:
+        """When sub_boxes is omitted, it defaults to a 1-tuple of BoundingBox3D from bounding_box."""
+        sol = NodeSolution(
+            node_id="n1",
+            local_coordinates={1: Coord3D(0, 0, 0)},
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(2, 2, 2)),
+        )
+        assert len(sol.sub_boxes) == 1
+        sb = sol.sub_boxes[0]
+        assert isinstance(sb, BoundingBox3D)
+        assert (sb.min_x, sb.max_x, sb.min_y, sb.max_y, sb.min_z, sb.max_z) == (0, 2, 0, 2, 0, 2)
+
+    def test_sub_boxes_default_from_bounding_box_instance(self) -> None:
+        """When sub_boxes is omitted and bounding_box is BoundingBox3D, it is wrapped in a tuple."""
+        box = BoundingBox3D(min_x=1, max_x=3, min_y=2, max_y=4, min_z=0, max_z=1)
+        sol = NodeSolution(
+            node_id="n2",
+            local_coordinates={1: Coord3D(1, 2, 0)},
+            bounding_box=box,  # type: ignore[arg-type]
+        )
+        assert sol.sub_boxes == (box,)
+
+    def test_sub_boxes_empty_when_no_bounding_box(self) -> None:
+        """When bounding_box is None and sub_boxes omitted, sub_boxes is empty tuple."""
+        sol = NodeSolution(
+            node_id="n3",
+            local_coordinates={},
+            bounding_box=None,
+        )
+        assert sol.sub_boxes == ()
+
+    def test_explicit_sub_boxes_conversion(self) -> None:
+        """Explicit sub_boxes converts tuples to BoundingBox3D instances and normalizes to tuple."""
+        box1 = (Coord3D(0, 0, 0), Coord3D(1, 0, 0))
+        box2 = BoundingBox3D(min_x=0, max_x=0, min_y=1, max_y=2, min_z=0, max_z=0)
+        sol = NodeSolution(
+            node_id="n4",
+            local_coordinates={},
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 2, 0)),
+            sub_boxes=[box1, box2],  # list input with mixed types
+        )
+        assert isinstance(sol.sub_boxes, tuple)
+        assert len(sol.sub_boxes) == 2
+        assert all(isinstance(b, BoundingBox3D) for b in sol.sub_boxes)
+        assert sol.sub_boxes[0].max_x == 1
+        assert sol.sub_boxes[1].max_y == 2

@@ -169,20 +169,20 @@ class TestParentClusterMILP:
             for cr in [5, 6]:
                 assert parent_sol.local_coordinates[pr] != placed_child_coords[cr]
 
-        # 3. Macro-box clearance: non-anchor parent rooms (1, 3, 4) cannot lie inside child's bounding box
-        assert child_sol.bounding_box is not None
-        c_min, c_max = child_sol.bounding_box
-        child_box_in_parent = BoundingBox3D(
-            min_x=c_off.x + c_min.x,
-            max_x=c_off.x + c_max.x,
-            min_y=c_off.y + c_min.y,
-            max_y=c_off.y + c_max.y,
-            min_z=c_off.z + c_min.z,
-            max_z=c_off.z + c_max.z,
-        )
+        # 3. Macro-box clearance: non-anchor parent rooms (1, 3, 4) cannot lie inside child's sub-boxes
+        assert child_sol.sub_boxes
         for pr in [1, 3, 4]:
             p_pt = parent_sol.local_coordinates[pr]
-            assert not child_box_in_parent.contains_point(p_pt)
+            for sb in child_sol.sub_boxes:
+                sb_in_parent = BoundingBox3D(
+                    min_x=c_off.x + sb.min_x,
+                    max_x=c_off.x + sb.max_x,
+                    min_y=c_off.y + sb.min_y,
+                    max_y=c_off.y + sb.max_y,
+                    min_z=c_off.z + sb.min_z,
+                    max_z=c_off.z + sb.max_z,
+                )
+                assert not sb_in_parent.contains_point(p_pt)
 
     def test_2cut_split_pair_side_by_side(self) -> None:
         """2-Cut split pair: parent container with 2 parallel child paths between poles.
@@ -1220,6 +1220,93 @@ class TestParentComprehensiveEdgeCoverage:
         with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
             with pytest.raises(LayoutSolverError):
                 solve_cluster(parent, {"c_exc_solve": c_sol}, graph)
+
+    def test_parent_room_placed_in_concave_child_void(self) -> None:
+        """Integration test demonstrating parent room placement inside child concavity.
+
+        When an L-shaped child cluster has empty cells inside its bounding box,
+        concave sub-box decomposition allows a parent room to be placed inside the
+        concave void without artificial separation conflict or layout dilation.
+        """
+        # Child cluster: rooms 1, 2, 3 forming an L-shape
+        # 1 -E-> 2, 1 -N-> 3
+        child_rooms = [1, 2, 3]
+        child_edges = [
+            (1, 2, Direction.east, 1),
+            (1, 3, Direction.north, 1),
+        ]
+        graph_child = _make_graph(child_rooms, child_edges)
+        child_node = SolveTreeNode(
+            node_id="child_l",
+            node_type="leaf",
+            rooms=frozenset(child_rooms),
+            metadata={"cut_type": "articulation_point", "anchor_vnum": 2},
+        )
+        child_sol = solve_cluster(child_node, graph_child)
+
+        # Child bounding box covers (0,0,0) to (1,1,0), but decomposes into 2 disjoint sub-boxes
+        assert child_sol.bounding_box == (Coord3D(0, 0, 0), Coord3D(1, 1, 0))
+        assert len(child_sol.sub_boxes) == 2
+
+        # Parent cluster: rooms 2 and 4 with edge 2 -N-> 4
+        # Room 2 is the gateway anchor. Room 4 is a non-anchor parent room that wants to
+        # occupy (1, 1, 0), which lies inside child's bounding box but outside both sub-boxes.
+        parent_rooms = [2, 4]
+        parent_edges = [
+            (2, 4, Direction.north, 1),
+        ]
+        all_rooms = [1, 2, 3, 4]
+        all_edges = child_edges + parent_edges
+        graph_parent = _make_graph(all_rooms, all_edges)
+        parent_node = SolveTreeNode(
+            node_id="parent_p",
+            node_type="block",
+            rooms=frozenset(parent_rooms),
+            children=(child_node,),
+        )
+        parent_sol = solve_cluster(parent_node, {child_node.node_id: child_sol}, graph_parent)
+
+        # Verify parent solved with optimal status
+        assert parent_sol.metadata.get("status") == SolverStatus.OPTIMAL
+
+        c_off = parent_sol.metadata["child_offsets"]["child_l"]
+        placed_child_coords = {
+            v: Coord3D(c_off.x + pt.x, c_off.y + pt.y, c_off.z + pt.z)
+            for v, pt in child_sol.local_coordinates.items()
+        }
+        p_r4 = parent_sol.local_coordinates[4]
+
+        # 1. Zero collision with any child room
+        for cv, cpt in placed_child_coords.items():
+            assert p_r4 != cpt
+
+        # 2. Room 4 is inside the overall convex bounding box of the child
+        child_full_box = BoundingBox3D(
+            min_x=c_off.x + child_sol.bounding_box[0].x,
+            max_x=c_off.x + child_sol.bounding_box[1].x,
+            min_y=c_off.y + child_sol.bounding_box[0].y,
+            max_y=c_off.y + child_sol.bounding_box[1].y,
+            min_z=c_off.z + child_sol.bounding_box[0].z,
+            max_z=c_off.z + child_sol.bounding_box[1].z,
+        )
+        assert child_full_box.contains_point(p_r4)
+
+        # 3. Room 4 is outside all decomposed sub-boxes of the child
+        for sb in child_sol.sub_boxes:
+            sb_in_parent = BoundingBox3D(
+                min_x=c_off.x + sb.min_x,
+                max_x=c_off.x + sb.max_x,
+                min_y=c_off.y + sb.min_y,
+                max_y=c_off.y + sb.max_y,
+                min_z=c_off.z + sb.min_z,
+                max_z=c_off.z + sb.max_z,
+            )
+            assert not sb_in_parent.contains_point(p_r4)
+
+        # 4. Edge length from 2 to 4 is exactly 1 (no dilation)
+        p_r2 = parent_sol.local_coordinates[2]
+        dist = abs(p_r4.x - p_r2.x) + abs(p_r4.y - p_r2.y) + abs(p_r4.z - p_r2.z)
+        assert dist == 1
 
     def test_hierarchical_solver_caching_and_nested_room_collection(self) -> None:
         """HierarchicalTreeSolver returns cached solutions and collects rooms across nested children when graph is None."""

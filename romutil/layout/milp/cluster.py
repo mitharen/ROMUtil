@@ -23,7 +23,7 @@ class ActiveEdge:
 import pyomo.environ as pyo
 from pyomo.opt import SolverStatus as PyomoSolverStatus, TerminationCondition
 
-from romutil.layout.geometry import BoundingBox3D
+from romutil.layout.geometry import BoundingBox3D, decompose_into_orthogonal_sub_boxes
 from romutil.layout.ir import (
     ArticulationPointCut,
     BridgeCut,
@@ -172,16 +172,22 @@ def solve_cluster(
             px, py, pz = get_point(u)
             return (px, px, py, py, pz, pz)
 
-        def _child_box(cid: str) -> tuple[Any, Any, Any, Any, Any, Any]:
-            box = _get_child_bbox_corners(child_solutions[cid].bounding_box)
-            assert box is not None
+
+        def _child_sub_box(ref: tuple[str, int]) -> tuple[Any, Any, Any, Any, Any, Any]:
+            cid, k = ref
+            raw_sb = child_solutions[cid].sub_boxes[k]
+            sb = (
+                raw_sb
+                if isinstance(raw_sb, BoundingBox3D)
+                else BoundingBox3D.from_coordinates([raw_sb[0], raw_sb[1]])
+            )
             return (
-                model.cx[cid] + box[0],
-                model.cx[cid] + box[1],
-                model.cy[cid] + box[2],
-                model.cy[cid] + box[3],
-                model.cz[cid] + box[4],
-                model.cz[cid] + box[5],
+                model.cx[cid] + sb.min_x,
+                model.cx[cid] + sb.max_x,
+                model.cy[cid] + sb.min_y,
+                model.cy[cid] + sb.max_y,
+                model.cz[cid] + sb.min_z,
+                model.cz[cid] + sb.max_z,
             )
 
         # Parent room non-overlap separation
@@ -827,8 +833,8 @@ def solve_cluster(
                 model.edge_y.add(dst_y - src_y == model.L[i] * dy)
                 model.edge_z.add(dst_z - src_z == model.L[i] * dz)
 
-        # Pairwise child-child macro-box separation
-        child_pairs: list[tuple[str, str]] = []
+        # Pairwise child-child sub-box separation
+        child_pairs: list[tuple[tuple[str, int], tuple[str, int]]] = []
         for i in range(len(children)):
             for j in range(i + 1, len(children)):
                 c1 = children[i]
@@ -838,40 +844,43 @@ def solve_cluster(
                 if (
                     sol1
                     and sol2
-                    and sol1.bounding_box is not None
-                    and sol2.bounding_box is not None
+                    and sol1.sub_boxes
+                    and sol2.sub_boxes
                 ):
                     shared = set(sol1.local_coordinates.keys()) & set(sol2.local_coordinates.keys())
                     if not shared:
-                        child_pairs.append((c1.node_id, c2.node_id))
+                        for k1 in range(len(sol1.sub_boxes)):
+                            for k2 in range(len(sol2.sub_boxes)):
+                                child_pairs.append(((c1.node_id, k1), (c2.node_id, k2)))
 
         if child_pairs:
             add_disjunctive_box_separation(
                 model=model,
                 pairs=child_pairs,
-                get_box_a=_child_box,
-                get_box_b=_child_box,
+                get_box_a=_child_sub_box,
+                get_box_b=_child_sub_box,
                 prefix="cb",
                 m_big=m_big,
             )
 
-        # Parent room vs child box clearance
-        rc_pairs: list[tuple[int, str]] = []
+        # Parent room vs child sub-box clearance
+        rc_pairs: list[tuple[int, tuple[str, int]]] = []
         if rooms:
             for child in children:
                 c_sol = child_solutions.get(child.node_id)
-                if c_sol and c_sol.bounding_box is not None:
+                if c_sol and c_sol.sub_boxes:
                     anchors = gateway_anchors[child.node_id]
                     for u in rooms:
                         if u not in anchors and u not in c_sol.local_coordinates:
-                            rc_pairs.append((u, child.node_id))
+                            for k in range(len(c_sol.sub_boxes)):
+                                rc_pairs.append((u, (child.node_id, k)))
 
         if rc_pairs:
             add_disjunctive_box_separation(
                 model=model,
                 pairs=rc_pairs,
                 get_box_a=_room_box,
-                get_box_b=_child_box,
+                get_box_b=_child_sub_box,
                 prefix="rc",
                 m_big=m_big,
             )
@@ -936,8 +945,8 @@ def solve_cluster(
             m_big=m_big,
         )
 
-        # Corridor vs. sibling child macro-box non-penetration
-        corridor_child_pairs: list[tuple[int, str]] = []
+        # Corridor vs. sibling child sub-box non-penetration
+        corridor_child_pairs: list[tuple[int, tuple[str, int]]] = []
         if edge_indices and len(children) > 0:
             for i, ae in enumerate(active_edges):
                 if ae.edge_id.startswith("sp_"):
@@ -949,9 +958,7 @@ def solve_cluster(
                     if s_id in ae.associated_children:
                         continue
                     s_sol = child_solutions.get(s_id)
-                    if not s_sol or s_sol.bounding_box is None:
-                        continue
-                    if _get_child_bbox_corners(s_sol.bounding_box) is None:
+                    if not s_sol or not s_sol.sub_boxes:
                         continue
                     if any(r in s_sol.local_coordinates for r in ae.associated_rooms):
                         continue
@@ -962,14 +969,15 @@ def solve_cluster(
                         if c_other in child_solutions
                     ):
                         continue
-                    corridor_child_pairs.append((i, s_id))
+                    for k in range(len(s_sol.sub_boxes)):
+                        corridor_child_pairs.append((i, (s_id, k)))
 
         if corridor_child_pairs:
             add_disjunctive_box_separation(
                 model=model,
                 pairs=corridor_child_pairs,
                 get_box_a=lambda i: _corridor_full_box(active_edges[i]),
-                get_box_b=_child_box,
+                get_box_b=_child_sub_box,
                 prefix="cws",
                 m_big=m_big,
             )
@@ -1149,31 +1157,38 @@ def solve_cluster(
             for cid, (x, y, z) in raw_child_offsets.items()
         }
 
-        # Interior-only bounding box: compute strictly over child's interior rooms,
-        # excluding boundary gateway vertices/poles.
+        # Interior-only bounding box and sub-box decomposition: compute strictly
+        # over child's interior rooms and translated child sub-boxes, excluding
+        # boundary gateway vertices/poles.
         boundary_ports = _get_child_boundary_ports(node)
-        interior_pts: list[Coord3D] = [
+        interior_cells: set[Coord3D] = {
             norm_parent_coords[u]
             for u in node.rooms
             if u not in boundary_ports and u in norm_parent_coords
-        ]
+        }
         for child in children:
             cid = child.node_id
             c_sol = child_solutions.get(cid)
-            if c_sol and c_sol.bounding_box is not None:
-                box = _get_child_bbox_corners(c_sol.bounding_box)
-                if box:
-                    off = norm_child_offsets[cid]
-                    interior_pts.append(Coord3D(off.x + box[0], off.y + box[2], off.z + box[4]))
-                    interior_pts.append(Coord3D(off.x + box[1], off.y + box[3], off.z + box[5]))
+            if c_sol:
+                off = norm_child_offsets[cid]
+                for sb in c_sol.sub_boxes:
+                    for x in range(sb.min_x + off.x, sb.max_x + off.x + 1):
+                        for y in range(sb.min_y + off.y, sb.max_y + off.y + 1):
+                            for z in range(sb.min_z + off.z, sb.max_z + off.z + 1):
+                                interior_cells.add(Coord3D(x, y, z))
 
-        if interior_pts:
-            enc = BoundingBox3D.from_coordinates(interior_pts)
+        if interior_cells:
+            enc = BoundingBox3D.from_coordinates(interior_cells)
             parent_bbox: tuple[Coord3D, Coord3D] | None = (
                 Coord3D(enc.min_x, enc.min_y, enc.min_z),
                 Coord3D(enc.max_x, enc.max_y, enc.max_z),
             )
+            if not children:
+                sub_boxes = decompose_into_orthogonal_sub_boxes(interior_cells)
+            else:
+                sub_boxes = (enc,)
         else:
+            sub_boxes = ()
             parent_bbox = None
 
         solver_status = SolverStatus.FEASIBLE
@@ -1189,6 +1204,7 @@ def solve_cluster(
             node_id=node.node_id,
             local_coordinates=norm_parent_coords,
             bounding_box=parent_bbox,
+            sub_boxes=sub_boxes,
             metadata={"child_offsets": norm_child_offsets, "status": solver_status},
         )
     except LayoutSolverError:

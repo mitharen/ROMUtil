@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Collection, Mapping, Sequence
 
+from romutil.layout.geometry.primitives import BoundingBox3D
 from romutil.models import Room
 from romutil.types import Coord3D, WorldGraph
 
@@ -224,7 +225,46 @@ class NodeSolution:
     node_id: str
     local_coordinates: Mapping[int, Coord3D]
     bounding_box: tuple[Coord3D, Coord3D] | None = None
+    sub_boxes: Sequence[BoundingBox3D | tuple[Coord3D, Coord3D]] = field(default_factory=tuple)
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.sub_boxes and self.bounding_box is not None:
+            if isinstance(self.bounding_box, BoundingBox3D):
+                boxes: tuple[BoundingBox3D, ...] = (self.bounding_box,)
+            else:
+                p1, p2 = self.bounding_box
+                boxes = (
+                    BoundingBox3D(
+                        min_x=min(p1.x, p2.x),
+                        max_x=max(p1.x, p2.x),
+                        min_y=min(p1.y, p2.y),
+                        max_y=max(p1.y, p2.y),
+                        min_z=min(p1.z, p2.z),
+                        max_z=max(p1.z, p2.z),
+                    ),
+                )
+            object.__setattr__(self, "sub_boxes", boxes)
+        elif self.sub_boxes:
+            boxes_list: list[BoundingBox3D] = []
+            for sb in self.sub_boxes:
+                if isinstance(sb, BoundingBox3D):
+                    boxes_list.append(sb)
+                else:
+                    p1, p2 = sb
+                    boxes_list.append(
+                        BoundingBox3D(
+                            min_x=min(p1.x, p2.x),
+                            max_x=max(p1.x, p2.x),
+                            min_y=min(p1.y, p2.y),
+                            max_y=max(p1.y, p2.y),
+                            min_z=min(p1.z, p2.z),
+                            max_z=max(p1.z, p2.z),
+                        )
+                    )
+            object.__setattr__(self, "sub_boxes", tuple(boxes_list))
+        elif not isinstance(self.sub_boxes, tuple):
+            object.__setattr__(self, "sub_boxes", tuple(self.sub_boxes))
 
 
 @dataclass(frozen=True)
