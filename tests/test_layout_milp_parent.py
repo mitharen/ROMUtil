@@ -1378,8 +1378,8 @@ class TestDirectlyObservableCutAlignment:
         assert c10_world.x == p2_coord.x
         assert c10_world.y >= p2_coord.y + 2
 
-    def test_split_pair_corridor_elastic_stretching(self) -> None:
-        """Split-pair child corridor stretches elastically when forced by parent layout."""
+    def test_split_pair_rigid_boundary_ports(self) -> None:
+        """Split-pair child maintains rigid boundary port coordinates under parent layout."""
         # Split-pair container with poles 1 and 2
         # Child contains rooms 1, 2, 3 with nominal span 2 along North
         s_child = SolveTreeNode(
@@ -1492,3 +1492,155 @@ class TestDirectlyObservableCutAlignment:
         assert pos_20.x == pos_11.x
         assert pos_20.y >= pos_11.y + 3
         assert pos_20.z == pos_11.z
+
+    def test_split_pair_sibling_alignment_without_parent_rooms(self) -> None:
+        """Multiple split-pair children align at shared pole in container without parent rooms."""
+        c1 = SolveTreeNode(
+            node_id="c1",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({100, 101}),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (100, 101),
+                "cut_contract": SplitPairCut(poles=(100, 101)),
+            },
+        )
+        c2 = SolveTreeNode(
+            node_id="c2",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({100, 101}),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (100, 101),
+                "cut_contract": SplitPairCut(poles=(100, 101)),
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="split_container",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset(),
+            children=(c1, c2),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (100, 101),
+                "cut_contract": SplitPairCut(poles=(100, 101)),
+            },
+        )
+        sol1 = NodeSolution(
+            node_id="c1",
+            local_coordinates={100: Coord3D(0, 0, 0), 101: Coord3D(1, 0, 0)},
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 0, 0)),
+        )
+        sol2 = NodeSolution(
+            node_id="c2",
+            local_coordinates={100: Coord3D(0, 0, 0), 101: Coord3D(0, 2, 0)},
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 2, 0)),
+        )
+        graph = _make_graph(rooms=[100, 101], edges=[(100, 101, Direction.east, 1)])
+        parent_sol = solve_parent_cluster(parent, {"c1": sol1, "c2": sol2}, graph)
+        off1 = parent_sol.metadata["child_offsets"]["c1"]
+        off2 = parent_sol.metadata["child_offsets"]["c2"]
+        # Both children align at shared pole 100
+        assert off1.x + sol1.local_coordinates[100].x == off2.x + sol2.local_coordinates[100].x
+
+    def test_split_pair_boundary_port_external_parent_edges(self) -> None:
+        """Parent rooms connect to child boundary port when pole is not in parent room set."""
+        child = SolveTreeNode(
+            node_id="c_split",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({200, 201, 202}),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (200, 201),
+                "cut_contract": SplitPairCut(poles=(200, 201)),
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="parent_cluster",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({300, 301}),
+            children=(child,),
+        )
+        child_sol = NodeSolution(
+            node_id="c_split",
+            local_coordinates={
+                200: Coord3D(0, 0, 0),
+                201: Coord3D(2, 0, 0),
+                202: Coord3D(1, 1, 0),
+            },
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(2, 1, 0)),
+        )
+        graph = _make_graph(
+            rooms=[200, 201, 202, 300, 301],
+            edges=[
+                (300, 200, Direction.east, 1),
+                (201, 301, Direction.east, 1),
+            ],
+        )
+        parent_sol = solve_parent_cluster(parent, {"c_split": child_sol}, graph)
+        c_off = parent_sol.metadata["child_offsets"]["c_split"]
+        p300 = parent_sol.local_coordinates[300]
+        p301 = parent_sol.local_coordinates[301]
+        port200 = Coord3D(c_off.x + 0, c_off.y + 0, c_off.z + 0)
+        port201 = Coord3D(c_off.x + 2, c_off.y + 0, c_off.z + 0)
+        assert port200.x >= p300.x + 1
+        assert p301.x >= port201.x + 1
+
+    def test_tree_solver_module_reexport(self) -> None:
+        """romutil.layout.milp.tree exports HierarchicalTreeSolver."""
+        from romutil.layout.milp.tree import HierarchicalTreeSolver as TreeSolverClass
+        assert TreeSolverClass is HierarchicalTreeSolver
+
+    def test_inter_child_split_pair_boundary_port_edges(self) -> None:
+        """Inter-child edge connects boundary ports of two split-pair children."""
+        c1 = SolveTreeNode(
+            node_id="c1",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({10, 11}),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (10, 11),
+                "cut_contract": SplitPairCut(poles=(10, 11)),
+            },
+        )
+        c2 = SolveTreeNode(
+            node_id="c2",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({20, 21}),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (20, 21),
+                "cut_contract": SplitPairCut(poles=(20, 21)),
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="p_split_bridge",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset(),
+            children=(c1, c2),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (10, 21),
+                "cut_contract": SplitPairCut(poles=(10, 21)),
+            },
+        )
+        c1_sol = NodeSolution(
+            node_id="c1",
+            local_coordinates={10: Coord3D(0, 0, 0), 11: Coord3D(1, 0, 0)},
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 0, 0)),
+        )
+        c2_sol = NodeSolution(
+            node_id="c2",
+            local_coordinates={20: Coord3D(0, 0, 0), 21: Coord3D(1, 0, 0)},
+            bounding_box=(Coord3D(0, 0, 0), Coord3D(1, 0, 0)),
+        )
+        graph = _make_graph(
+            rooms=[10, 11, 20, 21],
+            edges=[(11, 20, Direction.east, 2)],
+        )
+        parent_sol = solve_parent_cluster(parent, {"c1": c1_sol, "c2": c2_sol}, graph)
+        off1 = parent_sol.metadata["child_offsets"]["c1"]
+        off2 = parent_sol.metadata["child_offsets"]["c2"]
+        p11 = Coord3D(off1.x + 1, off1.y, off1.z)
+        p20 = Coord3D(off2.x + 0, off2.y, off2.z)
+        assert p20.x >= p11.x + 2
