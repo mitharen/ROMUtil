@@ -1644,3 +1644,99 @@ class TestDirectlyObservableCutAlignment:
         p11 = Coord3D(off1.x + 1, off1.y, off1.z)
         p20 = Coord3D(off2.x + 0, off2.y, off2.z)
         assert p20.x >= p11.x + 2
+
+    def test_child_bounding_box_strictly_excludes_boundary_ports(self) -> None:
+        """Child bounding box is computed strictly over interior rooms excluding boundary ports."""
+        split_child = SolveTreeNode(
+            node_id="split_child",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1, 2, 3}),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (1, 2),
+                "cut_contract": SplitPairCut(poles=(1, 2)),
+            },
+        )
+        graph = _make_graph(
+            rooms=[1, 2, 3],
+            edges=[
+                (1, 3, Direction.east, 1),
+                (3, 2, Direction.east, 1),
+            ],
+        )
+        child_sol = solve_parent_cluster(split_child, {}, graph)
+        # Pole 1 and Pole 2 are excluded; only interior room 3 determines bounding box
+        assert child_sol.bounding_box is not None
+        min_box, max_box = child_sol.bounding_box
+        loc3 = child_sol.local_coordinates[3]
+        assert min_box == loc3
+        assert max_box == loc3
+
+    def test_child_bounding_box_none_when_all_rooms_are_boundary_ports(self) -> None:
+        """Child bounding box is None when all constituent rooms are boundary gateway ports."""
+        pole_only_child = SolveTreeNode(
+            node_id="pole_only",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({10, 20}),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (10, 20),
+                "cut_contract": SplitPairCut(poles=(10, 20)),
+            },
+        )
+        graph = _make_graph(rooms=[10, 20], edges=[(10, 20, Direction.north, 1)])
+        sol = solve_parent_cluster(pole_only_child, {}, graph)
+        assert sol.bounding_box is None
+
+    def test_equated_sibling_children_do_not_add_conflicting_directional_edge(self) -> None:
+        """Sibling children equated at a shared pole do not accumulate conflicting directional active edges."""
+        # Two children sharing pole 100, where an edge exists between their local ports
+        c1 = SolveTreeNode(
+            node_id="c1",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({100, 101}),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (100, 101),
+                "cut_contract": SplitPairCut(poles=(100, 101)),
+            },
+        )
+        c2 = SolveTreeNode(
+            node_id="c2",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({100, 102}),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (100, 102),
+                "cut_contract": SplitPairCut(poles=(100, 102)),
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="parent_container",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({100}),
+            children=(c1, c2),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (100, 101),
+            },
+        )
+        c1_sol = NodeSolution(
+            node_id="c1",
+            local_coordinates={100: Coord3D(0, 0, 0), 101: Coord3D(2, 0, 0)},
+            bounding_box=(Coord3D(2, 0, 0), Coord3D(2, 0, 0)),
+        )
+        c2_sol = NodeSolution(
+            node_id="c2",
+            local_coordinates={100: Coord3D(0, 0, 0), 102: Coord3D(0, 2, 0)},
+            bounding_box=(Coord3D(0, 2, 0), Coord3D(0, 2, 0)),
+        )
+        graph = _make_graph(
+            rooms=[100, 101, 102],
+            edges=[
+                (100, 101, Direction.east, 2),
+                (100, 102, Direction.north, 2),
+            ],
+        )
+        sol = solve_parent_cluster(parent, {"c1": c1_sol, "c2": c2_sol}, graph)
+        assert sol.metadata["child_offsets"]["c1"] == sol.metadata["child_offsets"]["c2"]

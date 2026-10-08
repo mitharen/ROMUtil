@@ -258,6 +258,8 @@ def solve_parent_cluster(
 
         split_min_lengths: dict[tuple[int, int], int] = {}
         split_directions: dict[tuple[int, int], tuple[int, int, int]] = {}
+        equated_children: set[frozenset[str]] = set()
+        room_anchored_children: dict[int, list[str]] = {}
         for (p0, p1), split_children in split_children_by_poles.items():
             if not split_children:
                 continue
@@ -271,6 +273,7 @@ def solve_parent_cluster(
                     model.align_z.add(model.z[p0] == model.cz[child.node_id] + pc0.z)
                     gateway_anchors[child.node_id].add(p0)
                     aligned_children.add(child.node_id)
+                    room_anchored_children.setdefault(p0, []).append(child.node_id)
                 elif len(split_children) > 1:
                     base_child = split_children[0]
                     base_pc0 = child_solutions[base_child.node_id].local_coordinates[p0]
@@ -287,6 +290,17 @@ def solve_parent_cluster(
                         == model.cz[child.node_id] + pc0.z
                     )
                     aligned_children.add(child.node_id)
+                    equated_children.add(frozenset({base_child.node_id, child.node_id}))
+
+            if len(split_children) > 1 and p0 not in room_set:
+                for idx1 in range(len(split_children)):
+                    for idx2 in range(idx1 + 1, len(split_children)):
+                        equated_children.add(frozenset({split_children[idx1].node_id, split_children[idx2].node_id}))
+
+        for p_anchor, c_list in room_anchored_children.items():
+            for idx1 in range(len(c_list)):
+                for idx2 in range(idx1 + 1, len(c_list)):
+                    equated_children.add(frozenset({c_list[idx1], c_list[idx2]}))
 
             def _child_span(c: SolveTreeNode) -> int:
                 c_coords = child_solutions[c.node_id].local_coordinates
@@ -417,6 +431,10 @@ def solve_parent_cluster(
                         for other in children:
                             if other.node_id == sc.node_id:
                                 continue
+                            if frozenset({other.node_id, sc.node_id}) in equated_children:
+                                continue
+                            if edge.src == edge.dst:
+                                continue
                             other_coords = (
                                 child_solutions[other.node_id].local_coordinates
                                 if other.node_id in child_solutions
@@ -504,6 +522,9 @@ def solve_parent_cluster(
                 model.align_z.add(model.z[a] == model.cz[child.node_id] + pc.z)
                 gateway_anchors[child.node_id].add(a)
                 aligned_children.add(child.node_id)
+                for other_cid in room_anchored_children.get(a, []):
+                    equated_children.add(frozenset({other_cid, child.node_id}))
+                room_anchored_children.setdefault(a, []).append(child.node_id)
 
         # 1-cut doorway / bridge edge alignment
         for child in children:
@@ -616,6 +637,8 @@ def solve_parent_cluster(
                     for other in children:
                         if other.node_id == child.node_id or other.node_id not in aligned_children:
                             continue
+                        if frozenset({other.node_id, child.node_id}) in equated_children:
+                            continue
                         other_coords = (
                             child_solutions[other.node_id].local_coordinates
                             if other.node_id in child_solutions
@@ -664,6 +687,8 @@ def solve_parent_cluster(
                         continue
                     for other in children:
                         if other.node_id == child.node_id or other.node_id not in aligned_children:
+                            continue
+                        if frozenset({other.node_id, child.node_id}) in equated_children:
                             continue
                         other_coords = (
                             child_solutions[other.node_id].local_coordinates
