@@ -140,7 +140,7 @@ class TestGalleryAssetsGeneration:
             "midgaard_metropolitan",
             "school",
             "shire",
-            "smurf",
+            "thalos",
         }
 
         # Verify individual showcase zones
@@ -249,12 +249,12 @@ class TestGalleryAssetsGeneration:
         from scripts.build_pages import resolve_candidate_areas
         custom_dir = tmp_path / "custom_qm"
         custom_dir.mkdir()
-        smurf_src = REPO_ROOT / "tests" / "fixtures" / "areas" / "smurf.are"
-        (custom_dir / "smurf.are").write_text(smurf_src.read_text(encoding="utf-8"), encoding="utf-8")
+        thalos_src = REPO_ROOT / "tests" / "fixtures" / "areas" / "thalos.are"
+        (custom_dir / "thalos.are").write_text(thalos_src.read_text(encoding="utf-8"), encoding="utf-8")
 
         monkeypatch.setenv("QUICKMUD_AREA_DIR", str(custom_dir))
         candidates = resolve_candidate_areas()
-        assert any(c[1] == "smurf" and c[2].parent == custom_dir for c in candidates)
+        assert any(c[1] == "thalos" and c[2].parent == custom_dir for c in candidates)
 
     def test_render_area_success(self, tmp_path):
         from scripts.build_pages import render_area

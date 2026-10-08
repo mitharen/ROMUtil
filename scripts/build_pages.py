@@ -25,7 +25,7 @@ SHOWCASE_AREAS = (
     "midgaard.are",
     "school.are",
     "shire.are",
-    "smurf.are",
+    "thalos.are",
 )
 
 # Curated composite showcase clusters (category, name/slug, constituent filenames, [optional timeout])

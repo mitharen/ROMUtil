@@ -11,6 +11,9 @@
   - Always run `uv run pytest` before committing.
   - All tests must pass, and total test coverage across `romutil/` must remain at or above **95%** (enforced automatically by `pytest --cov-fail-under=95`).
   - Any new feature, edge case, or bug fix must be accompanied by corresponding positive and negative test cases.
+- **No Vestigial Backward-Compatibility Shims**:
+  - When unifying, replacing, or refactoring abstractions, remove obsolete wrapper functions, vestigial compatibility aliases, and dead modules cleanly.
+  - Migrate tests and callers to the canonical interface immediately instead of preserving technical debt shims.
 
 ## Git & Branching Policy
 - **Dedicated Feature Branches**: Every agent or contributor must operate on its own unique feature branch (e.g., `feature/<task-name>`). Never commit directly to `main`.
