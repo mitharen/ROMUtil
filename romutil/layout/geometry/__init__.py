@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from romutil.layout.geometry.decomposition import (
+    decompose_into_orthogonal_sub_boxes,
+)
 from romutil.layout.geometry.intersections import (
     point_in_segment_interior,
     segment_box_penetration,
@@ -16,6 +19,7 @@ from romutil.layout.geometry.primitives import (
 __all__ = [
     "BoundingBox3D",
     "Segment3D",
+    "decompose_into_orthogonal_sub_boxes",
     "point_in_segment_interior",
     "segment_box_penetration",
     "segment_room_penetration",
