@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from romutil.layout.milp.parent import HierarchicalTreeSolver
+from romutil.layout.milp.cluster import HierarchicalTreeSolver
 
 __all__ = ["HierarchicalTreeSolver"]

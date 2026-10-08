@@ -69,7 +69,7 @@ flowchart TD
    - Ingests the `WorldGraph` into an internal `LayoutGraph`.
    - Simplifies degree-2 straight corridors (`HallwayCompactor`) and cuts non-Euclidean cycle chords (`WarpSeverer`).
    - Recursively decomposes the biconnected and triconnected structure into a hierarchical tree (`BlockCutTreeBuilder` and `SpqrTreeBuilder`).
-   - Solves leaf clusters and parent containers via Mixed-Integer Linear Programming (`LeafTreeSolver`, `ParentClusterSolver`, `HierarchicalTreeSolver`).
+   - Solves leaf clusters and parent containers via Mixed-Integer Linear Programming (`HierarchicalClusterSolver`, `HierarchicalTreeSolver`).
    - Assembles coordinates top-down, decompresses collapsed corridors, and normalizes coordinates (`HierarchicalLayoutAssembler`) into a `SolvedLayout`.
 3. **Decoupled Rendering Subsystem**:
    - Accepts `(WorldGraph, SolvedLayout)` pairs via the `BaseRenderer` protocol.
@@ -102,8 +102,9 @@ ROMUtil/
 │   │   │   └── spqr.py          # SpqrTreeBuilder (triconnected SPQR decomposition)
 │   │   ├── ir.py                # Intermediate representations (LayoutGraph, SolveTree, NodeSolution)
 │   │   ├── milp/                # Stage 4 mathematical optimization solvers
-│   │   │   ├── leaf.py          # LeafTreeSolver & solve_leaf_cluster formulation
-│   │   │   └── parent.py        # ParentClusterSolver, solve_parent_cluster, & HierarchicalTreeSolver
+│   │   │   ├── cluster.py       # HierarchicalClusterSolver, solve_cluster, & HierarchicalTreeSolver
+│   │   │   ├── constraints.py   # Disjunctive Big-M non-penetration cuts & box separation
+│   │   │   └── tree.py          # HierarchicalTreeSolver re-export
 │   │   ├── protocols.py         # Stage interfaces (GraphSimplifier, TreeBuilder, TreeSolver, LayoutAssembler)
 │   │   └── simplification/      # Stage 2 graph reduction routines
 │   │       ├── hallways.py      # HallwayCompactor (degree-2 corridor compression)
@@ -221,9 +222,9 @@ Decomposes the simplified topology into a hierarchical `SolveTree` of localized 
 
 #### Stage 4: Mathematical Optimization (`TreeSolver`)
 Assigns local 3D coordinates to rooms within each `SolveTreeNode` through Mixed-Integer Linear Programming (MILP) using Coin-OR CBC via Pyomo:
-- **`LeafTreeSolver` / `solve_leaf_cluster`**:
-  - Solves atomic leaf clusters ($R$-nodes, series chains, isolated blocks).
-  - **Decision Variables**: Integer coordinates $x_r, y_r, z_r$ bounded tightly by dimension-specific bounds $[-M_x, M_x]$, $[-M_y, M_y]$, $[-M_z, M_z]$.
+- **`HierarchicalClusterSolver` / `solve_cluster`**:
+  - Solves individual clusters (both atomic leaf clusters and composite parent container clusters embedding child macro-boxes).
+  - **Decision Variables**: Integer coordinates $x_r, y_r, z_r$ and child macro-box origin translations $c_x, c_y, c_z$, bounded tightly by dimension-specific bounds $[-M_x, M_x]$, $[-M_y, M_y]$, $[-M_z, M_z]$.
   - **Relative Distance Constraints**: For exit $(u, v)$ in nominal direction East:
     $$x_v - x_u + 2 M_x \cdot \text{cut}_e \ge l_{\min}(e)$$
     $$x_v - x_u - 2 M_x \cdot \text{cut}_e \le l_{\max}(e)$$
@@ -231,12 +232,8 @@ Assigns local 3D coordinates to rooms within each `SolveTreeNode` through Mixed-
   - **Spatial Non-Overlap Invariants**: Pairwise disjunctive separation constraints prevent coincident room placements:
     $$x_v - x_u + M_{\text{sep}}^x (1 - d_{\text{east}}) \ge 1$$
     $$\sum_{d \in \mathcal{D}_{\text{active}}} d_{\text{dir}} \ge 1, \quad d_{\text{dir}} \in \{0, 1\}$$
-  - Generates a `NodeSolution` containing local coordinates and an axis-aligned 3D `BoundingBox3D`.
-- **`ParentClusterSolver` / `solve_parent_cluster`**:
-  - Solves container nodes housing child cluster subtrees.
-  - Aligns boundary gateway rooms across adjacent child components so shared articulation and split-pair ports coincide.
-  - Enforces Big-M macro-box clearance constraints between child bounding boxes to eliminate spatial interpenetration.
-  - Records relative child translation vectors `child_offsets` in `NodeSolution.metadata`.
+  - **Child Container Embedding**: Aligns boundary gateway rooms across adjacent child components so shared articulation and split-pair ports coincide, enforces Big-M macro-box clearance constraints between child bounding boxes to eliminate spatial interpenetration, and records relative child translation vectors `child_offsets` in `NodeSolution.metadata`.
+  - Generates a `NodeSolution` containing local coordinates, child offsets in metadata, and an axis-aligned 3D `BoundingBox3D`.
 - **`HierarchicalTreeSolver`**:
   - Coordinates bottom-up leaf-to-root solving across the entire `SolveTree`, aggregating individual `NodeSolution` records into a unified `TreeSolution`.
 

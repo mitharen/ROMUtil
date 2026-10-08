@@ -1,4 +1,4 @@
-"""Comprehensive unit and integration tests for parent container MILP solver and HierarchicalTreeSolver."""
+"""Comprehensive unit and integration tests for MILP cluster solver and HierarchicalTreeSolver."""
 
 from __future__ import annotations
 
@@ -13,13 +13,12 @@ from romutil.layout import (
     BlockCutTreeBuilder,
     BridgeCut,
     CutType,
+    HierarchicalClusterSolver,
     HierarchicalLayoutSolver,
     HierarchicalTreeSolver,
     LayoutEdge,
     LayoutGraph,
-    LeafTreeSolver,
     NodeSolution,
-    ParentClusterSolver,
     SimplifiedGraph,
     SolveTree,
     SolveTreeNode,
@@ -29,8 +28,7 @@ from romutil.layout import (
     TreeSolution,
     TreeSolver,
     build_block_spqr_tree,
-    solve_leaf_cluster,
-    solve_parent_cluster,
+    solve_cluster,
 )
 from romutil.layout.geometry import (
     BoundingBox3D,
@@ -40,7 +38,7 @@ from romutil.layout.geometry import (
     segment_room_penetration,
     segments_intersect_3d,
 )
-from romutil.layout.milp.parent import (
+from romutil.layout.milp.cluster import (
     _get_child_bbox_corners,
 )
 from romutil.models import Direction, Exit, Room
@@ -85,13 +83,13 @@ def _make_graph(
 
 
 class TestParentClusterMILP:
-    """Unit tests for solve_parent_cluster core mathematical formulation and clearances."""
+    """Unit tests for solve_cluster core mathematical formulation and clearances."""
 
     def test_empty_parent_and_children(self) -> None:
         """Empty rooms and children returns empty NodeSolution."""
         node = SolveTreeNode(node_id="empty_p", node_type="container", rooms=frozenset())
         graph = LayoutGraph(rooms={}, edges=())
-        sol = solve_parent_cluster(node, {}, graph)
+        sol = solve_cluster(node, {}, graph)
 
         assert sol.node_id == "empty_p"
         assert sol.local_coordinates == {}
@@ -102,7 +100,7 @@ class TestParentClusterMILP:
         """Single room parent with no children delegates to leaf solve."""
         node = SolveTreeNode(node_id="single_p", node_type="block", rooms=frozenset({10}))
         graph = _make_graph([10], [])
-        sol = solve_parent_cluster(node, {}, graph)
+        sol = solve_cluster(node, {}, graph)
 
         assert sol.local_coordinates == {10: Coord3D(0, 0, 0)}
         assert sol.bounding_box == (Coord3D(0, 0, 0), Coord3D(0, 0, 0))
@@ -140,7 +138,7 @@ class TestParentClusterMILP:
             rooms=frozenset(child_rooms),
             metadata={"cut_type": "articulation_point", "anchor_vnum": 2},
         )
-        child_sol = solve_leaf_cluster(child_node, graph)
+        child_sol = solve_cluster(child_node, graph)
 
         parent_node = SolveTreeNode(
             node_id="parent_sq",
@@ -148,7 +146,7 @@ class TestParentClusterMILP:
             rooms=frozenset(parent_rooms),
             children=(child_node,),
         )
-        parent_sol = solve_parent_cluster(parent_node, {child_node.node_id: child_sol}, graph)
+        parent_sol = solve_cluster(parent_node, {child_node.node_id: child_sol}, graph)
 
         # 1. Articulation anchor alignment:
         # In parent frame: parent_coords[2] == child_offset + child_coords[2]
@@ -211,8 +209,8 @@ class TestParentClusterMILP:
         child1 = SolveTreeNode(node_id="path_3", node_type="leaf", rooms=frozenset(c1_rooms))
         child2 = SolveTreeNode(node_id="path_4", node_type="leaf", rooms=frozenset(c2_rooms))
 
-        sol1 = solve_leaf_cluster(child1, graph)
-        sol2 = solve_leaf_cluster(child2, graph)
+        sol1 = solve_cluster(child1, graph)
+        sol2 = solve_cluster(child2, graph)
 
         parent_node = SolveTreeNode(
             node_id="split_container",
@@ -222,7 +220,7 @@ class TestParentClusterMILP:
             metadata={"cut_type": "split_pair", "poles": (1, 2)},
         )
 
-        parent_sol = solve_parent_cluster(
+        parent_sol = solve_cluster(
             parent_node,
             {child1.node_id: sol1, child2.node_id: sol2},
             graph,
@@ -278,8 +276,8 @@ class TestParentClusterMILP:
         child1 = SolveTreeNode(node_id="spqr_c1", node_type="series_loop", rooms=frozenset(c1_rooms))
         child2 = SolveTreeNode(node_id="spqr_c2", node_type="series_loop", rooms=frozenset(c2_rooms))
 
-        sol1 = solve_leaf_cluster(child1, graph)
-        sol2 = solve_leaf_cluster(child2, graph)
+        sol1 = solve_cluster(child1, graph)
+        sol2 = solve_cluster(child2, graph)
 
         parent_node = SolveTreeNode(
             node_id="spqr_p",
@@ -289,7 +287,7 @@ class TestParentClusterMILP:
             metadata={"cut_type": "split_pair", "poles": poles},
         )
 
-        parent_sol = solve_parent_cluster(
+        parent_sol = solve_cluster(
             parent_node,
             {child1.node_id: sol1, child2.node_id: sol2},
             graph,
@@ -340,8 +338,8 @@ class TestParentClusterMILP:
         child1 = SolveTreeNode(node_id="child1", node_type="leaf", rooms=frozenset(c1_rooms))
         child2 = SolveTreeNode(node_id="child2", node_type="leaf", rooms=frozenset(c2_rooms))
 
-        sol1 = solve_leaf_cluster(child1, graph)
-        sol2 = solve_leaf_cluster(child2, graph)
+        sol1 = solve_cluster(child1, graph)
+        sol2 = solve_cluster(child2, graph)
 
         parent_node = SolveTreeNode(
             node_id="parent_node",
@@ -350,7 +348,7 @@ class TestParentClusterMILP:
             children=(child1, child2),
         )
 
-        parent_sol = solve_parent_cluster(
+        parent_sol = solve_cluster(
             parent_node,
             {child1.node_id: sol1, child2.node_id: sol2},
             graph,
@@ -405,8 +403,8 @@ class TestParentClusterMILP:
         comp1 = SolveTreeNode(node_id="comp1", node_type="leaf", rooms=frozenset(c1_rooms))
         comp2 = SolveTreeNode(node_id="comp2", node_type="leaf", rooms=frozenset(c2_rooms))
 
-        sol1 = solve_leaf_cluster(comp1, graph)
-        sol2 = solve_leaf_cluster(comp2, graph)
+        sol1 = solve_cluster(comp1, graph)
+        sol2 = solve_cluster(comp2, graph)
 
         world_root = SolveTreeNode(
             node_id="world_root",
@@ -415,7 +413,7 @@ class TestParentClusterMILP:
             children=(comp1, comp2),
         )
 
-        root_sol = solve_parent_cluster(
+        root_sol = solve_cluster(
             world_root,
             {comp1.node_id: sol1, comp2.node_id: sol2},
             graph,
@@ -467,7 +465,7 @@ class TestParentClusterMILP:
         graph = _make_graph([10, 1, 2], edges)
 
         child = SolveTreeNode(node_id="c_rev", node_type="leaf", rooms=frozenset(child_rooms))
-        child_sol = solve_leaf_cluster(child, graph)
+        child_sol = solve_cluster(child, graph)
 
         parent_node = SolveTreeNode(
             node_id="p_rev",
@@ -475,7 +473,7 @@ class TestParentClusterMILP:
             rooms=frozenset(parent_rooms),
             children=(child,),
         )
-        parent_sol = solve_parent_cluster(parent_node, {child.node_id: child_sol}, graph)
+        parent_sol = solve_cluster(parent_node, {child.node_id: child_sol}, graph)
 
         off = parent_sol.metadata["child_offsets"][child.node_id]
         p10 = parent_sol.local_coordinates[10]
@@ -500,7 +498,7 @@ class TestParentFallbackAndRobustness:
         """Solving completely empty node returns clean empty NodeSolution."""
         node = SolveTreeNode(node_id="empty_test", node_type="container", rooms=frozenset())
         graph = LayoutGraph(rooms={}, edges=())
-        sol = solve_parent_cluster(node, {}, graph)
+        sol = solve_cluster(node, {}, graph)
         assert sol.local_coordinates == {}
         assert sol.bounding_box is None
 
@@ -508,7 +506,7 @@ class TestParentFallbackAndRobustness:
         """Single room container with no children places room at origin directly."""
         node = SolveTreeNode(node_id="single_test", node_type="leaf", rooms=frozenset({10}))
         graph = LayoutGraph(rooms={10: _make_room(10)}, edges=())
-        sol = solve_parent_cluster(node, {}, graph)
+        sol = solve_cluster(node, {}, graph)
         assert sol.local_coordinates == {10: Coord3D(0, 0, 0)}
 
     def test_solver_unavailable_raises_error(self) -> None:
@@ -522,7 +520,7 @@ class TestParentFallbackAndRobustness:
         ]
         graph = _make_graph([1, 2, 3, 4], edges)
         child = SolveTreeNode(node_id="c_fb", node_type="leaf", rooms=frozenset(child_rooms))
-        child_sol = solve_leaf_cluster(child, graph)
+        child_sol = solve_cluster(child, graph)
 
         parent = SolveTreeNode(
             node_id="p_fb",
@@ -531,7 +529,7 @@ class TestParentFallbackAndRobustness:
             children=(child,),
         )
         with pytest.raises(LayoutSolverError):
-            solve_parent_cluster(
+            solve_cluster(
                 parent,
                 {child.node_id: child_sol},
                 graph,
@@ -550,7 +548,7 @@ class TestParentFallbackAndRobustness:
 
         with patch("pyomo.environ.SolverFactory", side_effect=RuntimeError("Solver init failure")):
             with pytest.raises(LayoutSolverError):
-                solve_parent_cluster(parent, {child.node_id: child_sol}, graph)
+                solve_cluster(parent, {child.node_id: child_sol}, graph)
 
     def test_solver_infeasible_status_raises_error(self) -> None:
         """Infeasible solver status cleanly raises LayoutSolverError."""
@@ -571,7 +569,7 @@ class TestParentFallbackAndRobustness:
 
         with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
             with pytest.raises(LayoutSolverError):
-                solve_parent_cluster(parent, {child.node_id: child_sol}, graph)
+                solve_cluster(parent, {child.node_id: child_sol}, graph)
 
     def test_solver_none_coordinate_value_raises_error(self) -> None:
         """pyo.value returning None raises LayoutSolverError."""
@@ -593,7 +591,7 @@ class TestParentFallbackAndRobustness:
         with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
             with patch("pyomo.environ.value", return_value=None):
                 with pytest.raises(LayoutSolverError):
-                    solve_parent_cluster(parent, {child.node_id: child_sol}, graph)
+                    solve_cluster(parent, {child.node_id: child_sol}, graph)
 
     def test_timeout_options_configuration(self) -> None:
         """Options timeout_seconds are passed to CBC and GLPK solvers."""
@@ -615,7 +613,7 @@ class TestParentFallbackAndRobustness:
 
         with patch("pyomo.environ.SolverFactory", return_value=mock_cbc):
             with patch("pyomo.environ.value", side_effect=[0, 0, 0, 1, 0, 0, 2, 0, 0]):
-                solve_parent_cluster(parent, {child.node_id: child_sol}, graph, options=opts, solver_name="cbc")
+                solve_cluster(parent, {child.node_id: child_sol}, graph, options=opts, solver_name="cbc")
                 assert mock_cbc.options.get("seconds") == 30
 
         mock_glpk = MagicMock()
@@ -625,7 +623,7 @@ class TestParentFallbackAndRobustness:
 
         with patch("pyomo.environ.SolverFactory", return_value=mock_glpk):
             with patch("pyomo.environ.value", side_effect=[0, 0, 0, 1, 0, 0, 2, 0, 0]):
-                solve_parent_cluster(parent, {child.node_id: child_sol}, graph, options=opts, solver_name="glpk")
+                solve_cluster(parent, {child.node_id: child_sol}, graph, options=opts, solver_name="glpk")
                 assert mock_glpk.options.get("tmlim") == 30
 
     def test_unconnected_overlapping_boxes_separated_by_milp(self) -> None:
@@ -638,7 +636,7 @@ class TestParentFallbackAndRobustness:
         parent = SolveTreeNode(node_id="p_fb_boxes", node_type="container", rooms=frozenset(), children=(c1, c2))
         graph = LayoutGraph(rooms={}, edges=())
 
-        sol = solve_parent_cluster(parent, {c1.node_id: sol1, c2.node_id: sol2}, graph)
+        sol = solve_cluster(parent, {c1.node_id: sol1, c2.node_id: sol2}, graph)
         off1 = sol.metadata["child_offsets"]["fb_c1"]
         off2 = sol.metadata["child_offsets"]["fb_c2"]
 
@@ -678,7 +676,7 @@ class TestParentFallbackAndRobustness:
             children=(child_node,),
         )
 
-        sol = solve_parent_cluster(parent_node, {child_node.node_id: child_sol}, graph)
+        sol = solve_cluster(parent_node, {child_node.node_id: child_sol}, graph)
 
         p1 = sol.local_coordinates[1]
         p2 = sol.local_coordinates[2]
@@ -724,7 +722,7 @@ class TestParentFallbackAndRobustness:
             children=(child_k, child_j),
         )
 
-        sol = solve_parent_cluster(
+        sol = solve_cluster(
             parent_node,
             {child_k.node_id: child_k_sol, child_j.node_id: child_j_sol},
             graph,
@@ -782,7 +780,7 @@ class TestParentFallbackAndRobustness:
             children=(child_1, child_2),
         )
 
-        sol = solve_parent_cluster(
+        sol = solve_cluster(
             parent_node,
             {child_1.node_id: child_1_sol, child_2.node_id: child_2_sol},
             graph,
@@ -827,7 +825,7 @@ class TestParentFallbackAndRobustness:
             children=(child,),
         )
 
-        sol = solve_parent_cluster(parent_node, {child.node_id: child_sol}, graph)
+        sol = solve_cluster(parent_node, {child.node_id: child_sol}, graph)
 
         p1 = sol.local_coordinates[1]
         off = sol.metadata["child_offsets"][child.node_id]
@@ -860,7 +858,7 @@ class TestParentFallbackAndRobustness:
 
         parent = SolveTreeNode(node_id="p_fb_corr", node_type="block", rooms=frozenset(parent_rooms), children=(c1, c2))
 
-        sol = solve_parent_cluster(parent, {c1.node_id: sol1, c2.node_id: sol2}, graph)
+        sol = solve_cluster(parent, {c1.node_id: sol1, c2.node_id: sol2}, graph)
 
         p1 = sol.local_coordinates[1]
         p2 = sol.local_coordinates[2]
@@ -897,7 +895,7 @@ class TestParentFallbackAndRobustness:
                 children=(child_node,),
             )
 
-            sol = solve_parent_cluster(parent_node, {child_node.node_id: child_sol}, graph)
+            sol = solve_cluster(parent_node, {child_node.node_id: child_sol}, graph)
             p1 = sol.local_coordinates[1]
             p2 = sol.local_coordinates[2]
             c_off = sol.metadata["child_offsets"][child_node.node_id]
@@ -934,7 +932,7 @@ class TestParentFallbackAndRobustness:
                 children=(child_k, child_j),
             )
 
-            sol = solve_parent_cluster(parent_node, {"ck": child_k_sol, "cj": child_j_sol}, graph)
+            sol = solve_cluster(parent_node, {"ck": child_k_sol, "cj": child_j_sol}, graph)
             p1 = sol.local_coordinates[1]
             off_k = sol.metadata["child_offsets"]["ck"]
             p2 = Coord3D(off_k.x, off_k.y, off_k.z)
@@ -960,7 +958,7 @@ class TestParentFallbackAndRobustness:
         c2_sol = NodeSolution(node_id="c2", local_coordinates={4: Coord3D(0, 0, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 0, 0)))
 
         parent = SolveTreeNode(node_id="p_v_cross", node_type="block", rooms=frozenset(parent_rooms), children=(c1, c2))
-        sol = solve_parent_cluster(parent, {"c1": c1_sol, "c2": c2_sol}, graph)
+        sol = solve_cluster(parent, {"c1": c1_sol, "c2": c2_sol}, graph)
 
         p1 = sol.local_coordinates[1]
         off1 = sol.metadata["child_offsets"]["c1"]
@@ -1112,16 +1110,16 @@ class TestHierarchicalLayoutIntegration:
 class TestParentComprehensiveEdgeCoverage:
     """Tests targeting specific solver edge cases and error handling to ensure fail-fast semantics."""
 
-    def test_parent_cluster_solver_delegate(self) -> None:
-        """ParentClusterSolver wraps solve_parent_cluster cleanly."""
-        solver = ParentClusterSolver(solver_name="cbc")
+    def test_hierarchical_cluster_solver_delegate(self) -> None:
+        """HierarchicalClusterSolver wraps solve_cluster cleanly."""
+        solver = HierarchicalClusterSolver(solver_name="cbc")
         node = SolveTreeNode(node_id="pcs_single", node_type="leaf", rooms=frozenset({1}))
         graph = LayoutGraph(rooms={1: _make_room(1)}, edges=())
         sol = solver.solve(node, {}, graph)
         assert sol.local_coordinates == {1: Coord3D(0, 0, 0)}
 
     def test_milp_solver_unavailable_branch(self) -> None:
-        """When solver.available() returns False in solve_parent_cluster, LayoutSolverError is raised."""
+        """When solver.available() returns False in solve_cluster, LayoutSolverError is raised."""
         child = SolveTreeNode(node_id="c_unavail", node_type="leaf", rooms=frozenset({2}))
         parent = SolveTreeNode(node_id="p_unavail", node_type="block", rooms=frozenset({1}), children=(child,))
         graph = _make_graph([1, 2], [])
@@ -1131,7 +1129,7 @@ class TestParentComprehensiveEdgeCoverage:
         mock_solver.available.return_value = False
         with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
             with pytest.raises(LayoutSolverError):
-                solve_parent_cluster(parent, {"c_unavail": c_sol}, graph)
+                solve_cluster(parent, {"c_unavail": c_sol}, graph)
 
     def test_milp_common_room_anchor_inferred(self) -> None:
         """MILP infers articulation anchor when parent and child share 1 room without anchor_vnum in metadata."""
@@ -1143,7 +1141,7 @@ class TestParentComprehensiveEdgeCoverage:
         ]
         graph = LayoutGraph(rooms={v: _make_room(v) for v in [1, 2, 3]}, edges=tuple(edges))
         c_sol = NodeSolution(node_id="c_common", local_coordinates={2: Coord3D(0, 0, 0), 3: Coord3D(0, 1, 0)}, bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 1, 0)))
-        sol = solve_parent_cluster(parent, {"c_common": c_sol}, graph)
+        sol = solve_cluster(parent, {"c_common": c_sol}, graph)
         assert 1 in sol.local_coordinates
         assert 2 in sol.local_coordinates
 
@@ -1169,7 +1167,7 @@ class TestParentComprehensiveEdgeCoverage:
             rooms=frozenset(parent_rooms),
             children=(child1, child2),
         )
-        sol = solve_parent_cluster(parent, {"c1": c_sol1, "c2": c_sol2}, graph)
+        sol = solve_cluster(parent, {"c1": c_sol1, "c2": c_sol2}, graph)
         assert len(sol.local_coordinates) == 2
 
     def test_milp_child_missing_solution_and_no_bbox(self) -> None:
@@ -1185,7 +1183,7 @@ class TestParentComprehensiveEdgeCoverage:
             children=(c_no_sol, c_no_box),
         )
         graph = _make_graph([1, 10], [])
-        sol = solve_parent_cluster(parent, {"c_no_box": sol_no_box}, graph)
+        sol = solve_cluster(parent, {"c_no_box": sol_no_box}, graph)
         assert 1 in sol.local_coordinates
 
     def test_milp_none_value_child_offset_raises_error(self) -> None:
@@ -1206,7 +1204,7 @@ class TestParentComprehensiveEdgeCoverage:
         with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
             with patch("pyomo.environ.value", side_effect=[0, 0, 0, None, 0, 0]):
                 with pytest.raises(LayoutSolverError):
-                    solve_parent_cluster(parent, {"c_none": c_sol}, graph)
+                    solve_cluster(parent, {"c_none": c_sol}, graph)
 
     def test_milp_solve_exception_raises_error(self) -> None:
         """Exception during solver.solve raises LayoutSolverError."""
@@ -1221,7 +1219,7 @@ class TestParentComprehensiveEdgeCoverage:
 
         with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
             with pytest.raises(LayoutSolverError):
-                solve_parent_cluster(parent, {"c_exc_solve": c_sol}, graph)
+                solve_cluster(parent, {"c_exc_solve": c_sol}, graph)
 
     def test_hierarchical_solver_caching_and_nested_room_collection(self) -> None:
         """HierarchicalTreeSolver returns cached solutions and collects rooms across nested children when graph is None."""
@@ -1280,7 +1278,7 @@ class TestDirectlyObservableCutAlignment:
             ],
         )
 
-        parent_sol = solve_parent_cluster(r_parent, {"s_child": child_sol}, graph)
+        parent_sol = solve_cluster(r_parent, {"s_child": child_sol}, graph)
 
         child_offsets = parent_sol.metadata.get("child_offsets", {})
         assert "s_child" in child_offsets
@@ -1325,7 +1323,7 @@ class TestDirectlyObservableCutAlignment:
             edges=[(1, 2, Direction.north, 1)],
         )
 
-        parent_sol = solve_parent_cluster(parent, {"art_child": child_sol}, graph)
+        parent_sol = solve_cluster(parent, {"art_child": child_sol}, graph)
         c_offset = parent_sol.metadata["child_offsets"]["art_child"]
         p2_coord = parent_sol.local_coordinates[2]
 
@@ -1368,7 +1366,7 @@ class TestDirectlyObservableCutAlignment:
             edges=[(1, 2, Direction.east, 1)],
         )
 
-        parent_sol = solve_parent_cluster(parent, {"br_child": child_sol}, graph)
+        parent_sol = solve_cluster(parent, {"br_child": child_sol}, graph)
         c_offset = parent_sol.metadata["child_offsets"]["br_child"]
         p2_coord = parent_sol.local_coordinates[2]
         c10_world = Coord3D(c_offset.x + 0, c_offset.y + 0, c_offset.z + 0)
@@ -1424,7 +1422,7 @@ class TestDirectlyObservableCutAlignment:
             ],
         )
 
-        parent_sol = solve_parent_cluster(parent, {"s_child": child_sol}, graph)
+        parent_sol = solve_cluster(parent, {"s_child": child_sol}, graph)
         p1 = parent_sol.local_coordinates[1]
         p2 = parent_sol.local_coordinates[2]
         c_off = parent_sol.metadata["child_offsets"]["s_child"]
@@ -1481,7 +1479,7 @@ class TestDirectlyObservableCutAlignment:
             edges=[(10, 11, Direction.east, 1), (20, 21, Direction.north, 1)],
         )
 
-        parent_sol = solve_parent_cluster(parent, {"c1": c1_sol, "c2": c2_sol}, graph)
+        parent_sol = solve_cluster(parent, {"c1": c1_sol, "c2": c2_sol}, graph)
         off1 = parent_sol.metadata["child_offsets"]["c1"]
         off2 = parent_sol.metadata["child_offsets"]["c2"]
 
@@ -1537,7 +1535,7 @@ class TestDirectlyObservableCutAlignment:
             bounding_box=(Coord3D(0, 0, 0), Coord3D(0, 2, 0)),
         )
         graph = _make_graph(rooms=[100, 101], edges=[(100, 101, Direction.east, 1)])
-        parent_sol = solve_parent_cluster(parent, {"c1": sol1, "c2": sol2}, graph)
+        parent_sol = solve_cluster(parent, {"c1": sol1, "c2": sol2}, graph)
         off1 = parent_sol.metadata["child_offsets"]["c1"]
         off2 = parent_sol.metadata["child_offsets"]["c2"]
         # Both children align at shared pole 100
@@ -1577,7 +1575,7 @@ class TestDirectlyObservableCutAlignment:
                 (201, 301, Direction.east, 1),
             ],
         )
-        parent_sol = solve_parent_cluster(parent, {"c_split": child_sol}, graph)
+        parent_sol = solve_cluster(parent, {"c_split": child_sol}, graph)
         c_off = parent_sol.metadata["child_offsets"]["c_split"]
         p300 = parent_sol.local_coordinates[300]
         p301 = parent_sol.local_coordinates[301]
@@ -1638,7 +1636,7 @@ class TestDirectlyObservableCutAlignment:
             rooms=[10, 11, 20, 21],
             edges=[(11, 20, Direction.east, 2)],
         )
-        parent_sol = solve_parent_cluster(parent, {"c1": c1_sol, "c2": c2_sol}, graph)
+        parent_sol = solve_cluster(parent, {"c1": c1_sol, "c2": c2_sol}, graph)
         off1 = parent_sol.metadata["child_offsets"]["c1"]
         off2 = parent_sol.metadata["child_offsets"]["c2"]
         p11 = Coord3D(off1.x + 1, off1.y, off1.z)
@@ -1664,7 +1662,7 @@ class TestDirectlyObservableCutAlignment:
                 (3, 2, Direction.east, 1),
             ],
         )
-        child_sol = solve_parent_cluster(split_child, {}, graph)
+        child_sol = solve_cluster(split_child, {}, graph)
         # Pole 1 and Pole 2 are excluded; only interior room 3 determines bounding box
         assert child_sol.bounding_box is not None
         min_box, max_box = child_sol.bounding_box
@@ -1685,7 +1683,7 @@ class TestDirectlyObservableCutAlignment:
             },
         )
         graph = _make_graph(rooms=[10, 20], edges=[(10, 20, Direction.north, 1)])
-        sol = solve_parent_cluster(pole_only_child, {}, graph)
+        sol = solve_cluster(pole_only_child, {}, graph)
         assert sol.bounding_box is None
 
     def test_equated_sibling_children_do_not_add_conflicting_directional_edge(self) -> None:
@@ -1738,5 +1736,330 @@ class TestDirectlyObservableCutAlignment:
                 (100, 102, Direction.north, 2),
             ],
         )
-        sol = solve_parent_cluster(parent, {"c1": c1_sol, "c2": c2_sol}, graph)
+        sol = solve_cluster(parent, {"c1": c1_sol, "c2": c2_sol}, graph)
         assert sol.metadata["child_offsets"]["c1"] == sol.metadata["child_offsets"]["c2"]
+
+
+class TestClusterPrimitives:
+    """Unit tests for solve_cluster edge cases and core geometric topologies."""
+
+    def test_empty_cluster(self) -> None:
+        """Empty room collection returns an empty NodeSolution."""
+        node = SolveTreeNode(node_id="empty", node_type="leaf", rooms=frozenset())
+        graph = LayoutGraph(rooms={}, edges=())
+        sol = solve_cluster(node, {}, graph)
+
+        assert sol.node_id == "empty"
+        assert sol.local_coordinates == {}
+        assert sol.bounding_box is None
+
+    def test_single_room_cluster(self) -> None:
+        """Single room cluster returns origin (0, 0, 0)."""
+        node = SolveTreeNode(node_id="single", node_type="leaf", rooms=frozenset({42}))
+        graph = _make_graph([42], [])
+        sol = solve_cluster(node, {}, graph)
+
+        assert sol.node_id == "single"
+        assert sol.local_coordinates == {42: Coord3D(0, 0, 0)}
+        assert sol.bounding_box == (Coord3D(0, 0, 0), Coord3D(0, 0, 0))
+
+    def test_solve_cluster_default_arguments(self) -> None:
+        """Calling solve_cluster without child_solutions or graph uses sensible empty defaults."""
+        node = SolveTreeNode(node_id="single_default", node_type="leaf", rooms=frozenset({10}))
+        sol = solve_cluster(node)
+        assert sol.local_coordinates == {10: Coord3D(0, 0, 0)}
+
+    def test_solve_cluster_graph_as_second_positional_arg(self) -> None:
+        """Calling solve_cluster(node, graph) positionally delegates graph properly."""
+        node = SolveTreeNode(node_id="single_pos", node_type="leaf", rooms=frozenset({20}))
+        graph = _make_graph([20], [])
+        sol = solve_cluster(node, graph)
+        assert sol.local_coordinates == {20: Coord3D(0, 0, 0)}
+
+    def test_simple_two_room_corridor(self) -> None:
+        """Simple 2-room corridor (East) -> coordinates (0, 0, 0) and (1, 0, 0)."""
+        node = SolveTreeNode(node_id="corridor", node_type="leaf", rooms=frozenset({1, 2}))
+        graph = _make_graph([1, 2], [(1, 2, Direction.east, 1), (2, 1, Direction.west, 1)])
+        sol = solve_cluster(node, {}, graph)
+
+        assert sol.local_coordinates[1] == Coord3D(0, 0, 0)
+        assert sol.local_coordinates[2] == Coord3D(1, 0, 0)
+        assert sol.bounding_box == (Coord3D(0, 0, 0), Coord3D(1, 0, 0))
+
+    def test_rectilinear_loop_square(self) -> None:
+        """Rectilinear loop (4-room cycle North, East, South, West) -> exact compact square layout."""
+        # 1 -N-> 2 -E-> 3 -S-> 4 -W-> 1
+        rooms = [1, 2, 3, 4]
+        edges = [
+            (1, 2, Direction.north, 1),
+            (2, 3, Direction.east, 1),
+            (3, 4, Direction.south, 1),
+            (4, 1, Direction.west, 1),
+        ]
+        node = SolveTreeNode(node_id="cycle4", node_type="series_loop", rooms=frozenset(rooms))
+        graph = _make_graph(rooms, edges)
+        sol = solve_cluster(node, {}, graph)
+
+        # Expected coordinates normalized:
+        # 1: (0, 0, 0), 2: (0, 1, 0), 3: (1, 1, 0), 4: (1, 0, 0)
+        coords = sol.local_coordinates
+        assert coords[1] == Coord3D(0, 0, 0)
+        assert coords[2] == Coord3D(0, 1, 0)
+        assert coords[3] == Coord3D(1, 1, 0)
+        assert coords[4] == Coord3D(1, 0, 0)
+        assert sol.bounding_box == (Coord3D(0, 0, 0), Coord3D(1, 1, 0))
+
+    def test_3d_cube_layer_separation(self) -> None:
+        """3D cube or vertical steps (with Up/Down exits) -> vertical layer separation."""
+        rooms = [1, 2, 3]
+        edges = [
+            (1, 2, Direction.up, 1),
+            (2, 3, Direction.east, 1),
+        ]
+        node = SolveTreeNode(node_id="tower", node_type="leaf", rooms=frozenset(rooms))
+        graph = _make_graph(rooms, edges)
+        sol = solve_cluster(node, {}, graph)
+
+        coords = sol.local_coordinates
+        assert coords[1] == Coord3D(0, 0, 0)
+        assert coords[2] == Coord3D(0, 0, 1)
+        assert coords[3] == Coord3D(1, 0, 1)
+        assert sol.bounding_box == (Coord3D(0, 0, 0), Coord3D(1, 0, 1))
+
+    def test_hard_room_non_overlap(self) -> None:
+        """Hard non-overlap collision test: rooms cannot overlap at the same (x, y, z)."""
+        # Graph with 3 disconnected rooms with no edges between them
+        rooms = [10, 20, 30]
+        node = SolveTreeNode(node_id="disconnected", node_type="leaf", rooms=frozenset(rooms))
+        graph = _make_graph(rooms, [])
+        sol = solve_cluster(node, {}, graph)
+
+        placed_points = list(sol.local_coordinates.values())
+        # All points must be distinct
+        assert len(placed_points) == len(set(placed_points))
+        assert len(placed_points) == 3
+
+    def test_elastic_loop_closure(self) -> None:
+        """Elastic loop closure: rectangle with 2 North, 1 East, 1 South, 1 West stretches South by 1."""
+        # 1 -N-> 2 -N-> 3 -E-> 4 -S-> 5 -W-> 1
+        rooms = [1, 2, 3, 4, 5]
+        edges = [
+            (1, 2, Direction.north, 1),
+            (2, 3, Direction.north, 1),
+            (3, 4, Direction.east, 1),
+            (4, 5, Direction.south, 1),
+            (5, 1, Direction.west, 1),
+        ]
+        node = SolveTreeNode(node_id="elastic", node_type="series_loop", rooms=frozenset(rooms))
+        graph = _make_graph(rooms, edges)
+        sol = solve_cluster(node, {}, graph)
+
+        coords = sol.local_coordinates
+        # All positions must be distinct and non-overlapping
+        assert len(coords) == 5
+        assert len(set(coords.values())) == 5
+        # Room 1 is (0, 0, 0)
+        assert coords[1] == Coord3D(0, 0, 0)
+        assert coords[2] == Coord3D(0, 1, 0)
+        assert coords[3] == Coord3D(0, 2, 0)
+        assert coords[4] == Coord3D(1, 2, 0)
+        assert coords[5] == Coord3D(1, 0, 0)
+        # Verify edge 4->5 stretched by 1 (distance in Y is 2 instead of 1)
+        assert coords[4].y - coords[5].y == 2
+        assert coords[4].x == coords[5].x
+
+    def test_cut_edges_ignored(self) -> None:
+        """Edges with cut=True are ignored by cluster solver."""
+        rooms = [1, 2]
+        edges = [(1, 2, Direction.east, 1)]
+        cut_edges = [(2, 1, Direction.north, 1)]
+        graph = _make_graph(rooms, edges, cut_edges=cut_edges)
+        node = SolveTreeNode(node_id="n1", node_type="leaf", rooms=frozenset(rooms))
+        sol = solve_cluster(node, {}, graph)
+
+        assert sol.local_coordinates[1] == Coord3D(0, 0, 0)
+        assert sol.local_coordinates[2] == Coord3D(1, 0, 0)
+
+    def test_invalid_direction_edge_ignored(self) -> None:
+        """Edges with invalid direction integer values are skipped gracefully."""
+        rooms = [1, 2]
+        room_defs = {v: _make_room(v) for v in rooms}
+        layout_edges = [
+            LayoutEdge(src=1, dst=2, direction=999, weight=1),  # Invalid direction
+        ]
+        graph = LayoutGraph(rooms=room_defs, edges=tuple(layout_edges))
+        node = SolveTreeNode(node_id="n_invalid", node_type="leaf", rooms=frozenset(rooms))
+        sol = solve_cluster(node, {}, graph)
+
+        # Rooms are still separated without crashing
+        assert len(sol.local_coordinates) == 2
+        assert sol.local_coordinates[1] != sol.local_coordinates[2]
+
+
+class TestClusterFailFast:
+    """Unit tests verifying fail-fast behavior and LayoutSolverError on solver failure."""
+
+    def test_solve_empty_and_single_room(self) -> None:
+        """Solver handles empty and single-room clusters cleanly."""
+        graph = LayoutGraph(rooms={}, edges=())
+        empty_node = SolveTreeNode(node_id="e", node_type="leaf", rooms=frozenset())
+        sol_empty = solve_cluster(empty_node, {}, graph)
+        assert sol_empty.local_coordinates == {}
+
+        single_node = SolveTreeNode(node_id="s", node_type="leaf", rooms=frozenset({100}))
+        sol_single = solve_cluster(single_node, {}, graph)
+        assert sol_single.local_coordinates == {100: Coord3D(0, 0, 0)}
+
+    def test_solver_unavailable_raises_error(self) -> None:
+        """When an invalid solver name is passed, LayoutSolverError is raised."""
+        rooms = [1, 2, 3]
+        edges = [
+            (1, 2, Direction.north, 1),
+            (2, 3, Direction.east, 1),
+        ]
+        graph = _make_graph(rooms, edges)
+        node = SolveTreeNode(node_id="fb_test", node_type="leaf", rooms=frozenset(rooms))
+
+        with pytest.raises(LayoutSolverError):
+            solve_cluster(node, {}, graph, solver_name="nonexistent_solver_xyz")
+
+    def test_solver_factory_exception_raises_error(self) -> None:
+        """Exceptions in pyo.SolverFactory or solver setup raise LayoutSolverError."""
+        rooms = [1, 2]
+        edges = [(1, 2, Direction.east, 1)]
+        graph = _make_graph(rooms, edges)
+        node = SolveTreeNode(node_id="exc_node", node_type="leaf", rooms=frozenset(rooms))
+
+        with patch("pyomo.environ.SolverFactory", side_effect=RuntimeError("Solver init error")):
+            with pytest.raises(LayoutSolverError):
+                solve_cluster(node, {}, graph)
+
+    def test_solver_infeasible_status_raises_error(self) -> None:
+        """Infeasible or errored solver status raises LayoutSolverError."""
+        rooms = [1, 2]
+        edges = [(1, 2, Direction.east, 1)]
+        graph = _make_graph(rooms, edges)
+        node = SolveTreeNode(node_id="infeasible_node", node_type="leaf", rooms=frozenset(rooms))
+
+        mock_solver = MagicMock()
+        mock_solver.available.return_value = True
+        mock_results = MagicMock()
+        mock_results.solver.status = PyomoSolverStatus.error
+        mock_results.solver.termination_condition = TerminationCondition.infeasible
+        mock_solver.solve.return_value = mock_results
+
+        with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
+            with pytest.raises(LayoutSolverError):
+                solve_cluster(node, {}, graph)
+
+    def test_solver_none_value_raises_error(self) -> None:
+        """If pyo.value returns None for a coordinate, LayoutSolverError is raised."""
+        rooms = [1, 2]
+        edges = [(1, 2, Direction.east, 1)]
+        graph = _make_graph(rooms, edges)
+        node = SolveTreeNode(node_id="none_val_node", node_type="leaf", rooms=frozenset(rooms))
+
+        mock_solver = MagicMock()
+        mock_solver.available.return_value = True
+        mock_results = MagicMock()
+        mock_results.solver.status = PyomoSolverStatus.ok
+        mock_results.solver.termination_condition = TerminationCondition.optimal
+        mock_solver.solve.return_value = mock_results
+
+        with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
+            with patch("pyomo.environ.value", return_value=None):
+                with pytest.raises(LayoutSolverError):
+                    solve_cluster(node, {}, graph)
+
+    def test_solver_unavailable_flag_raises_error(self) -> None:
+        """When solver.available() returns False, LayoutSolverError is raised."""
+        rooms = [1, 2]
+        edges = [(1, 2, Direction.east, 1)]
+        graph = _make_graph(rooms, edges)
+        node = SolveTreeNode(node_id="unavail_node", node_type="leaf", rooms=frozenset(rooms))
+
+        mock_solver = MagicMock()
+        mock_solver.available.return_value = False
+        with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
+            with pytest.raises(LayoutSolverError):
+                solve_cluster(node, {}, graph)
+
+    def test_solve_model_exception_raises_error(self) -> None:
+        """Exceptions raised during model solving raise LayoutSolverError."""
+        rooms = [1, 2]
+        edges = [(1, 2, Direction.east, 1)]
+        graph = _make_graph(rooms, edges)
+        node = SolveTreeNode(node_id="model_exc_node", node_type="leaf", rooms=frozenset(rooms))
+
+        mock_solver = MagicMock()
+        mock_solver.available.return_value = True
+        mock_solver.solve.side_effect = RuntimeError("Model error during solve")
+
+        with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
+            with pytest.raises(LayoutSolverError):
+                solve_cluster(node, {}, graph)
+
+    def test_solver_timeout_options_configuration(self) -> None:
+        """LayoutOptions timeout_seconds are passed to CBC and GLPK solvers."""
+        rooms = [1, 2]
+        edges = [(1, 2, Direction.east, 1)]
+        graph = _make_graph(rooms, edges)
+        node = SolveTreeNode(node_id="timeout_node", node_type="leaf", rooms=frozenset(rooms))
+        opts = LayoutOptions(timeout_seconds=45)
+
+        # For CBC
+        mock_cbc = MagicMock()
+        mock_cbc.available.return_value = True
+        mock_cbc.options = {}
+        mock_results = MagicMock()
+        mock_results.solver.status = PyomoSolverStatus.ok
+        mock_results.solver.termination_condition = TerminationCondition.optimal
+        mock_cbc.solve.return_value = mock_results
+
+        with patch("pyomo.environ.SolverFactory", return_value=mock_cbc):
+            with patch("pyomo.environ.value", side_effect=[0, 0, 0, 1, 0, 0]):
+                solve_cluster(node, {}, graph, options=opts, solver_name="cbc")
+                assert mock_cbc.options.get("seconds") == 45
+
+        # For GLPK
+        mock_glpk = MagicMock()
+        mock_glpk.available.return_value = True
+        mock_glpk.options = {}
+        mock_glpk.solve.return_value = mock_results
+
+        with patch("pyomo.environ.SolverFactory", return_value=mock_glpk):
+            with patch("pyomo.environ.value", side_effect=[0, 0, 0, 1, 0, 0]):
+                solve_cluster(node, {}, graph, options=opts, solver_name="glpk")
+                assert mock_glpk.options.get("tmlim") == 45
+
+
+class TestHierarchicalTreeSolverAdditionalCases:
+    """Additional edge cases for HierarchicalTreeSolver."""
+
+    def test_non_leaf_empty_children_corners(self) -> None:
+        """Non-leaf node whose children have empty bounding boxes gets None bounding box."""
+        empty_child = SolveTreeNode(node_id="empty_child", node_type="leaf", rooms=frozenset())
+        parent = SolveTreeNode(
+            node_id="p_empty",
+            node_type="container",
+            rooms=frozenset(),
+            children=(empty_child,),
+        )
+        tree = SolveTree(root=parent, components=(parent,))
+        solver = HierarchicalTreeSolver()
+        solution = solver.solve_tree(tree)
+        assert solution.node_solutions["p_empty"].bounding_box is None
+
+    def test_solve_tree_already_solved_node(self) -> None:
+        """HierarchicalTreeSolver returns cached solution if a node is encountered again."""
+        child = SolveTreeNode(node_id="shared_child", node_type="leaf", rooms=frozenset({1}))
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type="block",
+            rooms=frozenset({1}),
+            children=(child, child),
+        )
+        tree = SolveTree(root=parent, components=(parent,))
+        solver = HierarchicalTreeSolver()
+        solution = solver.solve_tree(tree)
+        assert "shared_child" in solution.node_solutions

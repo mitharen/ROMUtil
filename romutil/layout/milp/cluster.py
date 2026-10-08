@@ -1,4 +1,4 @@
-"""MILP formulation and solver for parent container clusters and gateway alignment."""
+"""MILP formulation and solver for layout clusters and hierarchical tree nodes."""
 
 from __future__ import annotations
 
@@ -74,25 +74,34 @@ def _get_child_boundary_ports(child: SolveTreeNode) -> set[int]:
     return ports
 
 
-def solve_parent_cluster(
+def solve_cluster(
     node: SolveTreeNode,
-    child_solutions: Mapping[str, NodeSolution],
-    graph: LayoutGraph,
+    child_solutions: Mapping[str, NodeSolution] | LayoutGraph | None = None,
+    graph: LayoutGraph | None = None,
     options: LayoutOptions | None = None,
     solver_name: str = "cbc",
 ) -> NodeSolution:
-    """Solve parent container cluster embedding child macro-boxes via MILP.
+    """Solve layout cluster embedding constituent rooms and child macro-boxes via MILP.
 
     Args:
-        node: Parent SolveTreeNode containing rooms and children.
-        child_solutions: Mapping of child node_id to already-solved NodeSolution.
-        graph: Underlying LayoutGraph with active edges.
+        node: SolveTreeNode representing the cluster to lay out.
+        child_solutions: Mapping of child node_id to already-solved NodeSolution,
+            or LayoutGraph if solving a leaf cluster without children.
+        graph: Underlying LayoutGraph with room definitions and exit edges.
         options: Optional layout configuration parameters.
         solver_name: Pyomo MILP solver name (defaults to 'cbc').
 
     Returns:
-        NodeSolution containing parent local coordinates, child offsets in metadata, and bounding box.
+        NodeSolution containing local coordinates, child offsets in metadata, and bounding box.
     """
+    if isinstance(child_solutions, LayoutGraph):
+        graph = child_solutions
+        child_solutions = {}
+    elif child_solutions is None:
+        child_solutions = {}
+
+    if graph is None:
+        graph = LayoutGraph(rooms={}, edges=())
     rooms = sorted(node.rooms)
     children = list(node.children)
 
@@ -1190,8 +1199,8 @@ def solve_parent_cluster(
         ) from exc
 
 
-class ParentClusterSolver:
-    """Solver for parent container clusters and leaf clusters via MILP."""
+class HierarchicalClusterSolver:
+    """Solver for layout clusters (both leaf and composite parent clusters) via MILP."""
 
     def __init__(self, solver_name: str = "cbc") -> None:
         self.solver_name = solver_name
@@ -1199,12 +1208,12 @@ class ParentClusterSolver:
     def solve(
         self,
         node: SolveTreeNode,
-        child_solutions: Mapping[str, NodeSolution],
-        graph: LayoutGraph,
+        child_solutions: Mapping[str, NodeSolution] | LayoutGraph | None = None,
+        graph: LayoutGraph | None = None,
         options: LayoutOptions | None = None,
     ) -> NodeSolution:
         """Solve cluster layout non-overlapping coordinates and child offsets."""
-        return solve_parent_cluster(
+        return solve_cluster(
             node=node,
             child_solutions=child_solutions,
             graph=graph,
@@ -1260,16 +1269,16 @@ class HierarchicalTreeSolver(TreeSolver):
                 child_sol = _solve_node(child, g)
                 child_solutions_map[child.node_id] = child_sol
 
-            parent_sol = solve_parent_cluster(
-                node,
-                child_solutions_map,
-                g,
-                options,
+            cluster_sol = solve_cluster(
+                node=node,
+                child_solutions=child_solutions_map,
+                graph=g,
+                options=options,
                 solver_name=self.solver_name,
             )
 
-            solutions[node.node_id] = parent_sol
-            return parent_sol
+            solutions[node.node_id] = cluster_sol
+            return cluster_sol
 
         _solve_node(tree.root, layout_graph)
         for comp in tree.components:
@@ -1277,3 +1286,12 @@ class HierarchicalTreeSolver(TreeSolver):
                 _solve_node(comp, layout_graph)
 
         return TreeSolution(node_solutions=solutions)
+
+
+__all__ = [
+    "ActiveEdge",
+    "EndpointRef",
+    "HierarchicalClusterSolver",
+    "HierarchicalTreeSolver",
+    "solve_cluster",
+]
