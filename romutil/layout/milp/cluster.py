@@ -19,6 +19,7 @@ class ActiveEdge:
     min_length: int
     associated_rooms: frozenset[int]
     associated_children: frozenset[str]
+    allow_transverse_slack: bool = False
 
 import pyomo.environ as pyo
 from pyomo.opt import SolverStatus as PyomoSolverStatus, TerminationCondition
@@ -267,23 +268,68 @@ def solve_cluster(
         split_directions: dict[tuple[int, int], tuple[int, int, int]] = {}
         equated_children: set[frozenset[str]] = set()
         room_anchored_children: dict[int, list[str]] = {}
+        child_anchor_poles: dict[str, int] = {}
         for (p0, p1), split_children in split_children_by_poles.items():
             if not split_children:
                 continue
 
             for child in split_children:
                 c_sol = child_solutions[child.node_id]
-                pc0 = c_sol.local_coordinates[p0]
-                if p0 in room_set:
-                    model.align_x.add(model.x[p0] == model.cx[child.node_id] + pc0.x)
-                    model.align_y.add(model.y[p0] == model.cy[child.node_id] + pc0.y)
-                    model.align_z.add(model.z[p0] == model.cz[child.node_id] + pc0.z)
-                    gateway_anchors[child.node_id].add(p0)
+                anchor_pole = p0 if p0 in room_set else (p1 if p1 in room_set else p0)
+                if (
+                    p0 in room_set
+                    and p1 in room_set
+                    and p0 in c_sol.local_coordinates
+                    and p1 in c_sol.local_coordinates
+                ):
+                    pc0 = c_sol.local_coordinates[p0]
+                    pc1 = c_sol.local_coordinates[p1]
+                    pdx = pc1.x - pc0.x
+                    pdy = pc1.y - pc0.y
+                    pdz = pc1.z - pc0.z
+                    max_d = max(abs(pdx), abs(pdy), abs(pdz))
+                    primary_axis = 0 if abs(pdx) == max_d else (1 if abs(pdy) == max_d else 2)
+
+                    def _has_transverse_exit(p_check: int) -> bool:
+                        for ge in graph.edges:
+                            if ge.cut or {ge.src, ge.dst} == {p0, p1}:
+                                continue
+                            if ge.src == p_check and ge.dst in c_sol.local_coordinates and ge.dst not in (p0, p1):
+                                try:
+                                    disp = direction_to_displacement(ge.direction)
+                                    if disp[primary_axis] == 0:
+                                        return True
+                                except ValueError:
+                                    pass
+                            elif ge.dst == p_check and ge.src in c_sol.local_coordinates and ge.src not in (p0, p1):
+                                try:
+                                    disp = direction_to_displacement(ge.direction)
+                                    if disp[primary_axis] == 0:
+                                        return True
+                                except ValueError:
+                                    pass
+                        return False
+
+                    p0_trans = _has_transverse_exit(p0)
+                    p1_trans = _has_transverse_exit(p1)
+                    if p1_trans and not p0_trans:
+                        anchor_pole = p1
+                    elif p0_trans and not p1_trans:
+                        anchor_pole = p0
+
+                child_anchor_poles[child.node_id] = anchor_pole
+                pc_anchor = c_sol.local_coordinates[anchor_pole]
+                if anchor_pole in room_set:
+                    model.align_x.add(model.x[anchor_pole] == model.cx[child.node_id] + pc_anchor.x)
+                    model.align_y.add(model.y[anchor_pole] == model.cy[child.node_id] + pc_anchor.y)
+                    model.align_z.add(model.z[anchor_pole] == model.cz[child.node_id] + pc_anchor.z)
+                    gateway_anchors[child.node_id].add(anchor_pole)
                     aligned_children.add(child.node_id)
-                    room_anchored_children.setdefault(p0, []).append(child.node_id)
+                    room_anchored_children.setdefault(anchor_pole, []).append(child.node_id)
                 elif len(split_children) > 1:
                     base_child = split_children[0]
                     base_pc0 = child_solutions[base_child.node_id].local_coordinates[p0]
+                    pc0 = c_sol.local_coordinates[p0]
                     model.align_x.add(
                         model.cx[base_child.node_id] + base_pc0.x
                         == model.cx[child.node_id] + pc0.x
@@ -299,7 +345,7 @@ def solve_cluster(
                     aligned_children.add(child.node_id)
                     equated_children.add(frozenset({base_child.node_id, child.node_id}))
 
-            if len(split_children) > 1 and p0 not in room_set:
+            if len(split_children) > 1 and p0 not in room_set and p1 not in room_set:
                 for idx1 in range(len(split_children)):
                     for idx2 in range(idx1 + 1, len(split_children)):
                         equated_children.add(frozenset({split_children[idx1].node_id, split_children[idx2].node_id}))
@@ -367,11 +413,12 @@ def solve_cluster(
             if d_vec is not None:
                 split_directions[can_pair] = d_vec
 
-        # External parent edges connecting to split-pair boundary ports
-        seen_split_edges: set[tuple[EndpointRef, EndpointRef]] = set()
+        # External parent edges and inter-child edges connecting to split-pair boundary ports
+        seen_split_corridors: set[frozenset[EndpointRef]] = set()
         for (p0, p1), split_children in split_children_by_poles.items():
             for sc in split_children:
                 c_coords = child_solutions[sc.node_id].local_coordinates
+                anchor_p = child_anchor_poles.get(sc.node_id, p0)
                 for edge in graph.edges:
                     if edge.cut:
                         continue
@@ -384,57 +431,49 @@ def solve_cluster(
                     except ValueError:
                         continue
 
-                    # Parent room to split-pair pole port
-                    if (
-                        edge.src in room_set
-                        and edge.dst in (p0, p1)
-                        and edge.dst in c_coords
-                        and edge.dst not in room_set
-                        and edge.src not in c_coords
-                    ):
-                        if edge.src not in (p0, p1):
-                            edge_key = (edge.src, (sc.node_id, edge.dst))
-                            if edge_key not in seen_split_edges:
-                                seen_split_edges.add(edge_key)
+                    # Parent room to split-pair child room
+                    if edge.src in room_set and edge.dst in c_coords and edge.dst not in room_set:
+                        u, v = edge.src, edge.dst
+                        if u != anchor_p:
+                            corridor_key = frozenset({u, (sc.node_id, v)})
+                            if corridor_key not in seen_split_corridors:
+                                seen_split_corridors.add(corridor_key)
                                 active_edges.append(
                                     ActiveEdge(
-                                        edge_id=f"ext_{sc.node_id}_{edge.src}_{edge.dst}",
-                                        src=edge.src,
-                                        dst=(sc.node_id, edge.dst),
+                                        edge_id=f"ext_{sc.node_id}_{u}_{v}",
+                                        src=u,
+                                        dst=(sc.node_id, v),
                                         direction=disp,
                                         min_length=max(1, edge.weight),
-                                        associated_rooms=frozenset({edge.src}),
+                                        associated_rooms=frozenset({u}),
                                         associated_children=frozenset({sc.node_id}),
+                                        allow_transverse_slack=True,
                                     )
                                 )
-                                gateway_anchors[sc.node_id].add(edge.src)
+                                gateway_anchors[sc.node_id].add(u)
                                 aligned_children.add(sc.node_id)
-                    elif (
-                        edge.dst in room_set
-                        and edge.src in (p0, p1)
-                        and edge.src in c_coords
-                        and edge.src not in room_set
-                        and edge.dst not in c_coords
-                    ):
-                        if edge.dst not in (p0, p1):
-                            edge_key = ((sc.node_id, edge.src), edge.dst)
-                            if edge_key not in seen_split_edges:
-                                seen_split_edges.add(edge_key)
+                    elif edge.dst in room_set and edge.src in c_coords and edge.src not in room_set:
+                        u, v = edge.dst, edge.src
+                        if u != anchor_p:
+                            corridor_key = frozenset({u, (sc.node_id, v)})
+                            if corridor_key not in seen_split_corridors:
+                                seen_split_corridors.add(corridor_key)
                                 active_edges.append(
                                     ActiveEdge(
-                                        edge_id=f"ext_{sc.node_id}_{edge.src}_{edge.dst}",
-                                        src=(sc.node_id, edge.src),
-                                        dst=edge.dst,
+                                        edge_id=f"ext_{sc.node_id}_{v}_{u}",
+                                        src=(sc.node_id, v),
+                                        dst=u,
                                         direction=disp,
                                         min_length=max(1, edge.weight),
-                                        associated_rooms=frozenset({edge.dst}),
+                                        associated_rooms=frozenset({u}),
                                         associated_children=frozenset({sc.node_id}),
+                                        allow_transverse_slack=True,
                                     )
                                 )
-                                gateway_anchors[sc.node_id].add(edge.dst)
+                                gateway_anchors[sc.node_id].add(u)
                                 aligned_children.add(sc.node_id)
                     else:
-                        # Inter-child edge to split-pair pole port
+                        # Inter-child edge to split-pair boundary ports
                         for other in children:
                             if other.node_id == sc.node_id:
                                 continue
@@ -456,50 +495,48 @@ def solve_cluster(
                             other_ports = _get_child_boundary_ports(other)
                             if (
                                 edge.src in other_ports
-                                and edge.dst in (p0, p1)
                                 and edge.dst in c_coords
                                 and edge.src not in c_coords
                                 and edge.dst not in other_coords
                             ):
-                                if edge.src not in (p0, p1):
-                                    edge_key = ((other.node_id, edge.src), (sc.node_id, edge.dst))
-                                    if edge_key not in seen_split_edges:
-                                        seen_split_edges.add(edge_key)
-                                        active_edges.append(
-                                            ActiveEdge(
-                                                edge_id=f"ext_{other.node_id}_{sc.node_id}_{edge.src}_{edge.dst}",
-                                                src=(other.node_id, edge.src),
-                                                dst=(sc.node_id, edge.dst),
-                                                direction=disp,
-                                                min_length=max(1, edge.weight),
-                                                associated_rooms=frozenset(),
-                                                associated_children=frozenset({other.node_id, sc.node_id}),
-                                            )
+                                corridor_key = frozenset({(other.node_id, edge.src), (sc.node_id, edge.dst)})
+                                if corridor_key not in seen_split_corridors:
+                                    seen_split_corridors.add(corridor_key)
+                                    active_edges.append(
+                                        ActiveEdge(
+                                            edge_id=f"ext_{other.node_id}_{sc.node_id}_{edge.src}_{edge.dst}",
+                                            src=(other.node_id, edge.src),
+                                            dst=(sc.node_id, edge.dst),
+                                            direction=disp,
+                                            min_length=max(1, edge.weight),
+                                            associated_rooms=frozenset(),
+                                            associated_children=frozenset({other.node_id, sc.node_id}),
+                                            allow_transverse_slack=True,
                                         )
-                                        aligned_children.add(sc.node_id)
+                                    )
+                                    aligned_children.add(sc.node_id)
                             elif (
                                 edge.dst in other_ports
-                                and edge.src in (p0, p1)
                                 and edge.src in c_coords
                                 and edge.dst not in c_coords
                                 and edge.src not in other_coords
                             ):
-                                if edge.dst not in (p0, p1):
-                                    edge_key = ((sc.node_id, edge.src), (other.node_id, edge.dst))
-                                    if edge_key not in seen_split_edges:
-                                        seen_split_edges.add(edge_key)
-                                        active_edges.append(
-                                            ActiveEdge(
-                                                edge_id=f"ext_{sc.node_id}_{other.node_id}_{edge.src}_{edge.dst}",
-                                                src=(sc.node_id, edge.src),
-                                                dst=(other.node_id, edge.dst),
-                                                direction=disp,
-                                                min_length=max(1, edge.weight),
-                                                associated_rooms=frozenset(),
-                                                associated_children=frozenset({sc.node_id, other.node_id}),
-                                            )
+                                corridor_key = frozenset({(sc.node_id, edge.src), (other.node_id, edge.dst)})
+                                if corridor_key not in seen_split_corridors:
+                                    seen_split_corridors.add(corridor_key)
+                                    active_edges.append(
+                                        ActiveEdge(
+                                            edge_id=f"ext_{sc.node_id}_{other.node_id}_{edge.src}_{edge.dst}",
+                                            src=(sc.node_id, edge.src),
+                                            dst=(other.node_id, edge.dst),
+                                            direction=disp,
+                                            min_length=max(1, edge.weight),
+                                            associated_rooms=frozenset(),
+                                            associated_children=frozenset({sc.node_id, other.node_id}),
+                                            allow_transverse_slack=True,
                                         )
-                                        aligned_children.add(sc.node_id)
+                                    )
+                                    aligned_children.add(sc.node_id)
 
         # 1-cut articulation point alignment
         for child in children:
@@ -808,6 +845,8 @@ def solve_cluster(
                 )
 
         edge_indices = list(range(len(active_edges)))
+        model.s_transverse_p = pyo.VarList(domain=pyo.NonNegativeReals)
+        model.s_transverse_m = pyo.VarList(domain=pyo.NonNegativeReals)
         if edge_indices:
             model.L = pyo.Var(
                 edge_indices,
@@ -821,9 +860,33 @@ def solve_cluster(
                 src_x, src_y, src_z = get_point(ae.src)
                 dst_x, dst_y, dst_z = get_point(ae.dst)
                 dx, dy, dz = ae.direction
-                model.edge_x.add(dst_x - src_x == model.L[i] * dx)
-                model.edge_y.add(dst_y - src_y == model.L[i] * dy)
-                model.edge_z.add(dst_z - src_z == model.L[i] * dz)
+
+                if dx != 0:
+                    model.edge_x.add(dst_x - src_x == model.L[i] * dx)
+                elif ae.allow_transverse_slack:
+                    sp = model.s_transverse_p.add()
+                    sm = model.s_transverse_m.add()
+                    model.edge_x.add(dst_x - src_x == sp - sm)
+                else:
+                    model.edge_x.add(dst_x - src_x == 0)
+
+                if dy != 0:
+                    model.edge_y.add(dst_y - src_y == model.L[i] * dy)
+                elif ae.allow_transverse_slack:
+                    sp = model.s_transverse_p.add()
+                    sm = model.s_transverse_m.add()
+                    model.edge_y.add(dst_y - src_y == sp - sm)
+                else:
+                    model.edge_y.add(dst_y - src_y == 0)
+
+                if dz != 0:
+                    model.edge_z.add(dst_z - src_z == model.L[i] * dz)
+                elif ae.allow_transverse_slack:
+                    sp = model.s_transverse_p.add()
+                    sm = model.s_transverse_m.add()
+                    model.edge_z.add(dst_z - src_z == sp - sm)
+                else:
+                    model.edge_z.add(dst_z - src_z == 0)
 
         # Pairwise child-child sub-box separation
         child_pairs: list[tuple[tuple[str, int], tuple[str, int]]] = []
@@ -1054,13 +1117,21 @@ def solve_cluster(
             if edge_indices
             else 0
         )
+        transverse_penalty = (
+            sum(
+                500.0 * (model.s_transverse_p[k] + model.s_transverse_m[k])
+                for k in model.s_transverse_p
+            )
+            if hasattr(model, "s_transverse_p") and len(model.s_transverse_p) > 0
+            else 0
+        )
         span_expr = (
             (model.x_max - model.x_min)
             + (model.y_max - model.y_min)
             + (model.z_max - model.z_min)
         )
         model.obj = pyo.Objective(
-            expr=stretch_expr + span_expr,
+            expr=stretch_expr + span_expr + transverse_penalty,
             sense=pyo.minimize,
         )
 

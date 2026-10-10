@@ -2139,3 +2139,148 @@ class TestHierarchicalTreeSolverAdditionalCases:
         solver = HierarchicalTreeSolver()
         solution = solver.solve_tree(tree)
         assert "shared_child" in solution.node_solutions
+
+
+class TestSplitPairBoundaryPortAlignment:
+    """Unit and integration tests for split-pair dual boundary port alignment and transverse slack."""
+
+    def test_thalos_split_pair_boundary_port_strictly_on_axis(self) -> None:
+        """Split-pair boundary port exit 5243 <-> 5241 in Thalos solves strictly on-axis."""
+        from pathlib import Path
+        from romutil.parser import Parser
+
+        thalos_path = Path("tests/fixtures/areas/thalos.are")
+        area = Parser().parse(thalos_path.read_text(encoding="latin-1"))
+        world_graph = WorldGraph.from_area_data(area)
+
+        solver = HierarchicalLayoutSolver.production()
+        layout = solver.solve(world_graph, LayoutOptions(timeout_seconds=30))
+
+        assert layout.diagnostics.status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE)
+        assert 5243 in layout.coordinates
+        assert 5241 in layout.coordinates
+
+        c5243 = layout.coordinates[5243]
+        c5241 = layout.coordinates[5241]
+
+        # Room 5243 connects East to 5241
+        assert c5241.x - c5243.x >= 1
+        assert c5241.y == c5243.y
+        assert c5241.z == c5243.z
+
+        # Connected corridor 5201 -> 5239 -> 5240 -> 5241 is collinear along North
+        c5201 = layout.coordinates[5201]
+        c5239 = layout.coordinates[5239]
+        c5240 = layout.coordinates[5240]
+
+        assert c5201.x == c5239.x == c5240.x == c5241.x
+        assert c5201.z == c5239.z == c5240.z == c5241.z
+        assert c5201.y < c5239.y < c5240.y < c5241.y
+
+    def test_split_pair_transverse_boundary_port_alignment(self) -> None:
+        """Split-pair child boundary port with transverse exit aligns strictly on-axis."""
+        # Pole 1 and Pole 2 in parent. Child contains interior room 4.
+        # Inside child: 1 -> 4 is North (len 2), 4 -> 2 is East (len 1).
+        # Pole 2 to 4 is transverse to the split pair's primary Y axis.
+        s_child = SolveTreeNode(
+            node_id="s_child",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 4}),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (1, 2),
+                "cut_contract": SplitPairCut(poles=(1, 2)),
+            },
+        )
+        r_parent = SolveTreeNode(
+            node_id="r_parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3}),
+            children=(s_child,),
+        )
+
+        child_sol = NodeSolution(
+            node_id="s_child",
+            local_coordinates={
+                1: Coord3D(0, 0, 0),
+                4: Coord3D(0, 2, 0),
+                2: Coord3D(1, 2, 0),
+            },
+            sub_boxes=(BoundingBox3D(0, 1, 0, 2, 0, 0),),
+        )
+
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4],
+            edges=[
+                (1, 3, Direction.east, 2),
+                (3, 2, Direction.north, 4),
+                (1, 4, Direction.north, 2),
+                (4, 2, Direction.east, 1),
+            ],
+        )
+
+        parent_sol = solve_cluster(r_parent, {"s_child": child_sol}, graph)
+
+        child_offsets = parent_sol.metadata.get("child_offsets", {})
+        assert "s_child" in child_offsets
+        c_offset = child_offsets["s_child"]
+
+        # Room 4 in global parent coordinate system:
+        c4_x = c_offset.x + 0
+        c4_y = c_offset.y + 2
+        c4_z = c_offset.z + 0
+
+        p2_coord = parent_sol.local_coordinates[2]
+        # Exit between 4 and 2 is East: c2.x >= c4.x + 1, and strictly on-axis in Y and Z
+        assert p2_coord.x - c4_x >= 1
+        assert p2_coord.y == c4_y
+        assert p2_coord.z == c4_z
+
+    def test_split_pair_anchor_selection_falls_back_to_p0_when_no_transverse_bias(self) -> None:
+        """When split-pair poles have symmetric orientation, anchoring falls back to p0."""
+        # Both exits are longitudinal along North
+        s_child = SolveTreeNode(
+            node_id="s_symm",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 4}),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (1, 2),
+                "cut_contract": SplitPairCut(poles=(1, 2)),
+            },
+        )
+        r_parent = SolveTreeNode(
+            node_id="r_parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(s_child,),
+        )
+
+        child_sol = NodeSolution(
+            node_id="s_symm",
+            local_coordinates={
+                1: Coord3D(0, 0, 0),
+                4: Coord3D(0, 1, 0),
+                2: Coord3D(0, 2, 0),
+            },
+            sub_boxes=(BoundingBox3D(0, 0, 0, 2, 0, 0),),
+        )
+
+        graph = _make_graph(
+            rooms=[1, 2, 4],
+            edges=[
+                (1, 4, Direction.north, 1),
+                (4, 2, Direction.north, 1),
+            ],
+        )
+
+        parent_sol = solve_cluster(r_parent, {"s_symm": child_sol}, graph)
+        child_offsets = parent_sol.metadata.get("child_offsets", {})
+        assert "s_symm" in child_offsets
+        c_offset = child_offsets["s_symm"]
+
+        # Anchored at pole 1 (p0):
+        p1_coord = parent_sol.local_coordinates[1]
+        assert p1_coord.x == c_offset.x + 0
+        assert p1_coord.y == c_offset.y + 0
+        assert p1_coord.z == c_offset.z + 0
