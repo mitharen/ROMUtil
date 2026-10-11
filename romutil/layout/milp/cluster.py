@@ -12,7 +12,6 @@ from romutil.layout.ir import (
     SolveTreeNode,
     TreeSolution,
 )
-from romutil.layout.milp.clearance import apply_clearance_constraints
 from romutil.layout.milp.formulation import formulate_cluster_model
 from romutil.layout.milp.inventory import (
     ActiveEdge,
@@ -43,7 +42,7 @@ def solve_cluster(
     Coordinates the canonical 5-stage MILP pipeline:
       1. Inventory & Interface Classification (inventory_cluster)
       2. Basic MILP Formulation (formulate_cluster_model)
-      3. Geometric Clearance & Separation Constraints (apply_clearance_constraints)
+      3. Geometric Clearance & Separation Constraints (formulation.apply_clearances)
       4. Solve & Extraction (solve_and_extract)
       5. Coordinate Normalization (normalize_cluster_solution)
 
@@ -94,10 +93,10 @@ def solve_cluster(
         )
 
         # Stage 2: Basic MILP Formulation
-        formulation = formulate_cluster_model(inventory=inventory)
+        formulation = formulate_cluster_model(inventory=inventory, options=options)
 
         # Stage 3: Geometric Clearance & Separation Constraints
-        apply_clearance_constraints(formulation=formulation)
+        formulation.apply_clearances()
 
         # Stage 4: Solve & Extraction
         extraction = solve_and_extract(
