@@ -11,6 +11,7 @@ from romutil.layout.milp.cluster import (
     solve_cluster,
 )
 from romutil.layout.milp.constraints import add_disjunctive_box_separation
+from romutil.layout.milp.debug import render_cluster_solve_svg
 from romutil.layout.milp.formulation import (
     ClusterFormulation,
     formulate_cluster_model,
@@ -50,6 +51,7 @@ __all__ = [
     "formulate_cluster_model",
     "inventory_cluster",
     "normalize_cluster_solution",
+    "render_cluster_solve_svg",
     "solve_and_extract",
     "solve_cluster",
 ]

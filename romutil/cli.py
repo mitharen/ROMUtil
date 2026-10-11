@@ -33,6 +33,7 @@ def main(
     fmt: str | Sequence[str] = "svg",
     circle_dir: Path | str | None = None,
     solver_timeout: int | None = None,
+    debug_solve_dir: Path | str | None = None,
 ) -> WorldGraph:
     """Parse areas into a unified WorldGraph and optionally render without invoking the solver engine."""
     if isinstance(fmt, str):
@@ -148,7 +149,10 @@ def main(
             assembler=HierarchicalLayoutAssembler(),
         )
 
-        layout_opts = LayoutOptions(timeout_seconds=solver_timeout or 60)
+        layout_opts = LayoutOptions(
+            timeout_seconds=solver_timeout or 60,
+            debug_solve_dir=Path(debug_solve_dir) if debug_solve_dir is not None else None,
+        )
         layout = solver.solve(graph, layout_opts)
 
         render_opts = RenderOptions(split_levels=split_levels)
@@ -190,6 +194,17 @@ def cli() -> None:
         default=None,
         help="Solver timeout limit in seconds",
     )
+    parser.add_argument(
+        "--debug-solve",
+        action="store_true",
+        help="Export debug SVG visualizations of individual cluster MILP solves",
+    )
+    parser.add_argument(
+        "--debug-solve-dir",
+        type=Path,
+        default=None,
+        help="Directory to save cluster MILP solve debug SVG visualizations (defaults to 'debug_solves' when --debug-solve is set)",
+    )
     args = parser.parse_args()
 
     if not args.areas and not args.circle_dir:
@@ -214,6 +229,10 @@ def cli() -> None:
         elif args.circle_dir:
             outbase = str(args.circle_dir / args.circle_dir.name)
 
+    debug_solve_dir: Path | None = args.debug_solve_dir
+    if args.debug_solve and debug_solve_dir is None:
+        debug_solve_dir = Path("debug_solves")
+
     main(
         args.areas,
         outbase,
@@ -221,6 +240,7 @@ def cli() -> None:
         fmt=format_list,
         circle_dir=args.circle_dir,
         solver_timeout=args.solver_timeout,
+        debug_solve_dir=debug_solve_dir,
     )
 
 

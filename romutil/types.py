@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Mapping, Sequence
 
 from romutil.models import AreaData, AreaHeader, Exit, Room
@@ -59,6 +60,7 @@ class LayoutOptions:
 
     timeout_seconds: int = 60
     component_padding: int = 2
+    debug_solve_dir: Path | None = None
 
 
 @dataclass(frozen=True)

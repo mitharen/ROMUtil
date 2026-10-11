@@ -112,6 +112,7 @@ class ClusterInventory:
     aligned_children: frozenset[str]
     equated_children: frozenset[frozenset[str]]
     child_sub_boxes: Mapping[str, tuple[BoundingBox3D, ...]] = field(default_factory=dict)
+    graph: LayoutGraph | None = None
 
     @classmethod
     def from_node(
@@ -1216,6 +1217,7 @@ def inventory_cluster(
         aligned_children=frozenset(aligned_children),
         equated_children=frozenset(equated_children),
         child_sub_boxes=child_sub_boxes,
+        graph=graph,
     )
 
 

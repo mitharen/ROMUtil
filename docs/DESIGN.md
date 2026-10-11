@@ -105,6 +105,7 @@ ROMUtil/
 │   │   │   ├── clearance.py     # Stage 3: Disjunctive Big-M clearance & non-penetration constraints
 │   │   │   ├── cluster.py       # Cluster-level MILP solver orchestrator & HierarchicalClusterSolver
 │   │   │   ├── constraints.py   # Generic 3D disjunctive box separation helper
+│   │   │   ├── debug.py         # Debug visualization tools for individual MILP cluster layout solves
 │   │   │   ├── formulation.py   # Stage 2: Basic MILP Pyomo model formulation & displacement equations
 │   │   │   ├── inventory.py     # Stage 1: Room, child, boundary port, & active edge inventory
 │   │   │   ├── normalization.py # Stage 5: Origin coordinate normalization & NodeSolution packaging
@@ -237,6 +238,13 @@ Assigns local 3D coordinates to rooms within each `SolveTreeNode` through Mixed-
   - Generates a `NodeSolution` containing normalized local coordinates and child offsets in metadata, decoupled from MILP obstacle mechanics.
 - **`HierarchicalTreeSolver` (`tree.py`)**:
   - Coordinates bottom-up leaf-to-root post-order traversal across the entire `SolveTree`, solving children before parent containers and aggregating individual `NodeSolution` records into a unified `TreeSolution`.
+- **Cluster Solve Debug Visualizer (`debug.py`)**:
+  - `render_cluster_solve_svg(extraction, inventory, output_path, title=None, graph=None)` produces standalone isometric SVG diagrams capturing the mathematical and geometric state of individual cluster MILP solves.
+  - Visualizes:
+    - **Parent Rooms**: Rendered at their solved 3D coordinates $(x, y, z)$, annotated with VNUMs, coordinates, and optional names from graph metadata, highlighting boundary ports.
+    - **Active Edges**: Styled by interface classification (corridor edges, split-pair corridors, gateway/bridge edges, direct room-room edges) with directional arrows, length constraint badges, and dashed strokes for transverse spring slack.
+    - **Child Macro-Boxes & Keep-Out Sub-Boxes**: Renders bounding boxes and decomposed sub-boxes positioned at solved child offsets, displaying internal child rooms, boundary ports, and dimension envelopes.
+  - Integrated into `solve_cluster` via `LayoutOptions.debug_solve_dir` or CLI flags `--debug-solve` / `--debug-solve-dir`.
 
 #### Stage 5: Coordinate Assembly & Restoration (`LayoutAssembler`)
 Reconstructs global coordinates from tree solutions via `HierarchicalLayoutAssembler`:
@@ -324,6 +332,9 @@ uv run romutil <area.are> --split-levels
 
 # Configure solver timeout limit in seconds
 uv run romutil <area.are> --solver-timeout 120
+
+# Export per-cluster MILP solve debug SVG visualizations
+uv run romutil <area.are> --debug-solve [--debug-solve-dir _site/debug_solves]
 
 # Ingest CircleMUD / tbaMUD split world directory
 uv run romutil --circle-dir <world_dir> [-outbase <name>]

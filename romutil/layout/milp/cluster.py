@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Mapping
 
 from romutil.layout.ir import LayoutGraph, NodeSolution, SolveTreeNode
@@ -25,6 +26,7 @@ def solve_cluster(
     graph: LayoutGraph | None = None,
     options: LayoutOptions | None = None,
     solver_name: str = "cbc",
+    debug_solve_dir: Path | str | None = None,
 ) -> NodeSolution:
     """Solve layout cluster embedding constituent rooms and child macro-boxes via MILP.
 
@@ -42,6 +44,7 @@ def solve_cluster(
         graph: Underlying LayoutGraph with room definitions and exit edges.
         options: Optional layout configuration parameters.
         solver_name: Pyomo MILP solver name (defaults to 'cbc').
+        debug_solve_dir: Optional filesystem directory for exporting debug solve SVGs.
 
     Returns:
         NodeSolution containing local coordinates and child offsets in metadata.
@@ -94,6 +97,24 @@ def solve_cluster(
             options=options,
         )
 
+        debug_dir = (
+            debug_solve_dir
+            if debug_solve_dir is not None
+            else (options.debug_solve_dir if options is not None else None)
+        )
+        if debug_dir is not None:
+            from romutil.layout.milp.debug import render_cluster_solve_svg
+
+            out_dir = Path(debug_dir)
+            out_file = out_dir / f"cluster_{node.node_id}.svg"
+            render_cluster_solve_svg(
+                extraction=extraction,
+                inventory=inventory,
+                output_path=out_file,
+                title=f"Cluster {node.node_id}",
+                graph=graph,
+            )
+
         # Stage 5: Coordinate Normalization
         return normalize_cluster_solution(
             extraction=extraction,
@@ -121,6 +142,7 @@ class HierarchicalClusterSolver:
         child_solutions: Mapping[str, NodeSolution] | LayoutGraph | None = None,
         graph: LayoutGraph | None = None,
         options: LayoutOptions | None = None,
+        debug_solve_dir: Path | str | None = None,
     ) -> NodeSolution:
         """Solve cluster layout non-overlapping coordinates and child offsets."""
         return solve_cluster(
@@ -129,6 +151,7 @@ class HierarchicalClusterSolver:
             graph=graph,
             options=options,
             solver_name=self.solver_name,
+            debug_solve_dir=debug_solve_dir,
         )
 
 
