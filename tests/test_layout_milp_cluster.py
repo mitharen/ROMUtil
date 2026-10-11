@@ -1672,8 +1672,8 @@ class TestDirectlyObservableCutAlignment:
         assert port200.x >= p300.x + 1
         assert p301.x >= port201.x + 1
 
-    def test_tree_solver_module_reexport(self) -> None:
-        """romutil.layout.milp.tree exports HierarchicalTreeSolver."""
+    def test_tree_solver_canonical_export(self) -> None:
+        """romutil.layout.milp.tree canonically exports HierarchicalTreeSolver."""
         from romutil.layout.milp.tree import HierarchicalTreeSolver as TreeSolverClass
         assert TreeSolverClass is HierarchicalTreeSolver
 
