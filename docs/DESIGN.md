@@ -102,8 +102,13 @@ ROMUtil/
 │   │   │   └── spqr.py          # SpqrTreeBuilder (triconnected SPQR decomposition)
 │   │   ├── ir.py                # Intermediate representations (LayoutGraph, SolveTree, NodeSolution)
 │   │   ├── milp/                # Stage 4 mathematical optimization solvers
-│   │   │   ├── cluster.py       # HierarchicalClusterSolver, solve_cluster, & HierarchicalTreeSolver
-│   │   │   ├── constraints.py   # Disjunctive Big-M non-penetration cuts & box separation
+│   │   │   ├── clearance.py     # Stage 3: Disjunctive Big-M clearance & non-penetration constraints
+│   │   │   ├── cluster.py       # Pipeline orchestrator, HierarchicalClusterSolver, & HierarchicalTreeSolver
+│   │   │   ├── constraints.py   # Generic 3D disjunctive box separation helper
+│   │   │   ├── formulation.py   # Stage 2: Basic MILP Pyomo model formulation & displacement equations
+│   │   │   ├── inventory.py     # Stage 1: Room, child, boundary port, & active edge inventory
+│   │   │   ├── normalization.py # Stage 5: Origin coordinate normalization & NodeSolution packaging
+│   │   │   ├── solver.py        # Stage 4: Pyomo solver execution, variable extraction, & sub-box decomposition
 │   │   │   └── tree.py          # HierarchicalTreeSolver re-export
 │   │   ├── protocols.py         # Stage interfaces (GraphSimplifier, TreeBuilder, TreeSolver, LayoutAssembler)
 │   │   └── simplification/      # Stage 2 graph reduction routines
@@ -223,17 +228,13 @@ Decomposes the simplified topology into a hierarchical `SolveTree` of localized 
 #### Stage 4: Mathematical Optimization (`TreeSolver`)
 Assigns local 3D coordinates to rooms within each `SolveTreeNode` through Mixed-Integer Linear Programming (MILP) using Coin-OR CBC via Pyomo:
 - **`HierarchicalClusterSolver` / `solve_cluster`**:
-  - Solves individual clusters (both atomic leaf clusters and composite parent container clusters embedding child macro-boxes).
-  - **Decision Variables**: Integer coordinates $x_r, y_r, z_r$ and child macro-box origin translations $c_x, c_y, c_z$, bounded tightly by dimension-specific bounds $[-M_x, M_x]$, $[-M_y, M_y]$, $[-M_z, M_z]$.
-  - **Relative Distance Constraints**: For exit $(u, v)$ in nominal direction East:
-    $$x_v - x_u + 2 M_x \cdot \text{cut}_e \ge l_{\min}(e)$$
-    $$x_v - x_u - 2 M_x \cdot \text{cut}_e \le l_{\max}(e)$$
-  - **Orthogonal Alignment**: East-West exits enforce $y_u = y_v$ and $z_u = z_v$ (subject to Big-M relaxation when cut).
-  - **Spatial Non-Overlap Invariants**: Pairwise disjunctive separation constraints prevent coincident room placements:
-    $$x_v - x_u + M_{\text{sep}}^x (1 - d_{\text{east}}) \ge 1$$
-    $$\sum_{d \in \mathcal{D}_{\text{active}}} d_{\text{dir}} \ge 1, \quad d_{\text{dir}} \in \{0, 1\}$$
-  - **Child Container Embedding & Sub-Box Decomposition**: Aligns boundary gateway rooms across adjacent child components so shared articulation and split-pair ports coincide. For non-convex or concave child clusters, decomposes the child layout into minimal disjoint pure orthogonal sub-boxes (`BoundingBox3D`) via greedy maximal-volume partitioning, enforcing fine-grained Big-M clearance constraints against each sub-box independently to permit parent rooms and sibling clusters to navigate concave cluster geometries without interpenetration.
-  - Generates a `NodeSolution` containing local coordinates, child offsets in metadata, an enclosing `bounding_box`, and decomposed `sub_boxes`.
+  - Solves individual clusters (both atomic leaf clusters and composite parent container clusters embedding child macro-boxes) through a modular 5-stage pipeline:
+    1. **Stage 1: Inventory & Interface Classification (`inventory.py`)**: Ingests the cluster node, solved child solutions, and layout graph into a `ClusterInventory`. Inventories direct parent rooms, child macro-boxes, and boundary ports, and classifies all incident connections into canonical `ActiveEdge`s (internal room-room exits, gateway bridges, 1-cut articulation points, and split-pair boundary port corridors with transverse-aware anchor selection).
+    2. **Stage 2: Basic MILP Formulation (`formulation.py`)**: Builds the Pyomo `ConcreteModel` (`ClusterFormulation`), declaring room coordinates ($x_r, y_r, z_r$), child macro-box origins ($c_x, c_y, c_z$), edge length dilation variables ($L_e \ge L_{\min}$), continuous transverse spring slack variables ($\vec{s}_{\text{transverse}}$), and bounding span variables. Fixes origin anchors, establishes gateway alignment equalities, active edge displacement equations ($\mathbf{p}_2 - \mathbf{p}_1 = \vec{d} \cdot L_e + \vec{s}_{\text{transverse}}$), and attaches the optimization objective minimizing edge dilation, bounding envelope span, and transverse boundary slack penalties.
+    3. **Stage 3: Geometric Clearance & Separation Constraints (`clearance.py`)**: Enforces spatial non-overlap and clearance invariants via disjunctive Big-M constraints: pairwise box-box separation (room vs. room, child sub-box vs. child sub-box, room vs. child sub-box), corridor segment non-penetration against third-party rooms and sibling child boxes, and 3D crossing separation for non-incident perpendicular/skew corridors.
+    4. **Stage 4: Solve & Geometry Extraction (`solver.py`)**: Configures solver parameters and timeouts, invokes the MILP solver (Coin-OR CBC), validates termination status (raising `LayoutSolverError` on failures), extracts solved coordinates and child offsets into a `SolvedClusterExtraction`, and performs orthogonal sub-box decomposition (`decompose_cluster_sub_boxes`) across interior rooms and translated child sub-boxes.
+    5. **Stage 5: Coordinate Normalization (`normalization.py`)**: Translates local coordinates, child offsets, and sub-boxes by minimum bounding box offsets so coordinates align at origin $(0, 0, 0)$, constructing the immutable `NodeSolution`.
+  - Generates a `NodeSolution` containing normalized local coordinates, child offsets in metadata, and decomposed `sub_boxes`.
 - **`HierarchicalTreeSolver`**:
   - Coordinates bottom-up leaf-to-root solving across the entire `SolveTree`, aggregating individual `NodeSolution` records into a unified `TreeSolution`.
 
