@@ -194,6 +194,33 @@ class TestCliCoverage:
             cli()
         assert exc.value.code == 0
 
+        # debug-solve flag
+        debug_dir = tmp_path / "cli_debug"
+        monkeypatch.setattr(
+            "sys.argv",
+            ["romutil", str(are_file), "-outbase", out, "--debug-solve", "--debug-solve-dir", str(debug_dir)],
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli()
+        assert exc.value.code == 0
+        assert debug_dir.is_dir()
+        # Verify cluster svg files were generated
+        svgs = list(debug_dir.glob("*.svg"))
+        assert len(svgs) > 0
+
+        # debug-solve flag with default dir
+        monkeypatch.setattr(
+            "sys.argv",
+            ["romutil", str(are_file), "-outbase", out, "--debug-solve"],
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli()
+        assert exc.value.code == 0
+        default_debug = Path("debug_solves")
+        if default_debug.is_dir():
+            import shutil
+            shutil.rmtree(default_debug)
+
 
 class TestModelEdgeCases:
     """Targeted coverage tests for models.py methods."""
