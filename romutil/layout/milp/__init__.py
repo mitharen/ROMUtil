@@ -16,6 +16,7 @@ from romutil.layout.milp.formulation import (
 )
 from romutil.layout.milp.inventory import (
     ClusterInventory,
+    derive_child_sub_boxes,
     inventory_cluster,
 )
 from romutil.layout.milp.normalization import normalize_cluster_solution
@@ -35,6 +36,7 @@ __all__ = [
     "SolvedClusterExtraction",
     "add_disjunctive_box_separation",
     "apply_clearance_constraints",
+    "derive_child_sub_boxes",
     "formulate_cluster_model",
     "inventory_cluster",
     "normalize_cluster_solution",

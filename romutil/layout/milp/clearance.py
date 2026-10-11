@@ -55,11 +55,13 @@ def apply_clearance_constraints(formulation: ClusterFormulation) -> None:
             c2 = children[j]
             sol1 = child_solutions.get(c1.node_id)
             sol2 = child_solutions.get(c2.node_id)
-            if sol1 and sol2 and sol1.sub_boxes and sol2.sub_boxes:
+            sb1 = inventory.child_sub_boxes.get(c1.node_id, ())
+            sb2 = inventory.child_sub_boxes.get(c2.node_id, ())
+            if sol1 and sol2 and sb1 and sb2:
                 shared = set(sol1.local_coordinates.keys()) & set(sol2.local_coordinates.keys())
                 if not shared:
-                    for k1 in range(len(sol1.sub_boxes)):
-                        for k2 in range(len(sol2.sub_boxes)):
+                    for k1 in range(len(sb1)):
+                        for k2 in range(len(sb2)):
                             child_pairs.append(((c1.node_id, k1), (c2.node_id, k2)))
 
     if child_pairs:
@@ -77,11 +79,12 @@ def apply_clearance_constraints(formulation: ClusterFormulation) -> None:
     if rooms:
         for child in children:
             c_sol = child_solutions.get(child.node_id)
-            if c_sol and c_sol.sub_boxes:
+            sb = inventory.child_sub_boxes.get(child.node_id, ())
+            if c_sol and sb:
                 anchors = gateway_anchors.get(child.node_id, frozenset())
                 for u in rooms:
                     if u not in anchors and u not in c_sol.local_coordinates:
-                        for k in range(len(c_sol.sub_boxes)):
+                        for k in range(len(sb)):
                             rc_pairs.append((u, (child.node_id, k)))
 
     if rc_pairs:
@@ -133,7 +136,8 @@ def apply_clearance_constraints(formulation: ClusterFormulation) -> None:
                 if s_id in ae.associated_children:
                     continue
                 s_sol = child_solutions.get(s_id)
-                if not s_sol or not s_sol.sub_boxes:
+                sb = inventory.child_sub_boxes.get(s_id, ())
+                if not s_sol or not sb:
                     continue
                 if any(r in s_sol.local_coordinates for r in ae.associated_rooms):
                     continue
@@ -144,7 +148,7 @@ def apply_clearance_constraints(formulation: ClusterFormulation) -> None:
                     if c_other in child_solutions
                 ):
                     continue
-                for k in range(len(s_sol.sub_boxes)):
+                for k in range(len(sb)):
                     corridor_child_pairs.append((i, (s_id, k)))
 
     if corridor_child_pairs:

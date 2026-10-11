@@ -3,75 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Mapping
 
 import pyomo.environ as pyo
 from pyomo.opt import SolverStatus as PyomoSolverStatus, TerminationCondition
 
-from romutil.layout.geometry import BoundingBox3D, decompose_into_orthogonal_sub_boxes
-from romutil.layout.ir import NodeSolution, SolveTreeNode
 from romutil.layout.milp.formulation import ClusterFormulation
-from romutil.types import Coord3D, LayoutOptions, LayoutSolverError, SolverStatus
+from romutil.types import LayoutOptions, LayoutSolverError, SolverStatus
 
 
 @dataclass(frozen=True)
 class SolvedClusterExtraction:
-    """Solved unnormalized room coordinates, child offsets, and sub-boxes."""
+    """Solved unnormalized room coordinates and child offsets."""
 
     raw_parent_coords: Mapping[int, tuple[int, int, int]]
     raw_child_offsets: Mapping[str, tuple[int, int, int]]
-    raw_sub_boxes: tuple[BoundingBox3D, ...]
     solver_status: SolverStatus
-
-
-def decompose_cluster_sub_boxes(
-    raw_parent_coords: Mapping[int, tuple[int, int, int]],
-    raw_child_offsets: Mapping[str, tuple[int, int, int]],
-    node: SolveTreeNode,
-    children: Sequence[SolveTreeNode],
-    child_solutions: Mapping[str, NodeSolution],
-    boundary_ports: frozenset[int],
-) -> tuple[BoundingBox3D, ...]:
-    """Decompose interior rooms and translated child sub-boxes into orthogonal sub-boxes.
-
-    Boundary ports (e.g. gateway poles) are excluded from the cluster's internal
-    bounding footprint. If the cluster is a leaf (no child clusters), maximal-volume
-    orthogonal decomposition partitions non-convex clusters into minimal disjoint boxes.
-    If composite, the enclosing bounding box is returned.
-
-    Args:
-        raw_parent_coords: Mapping of parent room IDs to 3D coordinate tuples.
-        raw_child_offsets: Mapping of child node IDs to 3D origin tuples.
-        node: SolveTreeNode representing the current cluster.
-        children: Sequence of child solve tree nodes.
-        child_solutions: Mapping of child node IDs to solved NodeSolutions.
-        boundary_ports: Set of boundary port room IDs to exclude.
-
-    Returns:
-        Tuple of disjoint BoundingBox3D instances representing the internal volume.
-    """
-    interior_cells: set[Coord3D] = {
-        Coord3D(*raw_parent_coords[u])
-        for u in node.rooms
-        if u not in boundary_ports and u in raw_parent_coords
-    }
-    for child in children:
-        cid = child.node_id
-        c_sol = child_solutions.get(cid)
-        if c_sol:
-            cx, cy, cz = raw_child_offsets[cid]
-            for sb in c_sol.sub_boxes:
-                for x in range(sb.min_x + cx, sb.max_x + cx + 1):
-                    for y in range(sb.min_y + cy, sb.max_y + cy + 1):
-                        for z in range(sb.min_z + cz, sb.max_z + cz + 1):
-                            interior_cells.add(Coord3D(x, y, z))
-
-    if interior_cells:
-        enc = BoundingBox3D.from_coordinates(interior_cells)
-        if not children:
-            return decompose_into_orthogonal_sub_boxes(interior_cells)
-        return (enc,)
-    return ()
 
 
 def solve_and_extract(
@@ -79,7 +26,7 @@ def solve_and_extract(
     solver_name: str = "cbc",
     options: LayoutOptions | None = None,
 ) -> SolvedClusterExtraction:
-    """Invoke the MILP solver and extract raw coordinates, child offsets, and sub-boxes.
+    """Invoke the MILP solver and extract raw coordinates and child offsets.
 
     Handles solver availability, timeouts, infeasibility, and value extraction errors,
     raising LayoutSolverError on non-optimal solver exits or missing variables.
@@ -90,7 +37,7 @@ def solve_and_extract(
         options: Optional layout configuration parameters (e.g. timeout_seconds).
 
     Returns:
-        SolvedClusterExtraction containing raw coordinates, offsets, and sub-boxes.
+        SolvedClusterExtraction containing raw coordinates and child offsets.
 
     Raises:
         LayoutSolverError: If solver is unavailable, infeasible, or coordinate extraction fails.
@@ -177,25 +124,14 @@ def solve_and_extract(
     ):
         solver_status = SolverStatus.TIMEOUT
 
-    raw_sub_boxes = decompose_cluster_sub_boxes(
-        raw_parent_coords=raw_parent_coords,
-        raw_child_offsets=raw_child_offsets,
-        node=node,
-        children=children,
-        child_solutions=formulation.inventory.child_solutions,
-        boundary_ports=formulation.inventory.boundary_ports,
-    )
-
     return SolvedClusterExtraction(
         raw_parent_coords=raw_parent_coords,
         raw_child_offsets=raw_child_offsets,
-        raw_sub_boxes=raw_sub_boxes,
         solver_status=solver_status,
     )
 
 
 __all__ = [
     "SolvedClusterExtraction",
-    "decompose_cluster_sub_boxes",
     "solve_and_extract",
 ]

@@ -59,7 +59,7 @@ def solve_cluster(
         solver_name: Pyomo MILP solver name (defaults to 'cbc').
 
     Returns:
-        NodeSolution containing local coordinates, child offsets in metadata, and decomposed sub-boxes.
+        NodeSolution containing local coordinates and child offsets in metadata.
 
     Raises:
         LayoutSolverError: If the MILP solver is unavailable, infeasible, or solving fails.

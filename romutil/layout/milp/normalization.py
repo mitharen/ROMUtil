@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from romutil.layout.geometry import BoundingBox3D
 from romutil.layout.ir import NodeSolution, SolveTreeNode
@@ -27,9 +27,6 @@ def normalize_single_room_cluster(
 ) -> NodeSolution:
     """Construct a canonical NodeSolution for a degenerate single-room leaf cluster.
 
-    If the room acts as a boundary port for an ancestor split pair, it has zero internal
-    sub-box volume. Otherwise, a unit 1x1x1 bounding box at origin is assigned.
-
     Args:
         node: SolveTreeNode representing the single-room leaf cluster.
         room: Room ID contained within the cluster.
@@ -38,15 +35,10 @@ def normalize_single_room_cluster(
     Returns:
         NodeSolution positioned at origin (0, 0, 0).
     """
-    sub_boxes = (
-        ()
-        if is_boundary_port
-        else (BoundingBox3D(min_x=0, max_x=0, min_y=0, max_y=0, min_z=0, max_z=0),)
-    )
     return NodeSolution(
         node_id=node.node_id,
         local_coordinates={room: Coord3D(0, 0, 0)},
-        sub_boxes=sub_boxes,
+        sub_boxes=(),
         metadata={"child_offsets": {}},
     )
 
@@ -57,19 +49,19 @@ def normalize_cluster_solution(
     children: Sequence[SolveTreeNode],
     child_solutions: Mapping[str, NodeSolution],
 ) -> NodeSolution:
-    """Normalize solved room coordinates, child offsets, and sub-boxes to origin (0, 0, 0).
+    """Normalize solved room coordinates and child offsets to origin (0, 0, 0).
 
     Computes the minimum spatial bounds across all constituent rooms and child bounding
     boxes, applies the translational shift, and returns the immutable NodeSolution.
 
     Args:
-        extraction: SolvedClusterExtraction containing raw coordinates, offsets, and sub-boxes.
+        extraction: SolvedClusterExtraction containing raw coordinates and child offsets.
         node: SolveTreeNode representing the solved cluster.
         children: Sequence of child solve tree nodes.
         child_solutions: Mapping of child node IDs to already-solved NodeSolutions.
 
     Returns:
-        Immutable NodeSolution containing normalized coordinates, sub-boxes, and child offsets.
+        Immutable NodeSolution containing normalized coordinates and child offsets.
     """
     all_pts: list[tuple[int, int, int]] = list(extraction.raw_parent_coords.values())
     for child in children:
@@ -80,7 +72,7 @@ def normalize_cluster_solution(
         if box is not None:
             all_pts.append((cx + box.min_x, cy + box.min_y, cz + box.min_z))
             all_pts.append((cx + box.max_x, cy + box.max_y, cz + box.max_z))
-        else:
+        elif c_sol and c_sol.local_coordinates:
             all_pts.append((cx, cy, cz))
 
     if all_pts:
@@ -98,23 +90,29 @@ def normalize_cluster_solution(
         cid: Coord3D(x - min_x, y - min_y, z - min_z)
         for cid, (x, y, z) in extraction.raw_child_offsets.items()
     }
-    norm_sub_boxes = tuple(
-        BoundingBox3D(
-            min_x=sb.min_x - min_x,
-            max_x=sb.max_x - min_x,
-            min_y=sb.min_y - min_y,
-            max_y=sb.max_y - min_y,
-            min_z=sb.min_z - min_z,
-            max_z=sb.max_z - min_z,
+
+    metadata: dict[str, Any] = {
+        "child_offsets": norm_child_offsets,
+        "status": extraction.solver_status,
+    }
+    if all_pts:
+        max_x = max(p[0] for p in all_pts)
+        max_y = max(p[1] for p in all_pts)
+        max_z = max(p[2] for p in all_pts)
+        metadata["bounding_box"] = BoundingBox3D(
+            min_x=0,
+            max_x=max_x - min_x,
+            min_y=0,
+            max_y=max_y - min_y,
+            min_z=0,
+            max_z=max_z - min_z,
         )
-        for sb in extraction.raw_sub_boxes
-    )
 
     return NodeSolution(
         node_id=node.node_id,
         local_coordinates=norm_parent_coords,
-        sub_boxes=norm_sub_boxes,
-        metadata={"child_offsets": norm_child_offsets, "status": extraction.solver_status},
+        sub_boxes=(),
+        metadata=metadata,
     )
 
 

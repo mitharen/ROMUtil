@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
+from romutil.layout.geometry import BoundingBox3D, decompose_into_orthogonal_sub_boxes
 from romutil.layout.ir import (
     ArticulationPointCut,
     BridgeCut,
@@ -69,6 +70,7 @@ class ClusterInventory:
     gateway_anchors: Mapping[str, frozenset[int]]
     aligned_children: frozenset[str]
     equated_children: frozenset[frozenset[str]]
+    child_sub_boxes: Mapping[str, tuple[BoundingBox3D, ...]] = field(default_factory=dict)
 
 
 def get_child_boundary_ports(child: SolveTreeNode) -> set[int]:
@@ -90,6 +92,50 @@ def get_child_boundary_ports(child: SolveTreeNode) -> set[int]:
 
 
 _get_child_boundary_ports = get_child_boundary_ports
+
+
+def derive_child_sub_boxes(
+    child: SolveTreeNode,
+    child_solution: NodeSolution,
+    boundary_ports: frozenset[int] | None = None,
+) -> tuple[BoundingBox3D, ...]:
+    """Derive orthogonal keep-out sub-boxes for a child component within parent context.
+
+    Boundary ports connecting the child to parent rooms or sibling split pairs are
+    excluded from the keep-out footprint to allow external docking without triggering
+    Big-M non-overlap collisions. For leaf children, non-convex collections of interior
+    cells are partitioned into minimal disjoint orthogonal boxes. For composite children,
+    the enclosing bounding box is returned.
+
+    Args:
+        child: SolveTreeNode representing the child cluster.
+        child_solution: Solved NodeSolution for the child cluster.
+        boundary_ports: Set of boundary port room IDs to exclude. If None, derived
+            from child cut contracts and metadata.
+
+    Returns:
+        Tuple of disjoint BoundingBox3D instances representing keep-out obstacles.
+    """
+    if child_solution.sub_boxes:
+        return child_solution.sub_boxes
+
+    if boundary_ports is None:
+        boundary_ports = frozenset(get_child_boundary_ports(child))
+
+    if not child.children:
+        interior_cells: set[Coord3D] = {
+            coord
+            for u, coord in child_solution.local_coordinates.items()
+            if u not in boundary_ports
+        }
+        if not interior_cells:
+            return ()
+        return decompose_into_orthogonal_sub_boxes(interior_cells)
+
+    bbox = child_solution.bounding_box
+    if bbox is not None:
+        return (bbox,)
+    return ()
 
 
 def inventory_cluster(
@@ -762,6 +808,18 @@ def inventory_cluster(
                 )
             )
 
+    child_sub_boxes: dict[str, tuple[BoundingBox3D, ...]] = {}
+    for child in children:
+        if child.node_id in child_solutions:
+            child_ports = frozenset(get_child_boundary_ports(child))
+            child_sub_boxes[child.node_id] = derive_child_sub_boxes(
+                child=child,
+                child_solution=child_solutions[child.node_id],
+                boundary_ports=child_ports,
+            )
+        else:
+            child_sub_boxes[child.node_id] = ()
+
     return ClusterInventory(
         node=node,
         rooms=rooms,
@@ -774,6 +832,7 @@ def inventory_cluster(
         gateway_anchors={k: frozenset(v) for k, v in gateway_anchors.items()},
         aligned_children=frozenset(aligned_children),
         equated_children=frozenset(equated_children),
+        child_sub_boxes=child_sub_boxes,
     )
 
 
@@ -783,6 +842,7 @@ __all__ = [
     "ClusterInventory",
     "EndpointRef",
     "RoomChildAlignment",
+    "derive_child_sub_boxes",
     "get_child_boundary_ports",
     "inventory_cluster",
 ]

@@ -30,6 +30,7 @@ from romutil.layout import (
     build_block_spqr_tree,
     solve_cluster,
 )
+from romutil.layout.milp.inventory import derive_child_sub_boxes, get_child_boundary_ports
 from romutil.layout.geometry import (
     BoundingBox3D,
     Segment3D,
@@ -167,10 +168,11 @@ class TestParentClusterMILP:
                 assert parent_sol.local_coordinates[pr] != placed_child_coords[cr]
 
         # 3. Macro-box clearance: non-anchor parent rooms (1, 3, 4) cannot lie inside child's sub-boxes
-        assert child_sol.sub_boxes
+        child_sub_boxes = derive_child_sub_boxes(child_node, child_sol, frozenset(get_child_boundary_ports(child_node)))
+        assert child_sub_boxes
         for pr in [1, 3, 4]:
             p_pt = parent_sol.local_coordinates[pr]
-            for sb in child_sol.sub_boxes:
+            for sb in child_sub_boxes:
                 sb_in_parent = BoundingBox3D(
                     min_x=c_off.x + sb.min_x,
                     max_x=c_off.x + sb.max_x,
@@ -1235,7 +1237,8 @@ class TestParentComprehensiveEdgeCoverage:
 
         # Child bounding box covers (0,0,0) to (1,1,0), but decomposes into 2 disjoint sub-boxes
         assert child_sol.bounding_box == BoundingBox3D(0, 1, 0, 1, 0, 0)
-        assert len(child_sol.sub_boxes) == 2
+        child_sub_boxes = derive_child_sub_boxes(child_node, child_sol, frozenset(get_child_boundary_ports(child_node)))
+        assert len(child_sub_boxes) == 2
 
         # Parent cluster: rooms 2 and 4 with edge 2 -N-> 4
         # Room 2 is the gateway anchor. Room 4 is a non-anchor parent room that wants to
@@ -1283,7 +1286,7 @@ class TestParentComprehensiveEdgeCoverage:
         assert child_full_box.contains_point(p_r4)
 
         # 3. Room 4 is outside all decomposed sub-boxes of the child
-        for sb in child_sol.sub_boxes:
+        for sb in child_sub_boxes:
             sb_in_parent = BoundingBox3D(
                 min_x=c_off.x + sb.min_x,
                 max_x=c_off.x + sb.max_x,
@@ -1722,7 +1725,7 @@ class TestDirectlyObservableCutAlignment:
         assert p20.x >= p11.x + 2
 
     def test_child_bounding_box_strictly_excludes_boundary_ports(self) -> None:
-        """Child bounding box is computed strictly over interior rooms excluding boundary ports."""
+        """Child keep-out sub-boxes strictly exclude boundary ports within parent context."""
         split_child = SolveTreeNode(
             node_id="split_child",
             node_type=TreeNodeType.BLOCK,
@@ -1741,13 +1744,14 @@ class TestDirectlyObservableCutAlignment:
             ],
         )
         child_sol = solve_cluster(split_child, {}, graph)
-        # Pole 1 and Pole 2 are excluded; only interior room 3 determines bounding box
-        assert child_sol.bounding_box is not None
+        # Pole 1 and Pole 2 are excluded from derived keep-out sub-boxes; only interior room 3 determines keep-out box
+        sub_boxes = derive_child_sub_boxes(split_child, child_sol, frozenset({1, 2}))
+        assert len(sub_boxes) == 1
         loc3 = child_sol.local_coordinates[3]
-        assert child_sol.bounding_box == BoundingBox3D(loc3.x, loc3.x, loc3.y, loc3.y, loc3.z, loc3.z)
+        assert sub_boxes[0] == BoundingBox3D(loc3.x, loc3.x, loc3.y, loc3.y, loc3.z, loc3.z)
 
     def test_child_bounding_box_none_when_all_rooms_are_boundary_ports(self) -> None:
-        """Child bounding box is None when all constituent rooms are boundary gateway ports."""
+        """Child keep-out sub-boxes are empty when all constituent rooms are boundary gateway ports."""
         pole_only_child = SolveTreeNode(
             node_id="pole_only",
             node_type=TreeNodeType.BLOCK,
@@ -1760,7 +1764,8 @@ class TestDirectlyObservableCutAlignment:
         )
         graph = _make_graph(rooms=[10, 20], edges=[(10, 20, Direction.north, 1)])
         sol = solve_cluster(pole_only_child, {}, graph)
-        assert sol.bounding_box is None
+        sub_boxes = derive_child_sub_boxes(pole_only_child, sol, frozenset({10, 20}))
+        assert sub_boxes == ()
 
     def test_equated_sibling_children_do_not_add_conflicting_directional_edge(self) -> None:
         """Sibling children equated at a shared pole do not accumulate conflicting directional active edges."""

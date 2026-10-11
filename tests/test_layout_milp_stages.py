@@ -32,6 +32,7 @@ from romutil.layout.milp import (
 from romutil.layout.milp.inventory import (
     ChildChildAlignment,
     RoomChildAlignment,
+    derive_child_sub_boxes,
     get_child_boundary_ports,
 )
 from romutil.layout.milp.normalization import (
@@ -40,7 +41,6 @@ from romutil.layout.milp.normalization import (
 )
 from romutil.layout.milp.solver import (
     SolvedClusterExtraction,
-    decompose_cluster_sub_boxes,
 )
 from romutil.models import Direction, Room
 from romutil.types import Coord3D, LayoutOptions, LayoutSolverError, SolverStatus
@@ -220,6 +220,89 @@ class TestStage1Inventory:
         assert gw_edges[0].dst == ("c_brg", 30)
         assert gw_edges[0].min_length == 2
 
+    def test_derive_child_sub_boxes_leaf(self) -> None:
+        """Leaf child decomposes non-convex interior cells into orthogonal sub-boxes."""
+        child = SolveTreeNode(node_id="leaf_l", node_type="leaf", rooms=frozenset({1, 2, 3}))
+        child_sol = NodeSolution(
+            node_id="leaf_l",
+            local_coordinates={
+                1: Coord3D(0, 0, 0),
+                2: Coord3D(1, 0, 0),
+                3: Coord3D(0, 1, 0),
+            },
+        )
+        boxes = derive_child_sub_boxes(
+            child=child,
+            child_solution=child_sol,
+            boundary_ports=frozenset(),
+        )
+        assert len(boxes) == 2  # L-shape decomposes into 2 disjoint boxes
+        assert sum(b.volume() for b in boxes) == 3
+
+    def test_derive_child_sub_boxes_composite(self) -> None:
+        """Composite child computes enclosing bounding box over interior cells."""
+        grandchild = SolveTreeNode(node_id="gc", node_type="leaf", rooms=frozenset({10}))
+        child = SolveTreeNode(
+            node_id="comp",
+            node_type="container",
+            rooms=frozenset({1}),
+            children=(grandchild,),
+        )
+        child_sol = NodeSolution(
+            node_id="comp",
+            local_coordinates={1: Coord3D(0, 0, 0)},
+            metadata={
+                "child_offsets": {"gc": Coord3D(5, 0, 0)},
+                "bounding_box": BoundingBox3D(0, 5, 0, 0, 0, 0),
+            },
+        )
+        boxes = derive_child_sub_boxes(
+            child=child,
+            child_solution=child_sol,
+            boundary_ports=frozenset(),
+        )
+        assert len(boxes) == 1
+        assert boxes[0].min_x == 0
+        assert boxes[0].max_x == 5
+
+    def test_derive_child_sub_boxes_excludes_boundary_ports(self) -> None:
+        """Boundary ports are strictly excluded when deriving child sub-boxes."""
+        child = SolveTreeNode(
+            node_id="sp_child",
+            node_type="block",
+            rooms=frozenset({1, 2, 3}),
+            metadata={"cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        child_sol = NodeSolution(
+            node_id="sp_child",
+            local_coordinates={
+                1: Coord3D(0, 0, 0),
+                2: Coord3D(4, 0, 0),
+                3: Coord3D(2, 0, 0),
+            },
+        )
+        boxes = derive_child_sub_boxes(
+            child=child,
+            child_solution=child_sol,
+            boundary_ports=frozenset({1, 2}),
+        )
+        assert len(boxes) == 1
+        assert boxes[0] == BoundingBox3D(2, 2, 0, 0, 0, 0)
+
+    def test_inventory_cluster_derives_child_sub_boxes(self) -> None:
+        """Stage 1 inventory derives child_sub_boxes for all child clusters."""
+        child = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({10, 20}))
+        parent = SolveTreeNode(node_id="p", node_type="container", rooms=frozenset({1}), children=(child,))
+        c_sol = NodeSolution(
+            node_id="c1",
+            local_coordinates={10: Coord3D(0, 0, 0), 20: Coord3D(1, 0, 0)},
+        )
+        graph = _make_graph([1, 10, 20], [])
+        inv = inventory_cluster(node=parent, child_solutions={"c1": c_sol}, graph=graph)
+        assert "c1" in inv.child_sub_boxes
+        assert len(inv.child_sub_boxes["c1"]) == 1
+        assert inv.child_sub_boxes["c1"][0] == BoundingBox3D(0, 1, 0, 0, 0, 0)
+
 
 class TestStage2Formulation:
     """Unit tests for Stage 2: Basic MILP Formulation."""
@@ -312,46 +395,21 @@ class TestStage3Clearance:
 class TestStage4Solver:
     """Unit tests for Stage 4: Solve and Extraction."""
 
-    def test_decompose_cluster_sub_boxes_leaf(self) -> None:
-        """Leaf cluster decomposes non-convex cells into minimal orthogonal boxes."""
-        node = SolveTreeNode(node_id="leaf_l", node_type="leaf", rooms=frozenset({1, 2, 3}))
-        raw_coords = {
-            1: (0, 0, 0),
-            2: (1, 0, 0),
-            3: (0, 1, 0),
-        }
-        boxes = decompose_cluster_sub_boxes(
-            raw_parent_coords=raw_coords,
-            raw_child_offsets={},
-            node=node,
-            children=(),
-            child_solutions={},
-            boundary_ports=frozenset(),
-        )
-        assert len(boxes) == 2  # L-shape decomposes into 2 disjoint boxes
-        total_vol = sum(b.volume() for b in boxes)
-        assert total_vol == 3
-
-    def test_decompose_cluster_sub_boxes_composite(self) -> None:
-        """Composite cluster computes enclosing bounding box over translated sub-boxes."""
+    def test_solve_and_extract_raw_coordinates_and_offsets(self) -> None:
+        """Solved extraction contains raw parent coordinates, child offsets, and solver status."""
         child = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({10}))
-        parent = SolveTreeNode(node_id="comp", node_type="container", rooms=frozenset({1}), children=(child,))
-        c_sol = NodeSolution(
-            node_id="c1",
-            local_coordinates={10: Coord3D(0, 0, 0)},
-            sub_boxes=(BoundingBox3D(0, 2, 0, 1, 0, 0),),
-        )
-        boxes = decompose_cluster_sub_boxes(
-            raw_parent_coords={1: (0, 0, 0)},
-            raw_child_offsets={"c1": (5, 0, 0)},
-            node=parent,
-            children=(child,),
-            child_solutions={"c1": c_sol},
-            boundary_ports=frozenset(),
-        )
-        assert len(boxes) == 1
-        assert boxes[0].min_x == 0
-        assert boxes[0].max_x == 7
+        parent = SolveTreeNode(node_id="p", node_type="container", rooms=frozenset({1, 2}), children=(child,))
+        graph = _make_graph([1, 2, 10], [(1, 2, Direction.east, 1)])
+        c_sol = NodeSolution(node_id="c1", local_coordinates={10: Coord3D(0, 0, 0)})
+        inv = inventory_cluster(node=parent, child_solutions={"c1": c_sol}, graph=graph)
+        formulation = formulate_cluster_model(inventory=inv)
+
+        ext = solve_and_extract(formulation=formulation, solver_name="cbc")
+        assert 1 in ext.raw_parent_coords
+        assert 2 in ext.raw_parent_coords
+        assert "c1" in ext.raw_child_offsets
+        assert ext.solver_status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE)
+        assert not hasattr(ext, "raw_sub_boxes")
 
     def test_solve_and_extract_unavailable_solver(self) -> None:
         """Unavailable solver raises LayoutSolverError."""
@@ -398,30 +456,29 @@ class TestStage5Normalization:
         assert sol.metadata == {"child_offsets": {}}
 
     def test_normalize_single_room_cluster(self) -> None:
-        """Single room cluster returns origin coordinate and unit sub-box."""
+        """Single room cluster returns origin coordinate and empty sub_boxes."""
         node = SolveTreeNode(node_id="single", node_type="leaf", rooms=frozenset({42}))
         sol = normalize_single_room_cluster(node=node, room=42, is_boundary_port=False)
         assert sol.local_coordinates == {42: Coord3D(0, 0, 0)}
-        assert sol.sub_boxes == (BoundingBox3D(0, 0, 0, 0, 0, 0),)
+        assert sol.sub_boxes == ()
 
         sol_port = normalize_single_room_cluster(node=node, room=42, is_boundary_port=True)
         assert sol_port.sub_boxes == ()
 
     def test_normalize_cluster_solution_translates_to_origin(self) -> None:
-        """Normalizes solved coordinates and sub-boxes by minimum bounding origin."""
+        """Normalizes solved coordinates and child offsets by minimum bounding origin."""
         child = SolveTreeNode(node_id="c_child", node_type="leaf", rooms=frozenset({20}))
         parent = SolveTreeNode(node_id="parent", node_type="container", rooms=frozenset({10}), children=(child,))
 
         extraction = SolvedClusterExtraction(
             raw_parent_coords={10: (10, 20, 30)},
             raw_child_offsets={"c_child": (15, 25, 35)},
-            raw_sub_boxes=(BoundingBox3D(10, 15, 20, 25, 30, 35),),
             solver_status=SolverStatus.OPTIMAL,
         )
         c_sol = NodeSolution(
             node_id="c_child",
             local_coordinates={20: Coord3D(0, 0, 0)},
-            sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 1),),
+            sub_boxes=(),
         )
 
         norm_sol = normalize_cluster_solution(
@@ -433,7 +490,7 @@ class TestStage5Normalization:
 
         assert norm_sol.local_coordinates[10] == Coord3D(0, 0, 0)
         assert norm_sol.metadata["child_offsets"]["c_child"] == Coord3D(5, 5, 5)
-        assert norm_sol.sub_boxes[0] == BoundingBox3D(0, 5, 0, 5, 0, 5)
+        assert norm_sol.sub_boxes == ()
         assert norm_sol.metadata["status"] == SolverStatus.OPTIMAL
 
     def test_normalize_cluster_solution_child_without_bbox_and_empty_points(self) -> None:
@@ -443,7 +500,6 @@ class TestStage5Normalization:
         extraction = SolvedClusterExtraction(
             raw_parent_coords={},
             raw_child_offsets={"c_nobox": (2, 3, 4)},
-            raw_sub_boxes=(),
             solver_status=SolverStatus.FEASIBLE,
         )
         c_sol = NodeSolution(
@@ -459,6 +515,7 @@ class TestStage5Normalization:
         )
         assert norm_sol.local_coordinates == {}
         assert norm_sol.metadata["child_offsets"]["c_nobox"] == Coord3D(0, 0, 0)
+        assert norm_sol.sub_boxes == ()
 
     def test_solve_and_extract_timeout_and_missing_child_offset(self) -> None:
         """Timeout status returns SolverStatus.TIMEOUT and missing child offset raises error."""
