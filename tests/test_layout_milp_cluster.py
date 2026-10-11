@@ -30,7 +30,14 @@ from romutil.layout import (
     build_block_spqr_tree,
     solve_cluster,
 )
-from romutil.layout.milp.inventory import derive_child_sub_boxes, get_child_boundary_ports
+from romutil.layout.milp.inventory import (
+    ClusterInventory,
+    GatewayCutHandler,
+    InterChildBridgeHandler,
+    SplitPairHandler,
+    derive_child_sub_boxes,
+    get_child_boundary_ports,
+)
 from romutil.layout.geometry import (
     BoundingBox3D,
     Segment3D,
@@ -2289,3 +2296,47 @@ class TestSplitPairBoundaryPortAlignment:
         assert p1_coord.x == c_offset.x + 0
         assert p1_coord.y == c_offset.y + 0
         assert p1_coord.z == c_offset.z + 0
+
+    def test_typed_child_handlers_interface_dispatch(self) -> None:
+        """Typed child handlers classify interfaces and feed solve_cluster correctly."""
+        p0, p1 = 1, 2
+        sp_child = SolveTreeNode(
+            node_id="sp_child",
+            node_type="leaf",
+            rooms=frozenset({1, 2, 5}),
+            metadata={"cut_contract": SplitPairCut(poles=(p0, p1))},
+        )
+        gw_child = SolveTreeNode(
+            node_id="gw_child",
+            node_type="leaf",
+            rooms=frozenset({10}),
+            metadata={"cut_contract": BridgeCut(bridge_edge=(1, 10), direction=Direction.south, weight=2)},
+        )
+        parent = SolveTreeNode(
+            node_id="multi_child_p",
+            node_type="container",
+            rooms=frozenset({1, 2}),
+            children=(sp_child, gw_child),
+        )
+        sols = {
+            "sp_child": NodeSolution(
+                "sp_child",
+                {1: Coord3D(0, 0, 0), 2: Coord3D(3, 0, 0), 5: Coord3D(1, 1, 0)},
+                (BoundingBox3D(0, 3, 0, 1, 0, 0),),
+            ),
+            "gw_child": NodeSolution(
+                "gw_child",
+                {10: Coord3D(0, 0, 0)},
+                (BoundingBox3D(0, 0, 0, 0, 0, 0),),
+            ),
+        }
+        graph = _make_graph([1, 2, 5, 10], [(1, 2, Direction.east, 3), (1, 10, Direction.south, 2)])
+
+        inv = ClusterInventory.from_node(parent, sols, graph)
+        assert len(inv.children) == 2
+        assert len(inv.room_alignments) == 1
+        assert any(e.edge_id.startswith("gw_gw_child") for e in inv.active_edges)
+
+        sol = solve_cluster(parent, sols, graph)
+        assert "sp_child" in sol.metadata["child_offsets"]
+        assert "gw_child" in sol.metadata["child_offsets"]

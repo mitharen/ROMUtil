@@ -16,6 +16,9 @@ from romutil.layout.milp.formulation import (
 )
 from romutil.layout.milp.inventory import (
     ClusterInventory,
+    GatewayCutHandler,
+    InterChildBridgeHandler,
+    SplitPairHandler,
     derive_child_sub_boxes,
     inventory_cluster,
 )
@@ -30,10 +33,13 @@ __all__ = [
     "ActiveEdge",
     "ClusterFormulation",
     "ClusterInventory",
+    "GatewayCutHandler",
     "HierarchicalClusterSolver",
     "HierarchicalTreeSolver",
+    "InterChildBridgeHandler",
     "LayoutSolverError",
     "SolvedClusterExtraction",
+    "SplitPairHandler",
     "add_disjunctive_box_separation",
     "apply_clearance_constraints",
     "derive_child_sub_boxes",
