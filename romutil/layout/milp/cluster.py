@@ -31,9 +31,6 @@ from romutil.models import Room
 from romutil.types import Coord3D, LayoutOptions, LayoutSolverError
 
 
-_get_child_boundary_ports = get_child_boundary_ports
-
-
 def solve_cluster(
     node: SolveTreeNode,
     child_solutions: Mapping[str, NodeSolution] | LayoutGraph | None = None,
