@@ -233,17 +233,21 @@ class NodeSolution:
 
     @property
     def bounding_box(self) -> BoundingBox3D | None:
-        """Compute the minimal enclosing 3D bounding box over all sub-boxes."""
-        if not self.sub_boxes:
-            return None
-        return BoundingBox3D(
-            min_x=min(b.min_x for b in self.sub_boxes),
-            max_x=max(b.max_x for b in self.sub_boxes),
-            min_y=min(b.min_y for b in self.sub_boxes),
-            max_y=max(b.max_y for b in self.sub_boxes),
-            min_z=min(b.min_z for b in self.sub_boxes),
-            max_z=max(b.max_z for b in self.sub_boxes),
-        )
+        """Compute the minimal enclosing 3D bounding box over sub-boxes, local coordinates, or metadata."""
+        if self.sub_boxes:
+            return BoundingBox3D(
+                min_x=min(b.min_x for b in self.sub_boxes),
+                max_x=max(b.max_x for b in self.sub_boxes),
+                min_y=min(b.min_y for b in self.sub_boxes),
+                max_y=max(b.max_y for b in self.sub_boxes),
+                min_z=min(b.min_z for b in self.sub_boxes),
+                max_z=max(b.max_z for b in self.sub_boxes),
+            )
+        if "bounding_box" in self.metadata and isinstance(self.metadata["bounding_box"], BoundingBox3D):
+            return self.metadata["bounding_box"]
+        if self.local_coordinates:
+            return BoundingBox3D.from_coordinates(self.local_coordinates.values())
+        return None
 
 
 @dataclass(frozen=True)

@@ -185,13 +185,20 @@ class TestNodeSolution:
     """Tests for NodeSolution data structure, sub_boxes normalization, and bounding_box property."""
 
     def test_sub_boxes_default_empty(self) -> None:
-        """When sub_boxes is omitted, it defaults to an empty tuple and bounding_box is None."""
-        sol = NodeSolution(
+        """When sub_boxes is omitted, it defaults to an empty tuple and bounding_box reflects coordinates."""
+        sol_empty = NodeSolution(
+            node_id="n1",
+            local_coordinates={},
+        )
+        assert sol_empty.sub_boxes == ()
+        assert sol_empty.bounding_box is None
+
+        sol_coords = NodeSolution(
             node_id="n1",
             local_coordinates={1: Coord3D(0, 0, 0)},
         )
-        assert sol.sub_boxes == ()
-        assert sol.bounding_box is None
+        assert sol_coords.sub_boxes == ()
+        assert sol_coords.bounding_box == BoundingBox3D(0, 0, 0, 0, 0, 0)
 
     def test_sub_boxes_sequence_normalized_to_tuple(self) -> None:
         """Sequence passed to sub_boxes is normalized to a tuple."""

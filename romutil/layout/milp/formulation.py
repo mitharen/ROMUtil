@@ -9,6 +9,7 @@ import pyomo.environ as pyo
 
 from romutil.layout.geometry import BoundingBox3D
 from romutil.layout.milp.inventory import ActiveEdge, ClusterInventory, EndpointRef
+from romutil.types import LayoutOptions
 
 
 @dataclass
@@ -26,7 +27,10 @@ class ClusterFormulation:
     get_corridor_full_box: Callable[[ActiveEdge], tuple[Any, Any, Any, Any, Any, Any]]
 
 
-def formulate_cluster_model(inventory: ClusterInventory) -> ClusterFormulation:
+def formulate_cluster_model(
+    inventory: ClusterInventory,
+    options: LayoutOptions | None = None,
+) -> ClusterFormulation:
     """Build the baseline Pyomo model for layout cluster optimization.
 
     Declares room and child origin variables, edge length variables, transverse slack,
@@ -81,7 +85,7 @@ def formulate_cluster_model(inventory: ClusterInventory) -> ClusterFormulation:
 
     def get_child_sub_box(ref: tuple[str, int]) -> tuple[Any, Any, Any, Any, Any, Any]:
         cid, k = ref
-        raw_sb = inventory.child_solutions[cid].sub_boxes[k]
+        raw_sb = inventory.child_sub_boxes[cid][k]
         sb = (
             raw_sb
             if isinstance(raw_sb, BoundingBox3D)
