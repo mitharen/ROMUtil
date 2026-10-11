@@ -21,6 +21,7 @@ from romutil.layout.ir import (
 )
 from romutil.layout.milp import (
     ActiveEdge,
+    ClearanceConstraintBuilder,
     ClusterFormulation,
     ClusterInventory,
     apply_clearance_constraints,
@@ -313,8 +314,22 @@ class TestStage1Inventory:
 class TestStage2Formulation:
     """Unit tests for Stage 2: Basic MILP Formulation."""
 
+    def test_cluster_formulation_canonical_constructor(self) -> None:
+        """ClusterFormulation can be constructed directly with inventory and options."""
+        node = SolveTreeNode(node_id="canon_node", node_type="leaf", rooms=frozenset({1, 2}))
+        graph = _make_graph([1, 2], [(1, 2, Direction.east, 1)])
+        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
+        opts = LayoutOptions(timeout_seconds=10)
+
+        formulation = ClusterFormulation(inventory=inv, options=opts)
+        assert formulation.inventory is inv
+        assert formulation.options is opts
+        assert formulation.model is not None
+        assert formulation.m_coord >= 1000
+        assert formulation.m_big == 2 * formulation.m_coord
+
     def test_formulate_cluster_model_variables_and_anchors(self) -> None:
-        """Formulation declares room variables, fixes anchor, and attaches accessors."""
+        """Formulation declares room variables, fixes anchor, and provides member accessors."""
         node = SolveTreeNode(node_id="test_node", node_type="leaf", rooms=frozenset({10, 20}))
         graph = _make_graph([10, 20], [(10, 20, Direction.east, 1)])
         inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
@@ -359,6 +374,67 @@ class TestStage2Formulation:
         assert model.cx["c1"].value == 0
         assert not model.cx["c2"].is_fixed()
 
+    def test_formulation_child_point_and_sub_box_accessors(self) -> None:
+        """Child point and sub-box accessors correctly resolve local offsets."""
+        child = SolveTreeNode(node_id="c_sub", node_type="leaf", rooms=frozenset({5}))
+        parent = SolveTreeNode(node_id="p_sub", node_type="container", rooms=frozenset({1}), children=(child,))
+        sol = NodeSolution(
+            node_id="c_sub",
+            local_coordinates={5: Coord3D(2, 3, 4)},
+            sub_boxes=(BoundingBox3D(1, 3, 2, 4, 3, 5),),
+        )
+        inv = inventory_cluster(node=parent, child_solutions={"c_sub": sol}, graph=_make_graph([1, 5], []))
+        formulation = ClusterFormulation(inventory=inv)
+
+        pt_child = formulation.get_point(("c_sub", 5))
+        assert str(pt_child[0]) == "cx[c_sub] + 2"
+        assert str(pt_child[1]) == "cy[c_sub] + 3"
+        assert str(pt_child[2]) == "cz[c_sub] + 4"
+
+        sub_box = formulation.get_child_sub_box(("c_sub", 0))
+        assert str(sub_box[0]) == "cx[c_sub] + 1"
+        assert str(sub_box[1]) == "cx[c_sub] + 3"
+        assert str(sub_box[2]) == "cy[c_sub] + 2"
+        assert str(sub_box[3]) == "cy[c_sub] + 4"
+        assert str(sub_box[4]) == "cz[c_sub] + 3"
+        assert str(sub_box[5]) == "cz[c_sub] + 5"
+
+        # Also test with raw tuple sub-box fallback in child_sub_boxes
+        inv.child_sub_boxes["c_sub"] = ((Coord3D(0, 0, 0), Coord3D(1, 1, 1)),)
+        raw_box = formulation.get_child_sub_box(("c_sub", 0))
+        assert str(raw_box[0]) == "cx[c_sub]"
+        assert str(raw_box[1]) == "cx[c_sub] + 1"
+
+    def test_formulation_corridor_boxes_all_directions(self) -> None:
+        """Corridor interior and full boxes are evaluated correctly across all 6 directions."""
+        node = SolveTreeNode(node_id="n_dirs", node_type="leaf", rooms=frozenset({1, 2}))
+        inv = inventory_cluster(node=node, child_solutions={}, graph=_make_graph([1, 2], []))
+        formulation = ClusterFormulation(inventory=inv)
+
+        directions = [
+            ((1, 0, 0), "east"),
+            ((-1, 0, 0), "west"),
+            ((0, 1, 0), "north"),
+            ((0, -1, 0), "south"),
+            ((0, 0, 1), "up"),
+            ((0, 0, -1), "down"),
+        ]
+
+        for dir_vec, name in directions:
+            ae = ActiveEdge(
+                edge_id=f"e_{name}",
+                src=1,
+                dst=2,
+                direction=dir_vec,
+                min_length=3,
+                associated_rooms=frozenset({1, 2}),
+                associated_children=frozenset(),
+            )
+            int_box = formulation.get_corridor_interior_box(ae)
+            full_box = formulation.get_corridor_full_box(ae)
+            assert len(int_box) == 6
+            assert len(full_box) == 6
+
 
 class TestStage3Clearance:
     """Unit tests for Stage 3: Geometric Clearance & Separation Constraints."""
@@ -378,6 +454,27 @@ class TestStage3Clearance:
         assert hasattr(model, "pr_sep_sum")
         assert len(model.pr_sep_sum) == 3  # (1,2), (1,3), (2,3)
 
+    def test_formulation_apply_clearances_member_method(self) -> None:
+        """Direct invocation of formulation.apply_clearances() attaches clearance constraints."""
+        node = SolveTreeNode(node_id="p_member", node_type="block", rooms=frozenset({1, 2}))
+        graph = _make_graph([1, 2], [(1, 2, Direction.east, 1)])
+        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
+        formulation = ClusterFormulation(inventory=inv)
+
+        assert not hasattr(formulation.model, "pr_sep_sum")
+        formulation.apply_clearances()
+        assert hasattr(formulation.model, "pr_sep_sum")
+
+    def test_formulation_apply_clearance_constraints_alias(self) -> None:
+        """Calling formulation.apply_clearance_constraints() delegates cleanly to apply_clearances."""
+        node = SolveTreeNode(node_id="p_alias", node_type="block", rooms=frozenset({1, 2}))
+        graph = _make_graph([1, 2], [(1, 2, Direction.east, 1)])
+        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
+        formulation = ClusterFormulation(inventory=inv)
+
+        formulation.apply_clearance_constraints()
+        assert hasattr(formulation.model, "pr_sep_sum")
+
     def test_apply_clearance_constraints_child_and_corridors(self) -> None:
         """Child sub-box and corridor clearance constraints are created."""
         c1 = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({10}))
@@ -396,6 +493,109 @@ class TestStage3Clearance:
 
         assert hasattr(model, "rc_br")  # Room vs child separation
         assert hasattr(model, "cwr_br")  # Corridor vs room separation
+
+    def test_apply_clearances_child_child_separation(self) -> None:
+        """Pairwise child-child sub-box separation is attached for non-shared children."""
+        c1 = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({10}))
+        c2 = SolveTreeNode(node_id="c2", node_type="leaf", rooms=frozenset({20}))
+        parent = SolveTreeNode(node_id="p_cc", node_type="container", rooms=frozenset({1}), children=(c1, c2))
+        sol1 = NodeSolution(
+            node_id="c1",
+            local_coordinates={10: Coord3D(0, 0, 0)},
+            sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 0),),
+        )
+        sol2 = NodeSolution(
+            node_id="c2",
+            local_coordinates={20: Coord3D(0, 0, 0)},
+            sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 0),),
+        )
+        graph = _make_graph([1, 10, 20], [])
+        inv = inventory_cluster(node=parent, child_solutions={"c1": sol1, "c2": sol2}, graph=graph)
+        formulation = ClusterFormulation(inventory=inv)
+
+        formulation.apply_clearances()
+        assert hasattr(formulation.model, "cb_br")
+        assert hasattr(formulation.model, "cb_sep_sum")
+
+    def test_apply_clearances_corridor_child_and_crossing(self) -> None:
+        """Corridor vs. sibling child and corridor crossing separation constraints are created."""
+        c1 = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({10}))
+        c_empty = SolveTreeNode(node_id="c_empty", node_type="leaf", rooms=frozenset({20}))
+        parent = SolveTreeNode(
+            node_id="p_cross",
+            node_type="container",
+            rooms=frozenset({1, 2, 3, 4}),
+            children=(c1, c_empty),
+        )
+        sol1 = NodeSolution(
+            node_id="c1",
+            local_coordinates={10: Coord3D(0, 0, 0)},
+            sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 0),),
+        )
+        sol_empty = NodeSolution(
+            node_id="c_empty",
+            local_coordinates={20: Coord3D(0, 0, 0)},
+            sub_boxes=(),
+        )
+        # Create 2 orthogonal non-incident edges
+        graph = _make_graph(
+            [1, 2, 3, 4, 10, 20],
+            [
+                (1, 2, Direction.east, 3),
+                (3, 4, Direction.north, 3),
+            ],
+        )
+        inv = inventory_cluster(node=parent, child_solutions={"c1": sol1, "c_empty": sol_empty}, graph=graph)
+        # Add a non-orthogonal edge to test direction filtering branch
+        diag_edge = ActiveEdge(
+            edge_id="e_diag",
+            src=1,
+            dst=3,
+            direction=(1, 1, 0),
+            min_length=1,
+            associated_rooms=frozenset({1, 3}),
+            associated_children=frozenset(),
+        )
+        import dataclasses
+        empty_sub_boxes = dict(inv.child_sub_boxes)
+        empty_sub_boxes["c_empty"] = ()
+        inv = dataclasses.replace(
+            inv,
+            active_edges=inv.active_edges + (diag_edge,),
+            child_sub_boxes=empty_sub_boxes,
+        )
+        formulation = ClusterFormulation(inventory=inv)
+
+        formulation.apply_clearances()
+        assert hasattr(formulation.model, "cws_br")  # Corridor vs sibling child
+        assert hasattr(formulation.model, "cc_br")   # Corridor crossing
+
+    def test_clearance_constraint_builder_direct(self) -> None:
+        """ClearanceConstraintBuilder can be instantiated and executed directly."""
+        node = SolveTreeNode(node_id="p_builder", node_type="block", rooms=frozenset({1, 2}))
+        graph = _make_graph([1, 2], [(1, 2, Direction.east, 1)])
+        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
+        formulation = ClusterFormulation(inventory=inv)
+
+        builder = ClearanceConstraintBuilder(formulation)
+        builder.build()
+        assert hasattr(formulation.model, "pr_sep_sum")
+
+    def test_individual_clearance_methods_on_formulation(self) -> None:
+        """Individual clearance separation methods on ClusterFormulation execute without error."""
+        node = SolveTreeNode(node_id="p_indiv", node_type="block", rooms=frozenset({1, 2}))
+        graph = _make_graph([1, 2], [(1, 2, Direction.east, 1)])
+        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
+        formulation = ClusterFormulation(inventory=inv)
+
+        formulation.apply_parent_room_separation()
+        formulation.apply_child_child_separation()
+        formulation.apply_room_child_separation()
+        formulation.apply_corridor_room_separation()
+        formulation.apply_corridor_child_separation()
+        formulation.apply_corridor_crossing_separation()
+
+        assert hasattr(formulation.model, "pr_sep_sum")
 
 
 class TestStage4Solver:
