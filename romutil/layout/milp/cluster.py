@@ -1,21 +1,12 @@
-"""Modular 5-stage MILP cluster layout solver and hierarchical tree coordinator."""
+"""Modular 5-stage MILP cluster layout solver."""
 
 from __future__ import annotations
 
 from typing import Mapping
 
-from romutil.layout.geometry import BoundingBox3D
-from romutil.layout.ir import (
-    LayoutGraph,
-    NodeSolution,
-    SolveTree,
-    SolveTreeNode,
-    TreeSolution,
-)
+from romutil.layout.ir import LayoutGraph, NodeSolution, SolveTreeNode
 from romutil.layout.milp.formulation import formulate_cluster_model
 from romutil.layout.milp.inventory import (
-    ActiveEdge,
-    EndpointRef,
     get_child_boundary_ports,
     inventory_cluster,
 )
@@ -25,9 +16,7 @@ from romutil.layout.milp.normalization import (
     normalize_single_room_cluster,
 )
 from romutil.layout.milp.solver import solve_and_extract
-from romutil.layout.protocols import TreeSolver
-from romutil.models import Room
-from romutil.types import Coord3D, LayoutOptions, LayoutSolverError
+from romutil.types import LayoutOptions, LayoutSolverError
 
 
 def solve_cluster(
@@ -143,76 +132,7 @@ class HierarchicalClusterSolver:
         )
 
 
-class HierarchicalTreeSolver(TreeSolver):
-    """Hierarchical tree solver that solves tree nodes bottom-up via MILP."""
-
-    def __init__(
-        self,
-        graph: LayoutGraph | None = None,
-        solver_name: str = "cbc",
-    ) -> None:
-        self.graph = graph
-        self.solver_name = solver_name
-
-    def solve_tree(
-        self,
-        tree: SolveTree,
-        options: LayoutOptions | None = None,
-    ) -> TreeSolution:
-        """Recursively solve tree nodes bottom-up (post-order traversal)."""
-        layout_graph = self.graph if self.graph is not None else tree.graph
-        if layout_graph is None:
-            all_rooms: set[int] = set()
-
-            def _collect_rooms(n: SolveTreeNode) -> None:
-                all_rooms.update(n.rooms)
-                for ch in n.children:
-                    _collect_rooms(ch)
-
-            _collect_rooms(tree.root)
-            for comp in tree.components:
-                _collect_rooms(comp)
-
-            layout_graph = LayoutGraph(
-                rooms={v: Room(vnum=v, name=f"Room {v}", description="", exits=()) for v in all_rooms},
-                edges=(),
-            )
-
-        solutions: dict[str, NodeSolution] = {}
-
-        def _solve_node(node: SolveTreeNode, g: LayoutGraph) -> NodeSolution:
-            if node.node_id in solutions:
-                return solutions[node.node_id]
-
-            # Post-order traversal: solve all children first
-            child_solutions_map: dict[str, NodeSolution] = {}
-            for child in node.children:
-                child_sol = _solve_node(child, g)
-                child_solutions_map[child.node_id] = child_sol
-
-            cluster_sol = solve_cluster(
-                node=node,
-                child_solutions=child_solutions_map,
-                graph=g,
-                options=options,
-                solver_name=self.solver_name,
-            )
-
-            solutions[node.node_id] = cluster_sol
-            return cluster_sol
-
-        _solve_node(tree.root, layout_graph)
-        for comp in tree.components:
-            if comp.node_id not in solutions:
-                _solve_node(comp, layout_graph)
-
-        return TreeSolution(node_solutions=solutions)
-
-
 __all__ = [
-    "ActiveEdge",
-    "EndpointRef",
     "HierarchicalClusterSolver",
-    "HierarchicalTreeSolver",
     "solve_cluster",
 ]

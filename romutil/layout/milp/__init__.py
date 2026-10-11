@@ -7,9 +7,7 @@ from romutil.layout.milp.clearance import (
     apply_clearance_constraints,
 )
 from romutil.layout.milp.cluster import (
-    ActiveEdge,
     HierarchicalClusterSolver,
-    HierarchicalTreeSolver,
     solve_cluster,
 )
 from romutil.layout.milp.constraints import add_disjunctive_box_separation
@@ -18,6 +16,7 @@ from romutil.layout.milp.formulation import (
     formulate_cluster_model,
 )
 from romutil.layout.milp.inventory import (
+    ActiveEdge,
     ClusterInventory,
     GatewayCutHandler,
     InterChildBridgeHandler,
@@ -30,6 +29,7 @@ from romutil.layout.milp.solver import (
     SolvedClusterExtraction,
     solve_and_extract,
 )
+from romutil.layout.milp.tree import HierarchicalTreeSolver
 from romutil.types import LayoutSolverError
 
 __all__ = [

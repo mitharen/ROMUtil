@@ -103,13 +103,13 @@ ROMUtil/
 │   │   ├── ir.py                # Intermediate representations (LayoutGraph, SolveTree, NodeSolution)
 │   │   ├── milp/                # Stage 4 mathematical optimization solvers
 │   │   │   ├── clearance.py     # Stage 3: Disjunctive Big-M clearance & non-penetration constraints
-│   │   │   ├── cluster.py       # Pipeline orchestrator, HierarchicalClusterSolver, & HierarchicalTreeSolver
+│   │   │   ├── cluster.py       # Cluster-level MILP solver orchestrator & HierarchicalClusterSolver
 │   │   │   ├── constraints.py   # Generic 3D disjunctive box separation helper
 │   │   │   ├── formulation.py   # Stage 2: Basic MILP Pyomo model formulation & displacement equations
 │   │   │   ├── inventory.py     # Stage 1: Room, child, boundary port, & active edge inventory
 │   │   │   ├── normalization.py # Stage 5: Origin coordinate normalization & NodeSolution packaging
 │   │   │   ├── solver.py        # Stage 4: Pyomo solver execution, variable extraction, & sub-box decomposition
-│   │   │   └── tree.py          # HierarchicalTreeSolver re-export
+│   │   │   └── tree.py          # Bottom-up tree traversal & HierarchicalTreeSolver
 │   │   ├── protocols.py         # Stage interfaces (GraphSimplifier, TreeBuilder, TreeSolver, LayoutAssembler)
 │   │   └── simplification/      # Stage 2 graph reduction routines
 │   │       ├── hallways.py      # HallwayCompactor (degree-2 corridor compression)
@@ -227,7 +227,7 @@ Decomposes the simplified topology into a hierarchical `SolveTree` of localized 
 
 #### Stage 4: Mathematical Optimization (`TreeSolver`)
 Assigns local 3D coordinates to rooms within each `SolveTreeNode` through Mixed-Integer Linear Programming (MILP) using Coin-OR CBC via Pyomo:
-- **`HierarchicalClusterSolver` / `solve_cluster`**:
+- **`HierarchicalClusterSolver` / `solve_cluster` (`cluster.py`)**:
   - Solves individual clusters (both atomic leaf clusters and composite parent container clusters embedding child macro-boxes) through a modular 5-stage pipeline:
     1. **Stage 1: Inventory & Interface Classification (`inventory.py`)**: Ingests the cluster node, solved child solutions, and layout graph into a `ClusterInventory` (also constructible via `ClusterInventory.from_node`). Inventories direct parent rooms, child macro-boxes, and boundary ports, derives child keep-out sub-boxes (`child_sub_boxes`) tailored to the parent interface by excluding connecting boundary ports via orthogonal decomposition (`derive_child_sub_boxes`), and classifies all incident boundary connections into canonical `ActiveEdge`s via typed child handlers (`SplitPairHandler`, `GatewayCutHandler`, `InterChildBridgeHandler`) that encapsulate alignment rules and active edge generation (internal room-room exits, gateway bridges, 1-cut articulation points, and split-pair boundary port corridors with transverse-aware anchor selection).
     2. **Stage 2: Basic MILP Formulation (`formulation.py`)**: Builds the Pyomo `ConcreteModel` encapsulated within `ClusterFormulation`, a rich domain class with member coordinate and bounding box accessors (`get_point`, `get_room_box`, `get_child_sub_box`, `get_corridor_interior_box`, `get_corridor_full_box`). Declares room coordinates ($x_r, y_r, z_r$), child macro-box origins ($c_x, c_y, c_z$), edge length dilation variables ($L_e \ge L_{\min}$), continuous transverse spring slack variables ($\vec{s}_{\text{transverse}}$), and bounding span variables. Fixes origin anchors, establishes gateway alignment equalities, active edge displacement equations ($\mathbf{p}_2 - \mathbf{p}_1 = \vec{d} \cdot L_e + \vec{s}_{\text{transverse}}$), and attaches the optimization objective minimizing edge dilation, bounding envelope span, and transverse boundary slack penalties, utilizing `inventory.child_sub_boxes` for child macro-box sub-boxes.
@@ -235,8 +235,8 @@ Assigns local 3D coordinates to rooms within each `SolveTreeNode` through Mixed-
     4. **Stage 4: Solve & Geometry Extraction (`solver.py`)**: Configures solver parameters and timeouts, invokes the MILP solver (Coin-OR CBC), validates termination status (raising `LayoutSolverError` on failures), and extracts solved unnormalized coordinates and child offsets into a `SolvedClusterExtraction`.
     5. **Stage 5: Coordinate Normalization (`normalization.py`)**: Translates local coordinates and child offsets by minimum bounding box offsets so coordinates align at origin $(0, 0, 0)$, constructing the immutable `NodeSolution`.
   - Generates a `NodeSolution` containing normalized local coordinates and child offsets in metadata, decoupled from MILP obstacle mechanics.
-- **`HierarchicalTreeSolver`**:
-  - Coordinates bottom-up leaf-to-root solving across the entire `SolveTree`, aggregating individual `NodeSolution` records into a unified `TreeSolution`.
+- **`HierarchicalTreeSolver` (`tree.py`)**:
+  - Coordinates bottom-up leaf-to-root post-order traversal across the entire `SolveTree`, solving children before parent containers and aggregating individual `NodeSolution` records into a unified `TreeSolution`.
 
 #### Stage 5: Coordinate Assembly & Restoration (`LayoutAssembler`)
 Reconstructs global coordinates from tree solutions via `HierarchicalLayoutAssembler`:
