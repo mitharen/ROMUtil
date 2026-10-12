@@ -25,6 +25,7 @@ from romutil.layout.milp import (
     ClusterFormulation,
     ClusterInventory,
     apply_clearance_constraints,
+    calculate_dynamic_bounds,
     formulate_cluster_model,
     inventory_cluster,
     normalize_cluster_solution,
@@ -1022,7 +1023,7 @@ class TestStage2Formulation:
         assert formulation.inventory is inv
         assert formulation.options is opts
         assert formulation.model is not None
-        assert formulation.m_coord >= 1000
+        assert formulation.m_coord == 50
         assert formulation.m_big == 2 * formulation.m_coord
 
     def test_formulate_cluster_model_variables_and_anchors(self) -> None:
@@ -1131,6 +1132,211 @@ class TestStage2Formulation:
             full_box = formulation.get_corridor_full_box(ae)
             assert len(int_box) == 6
             assert len(full_box) == 6
+
+    def test_dynamic_bounds_small_leaf_hits_floor(self) -> None:
+        """Small leaf clusters with few rooms and edges resolve to the baseline floor of 50."""
+        node = SolveTreeNode(node_id="leaf_3", node_type="leaf", rooms=frozenset({1, 2, 3}))
+        graph = _make_graph([1, 2, 3], [(1, 2, Direction.east, 1), (2, 3, Direction.north, 1)])
+        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
+
+        m_coord = calculate_dynamic_bounds(inv)
+        assert m_coord == 50
+
+        formulation = ClusterFormulation(inventory=inv)
+        assert formulation.m_coord == 50
+        assert formulation.m_big == 100
+
+    def test_dynamic_bounds_empty_inventory_floor(self) -> None:
+        """Empty inventory with no rooms, children, or edges safely hits the baseline floor."""
+        node = SolveTreeNode(node_id="empty_node", node_type="leaf", rooms=frozenset())
+        inv = ClusterInventory(
+            node=node,
+            rooms=(),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(),
+            room_alignments=(),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+
+        assert calculate_dynamic_bounds(inv) == 50
+        formulation = ClusterFormulation(inventory=inv)
+        assert formulation.m_coord == 50
+        assert formulation.m_big == 100
+
+    def test_dynamic_bounds_moderate_leaf_proportional_scaling(self) -> None:
+        """Moderate leaf clusters scale proportionally to room count and active edge lengths."""
+        rooms = list(range(1, 11))
+        edges = [(i, i + 1, Direction.east, 2) for i in range(1, 10)]
+        graph = _make_graph(rooms, edges)
+        node = SolveTreeNode(node_id="leaf_10", node_type="leaf", rooms=frozenset(rooms))
+        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
+
+        # 10 rooms -> room_scale = 100
+        # 9 edges with min_length 2 -> edge_min_sum = 18 -> edge_scale = 36
+        # child_spans = 0
+        # total_scale = 136
+        m_coord = calculate_dynamic_bounds(inv)
+        assert m_coord == 136
+
+        formulation = ClusterFormulation(inventory=inv)
+        assert formulation.m_coord == 136
+        assert formulation.m_big == 272
+
+    def test_dynamic_bounds_composite_with_child_solutions(self) -> None:
+        """Composite clusters derive bounds from child solution bounding boxes and port spans."""
+        c1 = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({10}))
+        c2 = SolveTreeNode(node_id="c2", node_type="leaf", rooms=frozenset({20}))
+        parent = SolveTreeNode(
+            node_id="p_comp",
+            node_type="container",
+            rooms=frozenset({1, 2}),
+            children=(c1, c2),
+        )
+
+        sol1 = NodeSolution(
+            node_id="c1",
+            local_coordinates={10: Coord3D(0, 0, 0)},
+            sub_boxes=(BoundingBox3D(0, 10, 0, 10, 0, 1),),
+        )
+        sol2 = NodeSolution(
+            node_id="c2",
+            local_coordinates={20: Coord3D(0, 0, 0)},
+            sub_boxes=(BoundingBox3D(0, 5, 0, 8, 0, 2),),
+        )
+
+        graph = _make_graph([1, 2, 10, 20], [(1, 2, Direction.east, 3)])
+        inv = inventory_cluster(
+            node=parent,
+            child_solutions={"c1": sol1, "c2": sol2},
+            graph=graph,
+        )
+
+        m_coord = calculate_dynamic_bounds(inv)
+        assert m_coord > 50
+        formulation = ClusterFormulation(inventory=inv)
+        assert formulation.m_coord == m_coord
+        assert formulation.m_big == 2 * m_coord
+
+    def test_dynamic_bounds_composite_with_keepout_sub_boxes_only(self) -> None:
+        """Composite clusters without pre-solved solutions inspect keep-out sub-boxes directly."""
+        node = SolveTreeNode(node_id="p_keepout", node_type="container", rooms=frozenset({1}))
+        inv = ClusterInventory(
+            node=node,
+            rooms=(1,),
+            children=(SolveTreeNode(node_id="c_unsolv", node_type="leaf", rooms=frozenset({2})),),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(),
+            room_alignments=(),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+            child_sub_boxes={
+                "c_unsolv": (
+                    BoundingBox3D(0, 20, 0, 20, 0, 5),
+                    (Coord3D(0, 0, 0), Coord3D(25, 25, 5)),
+                ),
+            },
+        )
+
+        # Enclosing box dimensions: (26 + 26 + 6) = 58 span, max_offset 25 -> max(58, 50) = 58.
+        # Room scale: 1 * 10 = 10.
+        # Total scale = 68.
+        m_coord = calculate_dynamic_bounds(inv)
+        assert m_coord == 68
+        assert ClusterFormulation(inventory=inv).m_big == 136
+
+    def test_dynamic_bounds_unresolved_child_fallback(self) -> None:
+        """Unresolved child nodes lacking both solutions and sub-boxes receive a safe fallback span."""
+        child = SolveTreeNode(node_id="c_raw", node_type="leaf", rooms=frozenset({5}))
+        parent = SolveTreeNode(node_id="p_raw", node_type="container", rooms=frozenset({1}), children=(child,))
+        inv = ClusterInventory(
+            node=parent,
+            rooms=(1,),
+            children=(child,),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(),
+            room_alignments=(),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+
+        # Room scale: 10, Child fallback: 20 -> total scale = 30 -> baseline floor 50.
+        assert calculate_dynamic_bounds(inv) == 50
+
+    def test_dynamic_bounds_large_edge_min_length(self) -> None:
+        """Active edges with large min_length ensure coordinate bound exceeds edge length with headroom."""
+        node = SolveTreeNode(node_id="leaf_long", node_type="leaf", rooms=frozenset({1, 2}))
+        ae = ActiveEdge(
+            edge_id="e_long",
+            src=1,
+            dst=2,
+            direction=(1, 0, 0),
+            min_length=80,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+        )
+        inv = ClusterInventory(
+            node=node,
+            rooms=(1, 2),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(ae,),
+            room_alignments=(),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+
+        # 2 rooms = 20, edge min_length 80 -> edge_scale = 160 -> total scale = 180.
+        m_coord = calculate_dynamic_bounds(inv)
+        assert m_coord == 180
+        assert m_coord >= 2 * ae.min_length
+
+    def test_dynamic_bounds_explicit_override(self) -> None:
+        """Explicit coordinate bound overrides dynamic calculation in constructor and factory."""
+        node = SolveTreeNode(node_id="leaf_ovr", node_type="leaf", rooms=frozenset({1, 2}))
+        inv = inventory_cluster(node=node, child_solutions={}, graph=_make_graph([1, 2], []))
+
+        formulation = ClusterFormulation(inventory=inv, m_coord=500)
+        assert formulation.m_coord == 500
+        assert formulation.m_big == 1000
+
+        factory_formulation = formulate_cluster_model(inventory=inv, m_coord=750)
+        assert factory_formulation.m_coord == 750
+        assert factory_formulation.m_big == 1500
+
+    def test_dynamic_bounds_mathematical_soundness(self) -> None:
+        """Disjunctive separation Big-M relation holds strictly for all extreme coordinate values."""
+        node = SolveTreeNode(node_id="leaf_sound", node_type="leaf", rooms=frozenset({1, 2}))
+        inv = inventory_cluster(node=node, child_solutions={}, graph=_make_graph([1, 2], []))
+        formulation = ClusterFormulation(inventory=inv)
+
+        m_coord = formulation.m_coord
+        m_big = formulation.m_big
+
+        # Any coordinates min_xa, max_xb in [-m_coord, m_coord]
+        # Worst-case separation when br = 0: min_xa = -m_coord, max_xb = m_coord
+        min_xa_worst = -m_coord
+        max_xb_worst = m_coord
+        diff = min_xa_worst - max_xb_worst  # -2 * m_coord
+        rhs = 1 - 2 * m_big  # 1 - 4 * m_coord
+
+        # Constraint is min_xa - max_xb >= 1 - 2 * m_big (i.e. diff - rhs >= 0)
+        slack = diff - rhs
+        assert slack > 0
+        assert slack == 2 * m_coord - 1
 
 
 class TestStage3Clearance:

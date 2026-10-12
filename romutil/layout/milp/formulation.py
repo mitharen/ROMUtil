@@ -12,6 +12,100 @@ from romutil.layout.milp.inventory import ActiveEdge, ClusterInventory, Endpoint
 from romutil.types import LayoutOptions
 
 
+def calculate_dynamic_bounds(inventory: ClusterInventory) -> int:
+    """Calculate tight dynamic coordinate and Big-M separation bounds for cluster optimization.
+
+    Bounds the coordinate domain and Big-M relaxation values proportional to the cluster's
+    topological and geometric scale:
+    - Child component bounding spans derived from child solutions and keep-out sub-boxes.
+    - Active edge minimum length requirements with stretch headroom.
+    - Parent room count scale to ensure collision-free room placement.
+    - A tight baseline floor (50) ensuring mathematical soundness for small leaf clusters
+      without numerical instability from excessive relaxation constants.
+
+    Args:
+        inventory: ClusterInventory containing classified rooms, children, child solutions,
+            keep-out sub-boxes, and active edges.
+
+    Returns:
+        Integer coordinate bounding value (m_coord).
+    """
+    baseline_floor = 50
+
+    # 1. Child component bounding spans and local coordinate offsets
+    child_spans = 0
+    all_child_ids: set[str] = set()
+    if inventory.children:
+        all_child_ids.update(c.node_id for c in inventory.children)
+    if inventory.child_solutions:
+        all_child_ids.update(inventory.child_solutions.keys())
+    if inventory.child_sub_boxes:
+        all_child_ids.update(inventory.child_sub_boxes.keys())
+
+    for cid in all_child_ids:
+        boxes: list[BoundingBox3D] = []
+
+        # Collect boxes from child solutions
+        if inventory.child_solutions and cid in inventory.child_solutions:
+            c_sol = inventory.child_solutions[cid]
+            if c_sol.bounding_box is not None:
+                boxes.append(c_sol.bounding_box)
+            if c_sol.sub_boxes:
+                boxes.extend(c_sol.sub_boxes)
+
+        # Collect boxes from derived keep-out sub-boxes
+        if inventory.child_sub_boxes and cid in inventory.child_sub_boxes:
+            for raw_sb in inventory.child_sub_boxes[cid]:
+                if isinstance(raw_sb, BoundingBox3D):
+                    boxes.append(raw_sb)
+                else:
+                    boxes.append(BoundingBox3D.from_coordinates([raw_sb[0], raw_sb[1]]))
+
+        if boxes:
+            c_min_x = min(b.min_x for b in boxes)
+            c_max_x = max(b.max_x for b in boxes)
+            c_min_y = min(b.min_y for b in boxes)
+            c_max_y = max(b.max_y for b in boxes)
+            c_min_z = min(b.min_z for b in boxes)
+            c_max_z = max(b.max_z for b in boxes)
+
+            # Sum of child dimensions (width + height + depth)
+            width = c_max_x - c_min_x + 1
+            height = c_max_y - c_min_y + 1
+            depth = c_max_z - c_min_z + 1
+            span = width + height + depth
+
+            # Local origin coordinate offset
+            max_offset = max(
+                abs(c_min_x),
+                abs(c_max_x),
+                abs(c_min_y),
+                abs(c_max_y),
+                abs(c_min_z),
+                abs(c_max_z),
+            )
+            child_spans += max(span, 2 * max_offset)
+        else:
+            # Default span estimate for unresolved child components
+            child_spans += 20
+
+    # 2. Active edge requirements with stretch headroom
+    edge_min_sum = 0
+    max_edge_min = 0
+    if inventory.active_edges:
+        edge_min_sum = sum(ae.min_length for ae in inventory.active_edges)
+        max_edge_min = max(ae.min_length for ae in inventory.active_edges)
+
+    # Multiplier accounts for corridor stretching and detour clearances around obstacles
+    edge_scale = max(2 * edge_min_sum, 2 * max_edge_min)
+
+    # 3. Parent room scale proportional to room count
+    room_scale = len(inventory.rooms) * 10
+
+    total_scale = child_spans + edge_scale + room_scale
+    return max(baseline_floor, total_scale)
+
+
 class ClusterFormulation:
     """MILP formulation model and geometric accessors for layout cluster optimization."""
 
@@ -19,6 +113,7 @@ class ClusterFormulation:
         self,
         inventory: ClusterInventory,
         options: LayoutOptions | None = None,
+        m_coord: int | None = None,
     ) -> None:
         """Initialize the MILP formulation with decision variables and base constraints.
 
@@ -26,10 +121,11 @@ class ClusterFormulation:
             inventory: ClusterInventory containing classified rooms, children, alignments,
                 and active edges.
             options: Optional layout configuration parameters.
+            m_coord: Optional explicit coordinate bound overriding dynamic calculation.
         """
         self.inventory = inventory
         self.options = options
-        self.m_coord = max(1000, 100 * (len(inventory.rooms) + len(inventory.children) * 10))
+        self.m_coord = m_coord if m_coord is not None else calculate_dynamic_bounds(inventory)
         self.m_big = 2 * self.m_coord
         self.model = pyo.ConcreteModel()
         self._build_model()
@@ -310,6 +406,7 @@ class ClusterFormulation:
 def formulate_cluster_model(
     inventory: ClusterInventory,
     options: LayoutOptions | None = None,
+    m_coord: int | None = None,
 ) -> ClusterFormulation:
     """Build the baseline Pyomo model for layout cluster optimization.
 
@@ -319,14 +416,16 @@ def formulate_cluster_model(
         inventory: ClusterInventory containing classified rooms, children, alignments,
             and active edges.
         options: Optional layout configuration parameters.
+        m_coord: Optional explicit coordinate bound overriding dynamic calculation.
 
     Returns:
         ClusterFormulation wrapping the Pyomo model and coordinate accessors.
     """
-    return ClusterFormulation(inventory=inventory, options=options)
+    return ClusterFormulation(inventory=inventory, options=options, m_coord=m_coord)
 
 
 __all__ = [
     "ClusterFormulation",
+    "calculate_dynamic_bounds",
     "formulate_cluster_model",
 ]
