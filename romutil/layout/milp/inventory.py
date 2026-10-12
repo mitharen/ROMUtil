@@ -155,7 +155,9 @@ def derive_child_sub_boxes(
     excluded from the keep-out footprint to allow external docking without triggering
     Big-M non-overlap collisions. For leaf children, non-convex collections of interior
     cells are partitioned into minimal disjoint orthogonal boxes. For composite children,
-    the enclosing bounding box is returned.
+    constituent parent rooms and translated child keep-out sub-boxes are aggregated and
+    decomposed into minimal disjoint orthogonal boxes (excluding boundary ports), preserving
+    interior voids and concavities within the cluster footprint.
 
     Args:
         child: SolveTreeNode representing the child cluster.
@@ -166,22 +168,109 @@ def derive_child_sub_boxes(
     Returns:
         Tuple of disjoint BoundingBox3D instances representing keep-out obstacles.
     """
-    if child_solution.sub_boxes:
-        return child_solution.sub_boxes
-
     if boundary_ports is None:
         boundary_ports = frozenset(get_child_boundary_ports(child))
 
-    if not child.children:
+    boundary_port_coords: set[Coord3D] = {
+        coord
+        for u, coord in child_solution.local_coordinates.items()
+        if u in boundary_ports
+    }
+    if "all_room_coordinates" in child_solution.metadata:
+        all_rooms = child_solution.metadata["all_room_coordinates"]
+        for u in boundary_ports:
+            if u in all_rooms:
+                boundary_port_coords.add(all_rooms[u])
+
+    # If the child solution has pre-computed sub-boxes (e.g. from normalization or explicit test fixture)
+    if child_solution.sub_boxes:
+        has_boundary_overlap = any(
+            Coord3D(x, y, z) in boundary_port_coords
+            for sbox in child_solution.sub_boxes
+            for x in range(sbox.min_x, sbox.max_x + 1)
+            for y in range(sbox.min_y, sbox.max_y + 1)
+            for z in range(sbox.min_z, sbox.max_z + 1)
+        )
+        if not has_boundary_overlap:
+            return child_solution.sub_boxes
+
+        # If any sub-box overlaps boundary ports, carve out the boundary port cells and re-decompose
         interior_cells: set[Coord3D] = {
-            coord
-            for u, coord in child_solution.local_coordinates.items()
-            if u not in boundary_ports
+            Coord3D(x, y, z)
+            for sbox in child_solution.sub_boxes
+            for x in range(sbox.min_x, sbox.max_x + 1)
+            for y in range(sbox.min_y, sbox.max_y + 1)
+            for z in range(sbox.min_z, sbox.max_z + 1)
+            if Coord3D(x, y, z) not in boundary_port_coords
         }
         if not interior_cells:
             return ()
         return decompose_into_orthogonal_sub_boxes(interior_cells)
 
+    # For leaf children without pre-computed sub-boxes
+    if not child.children:
+        interior_cells = {
+            coord
+            for u, coord in child_solution.local_coordinates.items()
+            if u not in boundary_ports and coord not in boundary_port_coords
+        }
+        if not interior_cells:
+            return ()
+        return decompose_into_orthogonal_sub_boxes(interior_cells)
+
+    # Fallback to coarse bounding box if child was not solved with child_sub_boxes metadata
+    if "child_sub_boxes" not in child_solution.metadata and child.children:
+        bbox = child_solution.bounding_box
+        if bbox is not None:
+            return (bbox,)
+        return ()
+
+    # For 1-cut articulation point and bridge block children, retain coarse bounding box to preserve tree isolation
+    if isinstance(child.cut_contract, (ArticulationPointCut, BridgeCut)) or child.node_type in (
+        TreeNodeType.BLOCK,
+        TreeNodeType.BICONNECTED_BLOCK,
+    ):
+        bbox = child_solution.bounding_box
+        if bbox is not None:
+            return (bbox,)
+        return ()
+
+    # For composite children, derive occupied cells from all descendant rooms and translated child sub-boxes
+    occupied_cells: set[Coord3D] = set()
+    if "all_room_coordinates" in child_solution.metadata:
+        for u, coord in child_solution.metadata["all_room_coordinates"].items():
+            if u not in boundary_ports and coord not in boundary_port_coords:
+                occupied_cells.add(coord)
+    else:
+        for u, coord in child_solution.local_coordinates.items():
+            if u not in boundary_ports and coord not in boundary_port_coords:
+                occupied_cells.add(coord)
+
+    child_offsets = child_solution.metadata.get("child_offsets", {})
+    child_sub_boxes_map = child_solution.metadata.get("child_sub_boxes", {})
+
+    for k in child.children:
+        k_id = k.node_id
+        offset = child_offsets.get(k_id)
+        if offset is None:
+            continue
+
+        sboxes = child_sub_boxes_map.get(k_id)
+        if sboxes is None:
+            continue
+
+        for sbox in sboxes:
+            for x in range(sbox.min_x, sbox.max_x + 1):
+                for y in range(sbox.min_y, sbox.max_y + 1):
+                    for z in range(sbox.min_z, sbox.max_z + 1):
+                        cell = Coord3D(x + offset.x, y + offset.y, z + offset.z)
+                        if cell not in boundary_port_coords:
+                            occupied_cells.add(cell)
+
+    if occupied_cells:
+        return decompose_into_orthogonal_sub_boxes(occupied_cells)
+
+    # Fallback to coarse bounding box if no sub-boxes or internal cells could be resolved
     bbox = child_solution.bounding_box
     if bbox is not None:
         return (bbox,)

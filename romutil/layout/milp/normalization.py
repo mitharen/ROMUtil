@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
-from romutil.layout.geometry import BoundingBox3D
+from romutil.layout.geometry import (
+    BoundingBox3D,
+    decompose_into_orthogonal_sub_boxes,
+)
 from romutil.layout.ir import NodeSolution, SolveTreeNode
 from romutil.layout.milp.solver import SolvedClusterExtraction
 from romutil.types import Coord3D
@@ -48,20 +51,25 @@ def normalize_cluster_solution(
     node: SolveTreeNode,
     children: Sequence[SolveTreeNode],
     child_solutions: Mapping[str, NodeSolution],
+    child_sub_boxes: Mapping[str, Sequence[BoundingBox3D]] | None = None,
 ) -> NodeSolution:
     """Normalize solved room coordinates and child offsets to origin (0, 0, 0).
 
     Computes the minimum spatial bounds across all constituent rooms and child bounding
     boxes, applies the translational shift, and returns the immutable NodeSolution.
+    For composite clusters embedding child clusters, recursively aggregates physical
+    occupied footprints across constituent parent rooms and translated child sub-boxes,
+    decomposing them into disjoint orthogonal sub-boxes.
 
     Args:
         extraction: SolvedClusterExtraction containing raw coordinates and child offsets.
         node: SolveTreeNode representing the solved cluster.
         children: Sequence of child solve tree nodes.
         child_solutions: Mapping of child node IDs to already-solved NodeSolutions.
+        child_sub_boxes: Optional mapping of child node IDs to derived keep-out sub-boxes.
 
     Returns:
-        Immutable NodeSolution containing normalized coordinates and child offsets.
+        Immutable NodeSolution containing normalized coordinates, sub-boxes, and metadata.
     """
     all_pts: list[tuple[int, int, int]] = list(extraction.raw_parent_coords.values())
     for child in children:
@@ -91,9 +99,39 @@ def normalize_cluster_solution(
         for cid, (x, y, z) in extraction.raw_child_offsets.items()
     }
 
+    # Aggregate descendant room coordinates in cluster local frame
+    all_room_coords = dict(norm_parent_coords)
+    for child in children:
+        cid = child.node_id
+        c_off = norm_child_offsets.get(cid)
+        if c_off is None:
+            continue
+        c_sol = child_solutions.get(cid)
+        if not c_sol:
+            continue
+        for u, pt in c_sol.local_coordinates.items():
+            all_room_coords[u] = Coord3D(pt.x + c_off.x, pt.y + c_off.y, pt.z + c_off.z)
+        if "all_room_coordinates" in c_sol.metadata:
+            for u, pt in c_sol.metadata["all_room_coordinates"].items():
+                all_room_coords[u] = Coord3D(pt.x + c_off.x, pt.y + c_off.y, pt.z + c_off.z)
+
+    # Collect sub-boxes per child
+    sub_boxes_map: dict[str, tuple[BoundingBox3D, ...]] = {}
+    if child_sub_boxes is not None:
+        for cid, boxes in child_sub_boxes.items():
+            sub_boxes_map[cid] = tuple(boxes)
+    else:
+        for child in children:
+            cid = child.node_id
+            c_sol = child_solutions.get(cid)
+            if c_sol and c_sol.sub_boxes:
+                sub_boxes_map[cid] = tuple(c_sol.sub_boxes)
+
     metadata: dict[str, Any] = {
         "child_offsets": norm_child_offsets,
         "status": extraction.solver_status,
+        "child_sub_boxes": sub_boxes_map,
+        "all_room_coordinates": all_room_coords,
     }
     if all_pts:
         max_x = max(p[0] for p in all_pts)
