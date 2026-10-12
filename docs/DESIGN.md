@@ -238,13 +238,18 @@ Assigns local 3D coordinates to rooms within each `SolveTreeNode` through Mixed-
   - Generates a `NodeSolution` containing normalized local coordinates and child offsets in metadata, decoupled from MILP obstacle mechanics.
 - **`HierarchicalTreeSolver` (`tree.py`)**:
   - Coordinates bottom-up leaf-to-root post-order traversal across the entire `SolveTree`, solving children before parent containers and aggregating individual `NodeSolution` records into a unified `TreeSolution`.
-- **Cluster Solve Debug Visualizer (`debug.py`)**:
+- **Cluster Solve Debug Visualizer & SolveTree Explorer (`debug.py`)**:
   - `render_cluster_solve_svg(extraction, inventory, output_path, title=None, graph=None)` produces standalone isometric SVG diagrams capturing the mathematical and geometric state of individual cluster MILP solves.
   - Visualizes:
     - **Parent Rooms**: Rendered at their solved 3D coordinates $(x, y, z)$, annotated with VNUMs, coordinates, and optional names from graph metadata, highlighting boundary ports.
     - **Active Edges**: Styled by interface classification (corridor edges, split-pair corridors, gateway/bridge edges, direct room-room edges) with directional arrows, length constraint badges, and dashed strokes for transverse spring slack.
     - **Child Macro-Boxes & Keep-Out Sub-Boxes**: Renders bounding boxes and decomposed sub-boxes positioned at solved child offsets, displaying internal child rooms, boundary ports, and dimension envelopes.
-  - Integrated into `solve_cluster` via `LayoutOptions.debug_solve_dir` or CLI flags `--debug-solve` / `--debug-solve-dir`.
+    - **Interactive Hyperlinks & Navigation**: Child macro-boxes and header pills enclose `<a xlink:href="cluster_<child_id>.svg">` hyperlinks with tooltips, allowing instant drill-down from parent clusters to child solves in the browser; header cards contain direct navigation links back to `index.html` and parent cluster diagrams.
+  - `render_debug_solve_tree_index(tree, output_dir, area_name=None)` generates an interactive, two-pane HTML dashboard (`index.html`) in the debug directory:
+    - **Metrics Bar**: Displays root cluster ID, total cluster nodes, tree depth, total rooms, and solve status (`OPTIMAL`).
+    - **Left Navigation Pane**: Renders a collapsible SolveTree hierarchy with color-coded node type badges (`RIGID_CLUSTER`, `SERIES_LOOP`, `SPLIT_PAIR_CONTAINER`, `BLOCK`), topological cut contracts, room/child count pills, live search filtering by ID or room VNUM, and direct external SVG links.
+    - **Right Preview Pane**: Embeds an active SVG diagram preview inside a responsive `<iframe>`, dynamically updated when selecting tree nodes or drilling into child macro-boxes, with header actions to open standalone SVGs.
+  - Integrated into `HierarchicalTreeSolver.solve_tree` and `solve_cluster` via `LayoutOptions.debug_solve_dir` or CLI flags `--debug-solve` / `--debug-solve-dir`.
 
 #### Stage 5: Coordinate Assembly & Restoration (`LayoutAssembler`)
 Reconstructs global coordinates from tree solutions via `HierarchicalLayoutAssembler`:

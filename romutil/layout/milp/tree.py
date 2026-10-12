@@ -78,6 +78,11 @@ class HierarchicalTreeSolver(TreeSolver):
             if comp.node_id not in solutions:
                 _solve_node(comp, layout_graph)
 
+        if options and options.debug_solve_dir:
+            from romutil.layout.milp.debug import render_debug_solve_tree_index
+
+            render_debug_solve_tree_index(tree, options.debug_solve_dir)
+
         return TreeSolution(node_solutions=solutions)
 
 

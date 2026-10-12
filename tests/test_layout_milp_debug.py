@@ -8,7 +8,14 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from romutil.layout.geometry import BoundingBox3D
-from romutil.layout.ir import LayoutEdge, LayoutGraph, NodeSolution, SolveTreeNode, TreeNodeType
+from romutil.layout.ir import (
+    LayoutEdge,
+    LayoutGraph,
+    NodeSolution,
+    SolveTree,
+    SolveTreeNode,
+    TreeNodeType,
+)
 from romutil.layout.milp.cluster import HierarchicalClusterSolver, solve_cluster
 from romutil.layout.milp.debug import (
     _classify_edge,
@@ -16,9 +23,11 @@ from romutil.layout.milp.debug import (
     _get_child_bounding_box,
     _resolve_endpoint_coord,
     render_cluster_solve_svg,
+    render_debug_solve_tree_index,
 )
 from romutil.layout.milp.inventory import ActiveEdge, ClusterInventory
 from romutil.layout.milp.solver import SolvedClusterExtraction
+from romutil.layout.milp.tree import HierarchicalTreeSolver
 from romutil.models import Direction, Exit, Room
 from romutil.types import Coord3D, LayoutOptions, SolverStatus
 
@@ -286,6 +295,10 @@ def test_render_cluster_solve_svg_with_children_and_sub_boxes(tmp_path: Path):
     assert "Keep-Out Sub-box" in svg_content
     assert "bridge_edge" in svg_content
     assert "201" in svg_content
+    assert "cluster_child_sub.svg" in svg_content
+    assert "Click to view child cluster child_sub" in svg_content
+    assert "index.html" in svg_content
+    assert "Index" in svg_content
 
 
 def test_render_cluster_solve_svg_3d_elevations(tmp_path: Path):
@@ -373,3 +386,177 @@ def test_solve_cluster_with_debug_solve_dir(tmp_path: Path):
     assert 501 in solution2.local_coordinates
     direct_svg = direct_debug_dir / "cluster_test_two_room.svg"
     assert direct_svg.is_file()
+
+
+def test_render_cluster_solve_svg_with_parent_breadcrumb(tmp_path: Path):
+    node = SolveTreeNode(
+        node_id="child_cluster_7",
+        node_type=TreeNodeType.RIGID_CLUSTER,
+        rooms=frozenset({101}),
+        metadata={"parent_id": "root_spqr_0"},
+    )
+    inventory = ClusterInventory(
+        node=node,
+        rooms=(101,),
+        children=(),
+        child_solutions={},
+        boundary_ports=frozenset(),
+        active_edges=(),
+        room_alignments=(),
+        child_alignments=(),
+        gateway_anchors={},
+        aligned_children=frozenset(),
+        equated_children=frozenset(),
+        child_sub_boxes={},
+        graph=None,
+    )
+    extraction = SolvedClusterExtraction(
+        raw_parent_coords={101: (0, 0, 0)},
+        raw_child_offsets={},
+        solver_status=SolverStatus.OPTIMAL,
+    )
+    out_file = tmp_path / "cluster_child_7.svg"
+    render_cluster_solve_svg(extraction, inventory, out_file)
+    assert out_file.is_file()
+    content = out_file.read_text(encoding="utf-8")
+    assert "cluster_root_spqr_0.svg" in content
+    assert "↑ root_spqr_0" in content
+
+
+def test_render_debug_solve_tree_index_complete_hierarchy(tmp_path: Path):
+    leaf_a = SolveTreeNode(
+        node_id="leaf_a",
+        node_type=TreeNodeType.BLOCK,
+        rooms=frozenset({10, 11}),
+    )
+    leaf_b = SolveTreeNode(
+        node_id="leaf_b",
+        node_type="leaf",
+        rooms=frozenset({12}),
+    )
+    series_node = SolveTreeNode(
+        node_id="series_1",
+        node_type=TreeNodeType.SERIES_LOOP,
+        rooms=frozenset({10, 11, 12}),
+        children=(leaf_a, leaf_b),
+        metadata={"cut_type": "articulation_point", "anchor_vnum": 10},
+    )
+    split_node = SolveTreeNode(
+        node_id="split_pair_2",
+        node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+        rooms=frozenset({20, 21}),
+        children=(),
+        metadata={"cut_type": "split_pair", "poles": (20, 21)},
+    )
+    root_node = SolveTreeNode(
+        node_id="root_rigid",
+        node_type=TreeNodeType.RIGID_CLUSTER,
+        rooms=frozenset({1, 2}),
+        children=(series_node, split_node),
+    )
+    comp_node = SolveTreeNode(
+        node_id="comp_isolated",
+        node_type=TreeNodeType.BLOCK,
+        rooms=frozenset({99}),
+        children=(),
+    )
+    tree = SolveTree(
+        root=root_node,
+        components=(comp_node,),
+    )
+
+    out_dir = tmp_path / "debug_solves" / "thalos"
+    index_file = render_debug_solve_tree_index(tree, out_dir, area_name="thalos")
+
+    assert index_file == out_dir / "index.html"
+    assert index_file.is_file()
+    html_text = index_file.read_text(encoding="utf-8")
+
+    # Metrics
+    assert "SolveTree Explorer: Thalos" in html_text
+    assert "root_rigid" in html_text
+    assert "OPTIMAL" in html_text
+    assert "Nodes:" in html_text
+    assert "Depth:" in html_text
+    assert "Rooms:" in html_text
+
+    # Node IDs and direct SVG links
+    assert "cluster_root_rigid.svg" in html_text
+    assert "cluster_series_1.svg" in html_text
+    assert "cluster_split_pair_2.svg" in html_text
+    assert "cluster_leaf_a.svg" in html_text
+    assert "cluster_leaf_b.svg" in html_text
+    assert "cluster_comp_isolated.svg" in html_text
+
+    # Badges
+    assert "RIGID_CLUSTER" in html_text
+    assert "SERIES_LOOP" in html_text
+    assert "SPLIT_PAIR_CONTAINER" in html_text
+    assert "ARTICULATION_POINT" in html_text
+    assert "SPLIT_PAIR" in html_text
+    assert "BLOCK" in html_text
+
+    # Disconnected components section
+    assert "Disconnected Components" in html_text
+
+    # Area map breadcrumb link
+    assert "../../thalos.html" in html_text
+
+    # Iframe preview element
+    assert '<iframe id="svg-frame" src="cluster_root_rigid.svg"' in html_text
+
+
+def test_render_debug_solve_tree_index_inferred_area_and_leaf_root(tmp_path: Path):
+    root = SolveTreeNode(
+        node_id="single_leaf",
+        node_type=TreeNodeType.BLOCK,
+        rooms=frozenset({100}),
+    )
+    tree = SolveTree(root=root, components=())
+    solve_dir = tmp_path / "midgaard"
+    index_file = render_debug_solve_tree_index(tree, solve_dir)
+
+    assert index_file.is_file()
+    html_text = index_file.read_text(encoding="utf-8")
+    assert "Midgaard" in html_text
+    assert "single_leaf" in html_text
+    assert "cluster_single_leaf.svg" in html_text
+
+
+def test_solve_tree_generates_debug_index(tmp_path: Path):
+    r1 = Room(
+        vnum=10,
+        name="Hall",
+        description="",
+        exits=(Exit(direction=Direction.east, dst_vnum=11),),
+    )
+    r2 = Room(
+        vnum=11,
+        name="Chamber",
+        description="",
+        exits=(Exit(direction=Direction.west, dst_vnum=10),),
+    )
+    graph = LayoutGraph(
+        rooms={10: r1, 11: r2},
+        edges=(LayoutEdge(src=10, dst=11, direction=Direction.east.value),),
+    )
+    root = SolveTreeNode(
+        node_id="tree_root",
+        node_type=TreeNodeType.RIGID_CLUSTER,
+        rooms=frozenset({10, 11}),
+        children=(),
+    )
+    tree = SolveTree(root=root, graph=graph)
+
+    debug_dir = tmp_path / "solve_inspect"
+    options = LayoutOptions(debug_solve_dir=debug_dir)
+
+    solver = HierarchicalTreeSolver()
+    solution = solver.solve_tree(tree, options=options)
+
+    assert "tree_root" in solution.node_solutions
+    index_file = debug_dir / "index.html"
+    assert index_file.is_file()
+    html_text = index_file.read_text(encoding="utf-8")
+    assert "tree_root" in html_text
+    assert "cluster_tree_root.svg" in html_text
