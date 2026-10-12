@@ -17,6 +17,7 @@ from romutil.layout.milp.debug import (
 )
 from romutil.layout.milp.formulation import (
     ClusterFormulation,
+    calculate_dynamic_bounds,
     formulate_cluster_model,
 )
 from romutil.layout.milp.inventory import (
@@ -50,6 +51,7 @@ __all__ = [
     "SplitPairHandler",
     "add_disjunctive_box_separation",
     "apply_clearance_constraints",
+    "calculate_dynamic_bounds",
     "derive_child_sub_boxes",
     "formulate_cluster_model",
     "inventory_cluster",
