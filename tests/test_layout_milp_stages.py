@@ -272,6 +272,107 @@ class TestStage1Inventory:
         assert boxes[0].min_x == 0
         assert boxes[0].max_x == 5
 
+    def test_derive_child_sub_boxes_composite_recursive_cavity_carving(self) -> None:
+        """Composite child aggregates constituent rooms and child sub-boxes, preserving concavities."""
+        # Child has an internal room at (0, 0, 0), and a grandchild at offset (0, 4, 0)
+        # The region between Y=1 and Y=3 is completely empty.
+        grandchild = SolveTreeNode(node_id="gc", node_type="leaf", rooms=frozenset({10}))
+        child = SolveTreeNode(
+            node_id="comp_concave",
+            node_type="container",
+            rooms=frozenset({1}),
+            children=(grandchild,),
+        )
+        child_sol = NodeSolution(
+            node_id="comp_concave",
+            local_coordinates={1: Coord3D(0, 0, 0)},
+            metadata={
+                "child_offsets": {"gc": Coord3D(0, 4, 0)},
+                "child_sub_boxes": {
+                    "gc": (BoundingBox3D(0, 0, 0, 0, 0, 0),),
+                },
+                "bounding_box": BoundingBox3D(0, 0, 0, 4, 0, 0),
+            },
+        )
+        boxes = derive_child_sub_boxes(
+            child=child,
+            child_solution=child_sol,
+            boundary_ports=frozenset(),
+        )
+        # Because Y in [1..3] is void, the decomposition must yield 2 disjoint sub-boxes
+        assert len(boxes) == 2
+        box_coords = {(b.min_x, b.max_x, b.min_y, b.max_y, b.min_z, b.max_z) for b in boxes}
+        assert (0, 0, 0, 0, 0, 0) in box_coords
+        assert (0, 0, 4, 4, 0, 0) in box_coords
+
+    def test_derive_child_sub_boxes_composite_excludes_boundary_ports(self) -> None:
+        """Composite child strictly excludes boundary ports on constituent and descendant rooms."""
+        grandchild = SolveTreeNode(node_id="gc", node_type="leaf", rooms=frozenset({20}))
+        child = SolveTreeNode(
+            node_id="comp_ports",
+            node_type="container",
+            rooms=frozenset({1, 2}),  # 1 is internal, 2 is boundary port
+            children=(grandchild,),
+        )
+        child_sol = NodeSolution(
+            node_id="comp_ports",
+            local_coordinates={1: Coord3D(0, 0, 0), 2: Coord3D(0, 1, 0)},
+            metadata={
+                "child_offsets": {"gc": Coord3D(0, 3, 0)},
+                "child_sub_boxes": {
+                    "gc": (BoundingBox3D(0, 0, 0, 0, 0, 0),),
+                },
+                "all_room_coordinates": {
+                    1: Coord3D(0, 0, 0),
+                    2: Coord3D(0, 1, 0),
+                    20: Coord3D(0, 3, 0),
+                },
+            },
+        )
+        boxes = derive_child_sub_boxes(
+            child=child,
+            child_solution=child_sol,
+            boundary_ports=frozenset({2}),
+        )
+        assert len(boxes) == 2
+        # Room 2 at (0, 1, 0) must NOT be contained within any sub-box
+        for b in boxes:
+            assert not (b.min_x <= 0 <= b.max_x and b.min_y <= 1 <= b.max_y and b.min_z <= 0 <= b.max_z)
+
+    def test_derive_child_sub_boxes_explicit_sub_boxes_punches_boundary_port(self) -> None:
+        """Explicit sub-boxes overlapping boundary ports are carved and re-decomposed."""
+        child = SolveTreeNode(node_id="c_explicit", node_type="leaf", rooms=frozenset({1, 2}))
+        # Explicit box covers X=[0..2], Y=[0..0], Z=[0..0]. Port 2 is at (1, 0, 0).
+        child_sol = NodeSolution(
+            node_id="c_explicit",
+            local_coordinates={1: Coord3D(0, 0, 0), 2: Coord3D(1, 0, 0)},
+            sub_boxes=(BoundingBox3D(0, 2, 0, 0, 0, 0),),
+        )
+        boxes = derive_child_sub_boxes(
+            child=child,
+            child_solution=child_sol,
+            boundary_ports=frozenset({2}),
+        )
+        # Port 2 at (1, 0, 0) carved out -> remaining are (0, 0, 0) and (2, 0, 0) -> 2 disjoint boxes
+        assert len(boxes) == 2
+        box_coords = {(b.min_x, b.max_x, b.min_y, b.max_y, b.min_z, b.max_z) for b in boxes}
+        assert (0, 0, 0, 0, 0, 0) in box_coords
+        assert (2, 2, 0, 0, 0, 0) in box_coords
+
+    def test_derive_child_sub_boxes_empty_when_all_ports(self) -> None:
+        """Returns empty tuple when all rooms are boundary ports."""
+        child = SolveTreeNode(node_id="c_all_ports", node_type="leaf", rooms=frozenset({1}))
+        child_sol = NodeSolution(
+            node_id="c_all_ports",
+            local_coordinates={1: Coord3D(0, 0, 0)},
+        )
+        boxes = derive_child_sub_boxes(
+            child=child,
+            child_solution=child_sol,
+            boundary_ports=frozenset({1}),
+        )
+        assert boxes == ()
+
     def test_derive_child_sub_boxes_excludes_boundary_ports(self) -> None:
         """Boundary ports are strictly excluded when deriving child sub-boxes."""
         child = SolveTreeNode(
@@ -722,6 +823,34 @@ class TestStage5Normalization:
         assert norm_sol.local_coordinates == {}
         assert norm_sol.metadata["child_offsets"]["c_nobox"] == Coord3D(0, 0, 0)
         assert norm_sol.sub_boxes == ()
+
+    def test_normalize_cluster_solution_aggregates_child_sub_boxes_and_rooms(self) -> None:
+        """Normalizes composite cluster, storing child sub-boxes and descendant room coordinates."""
+        grandchild = SolveTreeNode(node_id="gc", node_type="leaf", rooms=frozenset({20}))
+        parent = SolveTreeNode(node_id="p", node_type="container", rooms=frozenset({10}), children=(grandchild,))
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={10: (0, 0, 0)},
+            raw_child_offsets={"gc": (2, 3, 0)},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        gc_sol = NodeSolution(
+            node_id="gc",
+            local_coordinates={20: Coord3D(0, 0, 0)},
+            sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 0),),
+        )
+        norm_sol = normalize_cluster_solution(
+            extraction=extraction,
+            node=parent,
+            children=(grandchild,),
+            child_solutions={"gc": gc_sol},
+            child_sub_boxes={"gc": (BoundingBox3D(0, 1, 0, 1, 0, 0),)},
+        )
+        assert "child_sub_boxes" in norm_sol.metadata
+        assert "gc" in norm_sol.metadata["child_sub_boxes"]
+        assert norm_sol.metadata["child_sub_boxes"]["gc"] == (BoundingBox3D(0, 1, 0, 1, 0, 0),)
+        assert "all_room_coordinates" in norm_sol.metadata
+        assert norm_sol.metadata["all_room_coordinates"][10] == Coord3D(0, 0, 0)
+        assert norm_sol.metadata["all_room_coordinates"][20] == Coord3D(2, 3, 0)
 
     def test_solve_and_extract_timeout_and_missing_child_offset(self) -> None:
         """Timeout status returns SolverStatus.TIMEOUT and missing child offset raises error."""

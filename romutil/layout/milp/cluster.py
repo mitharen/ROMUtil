@@ -121,6 +121,7 @@ def solve_cluster(
             node=node,
             children=inventory.children,
             child_solutions=child_solutions,
+            child_sub_boxes=inventory.child_sub_boxes,
         )
     except LayoutSolverError:
         raise
