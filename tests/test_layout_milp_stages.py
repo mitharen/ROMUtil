@@ -39,6 +39,7 @@ from romutil.layout.milp.inventory import (
     RoomChildAlignment,
     SplitPairHandler,
     SplitPairResult,
+    _build_internal_room_edges,
     derive_child_sub_boxes,
     get_child_boundary_ports,
 )
@@ -410,6 +411,601 @@ class TestStage1Inventory:
         assert "c1" in inv.child_sub_boxes
         assert len(inv.child_sub_boxes["c1"]) == 1
         assert inv.child_sub_boxes["c1"][0] == BoundingBox3D(0, 1, 0, 0, 0, 0)
+
+    def test_get_child_boundary_ports_metadata_parsing(self) -> None:
+        """Parse child boundary ports from metadata with varied pole configurations."""
+        node_no_poles = SolveTreeNode(
+            node_id="c_no_poles",
+            node_type="leaf",
+            rooms=frozenset({1, 2}),
+            metadata={"cut_type": CutType.SPLIT_PAIR},
+        )
+        assert get_child_boundary_ports(node_no_poles) == set()
+
+        node_single_pole = SolveTreeNode(
+            node_id="c_single_pole",
+            node_type="leaf",
+            rooms=frozenset({1, 2}),
+            metadata={"cut_type": "split_pair", "poles": [10]},
+        )
+        assert get_child_boundary_ports(node_single_pole) == set()
+
+        node_three_poles = SolveTreeNode(
+            node_id="c_three_poles",
+            node_type="leaf",
+            rooms=frozenset({1, 2, 3}),
+            metadata={"poles": [10, 20, 30]},
+        )
+        assert get_child_boundary_ports(node_three_poles) == set()
+
+        node_none_poles = SolveTreeNode(
+            node_id="c_none_poles",
+            node_type="leaf",
+            rooms=frozenset({1, 2}),
+            metadata={"poles": None},
+        )
+        assert get_child_boundary_ports(node_none_poles) == set()
+
+        mock_child = MagicMock(spec=SolveTreeNode)
+        mock_child.cut_contract = None
+        mock_child.cut_type = CutType.SPLIT_PAIR
+        mock_child.metadata = {"poles": ("6", "7")}
+        assert get_child_boundary_ports(mock_child) == {6, 7}
+
+    def test_derive_child_sub_boxes_fallbacks_and_empty_coordinates(self) -> None:
+        """Derive sub-boxes handling None boundary ports, bounding box fallbacks, and empty cells."""
+        child_sp = SolveTreeNode(
+            node_id="c_sp_none",
+            node_type="leaf",
+            rooms=frozenset({1, 2, 3}),
+            metadata={"cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        sol_sp = NodeSolution(
+            node_id="c_sp_none",
+            local_coordinates={1: Coord3D(0, 0, 0), 2: Coord3D(2, 0, 0), 3: Coord3D(1, 0, 0)},
+        )
+        boxes_sp = derive_child_sub_boxes(child=child_sp, child_solution=sol_sp, boundary_ports=None)
+        assert len(boxes_sp) == 1
+        assert boxes_sp[0] == BoundingBox3D(1, 1, 0, 0, 0, 0)
+
+        grandchild = SolveTreeNode(node_id="gc", node_type="leaf", rooms=frozenset({10}))
+        comp_child = SolveTreeNode(
+            node_id="comp_no_boxes",
+            node_type="container",
+            rooms=frozenset({1}),
+            children=(grandchild,),
+        )
+        sol_comp_no_bbox = NodeSolution(node_id="comp_no_boxes", local_coordinates={})
+        assert derive_child_sub_boxes(comp_child, sol_comp_no_bbox) == ()
+
+        sol_comp_with_bbox = NodeSolution(
+            node_id="comp_no_boxes",
+            local_coordinates={},
+            metadata={"bounding_box": BoundingBox3D(0, 2, 0, 1, 0, 0)},
+        )
+        assert derive_child_sub_boxes(comp_child, sol_comp_with_bbox) == (BoundingBox3D(0, 2, 0, 1, 0, 0),)
+
+        block_child = SolveTreeNode(
+            node_id="block_child",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1}),
+            children=(grandchild,),
+        )
+        sol_block_no_bbox = NodeSolution(
+            node_id="block_child",
+            local_coordinates={},
+            metadata={"child_sub_boxes": {}},
+        )
+        assert derive_child_sub_boxes(block_child, sol_block_no_bbox) == ()
+
+        sol_block_with_bbox = NodeSolution(
+            node_id="block_child",
+            local_coordinates={},
+            metadata={"child_sub_boxes": {}, "bounding_box": BoundingBox3D(0, 1, 0, 0, 0, 0)},
+        )
+        assert derive_child_sub_boxes(block_child, sol_block_with_bbox) == (BoundingBox3D(0, 1, 0, 0, 0, 0),)
+
+        gc1 = SolveTreeNode(node_id="gc1", node_type="leaf", rooms=frozenset({10}))
+        gc2 = SolveTreeNode(node_id="gc2", node_type="leaf", rooms=frozenset({20}))
+        gc3 = SolveTreeNode(node_id="gc3", node_type="leaf", rooms=frozenset({30}))
+        comp_partial = SolveTreeNode(
+            node_id="comp_partial",
+            node_type="container",
+            rooms=frozenset({1}),
+            children=(gc1, gc2, gc3),
+        )
+        sol_comp_partial = NodeSolution(
+            node_id="comp_partial",
+            local_coordinates={1: Coord3D(0, 0, 0)},
+            metadata={
+                "child_offsets": {"gc1": Coord3D(3, 0, 0)},
+                "child_sub_boxes": {"gc2": (BoundingBox3D(0, 0, 0, 0, 0, 0),)},
+            },
+        )
+        boxes_partial = derive_child_sub_boxes(comp_partial, sol_comp_partial)
+        assert len(boxes_partial) == 1
+        assert boxes_partial[0] == BoundingBox3D(0, 0, 0, 0, 0, 0)
+
+        comp_empty_cells = SolveTreeNode(
+            node_id="comp_empty",
+            node_type="container",
+            rooms=frozenset({1}),
+            children=(gc1,),
+        )
+        sol_empty_cells_with_bbox = NodeSolution(
+            node_id="comp_empty",
+            local_coordinates={},
+            metadata={"child_sub_boxes": {}, "bounding_box": BoundingBox3D(0, 1, 0, 0, 0, 0)},
+        )
+        assert derive_child_sub_boxes(
+            comp_empty_cells, sol_empty_cells_with_bbox, boundary_ports=frozenset({1})
+        ) == (BoundingBox3D(0, 1, 0, 0, 0, 0),)
+
+        sol_empty_cells_no_bbox = NodeSolution(
+            node_id="comp_empty",
+            local_coordinates={},
+            metadata={"child_sub_boxes": {}},
+        )
+        assert derive_child_sub_boxes(
+            comp_empty_cells, sol_empty_cells_no_bbox, boundary_ports=frozenset({1})
+        ) == ()
+
+        child_carved = SolveTreeNode(node_id="c_carved", node_type="leaf", rooms=frozenset({1}))
+        sol_carved = NodeSolution(
+            node_id="c_carved",
+            local_coordinates={1: Coord3D(0, 0, 0)},
+            sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),),
+        )
+        assert derive_child_sub_boxes(child_carved, sol_carved, boundary_ports=frozenset({1})) == ()
+
+    def test_split_pair_handler_grouping_and_metadata_poles(self) -> None:
+        """SplitPairHandler groups children from metadata and container-level poles."""
+        child_meta = SolveTreeNode(
+            node_id="c_meta",
+            node_type="leaf",
+            rooms=frozenset({1, 2, 5}),
+            metadata={"cut_type": CutType.SPLIT_PAIR, "poles": (1, 2)},
+        )
+        child_invalid = SolveTreeNode(
+            node_id="c_inv",
+            node_type="leaf",
+            rooms=frozenset({3, 4}),
+            metadata={"cut_type": CutType.SPLIT_PAIR, "poles": [3]},
+        )
+        child_container_bound = SolveTreeNode(
+            node_id="c_cb",
+            node_type="leaf",
+            rooms=frozenset({10, 20}),
+        )
+        mock_uncontracted = MagicMock(spec=SolveTreeNode)
+        mock_uncontracted.node_id = "c_uncontracted"
+        mock_uncontracted.cut_contract = None
+        mock_uncontracted.cut_type = CutType.SPLIT_PAIR
+        mock_uncontracted.metadata = {"poles": (50, 60)}
+        mock_uncontracted.rooms = frozenset({50, 60})
+        mock_uncontracted.children = ()
+
+        parent = SolveTreeNode(
+            node_id="parent_cont",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2, 10, 20}),
+            children=(child_meta, child_invalid, child_container_bound, mock_uncontracted),
+            metadata={"poles": (10, 20)},
+        )
+        sols = {
+            "c_meta": NodeSolution("c_meta", {1: Coord3D(0, 0, 0), 2: Coord3D(2, 0, 0), 5: Coord3D(1, 0, 0)}, ()),
+            "c_inv": NodeSolution("c_inv", {3: Coord3D(0, 0, 0), 4: Coord3D(1, 0, 0)}, ()),
+            "c_cb": NodeSolution("c_cb", {10: Coord3D(0, 0, 0), 20: Coord3D(3, 0, 0)}, ()),
+            "c_uncontracted": NodeSolution("c_uncontracted", {50: Coord3D(0, 0, 0), 60: Coord3D(1, 0, 0)}, ()),
+        }
+        graph = _make_graph([1, 2, 3, 4, 5, 10, 20, 50, 60], [])
+        handler = SplitPairHandler(node=parent, child_solutions=sols, graph=graph)
+        grouped = handler.group_split_children()
+
+        assert (1, 2) in grouped
+        assert child_meta in grouped[(1, 2)]
+        assert (10, 20) in grouped
+        assert child_container_bound in grouped[(10, 20)]
+        assert (3, 4) not in grouped
+        assert (50, 60) in grouped
+
+    def test_split_pair_handler_transverse_exit_and_anchor_selection(self) -> None:
+        """SplitPairHandler selects anchor pole based on transverse exits and handles invalid directions."""
+        child_p0 = SolveTreeNode(
+            node_id="c_p0",
+            node_type="leaf",
+            rooms=frozenset({1, 2, 10}),
+            metadata={"cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        parent_p0 = SolveTreeNode(
+            node_id="parent_p0",
+            node_type="container",
+            rooms=frozenset({1, 2}),
+            children=(child_p0,),
+        )
+        sol_p0 = NodeSolution(
+            node_id="c_p0",
+            local_coordinates={
+                1: Coord3D(0, 0, 0),
+                2: Coord3D(4, 0, 0),
+                10: Coord3D(0, 1, 0),
+                99: Coord3D(0, 2, 0),
+            },
+            sub_boxes=(),
+        )
+        room_defs = {v: Room(vnum=v, name="", description="", exits=()) for v in [1, 2, 10, 99]}
+        edges = [
+            LayoutEdge(src=1, dst=10, direction=int(Direction.north), weight=1, cut=False),
+            LayoutEdge(src=2, dst=99, direction=999, weight=1, cut=False),
+            LayoutEdge(src=99, dst=1, direction=999, weight=1, cut=False),
+        ]
+        graph = LayoutGraph(rooms=room_defs, edges=tuple(edges))
+
+        handler = SplitPairHandler(node=parent_p0, child_solutions={"c_p0": sol_p0}, graph=graph)
+        res = handler.process()
+        assert res.child_anchor_poles["c_p0"] == 1
+        assert any(a.room_vnum == 1 and a.child_id == "c_p0" for a in res.room_alignments)
+
+        # Incoming edges where dst == p_check with invalid direction and valid transverse displacement
+        edges_incoming = [
+            LayoutEdge(src=99, dst=1, direction=999, weight=1, cut=False),
+            LayoutEdge(src=10, dst=1, direction=int(Direction.north), weight=1, cut=False),
+        ]
+        graph_inc = LayoutGraph(rooms=room_defs, edges=tuple(edges_incoming))
+        handler_inc = SplitPairHandler(node=parent_p0, child_solutions={"c_p0": sol_p0}, graph=graph_inc)
+        assert handler_inc._has_transverse_exit(p_check=1, p0=1, p1=2, primary_axis=0, c_sol=sol_p0) is True
+
+    def test_split_pair_handler_align_children_branches(self) -> None:
+        """SplitPairHandler exercises align_children branches: empty groups, external poles, and non-axis alignment."""
+        c1 = SolveTreeNode(
+            node_id="c1",
+            node_type="leaf",
+            rooms=frozenset({10, 20}),
+            metadata={"cut_contract": SplitPairCut(poles=(10, 20))},
+        )
+        c2 = SolveTreeNode(
+            node_id="c2",
+            node_type="leaf",
+            rooms=frozenset({10, 20}),
+            metadata={"cut_contract": SplitPairCut(poles=(10, 20))},
+        )
+        parent_no_poles = SolveTreeNode(
+            node_id="parent_np",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1}),
+            children=(c1, c2),
+        )
+        sols = {
+            "c1": NodeSolution("c1", {10: Coord3D(0, 0, 0), 20: Coord3D(2, 1, 0)}, ()),
+            "c2": NodeSolution("c2", {10: Coord3D(0, 0, 0), 20: Coord3D(2, 1, 0)}, ()),
+        }
+        graph = _make_graph([1, 10, 20], [(10, 20, Direction.east, 3)])
+        handler = SplitPairHandler(node=parent_no_poles, child_solutions=sols, graph=graph)
+
+        groups = {(10, 20): [c1, c2], (30, 40): []}
+        (
+            room_aligns,
+            child_aligns,
+            equated,
+            gw_anchors,
+            aligned,
+            child_anchor_poles,
+            min_lens,
+            split_dirs,
+        ) = handler.align_children(split_children_by_poles=groups, room_anchored_children=None)
+
+        assert len(child_aligns) == 2
+        assert frozenset({"c1", "c2"}) in equated
+        assert split_dirs[(10, 20)] == (1, 0, 0)
+        assert min_lens[(10, 20)] >= 3
+
+        sols_degen = {
+            "c1": NodeSolution("c1", {10: Coord3D(0, 0, 0), 20: Coord3D(0, 0, 0)}, ()),
+            "c2": NodeSolution("c2", {10: Coord3D(0, 0, 0), 20: Coord3D(0, 0, 0)}, ()),
+        }
+        handler_degen = SplitPairHandler(node=parent_no_poles, child_solutions=sols_degen, graph=_make_graph([1, 10, 20], []))
+        _, _, _, _, _, _, _, split_dirs_degen = handler_degen.align_children(
+            split_children_by_poles={(10, 20): [c1, c2]}
+        )
+        assert split_dirs_degen[(10, 20)] == (1, 0, 0)
+
+        class MissingKeyCoordMap(dict):
+            def __contains__(self, key: object) -> bool:
+                if key == 20:
+                    return False
+                return super().__contains__(key)
+
+        c_missing = SolveTreeNode(node_id="c_miss", node_type="leaf", rooms=frozenset({10}))
+        sols_miss = {
+            "c1": NodeSolution("c1", {10: Coord3D(0, 0, 0), 20: Coord3D(2, 0, 0)}, ()),
+            "c_miss": NodeSolution("c_miss", MissingKeyCoordMap({10: Coord3D(0, 0, 0), 20: Coord3D(0, 0, 0)}), ()),
+        }
+        handler_miss = SplitPairHandler(node=parent_no_poles, child_solutions=sols_miss, graph=_make_graph([1, 10, 20], []))
+        handler_miss.align_children(split_children_by_poles={(10, 20): [c1, c_missing]})
+
+    def test_split_pair_handler_corridor_active_edges_edge_cases(self) -> None:
+        """SplitPairHandler exercises cut edges, reverse parent-child edges, and self-loops in corridors."""
+        c1 = SolveTreeNode(
+            node_id="c1",
+            node_type="leaf",
+            rooms=frozenset({1, 2, 10}),
+            metadata={"cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        c2 = SolveTreeNode(
+            node_id="c2",
+            node_type="leaf",
+            rooms=frozenset({3, 4, 20}),
+            metadata={"cut_contract": SplitPairCut(poles=(3, 4))},
+        )
+        parent = SolveTreeNode(
+            node_id="p",
+            node_type="container",
+            rooms=frozenset({1, 2, 5, 6}),
+            children=(c1, c2),
+        )
+        sols = {
+            "c1": NodeSolution("c1", {1: Coord3D(0, 0, 0), 2: Coord3D(2, 0, 0), 10: Coord3D(1, 0, 0)}, ()),
+            "c2": NodeSolution("c2", {3: Coord3D(0, 0, 0), 4: Coord3D(2, 0, 0), 20: Coord3D(1, 0, 0)}, ()),
+        }
+        room_defs = {v: Room(vnum=v, name="", description="", exits=()) for v in [1, 2, 3, 4, 5, 6, 10, 20]}
+        edges = [
+            LayoutEdge(src=5, dst=10, direction=int(Direction.east), weight=1, cut=True),
+            LayoutEdge(src=5, dst=10, direction=999, weight=1, cut=False),
+            LayoutEdge(src=5, dst=6, direction=int(Direction.east), weight=1, cut=False),
+            LayoutEdge(src=10, dst=1, direction=int(Direction.east), weight=1, cut=False),
+            LayoutEdge(src=10, dst=5, direction=int(Direction.south), weight=2, cut=False),
+            LayoutEdge(src=10, dst=10, direction=int(Direction.north), weight=1, cut=False),
+            LayoutEdge(src=10, dst=3, direction=int(Direction.west), weight=1, cut=False),
+        ]
+        graph = LayoutGraph(rooms=room_defs, edges=tuple(edges))
+
+        handler = SplitPairHandler(node=parent, child_solutions=sols, graph=graph)
+        corridors, gw, aligned = handler.build_corridor_active_edges(
+            split_children_by_poles={(1, 2): [c1], (3, 4): [c2]},
+            child_anchor_poles={"c1": 1, "c2": 3},
+            equated_children=set(),
+        )
+        edge_ids = {e.edge_id for e in corridors}
+        assert "ext_c1_10_5" in edge_ids
+        assert "ext_c1_c2_10_3" in edge_ids
+
+        # Equated children skip inter-split corridor construction
+        corridors_eq, _, _ = handler.build_corridor_active_edges(
+            split_children_by_poles={(1, 2): [c1], (3, 4): [c2]},
+            child_anchor_poles={"c1": 1, "c2": 3},
+            equated_children={frozenset({"c1", "c2"})},
+        )
+        assert "ext_c1_c2_10_3" not in {e.edge_id for e in corridors_eq}
+
+    def test_split_pair_handler_direct_sp_edges_and_process_defaults(self) -> None:
+        """SplitPairHandler exercises direct sp active edges skips and process default arguments."""
+        c1 = SolveTreeNode(
+            node_id="c1",
+            node_type="leaf",
+            rooms=frozenset({1, 2}),
+            metadata={"cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        parent = SolveTreeNode(
+            node_id="p",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(c1,),
+        )
+        sols = {
+            "c1": NodeSolution("c1", {1: Coord3D(0, 0, 0), 2: Coord3D(2, 0, 0)}, ()),
+        }
+        graph = _make_graph([1, 2], [(1, 2, Direction.east, 2)])
+        handler = SplitPairHandler(node=parent, child_solutions=sols, graph=graph)
+
+        sp_edges = handler.build_split_pair_active_edges(
+            split_children_by_poles={(1, 2): [c1]},
+            split_min_lengths={(1, 2): 2},
+            split_directions={(1, 2): (1, 0, 0)},
+            handled_pole_pairs=None,
+        )
+        assert len(sp_edges) == 1
+
+        sp_edges_handled = handler.build_split_pair_active_edges(
+            split_children_by_poles={(1, 2): [c1]},
+            split_min_lengths={(1, 2): 2},
+            split_directions={(1, 2): (1, 0, 0)},
+            handled_pole_pairs={(1, 2)},
+        )
+        assert len(sp_edges_handled) == 0
+
+        sp_edges_no_dir = handler.build_split_pair_active_edges(
+            split_children_by_poles={(1, 2): [c1]},
+            split_min_lengths={(1, 2): 2},
+            split_directions={},
+            handled_pole_pairs=set(),
+        )
+        assert len(sp_edges_no_dir) == 0
+
+        res = handler.process(room_anchored_children=None, handled_pole_pairs=None)
+        assert len(res.split_pair_edges) == 1
+
+    def test_gateway_cut_handler_edge_cases_and_error_handling(self) -> None:
+        """GatewayCutHandler exercises metadata fallback, multiple anchors, reverse doorway edges, and invalid directions."""
+        c_art1 = SolveTreeNode(
+            node_id="c_art1",
+            node_type="leaf",
+            rooms=frozenset({1, 10}),
+            metadata={"anchor_vnum": 1},
+        )
+        c_art2 = SolveTreeNode(
+            node_id="c_art2",
+            node_type="leaf",
+            rooms=frozenset({1, 20}),
+            metadata={"cut_type": CutType.ARTICULATION_POINT, "anchor_vnum": "1"},
+        )
+        c_art_none = SolveTreeNode(
+            node_id="c_art_none",
+            node_type="leaf",
+            rooms=frozenset({1, 30}),
+            metadata={"cut_type": CutType.ARTICULATION_POINT, "anchor_vnum": None},
+        )
+        mock_uncontracted_art = MagicMock(spec=SolveTreeNode)
+        mock_uncontracted_art.node_id = "c_uncontracted_art"
+        mock_uncontracted_art.cut_contract = None
+        mock_uncontracted_art.cut_type = CutType.ARTICULATION_POINT
+        mock_uncontracted_art.metadata = {"anchor_vnum": 1}
+        mock_uncontracted_art.rooms = frozenset({1, 70})
+        mock_uncontracted_art.children = ()
+
+        c_brg_fwd = SolveTreeNode(
+            node_id="c_brg_fwd",
+            node_type="leaf",
+            rooms=frozenset({40}),
+            metadata={"cut_contract": BridgeCut(bridge_edge=(1, 40), direction=999, weight=1)},
+        )
+        c_brg_rev = SolveTreeNode(
+            node_id="c_brg_rev",
+            node_type="leaf",
+            rooms=frozenset({50}),
+            metadata={"cut_contract": BridgeCut(bridge_edge=(50, 1), direction=999, weight=1)},
+        )
+        c_graph_rev = SolveTreeNode(
+            node_id="c_graph_rev",
+            node_type="leaf",
+            rooms=frozenset({60}),
+        )
+        parent = SolveTreeNode(
+            node_id="p_gw",
+            node_type="container",
+            rooms=frozenset({1}),
+            children=(c_art1, c_art2, c_art_none, mock_uncontracted_art, c_brg_fwd, c_brg_rev, c_graph_rev),
+        )
+        sols = {
+            "c_art1": NodeSolution("c_art1", {1: Coord3D(0, 0, 0), 10: Coord3D(1, 0, 0)}, ()),
+            "c_art2": NodeSolution("c_art2", {1: Coord3D(0, 0, 0), 20: Coord3D(0, 1, 0)}, ()),
+            "c_art_none": NodeSolution("c_art_none", {1: Coord3D(0, 0, 0), 30: Coord3D(0, 0, 1)}, ()),
+            "c_uncontracted_art": NodeSolution("c_uncontracted_art", {1: Coord3D(0, 0, 0), 70: Coord3D(1, 0, 0)}, ()),
+            "c_brg_fwd": NodeSolution("c_brg_fwd", {40: Coord3D(0, 0, 0)}, ()),
+            "c_brg_rev": NodeSolution("c_brg_rev", {50: Coord3D(0, 0, 0)}, ()),
+            "c_graph_rev": NodeSolution("c_graph_rev", {60: Coord3D(0, 0, 0)}, ()),
+        }
+        room_defs = {v: Room(vnum=v, name="", description="", exits=()) for v in [1, 10, 20, 30, 40, 50, 60, 70]}
+        edges = [
+            LayoutEdge(src=1, dst=60, direction=int(Direction.north), weight=1, cut=True),
+            LayoutEdge(src=1, dst=40, direction=999, weight=1, cut=False),
+            LayoutEdge(src=60, dst=1, direction=999, weight=1, cut=False),
+            LayoutEdge(src=60, dst=1, direction=int(Direction.south), weight=3, cut=False),
+        ]
+        graph = LayoutGraph(rooms=room_defs, edges=tuple(edges))
+
+        handler = GatewayCutHandler(node=parent, child_solutions=sols, graph=graph)
+        # Direct call to process_articulation_points with room_anchored_children=None
+        art_aligns, _, _, _ = handler.process_articulation_points(aligned_children=set(), room_anchored_children=None)
+        assert len(art_aligns) >= 1
+
+        res = handler.process(aligned_children=None, room_anchored_children=None)
+        assert frozenset({"c_art1", "c_art2"}) in res.equated_children
+        edge_ids = {e.edge_id for e in res.active_edges}
+        assert "gw_c_graph_rev_60_1" in edge_ids
+
+    def test_inter_child_bridge_handler_filtering_and_error_handling(self) -> None:
+        """InterChildBridgeHandler exercises equated filtering, unaligned target skipping, and invalid directions."""
+        c1 = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({10}))
+        c2 = SolveTreeNode(
+            node_id="c2",
+            node_type="leaf",
+            rooms=frozenset({20}),
+            metadata={"cut_contract": BridgeCut(bridge_edge=(10, 20), direction=999, weight=1)},
+        )
+        c3 = SolveTreeNode(
+            node_id="c3",
+            node_type="leaf",
+            rooms=frozenset({30}),
+            metadata={"cut_contract": BridgeCut(bridge_edge=(30, 10), direction=999, weight=1)},
+        )
+        c4 = SolveTreeNode(node_id="c4", node_type="leaf", rooms=frozenset({40}))
+        parent = SolveTreeNode(
+            node_id="p_icb",
+            node_type="container",
+            rooms=frozenset(),
+            children=(c1, c2, c3, c4),
+        )
+        sols = {
+            "c1": NodeSolution("c1", {10: Coord3D(0, 0, 0)}, ()),
+            "c2": NodeSolution("c2", {20: Coord3D(0, 0, 0)}, ()),
+            "c3": NodeSolution("c3", {30: Coord3D(0, 0, 0)}, ()),
+            "c4": NodeSolution("c4", {40: Coord3D(0, 0, 0)}, ()),
+        }
+        room_defs = {v: Room(vnum=v, name="", description="", exits=()) for v in [10, 20, 30, 40]}
+        edges = [
+            LayoutEdge(src=10, dst=20, direction=int(Direction.east), weight=1, cut=True),
+            LayoutEdge(src=10, dst=40, direction=999, weight=1, cut=False),
+            LayoutEdge(src=40, dst=10, direction=999, weight=1, cut=False),
+            LayoutEdge(src=10, dst=40, direction=int(Direction.east), weight=2, cut=False),
+        ]
+        graph = LayoutGraph(rooms=room_defs, edges=tuple(edges))
+
+        handler_eq = InterChildBridgeHandler(node=parent, child_solutions=sols, graph=graph)
+        res_eq = handler_eq.process(
+            aligned_children={"c1"},
+            equated_children={frozenset({"c1", "c4"}), frozenset({"c1", "c2"}), frozenset({"c1", "c3"})},
+        )
+        assert len(res_eq.active_edges) == 0
+
+        handler = InterChildBridgeHandler(node=parent, child_solutions=sols, graph=graph)
+        res = handler.process(aligned_children={"c1"}, equated_children=set())
+        assert len(res.active_edges) == 1
+        assert res.active_edges[0].edge_id == "ccb_c1_c4_10_40"
+        assert "c4" in res.aligned_children
+
+    def test_build_internal_room_edges_invalid_directions_and_empty_rooms(self) -> None:
+        """Internal room edge builder handles empty rooms, split pair duplicates, and invalid directions."""
+        assert _build_internal_room_edges(
+            graph=_make_graph([], []),
+            rooms=(),
+            split_pole_pairs=set(),
+            split_min_lengths={},
+            split_children_by_poles={},
+            pole_edges_handled=set(),
+        ) == []
+
+        room_defs = {v: Room(vnum=v, name="", description="", exits=()) for v in [1, 2, 3]}
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=999, weight=1, cut=False),
+            LayoutEdge(src=1, dst=2, direction=int(Direction.east), weight=1, cut=False),
+            LayoutEdge(src=2, dst=3, direction=999, weight=1, cut=False),
+            LayoutEdge(src=1, dst=3, direction=int(Direction.north), weight=1, cut=False),
+        ]
+        graph = LayoutGraph(rooms=room_defs, edges=tuple(edges))
+        pole_handled: set[tuple[int, int]] = set()
+        active = _build_internal_room_edges(
+            graph=graph,
+            rooms=(1, 2, 3),
+            split_pole_pairs={(1, 2)},
+            split_min_lengths={(1, 2): 3},
+            split_children_by_poles={},
+            pole_edges_handled=pole_handled,
+        )
+        assert len(active) == 1
+        assert active[0].src == 1
+        assert active[0].dst == 3
+        assert (1, 2) in pole_handled
+
+    def test_inventory_cluster_missing_child_solution_and_empty_sub_boxes(self) -> None:
+        """Stage 1 inventory assigns empty sub-boxes tuple when child cluster lacks a solution."""
+        child_solved = SolveTreeNode(node_id="c_solved", node_type="leaf", rooms=frozenset({1}))
+        child_unsolved = SolveTreeNode(node_id="c_unsolved", node_type="leaf", rooms=frozenset({2}))
+        parent = SolveTreeNode(
+            node_id="p",
+            node_type="container",
+            rooms=frozenset({10}),
+            children=(child_solved, child_unsolved),
+        )
+        sol_solved = NodeSolution("c_solved", {1: Coord3D(0, 0, 0)}, ())
+        graph = _make_graph([1, 2, 10], [])
+
+        inv = inventory_cluster(
+            node=parent,
+            child_solutions={"c_solved": sol_solved},
+            graph=graph,
+        )
+        assert inv.child_sub_boxes["c_unsolved"] == ()
+        assert "c_solved" in inv.child_sub_boxes
 
 
 class TestStage2Formulation:
