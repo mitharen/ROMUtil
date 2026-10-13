@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import collections
+from typing import TYPE_CHECKING, Any
 
+from romutil.layout.hierarchy.block_cut import ArticulationPointCut, BridgeCut
 from romutil.layout.milp.constraints import add_disjunctive_box_separation
+from romutil.layout.milp.inventory import direction_to_displacement
 
 if TYPE_CHECKING:
+    from romutil.layout.ir import SolveTreeNode
     from romutil.layout.milp.formulation import ClusterFormulation
 
 
@@ -35,10 +39,11 @@ class ClearanceConstraintBuilder:
             )
 
     def add_child_child_separation(self) -> None:
-        """Enforce pairwise child-child sub-box separation among non-shared child clusters."""
+        """Enforce pairwise child-child sub-box separation among non-shared child clusters and 1-cut siblings."""
         children = self.formulation.inventory.children
         child_solutions = self.formulation.inventory.child_solutions
         child_sub_boxes = self.formulation.inventory.child_sub_boxes
+        equated = self.formulation.inventory.equated_children
 
         child_pairs: list[tuple[tuple[str, int], tuple[str, int]]] = []
         for i in range(len(children)):
@@ -51,7 +56,13 @@ class ClearanceConstraintBuilder:
                 sb2 = child_sub_boxes.get(c2.node_id, ())
                 if sol1 and sol2 and sb1 and sb2:
                     shared = set(sol1.local_coordinates.keys()) & set(sol2.local_coordinates.keys())
-                    if not shared:
+                    is_sibling_one_cut = (
+                        len(shared) == 1
+                        and isinstance(c1.cut_contract, (ArticulationPointCut, BridgeCut))
+                        and isinstance(c2.cut_contract, (ArticulationPointCut, BridgeCut))
+                        and frozenset({c1.node_id, c2.node_id}) not in equated
+                    )
+                    if not shared or is_sibling_one_cut:
                         for k1 in range(len(sb1)):
                             for k2 in range(len(sb2)):
                                 child_pairs.append(((c1.node_id, k1), (c2.node_id, k2)))
@@ -210,11 +221,79 @@ class ClearanceConstraintBuilder:
             m_big=self.formulation.m_big,
         )
 
+    def add_doorway_clearance(self) -> None:
+        """Enforce external doorway clearance for boundary ports against child sub-boxes."""
+        node = getattr(self.formulation.inventory, "node", None)
+        rooms = self.formulation.inventory.rooms
+        children = self.formulation.inventory.children
+        child_solutions = self.formulation.inventory.child_solutions
+        child_sub_boxes = self.formulation.inventory.child_sub_boxes
+        graph = self.formulation.inventory.graph
+        b_ports = self.formulation.inventory.boundary_ports
+
+        if not (node and b_ports and graph):
+            return
+
+        sub_rooms: set[int] = set(node.rooms)
+
+        def _collect_subtree(n: SolveTreeNode) -> None:
+            sub_rooms.update(n.rooms)
+            for ch in n.children:
+                _collect_subtree(ch)
+
+        for ch in node.children:
+            _collect_subtree(ch)
+
+        active_dirs: dict[int, set[tuple[int, int, int]]] = collections.defaultdict(set)
+        for ae in self.formulation.inventory.active_edges:
+            if isinstance(ae.src, int):
+                active_dirs[ae.src].add(ae.direction)
+            if isinstance(ae.dst, int):
+                rev = (-ae.direction[0], -ae.direction[1], -ae.direction[2])
+                active_dirs[ae.dst].add(rev)
+
+        doorway_child_pairs: list[tuple[tuple[int, tuple[int, int, int]], tuple[str, int]]] = []
+        for u in b_ports:
+            if u not in rooms or u not in graph.rooms:
+                continue
+            for ex in graph.rooms[u].exits:
+                if ex.dst_vnum not in sub_rooms:
+                    try:
+                        disp = direction_to_displacement(ex.direction)
+                    except ValueError:
+                        continue
+                    if disp in active_dirs[u]:
+                        continue
+                    d_key = (u, disp)
+                    for child in children:
+                        c_sol = child_solutions.get(child.node_id)
+                        sb = child_sub_boxes.get(child.node_id, ())
+                        if c_sol and sb:
+                            for k in range(len(sb)):
+                                doorway_child_pairs.append((d_key, (child.node_id, k)))
+
+        def get_doorway_box(d_key: tuple[int, tuple[int, int, int]]) -> tuple[Any, Any, Any, Any, Any, Any]:
+            u, disp = d_key
+            x, y, z = self.formulation.get_point(u)
+            dx, dy, dz = disp
+            return (x + dx, x + dx, y + dy, y + dy, z + dz, z + dz)
+
+        if doorway_child_pairs:
+            add_disjunctive_box_separation(
+                model=self.formulation.model,
+                pairs=doorway_child_pairs,
+                get_box_a=get_doorway_box,
+                get_box_b=self.formulation.get_child_sub_box,
+                prefix="dwc",
+                m_big=self.formulation.m_big,
+            )
+
     def build(self) -> None:
         """Apply all disjunctive Big-M geometric clearance constraints."""
         self.add_parent_room_separation()
         self.add_child_child_separation()
         self.add_room_child_separation()
+        self.add_doorway_clearance()
         self.add_corridor_room_separation()
         self.add_corridor_child_separation()
         self.add_corridor_crossing_separation()

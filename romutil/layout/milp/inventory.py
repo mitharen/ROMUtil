@@ -132,6 +132,14 @@ def get_child_boundary_ports(child: SolveTreeNode) -> set[int]:
     contract = child.cut_contract
     if isinstance(contract, SplitPairCut):
         ports.update(contract.poles)
+    elif isinstance(contract, (ArticulationPointCut, BridgeCut)):
+        anchor = getattr(contract, "anchor_vnum", None)
+        if anchor is not None:
+            ports.add(int(anchor))
+        elif "anchor_vnum" in child.metadata:
+            raw_anchor = child.metadata.get("anchor_vnum")
+            if raw_anchor is not None:
+                ports.add(int(raw_anchor))
     elif (
         child.cut_type == CutType.SPLIT_PAIR
         or child.metadata.get("cut_type") in (CutType.SPLIT_PAIR, "split_pair")
@@ -141,6 +149,15 @@ def get_child_boundary_ports(child: SolveTreeNode) -> set[int]:
         if raw_poles and len(raw_poles) == 2:
             ports.add(int(raw_poles[0]))
             ports.add(int(raw_poles[1]))
+    elif (
+        child.cut_type in (CutType.ARTICULATION_POINT, CutType.BRIDGE)
+        or child.metadata.get("cut_type")
+        in (CutType.ARTICULATION_POINT, "articulation_point", CutType.BRIDGE, "bridge")
+        or "anchor_vnum" in child.metadata
+    ):
+        raw_anchor = child.metadata.get("anchor_vnum")
+        if raw_anchor is not None:
+            ports.add(int(raw_anchor))
     return ports
 
 
@@ -220,16 +237,6 @@ def derive_child_sub_boxes(
 
     # Fallback to coarse bounding box if child was not solved with child_sub_boxes metadata
     if "child_sub_boxes" not in child_solution.metadata and child.children:
-        bbox = child_solution.bounding_box
-        if bbox is not None:
-            return (bbox,)
-        return ()
-
-    # For 1-cut articulation point and bridge block children, retain coarse bounding box to preserve tree isolation
-    if isinstance(child.cut_contract, (ArticulationPointCut, BridgeCut)) or child.node_type in (
-        TreeNodeType.BLOCK,
-        TreeNodeType.BICONNECTED_BLOCK,
-    ):
         bbox = child_solution.bounding_box
         if bbox is not None:
             return (bbox,)
@@ -608,6 +615,12 @@ class SplitPairHandler:
                         # Inter-child edge to split-pair boundary ports
                         for other in self.children:
                             if other.node_id == sc.node_id:
+                                continue
+                            if not (
+                                other.cut_type == CutType.SPLIT_PAIR
+                                or isinstance(other.cut_contract, SplitPairCut)
+                                or other.metadata.get("cut_type") in (CutType.SPLIT_PAIR, "split_pair")
+                            ):
                                 continue
                             if frozenset({other.node_id, sc.node_id}) in equated_children:
                                 continue

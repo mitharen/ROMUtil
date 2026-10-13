@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from romutil.layout.geometry import (
     BoundingBox3D,
@@ -11,6 +11,9 @@ from romutil.layout.geometry import (
 from romutil.layout.ir import NodeSolution, SolveTreeNode
 from romutil.layout.milp.solver import SolvedClusterExtraction
 from romutil.types import Coord3D
+
+if TYPE_CHECKING:
+    from romutil.layout.milp.inventory import ActiveEdge
 
 
 def normalize_empty_cluster(node: SolveTreeNode) -> NodeSolution:
@@ -52,6 +55,7 @@ def normalize_cluster_solution(
     children: Sequence[SolveTreeNode],
     child_solutions: Mapping[str, NodeSolution],
     child_sub_boxes: Mapping[str, Sequence[BoundingBox3D]] | None = None,
+    active_edges: Sequence[ActiveEdge] | None = None,
 ) -> NodeSolution:
     """Normalize solved room coordinates and child offsets to origin (0, 0, 0).
 
@@ -67,6 +71,7 @@ def normalize_cluster_solution(
         children: Sequence of child solve tree nodes.
         child_solutions: Mapping of child node IDs to already-solved NodeSolutions.
         child_sub_boxes: Optional mapping of child node IDs to derived keep-out sub-boxes.
+        active_edges: Optional active edges of the cluster to identify expanded corridor paths.
 
     Returns:
         Immutable NodeSolution containing normalized coordinates, sub-boxes, and metadata.
@@ -100,7 +105,7 @@ def normalize_cluster_solution(
     }
 
     # Aggregate descendant room coordinates in cluster local frame
-    all_room_coords = dict(norm_parent_coords)
+    all_room_coords: dict[Any, Coord3D] = dict(norm_parent_coords)
     for child in children:
         cid = child.node_id
         c_off = norm_child_offsets.get(cid)
@@ -114,6 +119,23 @@ def normalize_cluster_solution(
         if "all_room_coordinates" in c_sol.metadata:
             for u, pt in c_sol.metadata["all_room_coordinates"].items():
                 all_room_coords[u] = Coord3D(pt.x + c_off.x, pt.y + c_off.y, pt.z + c_off.z)
+
+    if active_edges:
+        for ae in active_edges:
+            if (
+                isinstance(ae.src, int)
+                and isinstance(ae.dst, int)
+                and ae.src in norm_parent_coords
+                and ae.dst in norm_parent_coords
+            ):
+                p1 = norm_parent_coords[ae.src]
+                p2 = norm_parent_coords[ae.dst]
+                dist = abs(p2.x - p1.x) + abs(p2.y - p1.y) + abs(p2.z - p1.z)
+                if dist > 1:
+                    dx, dy, dz = ae.direction
+                    for t in range(1, dist):
+                        corr_pt = Coord3D(p1.x + t * dx, p1.y + t * dy, p1.z + t * dz)
+                        all_room_coords[f"corridor_{ae.src}_{ae.dst}_{t}"] = corr_pt
 
     # Collect sub-boxes per child
     sub_boxes_map: dict[str, tuple[BoundingBox3D, ...]] = {}
