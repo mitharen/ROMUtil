@@ -107,6 +107,65 @@ class TestStage1Inventory:
         )
         assert get_child_boundary_ports(node_meta_str) == {6, 7}
 
+        node_art_contract = SolveTreeNode(
+            node_id="c_art_contract",
+            node_type="leaf",
+            rooms=frozenset({10, 11}),
+            metadata={"cut_contract": ArticulationPointCut(anchor_vnum=10)},
+        )
+        assert get_child_boundary_ports(node_art_contract) == {10}
+
+        node_art_meta_enum = SolveTreeNode(
+            node_id="c_art_enum",
+            node_type="leaf",
+            rooms=frozenset({12, 13}),
+            metadata={"cut_type": CutType.ARTICULATION_POINT, "anchor_vnum": 12},
+        )
+        assert get_child_boundary_ports(node_art_meta_enum) == {12}
+
+        node_art_meta_str = SolveTreeNode(
+            node_id="c_art_str",
+            node_type="leaf",
+            rooms=frozenset({14, 15}),
+            metadata={"cut_type": "articulation_point", "anchor_vnum": "14"},
+        )
+        assert get_child_boundary_ports(node_art_meta_str) == {14}
+
+        node_art_meta_anchor_only = SolveTreeNode(
+            node_id="c_art_anchor_only",
+            node_type="leaf",
+            rooms=frozenset({16, 17}),
+            metadata={"anchor_vnum": 16},
+        )
+        assert get_child_boundary_ports(node_art_meta_anchor_only) == {16}
+
+        node_bridge_contract_with_anchor = SolveTreeNode(
+            node_id="c_bridge_contract_anchor",
+            node_type="leaf",
+            rooms=frozenset({20, 21}),
+            metadata={
+                "cut_contract": BridgeCut(bridge_edge=(1, 20), direction=0),
+                "anchor_vnum": 20,
+            },
+        )
+        assert get_child_boundary_ports(node_bridge_contract_with_anchor) == {20}
+
+        node_bridge_meta_enum = SolveTreeNode(
+            node_id="c_bridge_enum",
+            node_type="leaf",
+            rooms=frozenset({22, 23}),
+            metadata={"cut_type": CutType.BRIDGE, "anchor_vnum": 22},
+        )
+        assert get_child_boundary_ports(node_bridge_meta_enum) == {22}
+
+        node_bridge_meta_str = SolveTreeNode(
+            node_id="c_bridge_str",
+            node_type="leaf",
+            rooms=frozenset({24, 25}),
+            metadata={"cut_type": "bridge", "anchor_vnum": "24"},
+        )
+        assert get_child_boundary_ports(node_bridge_meta_str) == {24}
+
         node_plain = SolveTreeNode(
             node_id="c_plain",
             node_type="leaf",
@@ -361,6 +420,117 @@ class TestStage1Inventory:
         assert (0, 0, 0, 0, 0, 0) in box_coords
         assert (2, 2, 0, 0, 0, 0) in box_coords
 
+    def test_derive_child_sub_boxes_articulation_block_multi_z_isolation(self) -> None:
+        """1-cut articulation block decomposes into multi-Z sub-boxes preserving vacant upper levels."""
+        # Catacomb child at z=0 spans [0..4] x [0..4] x [0..0]
+        catacomb = SolveTreeNode(
+            node_id="catacombs",
+            node_type="leaf",
+            rooms=frozenset(range(1, 26)),
+        )
+        catacomb_box = BoundingBox3D(0, 4, 0, 4, 0, 0)
+
+        # Composite block has surface rooms at z=2:
+        # Room 100 is the articulation anchor (boundary port) at (0, 0, 2).
+        # Room 101 is an interior surface room at (1, 0, 2).
+        block_child = SolveTreeNode(
+            node_id="art_block",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({100, 101}),
+            children=(catacomb,),
+            metadata={
+                "cut_contract": ArticulationPointCut(anchor_vnum=100),
+                "anchor_vnum": 100,
+            },
+        )
+        catacomb_rooms = {
+            (i + 1): Coord3D(x, y, 0)
+            for i, (x, y) in enumerate(
+                (x, y) for x in range(5) for y in range(5)
+            )
+        }
+        all_rooms = dict(catacomb_rooms)
+        all_rooms[100] = Coord3D(0, 0, 2)
+        all_rooms[101] = Coord3D(1, 0, 2)
+
+        child_sol = NodeSolution(
+            node_id="art_block",
+            local_coordinates={100: Coord3D(0, 0, 2), 101: Coord3D(1, 0, 2)},
+            metadata={
+                "bounding_box": BoundingBox3D(0, 4, 0, 4, 0, 2),
+                "child_offsets": {"catacombs": Coord3D(0, 0, 0)},
+                "child_sub_boxes": {"catacombs": (catacomb_box,)},
+                "all_room_coordinates": all_rooms,
+            },
+        )
+
+        # Verify get_child_boundary_ports detects the articulation anchor
+        ports = get_child_boundary_ports(block_child)
+        assert ports == {100}
+
+        # Derive sub-boxes using the extracted boundary ports
+        boxes = derive_child_sub_boxes(block_child, child_sol, boundary_ports=frozenset(ports))
+
+        # Must decompose into discrete sub-boxes rather than a monolithic bounding box
+        assert len(boxes) == 2
+        z_ranges = {(b.min_z, b.max_z) for b in boxes}
+        assert z_ranges == {(0, 0), (2, 2)}
+
+        # The underground catacomb box is confined strictly to z=0
+        catacomb_derived = [b for b in boxes if b.min_z == 0][0]
+        assert catacomb_derived == BoundingBox3D(0, 4, 0, 4, 0, 0)
+
+        # The surface box is confined strictly to room 101 at z=2
+        surface_derived = [b for b in boxes if b.min_z == 2][0]
+        assert surface_derived == BoundingBox3D(1, 1, 0, 0, 2, 2)
+
+        # Boundary anchor (0, 0, 2) is excluded and vacant surface cells (e.g. (2, 2, 2)) are unblocked
+        assert not any(b.contains_point(Coord3D(0, 0, 2)) for b in boxes)
+        assert not any(b.contains_point(Coord3D(2, 2, 2)) for b in boxes)
+        assert not any(b.contains_point(Coord3D(4, 4, 2)) for b in boxes)
+
+    def test_derive_child_sub_boxes_bridge_block_decomposition(self) -> None:
+        """1-cut bridge block child decomposes occupied cells into discrete sub-boxes."""
+        child_leaf = SolveTreeNode(
+            node_id="bridge_leaf",
+            node_type="leaf",
+            rooms=frozenset({1, 2}),
+        )
+        block_bridge = SolveTreeNode(
+            node_id="bridge_block",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({10, 20}),
+            children=(child_leaf,),
+            metadata={
+                "cut_contract": BridgeCut(bridge_edge=(10, 5), direction=0),
+                "anchor_vnum": 10,
+            },
+        )
+        child_sol = NodeSolution(
+            node_id="bridge_block",
+            local_coordinates={10: Coord3D(0, 0, 0), 20: Coord3D(3, 0, 0)},
+            metadata={
+                "bounding_box": BoundingBox3D(0, 3, 0, 0, 0, 0),
+                "child_offsets": {"bridge_leaf": Coord3D(5, 0, 0)},
+                "child_sub_boxes": {"bridge_leaf": (BoundingBox3D(0, 1, 0, 0, 0, 0),)},
+                "all_room_coordinates": {
+                    10: Coord3D(0, 0, 0),
+                    20: Coord3D(3, 0, 0),
+                    1: Coord3D(5, 0, 0),
+                    2: Coord3D(6, 0, 0),
+                },
+            },
+        )
+        ports = get_child_boundary_ports(block_bridge)
+        assert ports == {10}
+        boxes = derive_child_sub_boxes(block_bridge, child_sol, boundary_ports=frozenset(ports))
+        assert len(boxes) == 2
+        # Room 10 at (0, 0, 0) must be excluded
+        assert not any(b.contains_point(Coord3D(0, 0, 0)) for b in boxes)
+        # Room 20 at (3, 0, 0) and leaf at (5..6, 0, 0) are kept
+        assert any(b.contains_point(Coord3D(3, 0, 0)) for b in boxes)
+        assert any(b.contains_point(Coord3D(5, 0, 0)) for b in boxes)
+
     def test_derive_child_sub_boxes_empty_when_all_ports(self) -> None:
         """Returns empty tuple when all rooms are boundary ports."""
         child = SolveTreeNode(node_id="c_all_ports", node_type="leaf", rooms=frozenset({1}))
@@ -452,6 +622,25 @@ class TestStage1Inventory:
         mock_child.cut_type = CutType.SPLIT_PAIR
         mock_child.metadata = {"poles": ("6", "7")}
         assert get_child_boundary_ports(mock_child) == {6, 7}
+
+        mock_art_none = MagicMock(spec=SolveTreeNode)
+        mock_art_none.cut_contract = None
+        mock_art_none.cut_type = CutType.ARTICULATION_POINT
+        mock_art_none.metadata = {"anchor_vnum": None}
+        assert get_child_boundary_ports(mock_art_none) == set()
+
+        mock_art_child = MagicMock(spec=SolveTreeNode)
+        mock_art_child.cut_contract = None
+        mock_art_child.cut_type = CutType.ARTICULATION_POINT
+        mock_art_child.metadata = {"anchor_vnum": "42"}
+        assert get_child_boundary_ports(mock_art_child) == {42}
+
+        mock_bridge_contract = MagicMock(spec=SolveTreeNode)
+        mock_contract = MagicMock(spec=BridgeCut)
+        mock_contract.anchor_vnum = 99
+        mock_bridge_contract.cut_contract = mock_contract
+        mock_bridge_contract.metadata = {}
+        assert get_child_boundary_ports(mock_bridge_contract) == {99}
 
     def test_derive_child_sub_boxes_fallbacks_and_empty_coordinates(self) -> None:
         """Derive sub-boxes handling None boundary ports, bounding box fallbacks, and empty cells."""

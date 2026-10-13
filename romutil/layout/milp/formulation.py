@@ -390,6 +390,10 @@ class ClusterFormulation:
         """Enforce parent room vs. child sub-box clearance."""
         ClearanceConstraintBuilder(self).add_room_child_separation()
 
+    def apply_doorway_clearance(self) -> None:
+        """Enforce external doorway clearance for boundary ports against child sub-boxes and parent rooms."""
+        ClearanceConstraintBuilder(self).add_doorway_clearance()
+
     def apply_corridor_room_separation(self) -> None:
         """Enforce corridor segment non-penetration against third-party parent rooms."""
         ClearanceConstraintBuilder(self).add_corridor_room_separation()

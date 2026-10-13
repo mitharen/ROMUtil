@@ -1242,10 +1242,10 @@ class TestParentComprehensiveEdgeCoverage:
         )
         child_sol = solve_cluster(child_node, graph_child)
 
-        # Child bounding box covers (0,0,0) to (1,1,0), but decomposes into 2 disjoint sub-boxes
+        # Excluding docking gateway anchor room 2 leaves rooms 1 and 3 in keep-out sub-boxes
         assert child_sol.bounding_box == BoundingBox3D(0, 1, 0, 1, 0, 0)
         child_sub_boxes = derive_child_sub_boxes(child_node, child_sol, frozenset(get_child_boundary_ports(child_node)))
-        assert len(child_sub_boxes) == 2
+        assert len(child_sub_boxes) == 1
 
         # Parent cluster: rooms 2 and 4 with edge 2 -N-> 4
         # Room 2 is the gateway anchor. Room 4 is a non-anchor parent room that wants to
