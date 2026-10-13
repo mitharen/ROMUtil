@@ -64,17 +64,14 @@ class SplitPairResult:
     child_alignments: tuple[ChildChildAlignment, ...]
     equated_children: frozenset[frozenset[str]]
     corridor_edges: tuple[ActiveEdge, ...]
-    split_pair_edges: tuple[ActiveEdge, ...]
     gateway_anchors: Mapping[str, frozenset[int]]
     aligned_children: frozenset[str]
-    split_min_lengths: Mapping[tuple[int, int], int]
-    split_directions: Mapping[tuple[int, int], tuple[int, int, int]]
     child_anchor_poles: Mapping[str, int]
 
     @property
     def active_edges(self) -> tuple[ActiveEdge, ...]:
         """All active edges produced by the split-pair handler."""
-        return self.corridor_edges + self.split_pair_edges
+        return self.corridor_edges
 
 
 @dataclass(frozen=True)
@@ -384,8 +381,6 @@ class SplitPairHandler:
         dict[str, set[int]],
         set[str],
         dict[str, int],
-        dict[tuple[int, int], int],
-        dict[tuple[int, int], tuple[int, int, int]],
     ]:
         """Align split-pair children to parent rooms or sibling children."""
         if room_anchored_children is None:
@@ -397,13 +392,6 @@ class SplitPairHandler:
         gateway_anchors: dict[str, set[int]] = {c.node_id: set() for c in self.children}
         aligned_children: set[str] = set()
         child_anchor_poles: dict[str, int] = {}
-        split_min_lengths: dict[tuple[int, int], int] = {}
-        split_directions: dict[tuple[int, int], tuple[int, int, int]] = {}
-
-        is_split_pair_container = (
-            self.node.node_type in (TreeNodeType.SPLIT_PAIR_CONTAINER, "split_pair_container")
-            or (self.node.node_type == "container" and "poles" in self.node.metadata)
-        )
 
         for (p0, p1), split_children in split_children_by_poles.items():
             if not split_children:
@@ -468,64 +456,6 @@ class SplitPairHandler:
                             frozenset({split_children[idx1].node_id, split_children[idx2].node_id})
                         )
 
-            def _child_span(c: SolveTreeNode) -> int:
-                c_coords = self.child_solutions[c.node_id].local_coordinates
-                if p0 not in c_coords or p1 not in c_coords:
-                    return 0
-                return (
-                    abs(c_coords[p1].x - c_coords[p0].x)
-                    + abs(c_coords[p1].y - c_coords[p0].y)
-                    + abs(c_coords[p1].z - c_coords[p0].z)
-                )
-
-            prim_child = max(split_children, key=_child_span)
-            prim_sol = self.child_solutions[prim_child.node_id]
-            pc0_prim = prim_sol.local_coordinates[p0]
-            pc1_prim = prim_sol.local_coordinates[p1]
-            pdx = pc1_prim.x - pc0_prim.x
-            pdy = pc1_prim.y - pc0_prim.y
-            pdz = pc1_prim.z - pc0_prim.z
-
-            is_axis_aligned = sum(1 for d in (pdx, pdy, pdz) if d != 0) == 1
-            d_vec: tuple[int, int, int] | None = None
-
-            if is_split_pair_container:
-                if is_axis_aligned:
-                    d_vec = (
-                        1 if pdx > 0 else (-1 if pdx < 0 else 0),
-                        1 if pdy > 0 else (-1 if pdy < 0 else 0),
-                        1 if pdz > 0 else (-1 if pdz < 0 else 0),
-                    )
-                else:
-                    abs_deltas = [
-                        (abs(pdx), (1 if pdx > 0 else (-1 if pdx < 0 else 0), 0, 0)),
-                        (abs(pdy), (0, 1 if pdy > 0 else (-1 if pdy < 0 else 0), 0)),
-                        (abs(pdz), (0, 0, 1 if pdz > 0 else (-1 if pdz < 0 else 0))),
-                    ]
-                    max_delta, d_cand = max(abs_deltas, key=lambda t: t[0])
-                    d_vec = (1, 0, 0) if max_delta == 0 else d_cand
-
-            l_min = max(
-                1,
-                max(
-                    max(
-                        abs(self.child_solutions[c.node_id].local_coordinates[p1].x - self.child_solutions[c.node_id].local_coordinates[p0].x),
-                        abs(self.child_solutions[c.node_id].local_coordinates[p1].y - self.child_solutions[c.node_id].local_coordinates[p0].y),
-                        abs(self.child_solutions[c.node_id].local_coordinates[p1].z - self.child_solutions[c.node_id].local_coordinates[p0].z),
-                    )
-                    for c in split_children
-                ),
-            )
-
-            for ge in self.graph.edges:
-                if not ge.cut and {ge.src, ge.dst} == {p0, p1}:
-                    l_min = max(l_min, max(1, ge.weight))
-
-            can_pair = (min(p0, p1), max(p0, p1))
-            split_min_lengths[can_pair] = l_min
-            if d_vec is not None:
-                split_directions[can_pair] = d_vec
-
         for _p_anchor, c_list in room_anchored_children.items():
             for idx1 in range(len(c_list)):
                 for idx2 in range(idx1 + 1, len(c_list)):
@@ -538,8 +468,6 @@ class SplitPairHandler:
             gateway_anchors,
             aligned_children,
             child_anchor_poles,
-            split_min_lengths,
-            split_directions,
         )
 
     def build_corridor_active_edges(
@@ -684,50 +612,13 @@ class SplitPairHandler:
 
         return corridor_edges, gateway_anchors, aligned_children
 
-    def build_split_pair_active_edges(
-        self,
-        split_children_by_poles: Mapping[tuple[int, int], Sequence[SolveTreeNode]],
-        split_min_lengths: Mapping[tuple[int, int], int],
-        split_directions: Mapping[tuple[int, int], tuple[int, int, int]],
-        handled_pole_pairs: set[tuple[int, int]] | None = None,
-    ) -> list[ActiveEdge]:
-        """Build sp_ active edges connecting pole pairs directly between parent rooms."""
-        if handled_pole_pairs is None:
-            handled_pole_pairs = set()
-
-        sp_edges: list[ActiveEdge] = []
-        for (p0, p1), split_children in split_children_by_poles.items():
-            if p0 in self.room_set and p1 in self.room_set:
-                can_p = (min(p0, p1), max(p0, p1))
-                if can_p in handled_pole_pairs:
-                    continue
-                if can_p not in split_directions:
-                    continue
-                d_vec = split_directions[can_p]
-                handled_pole_pairs.add(can_p)
-                sp_edges.append(
-                    ActiveEdge(
-                        edge_id=f"sp_{p0}_{p1}",
-                        src=p0,
-                        dst=p1,
-                        direction=d_vec,
-                        min_length=split_min_lengths[can_p],
-                        associated_rooms=frozenset({p0, p1}),
-                        associated_children=frozenset(c.node_id for c in split_children),
-                    )
-                )
-        return sp_edges
-
     def process(
         self,
         room_anchored_children: dict[int, list[str]] | None = None,
-        handled_pole_pairs: set[tuple[int, int]] | None = None,
     ) -> SplitPairResult:
         """Run split-pair classification, producing alignments, equated sets, and active edges."""
         if room_anchored_children is None:
             room_anchored_children = {}
-        if handled_pole_pairs is None:
-            handled_pole_pairs = set()
 
         grouped = self.group_split_children()
         (
@@ -737,8 +628,6 @@ class SplitPairHandler:
             gateway_anchors,
             aligned_children,
             child_anchor_poles,
-            split_min_lengths,
-            split_directions,
         ) = self.align_children(
             split_children_by_poles=grouped,
             room_anchored_children=room_anchored_children,
@@ -754,24 +643,14 @@ class SplitPairHandler:
             gateway_anchors[cid].update(anchors)
         aligned_children.update(corridor_aligned)
 
-        split_pair_edges = self.build_split_pair_active_edges(
-            split_children_by_poles=grouped,
-            split_min_lengths=split_min_lengths,
-            split_directions=split_directions,
-            handled_pole_pairs=handled_pole_pairs,
-        )
-
         return SplitPairResult(
             split_children_by_poles=grouped,
             room_alignments=tuple(room_alignments),
             child_alignments=tuple(child_alignments),
             equated_children=frozenset(equated_children),
             corridor_edges=tuple(corridor_edges),
-            split_pair_edges=tuple(split_pair_edges),
             gateway_anchors={k: frozenset(v) for k, v in gateway_anchors.items()},
             aligned_children=frozenset(aligned_children),
-            split_min_lengths=split_min_lengths,
-            split_directions=split_directions,
             child_anchor_poles=child_anchor_poles,
         )
 
@@ -1147,43 +1026,15 @@ class InterChildBridgeHandler:
 def _build_internal_room_edges(
     graph: LayoutGraph,
     rooms: Sequence[int],
-    split_pole_pairs: set[tuple[int, int]],
-    split_min_lengths: Mapping[tuple[int, int], int],
-    split_children_by_poles: Mapping[tuple[int, int], Sequence[SolveTreeNode]],
-    pole_edges_handled: set[tuple[int, int]],
 ) -> list[ActiveEdge]:
-    """Build active edges between parent rooms, expanding split-pair pole distances."""
+    """Build active edges between parent rooms from uncut graph edges."""
     room_set = set(rooms)
     active_edges: list[ActiveEdge] = []
     if not rooms:
         return active_edges
 
     for e in graph.edges:
-        if not e.cut and e.src in room_set and e.dst in room_set:
-            can_p = (min(e.src, e.dst), max(e.src, e.dst))
-            if can_p in split_pole_pairs:
-                if can_p in pole_edges_handled:
-                    continue
-                pole_edges_handled.add(can_p)
-                edge_min_len = max(e.weight, split_min_lengths.get(can_p, 1))
-                try:
-                    disp = direction_to_displacement(e.direction)
-                    active_edges.append(
-                        ActiveEdge(
-                            edge_id=f"int_{e.src}_{e.dst}",
-                            src=e.src,
-                            dst=e.dst,
-                            direction=disp,
-                            min_length=max(1, edge_min_len),
-                            associated_rooms=frozenset({e.src, e.dst}),
-                            associated_children=frozenset(
-                                c.node_id for c in split_children_by_poles.get(can_p, ())
-                            ),
-                        )
-                    )
-                except ValueError:
-                    pass
-                continue
+        if not e.cut and e.src in room_set and e.dst in room_set and e.src != e.dst:
             try:
                 disp = direction_to_displacement(e.direction)
                 active_edges.append(
@@ -1267,30 +1118,18 @@ def inventory_cluster(
     )
     aligned_children.update(bridge_res.aligned_children)
 
-    # 4. Internal room edges and direct split-pair active edges
-    pole_edges_handled: set[tuple[int, int]] = set()
-    internal_edges = _build_internal_room_edges(
+    # 4. Direct internal room edges
+    direct_edges = _build_internal_room_edges(
         graph=graph,
         rooms=rooms,
-        split_pole_pairs=set(split_res.split_children_by_poles.keys()),
-        split_min_lengths=split_res.split_min_lengths,
-        split_children_by_poles=split_res.split_children_by_poles,
-        pole_edges_handled=pole_edges_handled,
-    )
-    sp_direct_edges = split_handler.build_split_pair_active_edges(
-        split_children_by_poles=split_res.split_children_by_poles,
-        split_min_lengths=split_res.split_min_lengths,
-        split_directions=split_res.split_directions,
-        handled_pole_pairs=pole_edges_handled,
     )
 
     # Combine active edges in deterministic order
     active_edges: list[ActiveEdge] = [
-        *split_res.corridor_edges,
+        *split_res.active_edges,
         *gw_res.active_edges,
         *bridge_res.active_edges,
-        *internal_edges,
-        *sp_direct_edges,
+        *direct_edges,
     ]
 
     # 5. Keep-out sub-boxes for children
