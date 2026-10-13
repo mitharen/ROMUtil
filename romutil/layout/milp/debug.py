@@ -194,10 +194,10 @@ def render_cluster_solve_svg(
 
     pad_x = 70.0
     pad_y = 60.0
-    header_height = 160.0
+    header_height = 185.0
 
-    width = max(980.0, (max_sx - min_sx) + 2 * pad_x)
-    height = max(680.0, (max_sy - min_sy) + header_height + 2 * pad_y)
+    width = max(1080.0, (max_sx - min_sx) + 2 * pad_x)
+    height = max(700.0, (max_sy - min_sy) + header_height + 2 * pad_y)
 
     offset_x = pad_x - min_sx
     offset_y = header_height + pad_y - min_sy
@@ -336,11 +336,11 @@ def render_cluster_solve_svg(
 
     dwg.add(hdr_g)
 
-    # Legend Card
+    # Legend Card (Two-Tier)
     legend_g = dwg.g(id="legend")
     legend_card = dwg.rect(
         insert=(30, 96),
-        size=(width - 60, 44),
+        size=(width - 60, 74),
         rx=8,
         ry=8,
         fill="#ffffff",
@@ -349,39 +349,139 @@ def render_cluster_solve_svg(
     )
     legend_g.add(legend_card)
 
-    # Legend Items
-    lx = 50.0
-    ly = 122.0
+    # Row 1: Nodes & Interfaces
+    lx1 = 50.0
+    ly1 = 119.0
 
     # Item: Parent Room
-    legend_g.add(dwg.rect(insert=(lx, ly - 10), size=(14, 14), rx=3, ry=3, fill="#ffffff", stroke="#2563eb", stroke_width=2))
-    legend_g.add(dwg.text("Parent Room", insert=(lx + 20, ly + 2), font_size="11px", font_family="system-ui, sans-serif", fill="#334155"))
-    lx += 125.0
+    legend_g.add(
+        dwg.rect(insert=(lx1, ly1 - 10), size=(14, 14), rx=3, ry=3, fill="#ffffff", stroke="#2563eb", stroke_width=2)
+    )
+    legend_g.add(
+        dwg.text("Parent Room", insert=(lx1 + 20, ly1 + 2), font_size="11px", font_family="system-ui, sans-serif", fill="#334155")
+    )
+    lx1 += 120.0
 
-    # Item: Boundary Port
-    legend_g.add(dwg.rect(insert=(lx, ly - 10), size=(14, 14), rx=3, ry=3, fill="#fef3c7", stroke="#d97706", stroke_width=2))
-    legend_g.add(dwg.text("Boundary Port", insert=(lx + 20, ly + 2), font_size="11px", font_family="system-ui, sans-serif", fill="#334155"))
-    lx += 130.0
+    # Item: Parent Port
+    legend_g.add(
+        dwg.rect(insert=(lx1, ly1 - 10), size=(14, 14), rx=3, ry=3, fill="#fef3c7", stroke="#d97706", stroke_width=2)
+    )
+    legend_g.add(
+        dwg.text("Parent Port", insert=(lx1 + 20, ly1 + 2), font_size="11px", font_family="system-ui, sans-serif", fill="#334155")
+    )
+    lx1 += 115.0
 
-    # Item: Child Macro-Box
-    legend_g.add(dwg.rect(insert=(lx, ly - 10), size=(14, 14), rx=3, ry=3, fill="#eff6ff", stroke="#2563eb", stroke_width=1.5, stroke_dasharray="4,2"))
-    legend_g.add(dwg.text("Child Box", insert=(lx + 20, ly + 2), font_size="11px", font_family="system-ui, sans-serif", fill="#334155"))
-    lx += 105.0
+    # Item: Child Room
+    legend_g.add(
+        dwg.circle(center=(lx1 + 7, ly1 - 3), r=6, fill="#f1f5f9", stroke="#2563eb", stroke_width=1.5)
+    )
+    legend_g.add(
+        dwg.text("Child Room", insert=(lx1 + 20, ly1 + 2), font_size="11px", font_family="system-ui, sans-serif", fill="#334155")
+    )
+    lx1 += 110.0
 
-    # Item: Sub-Box Keep-Out
-    legend_g.add(dwg.rect(insert=(lx, ly - 10), size=(14, 14), rx=2, ry=2, fill="#e0e7ff", stroke="#4f46e5", stroke_width=1.5, stroke_dasharray="2,2"))
-    legend_g.add(dwg.text("Keep-Out Box", insert=(lx + 20, ly + 2), font_size="11px", font_family="system-ui, sans-serif", fill="#334155"))
-    lx += 120.0
+    # Item: Child Port
+    legend_g.add(
+        dwg.circle(center=(lx1 + 7, ly1 - 3), r=6, fill="#fef3c7", stroke="#d97706", stroke_width=1.5)
+    )
+    legend_g.add(
+        dwg.text("Child Port", insert=(lx1 + 20, ly1 + 2), font_size="11px", font_family="system-ui, sans-serif", fill="#334155")
+    )
+
+    # Row 2: Envelopes & Corridors
+    lx2 = 50.0
+    ly2 = 150.0
+
+    # Item: Child Macro-Box (Envelope)
+    legend_g.add(
+        dwg.rect(
+            insert=(lx2, ly2 - 10),
+            size=(14, 14),
+            rx=3,
+            ry=3,
+            fill="#eff6ff",
+            stroke="#2563eb",
+            stroke_width=1.5,
+            stroke_dasharray="4,2",
+        )
+    )
+    legend_g.add(
+        dwg.text(
+            "Child Macro-Box (Envelope)",
+            insert=(lx2 + 20, ly2 + 2),
+            font_size="11px",
+            font_family="system-ui, sans-serif",
+            fill="#334155",
+        )
+    )
+    lx2 += 195.0
+
+    # Item: Keep-Out Sub-Box (Obstacle)
+    legend_g.add(
+        dwg.rect(
+            insert=(lx2, ly2 - 10),
+            size=(14, 14),
+            rx=2,
+            ry=2,
+            fill="#e0e7ff",
+            stroke="#4f46e5",
+            stroke_width=1.5,
+            stroke_dasharray="2,2",
+        )
+    )
+    legend_g.add(
+        dwg.text(
+            "Keep-Out Sub-Box (Obstacle)",
+            insert=(lx2 + 20, ly2 + 2),
+            font_size="11px",
+            font_family="system-ui, sans-serif",
+            fill="#334155",
+        )
+    )
+    lx2 += 200.0
 
     # Item: Edge styles
     for cat_name, cat_style in EDGE_CATEGORY_STYLES.items():
-        legend_g.add(dwg.line(start=(lx, ly - 3), end=(lx + 20, ly - 3), stroke=cat_style["color"], stroke_width=2.5))
-        legend_g.add(dwg.text(cat_style["label"], insert=(lx + 26, ly + 2), font_size="11px", font_family="system-ui, sans-serif", fill="#334155"))
-        lx += 125.0
+        legend_g.add(
+            dwg.line(start=(lx2, ly2 - 3), end=(lx2 + 18, ly2 - 3), stroke=cat_style["color"], stroke_width=2.5)
+        )
+        legend_g.add(
+            dwg.text(
+                cat_style["label"],
+                insert=(lx2 + 24, ly2 + 2),
+                font_size="11px",
+                font_family="system-ui, sans-serif",
+                fill="#334155",
+            )
+        )
+        if cat_name == "corridor":
+            lx2 += 80.0
+        elif cat_name == "split_pair":
+            lx2 += 90.0
+        elif cat_name == "gateway":
+            lx2 += 122.0
+        else:
+            lx2 += 112.0
 
     # Item: Transverse Slack
-    legend_g.add(dwg.line(start=(lx, ly - 3), end=(lx + 20, ly - 3), stroke="#475569", stroke_width=2.0, stroke_dasharray="4,3"))
-    legend_g.add(dwg.text("Transverse Slack", insert=(lx + 26, ly + 2), font_size="11px", font_family="system-ui, sans-serif", fill="#334155"))
+    legend_g.add(
+        dwg.line(
+            start=(lx2, ly2 - 3),
+            end=(lx2 + 18, ly2 - 3),
+            stroke="#475569",
+            stroke_width=2.0,
+            stroke_dasharray="4,3",
+        )
+    )
+    legend_g.add(
+        dwg.text(
+            "Transverse Slack",
+            insert=(lx2 + 24, ly2 + 2),
+            font_size="11px",
+            font_family="system-ui, sans-serif",
+            fill="#334155",
+        )
+    )
 
     dwg.add(legend_g)
 
@@ -495,8 +595,8 @@ def render_cluster_solve_svg(
             tag_pos = p_nw1 if gz0 != gz1 else p_nw0
             tag_w = max(110, len(cid) * 8 + 30)
             tag_h = 18
-            tag_x = tag_pos[0] + 4
-            tag_y = tag_pos[1] - 18
+            tag_x = tag_pos[0] + 6
+            tag_y = tag_pos[1] + 6
 
             tag_link = dwg.a(
                 href=f"cluster_{cid}.svg",
@@ -529,21 +629,24 @@ def render_cluster_solve_svg(
         c_sol = inventory.child_solutions.get(cid)
         if c_sol and c_sol.local_coordinates:
             from romutil.layout.milp.inventory import get_child_boundary_ports
+
             c_boundary_ports = get_child_boundary_ports(child)
             for cvnum, cloc in c_sol.local_coordinates.items():
                 cpx, cpy = to_canvas(cx + cloc.x, cy + cloc.y, cz + cloc.z)
                 is_cport = (cvnum in c_boundary_ports) or (cvnum in inventory.boundary_ports)
-                dot_r = 10 if is_cport else 7
+                dot_r = 15 if is_cport else 13
                 dot_fill = "#fef3c7" if is_cport else "#f1f5f9"
                 dot_stroke = "#d97706" if is_cport else pal["stroke"]
                 dot = dwg.circle(center=(cpx, cpy), r=dot_r, fill=dot_fill, stroke=dot_stroke, stroke_width=1.5)
-                dot.set_desc(title=f"Child Internal Room: {cvnum}\nParent Coord: ({cx + cloc.x}, {cy + cloc.y}, {cz + cloc.z})\nBoundary Port: {is_cport}")
+                dot.set_desc(
+                    title=f"Child Internal Room: {cvnum}\nParent Coord: ({cx + cloc.x}, {cy + cloc.y}, {cz + cloc.z})\nBoundary Port: {is_cport}"
+                )
                 c_group.add(dot)
                 c_group.add(
                     dwg.text(
                         str(cvnum),
-                        insert=(cpx, cpy + 3),
-                        font_size="8px",
+                        insert=(cpx, cpy + 4),
+                        font_size="11px",
                         font_weight="bold",
                         font_family="system-ui, sans-serif",
                         fill="#0f172a",

@@ -247,6 +247,19 @@ def test_render_cluster_solve_svg_basic(tmp_path: Path):
     assert "edge_100_101" in svg_content
     assert "slack" in svg_content.lower()
 
+    # Two-tier legend items
+    assert "Parent Room" in svg_content
+    assert "Parent Port" in svg_content
+    assert "Child Room" in svg_content
+    assert "Child Port" in svg_content
+    assert "Child Macro-Box (Envelope)" in svg_content
+    assert "Keep-Out Sub-Box (Obstacle)" in svg_content
+    assert "Corridor" in svg_content
+    assert "Split-Pair" in svg_content
+    assert "Gateway/Bridge" in svg_content
+    assert "Room-to-Room" in svg_content
+    assert "Transverse Slack" in svg_content
+
 
 def test_render_cluster_solve_svg_with_children_and_sub_boxes(tmp_path: Path):
     child_node = SolveTreeNode(
@@ -295,10 +308,86 @@ def test_render_cluster_solve_svg_with_children_and_sub_boxes(tmp_path: Path):
     assert "Keep-Out Sub-box" in svg_content
     assert "bridge_edge" in svg_content
     assert "201" in svg_content
+    assert "202" in svg_content
     assert "cluster_child_sub.svg" in svg_content
     assert "Click to view child cluster child_sub" in svg_content
     assert "index.html" in svg_content
     assert "Index" in svg_content
+
+    # Child cluster tag badge placement
+    assert "Child: child_sub" in svg_content
+
+    # Child room circle sizing & typography
+    # 201 is boundary port (r=15), 202 is normal room (r=13)
+    assert 'r="15"' in svg_content
+    assert 'r="13"' in svg_content
+    assert 'font-size="11px"' in svg_content
+
+
+def test_render_cluster_solve_svg_legend_and_child_tag_placement(tmp_path: Path):
+    child_node = SolveTreeNode(
+        node_id="comp_0",
+        node_type=TreeNodeType.BLOCK,
+        rooms=frozenset({500, 501}),
+    )
+    child_sol = NodeSolution(
+        node_id="comp_0",
+        local_coordinates={500: Coord3D(0, 0, 0), 501: Coord3D(1, 0, 0)},
+        sub_boxes=(),
+        metadata={"bounding_box": BoundingBox3D(0, 1, 0, 1, 0, 0)},
+    )
+    inventory = _create_simple_cluster_inventory(
+        rooms=(400,),
+        children=(child_node,),
+        child_solutions={"comp_0": child_sol},
+        boundary_ports=frozenset({500}),
+    )
+    extraction = SolvedClusterExtraction(
+        raw_parent_coords={400: (0, 3, 0)},
+        raw_child_offsets={"comp_0": (0, 0, 0)},
+        solver_status=SolverStatus.OPTIMAL,
+    )
+    out_file = tmp_path / "cluster_legend_tag_test.svg"
+    render_cluster_solve_svg(extraction, inventory, out_file)
+
+    assert out_file.is_file()
+    tree = ET.parse(out_file)
+    root = tree.getroot()
+
+    # Find the legend card rect and verify its dimensions
+    legend_rect = None
+    for g in root.iter():
+        if g.attrib.get("id") == "legend":
+            for elem in g:
+                if elem.tag.endswith("rect") and elem.attrib.get("y") == "96":
+                    legend_rect = elem
+                    break
+    assert legend_rect is not None
+    assert legend_rect.attrib.get("height") == "74"
+
+    # Verify child badge rect is placed inside top-left corner of the macro-box
+    child_group = None
+    for g in root.iter():
+        if g.attrib.get("id") == "child-comp_0":
+            child_group = g
+            break
+    assert child_group is not None
+
+    # Find macro-box polygon and tag rect
+    polygon_points_str = None
+    tag_rect_y = None
+    for elem in child_group.iter():
+        if elem.tag.endswith("polygon") and "points" in elem.attrib:
+            polygon_points_str = elem.attrib["points"]
+        if elem.tag.endswith("rect") and elem.attrib.get("fill") == "#1d4ed8":
+            tag_rect_y = float(elem.attrib["y"])
+
+    assert polygon_points_str is not None
+    assert tag_rect_y is not None
+    # First point in polygon is p_nw0 (top-left)
+    p_nw_y = float(polygon_points_str.split()[0].split(",")[1])
+    # Tag y should be strictly inside the macro-box (tag_y >= p_nw_y), not above it
+    assert tag_rect_y >= p_nw_y
 
 
 def test_render_cluster_solve_svg_3d_elevations(tmp_path: Path):
