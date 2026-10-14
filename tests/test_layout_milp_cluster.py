@@ -2485,3 +2485,141 @@ class TestSplitPairBoundaryPortAlignment:
         assert c302.y > c301.y
         assert c200.y > c302.y
         assert c200.x > c2.x
+
+
+class TestSafe2CutAllowlistEndToEnd:
+    """End-to-end regression tests for safe 2-cut allowlist contract and combined child fusion."""
+
+    def test_case_2_rigid_span_mismatch_outer_parent_zero_collisions_zero_tears(self) -> None:
+        """Outer parent with rigid span mismatch solves with zero room collisions and zero corridor tears."""
+        # Outer parent rigid cluster on rooms 100, 101, 102, 103 with cross diagonal (3-connected)
+        # Connecting to poles 1, 2.
+        # Branch 1: Rigid K4 pinning span(1, 2) = 1
+        # Branch 2: Longer series loop requiring span >= 3
+        rooms_data = {
+            # Outer Parent R-node
+            100: {Direction.north: 101, Direction.west: 103, Direction.northwest: 102, Direction.east: 1},
+            101: {Direction.south: 100, Direction.west: 102, Direction.southwest: 103, Direction.east: 2},
+            102: {Direction.east: 101, Direction.south: 103, Direction.southeast: 100},
+            103: {Direction.north: 102, Direction.east: 100, Direction.northeast: 101},
+            # Pole 1
+            1: {
+                Direction.west: 100,
+                Direction.north: 2,
+                Direction.east: 3,
+                Direction.northeast: 4,
+                Direction.south: 20,
+            },
+            # Pole 2
+            2: {
+                Direction.west: 101,
+                Direction.south: 1,
+                Direction.east: 4,
+                Direction.southeast: 3,
+                Direction.north: 23,
+            },
+            # Branch 1 internal
+            3: {Direction.west: 1, Direction.north: 4, Direction.northwest: 2},
+            4: {Direction.south: 3, Direction.west: 2, Direction.southwest: 1},
+            # Branch 2 internal
+            20: {Direction.north: 1, Direction.east: 21},
+            21: {Direction.west: 20, Direction.north: 22},
+            22: {Direction.south: 21, Direction.west: 23},
+            23: {Direction.east: 22, Direction.south: 2},
+        }
+
+        rooms = {
+            vnum: Room(
+                vnum=vnum,
+                name=f"Room {vnum}",
+                description="",
+                exits=tuple(Exit(direction=d, dst_vnum=dst) for d, dst in exits.items()),
+            )
+            for vnum, exits in rooms_data.items()
+        }
+        all_exits = tuple(e for r in rooms.values() for e in r.exits)
+        world_graph = WorldGraph(rooms=rooms, exits=all_exits)
+
+        solver = HierarchicalLayoutSolver.production()
+        layout = solver.solve(world_graph)
+
+        assert layout.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
+        assert len(set(layout.coordinates.values())) == len(layout.coordinates) == len(rooms)
+
+        # Verify zero corridor tears for all cardinal exits
+        for r in rooms.values():
+            c_src = layout.coordinates[r.vnum]
+            for e in r.exits:
+                c_dst = layout.coordinates[e.dst_vnum]
+                dx = c_dst.x - c_src.x
+                dy = c_dst.y - c_src.y
+                dz = c_dst.z - c_src.z
+                if e.direction == Direction.north:
+                    assert dx == 0 and dy > 0 and dz == 0
+                elif e.direction == Direction.south:
+                    assert dx == 0 and dy < 0 and dz == 0
+                elif e.direction == Direction.east:
+                    assert dx > 0 and dy == 0 and dz == 0
+                elif e.direction == Direction.west:
+                    assert dx < 0 and dy == 0 and dz == 0
+
+    def test_case_3_concentric_arch_enclosure_outer_parent_zero_collisions_zero_tears(self) -> None:
+        """Outer parent with concentric arch enclosure solves with zero room collisions and zero corridor tears."""
+        # Outer parent rigid cluster on rooms 100, 101, 102, 103 (3-connected)
+        # Connecting to poles 1, 2.
+        # Inner branch: 1 -> 3 -> 30 -> 2
+        # Outer arch: 1 -> 4 -> 5 -> 6 -> 7 -> 2 wrapping around inner branch
+        rooms_data = {
+            # Outer Parent R-node
+            100: {Direction.north: 101, Direction.west: 103, Direction.northwest: 102, Direction.east: 1},
+            101: {Direction.south: 100, Direction.west: 102, Direction.southwest: 103, Direction.east: 2},
+            102: {Direction.east: 101, Direction.south: 103, Direction.southeast: 100},
+            103: {Direction.north: 102, Direction.east: 100, Direction.northeast: 101},
+            # Pole 1
+            1: {Direction.west: 100, Direction.north: 2, Direction.east: 3, Direction.south: 4},
+            # Pole 2
+            2: {Direction.west: 101, Direction.south: 1, Direction.east: 30, Direction.north: 7},
+            # Inner branch
+            3: {Direction.west: 1, Direction.north: 30},
+            30: {Direction.south: 3, Direction.west: 2},
+            # Outer arch
+            4: {Direction.north: 1, Direction.east: 5},
+            5: {Direction.west: 4, Direction.north: 6},
+            6: {Direction.south: 5, Direction.west: 7},
+            7: {Direction.east: 6, Direction.south: 2},
+        }
+
+        rooms = {
+            vnum: Room(
+                vnum=vnum,
+                name=f"Room {vnum}",
+                description="",
+                exits=tuple(Exit(direction=d, dst_vnum=dst) for d, dst in exits.items()),
+            )
+            for vnum, exits in rooms_data.items()
+        }
+        all_exits = tuple(e for r in rooms.values() for e in r.exits)
+        world_graph = WorldGraph(rooms=rooms, exits=all_exits)
+
+        solver = HierarchicalLayoutSolver.production()
+        layout = solver.solve(world_graph)
+
+        assert layout.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
+        assert len(set(layout.coordinates.values())) == len(layout.coordinates) == len(rooms)
+
+        # Verify zero corridor tears for all cardinal exits
+        for r in rooms.values():
+            c_src = layout.coordinates[r.vnum]
+            for e in r.exits:
+                c_dst = layout.coordinates[e.dst_vnum]
+                dx = c_dst.x - c_src.x
+                dy = c_dst.y - c_src.y
+                dz = c_dst.z - c_src.z
+                if e.direction == Direction.north:
+                    assert dx == 0 and dy > 0 and dz == 0
+                elif e.direction == Direction.south:
+                    assert dx == 0 and dy < 0 and dz == 0
+                elif e.direction == Direction.east:
+                    assert dx > 0 and dy == 0 and dz == 0
+                elif e.direction == Direction.west:
+                    assert dx < 0 and dy == 0 and dz == 0
