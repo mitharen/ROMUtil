@@ -39,6 +39,7 @@ def _make_simplified_graph(
     rooms: list[int],
     edges: list[tuple[int, int]] | None = None,
     cut_edges: list[tuple[int, int]] | None = None,
+    directed_edges: list[tuple[int, int, Direction]] | None = None,
 ) -> SimplifiedGraph:
     """Helper to construct a SimplifiedGraph from node lists and edge pairs."""
     room_defs = {v: _make_room(v) for v in rooms}
@@ -47,6 +48,10 @@ def _make_simplified_graph(
         for u, v in edges:
             layout_edges.append(LayoutEdge(src=u, dst=v, direction=Direction.north, cut=False))
             layout_edges.append(LayoutEdge(src=v, dst=u, direction=Direction.south, cut=False))
+    if directed_edges:
+        for u, v, d in directed_edges:
+            layout_edges.append(LayoutEdge(src=u, dst=v, direction=d, cut=False))
+            layout_edges.append(LayoutEdge(src=v, dst=u, direction=d.invert(), cut=False))
     if cut_edges:
         for u, v in cut_edges:
             layout_edges.append(LayoutEdge(src=u, dst=v, direction=Direction.north, cut=True))
@@ -151,13 +156,13 @@ class TestBuildBlockSpqrTree:
 
     def test_parallel_split_pair_dipole(self) -> None:
         """Graph with 2 poles and 3 independent paths decomposes into a P-node (split_pair_container)."""
-        # Poles 1, 2 with paths: (1, 2), (1, 3, 2), (1, 4, 2)
+        # Poles 1, 2 with paths: (1, 2) direct North, (1, 3, 2) East branch, (1, 4, 2) West branch
         edges = [
             LayoutEdge(src=1, dst=2, direction=Direction.north),
-            LayoutEdge(src=1, dst=3, direction=Direction.north),
-            LayoutEdge(src=3, dst=2, direction=Direction.north),
-            LayoutEdge(src=1, dst=4, direction=Direction.north),
-            LayoutEdge(src=4, dst=2, direction=Direction.north),
+            LayoutEdge(src=1, dst=3, direction=Direction.east),
+            LayoutEdge(src=3, dst=2, direction=Direction.west),
+            LayoutEdge(src=1, dst=4, direction=Direction.west),
+            LayoutEdge(src=4, dst=2, direction=Direction.east),
         ]
         tree_node = build_block_spqr_tree(frozenset({1, 2, 3, 4}), edges)
         assert tree_node.node_type == "split_pair_container"
@@ -169,7 +174,7 @@ class TestBuildBlockSpqrTree:
             assert child.node_type == "series_loop"
 
     def test_two_k4s_split_pair(self) -> None:
-        """Two K4s sharing an edge (split pair) decompose into P-node container with R-node children."""
+        """Two K4s sharing an edge fuse into a combined rigid cluster when allowlist rejects rigid branches."""
         edges: list[LayoutEdge] = []
         # K4 on 1, 2, 3, 4
         for u in [1, 2, 3, 4]:
@@ -183,15 +188,13 @@ class TestBuildBlockSpqrTree:
                     edges.append(LayoutEdge(src=u, dst=v, direction=Direction.north))
 
         tree_node = build_block_spqr_tree(frozenset({1, 2, 3, 4, 5, 6}), edges)
-        assert tree_node.node_type == TreeNodeType.SPLIT_PAIR_CONTAINER
-        assert tree_node.rooms == frozenset({1, 2})
+        assert tree_node.node_type == TreeNodeType.RIGID_CLUSTER
+        assert tree_node.rooms == frozenset({1, 2, 3, 4, 5, 6})
         assert set(tree_node.metadata.get("poles", ())) == {1, 2}
-        assert len(tree_node.children) == 2
-        for child in tree_node.children:
-            assert child.node_type == TreeNodeType.RIGID_CLUSTER
-            assert child.cut_type == CutType.SPLIT_PAIR
-            assert isinstance(child.cut_contract, SplitPairCut)
-            assert set(child.cut_contract.poles) == {1, 2}
+        assert tree_node.metadata.get("cut_type") == CutType.SPLIT_PAIR
+        assert isinstance(tree_node.cut_contract, SplitPairCut)
+        assert set(tree_node.cut_contract.poles) == {1, 2}
+        assert tree_node.children == ()
 
     def test_subdivided_k4_series_child_preserves_poles(self) -> None:
         """K_4 with subdivided edge produces R-node root with S-node child attaching via typed split pair."""
@@ -320,15 +323,22 @@ class TestSpqrTreeBuilder:
         builder = SpqrTreeBuilder()
         # Block 1 (Dipole between 1 and 2):
         # Path 1: 1 - 2
-        # Path 2: 1 - 3 - 2
-        # Path 3: 1 - 4 - 2
+        # Path 2: 1 - 3 - 2 (East)
+        # Path 3: 1 - 4 - 2 (West)
         # Block 2 (C4 attached at room 3):
         # 3 - 5 - 6 - 7 - 3
         simplified = _make_simplified_graph(
             rooms=[1, 2, 3, 4, 5, 6, 7],
-            edges=[
-                (1, 2), (1, 3), (3, 2), (1, 4), (4, 2),
-                (3, 5), (5, 6), (6, 7), (7, 3),
+            directed_edges=[
+                (1, 2, Direction.north),
+                (1, 3, Direction.east),
+                (3, 2, Direction.west),
+                (1, 4, Direction.west),
+                (4, 2, Direction.east),
+                (3, 5, Direction.north),
+                (5, 6, Direction.east),
+                (6, 7, Direction.south),
+                (7, 3, Direction.west),
             ],
         )
         tree = builder.build_tree(simplified)
@@ -356,9 +366,16 @@ class TestSpqrTreeBuilder:
         # 1 - 5 - 6 - 7 - 1
         simplified = _make_simplified_graph(
             rooms=[1, 2, 3, 4, 5, 6, 7],
-            edges=[
-                (1, 2), (1, 3), (3, 2), (1, 4), (4, 2),
-                (1, 5), (5, 6), (6, 7), (7, 1),
+            directed_edges=[
+                (1, 2, Direction.north),
+                (1, 3, Direction.east),
+                (3, 2, Direction.west),
+                (1, 4, Direction.west),
+                (4, 2, Direction.east),
+                (1, 5, Direction.south),
+                (5, 6, Direction.east),
+                (6, 7, Direction.north),
+                (7, 1, Direction.west),
             ],
         )
         tree = builder.build_tree(simplified)
@@ -411,3 +428,129 @@ class TestSpqrEndToEndIntegration:
         assert isinstance(solved, SolvedLayout)
         assert solved.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
         assert len(solved.coordinates) == len(world_graph.rooms)
+
+
+class TestSafe2CutAllowlistContract:
+    """Unit tests for the safe 2-cut allowlist contract and combined child fusion."""
+
+    def test_safe_series_branches_decouple_cleanly(self) -> None:
+        """Candidate series branches expanding into disjoint half-spaces decouple as independent children."""
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north),
+            LayoutEdge(src=1, dst=3, direction=Direction.east),
+            LayoutEdge(src=3, dst=2, direction=Direction.west),
+            LayoutEdge(src=1, dst=4, direction=Direction.west),
+            LayoutEdge(src=4, dst=2, direction=Direction.east),
+        ]
+        tree_node = build_block_spqr_tree(frozenset({1, 2, 3, 4}), edges)
+        assert tree_node.node_type == TreeNodeType.SPLIT_PAIR_CONTAINER
+        assert tree_node.rooms == frozenset({1, 2})
+        assert tree_node.metadata.get("cut_type") == CutType.SPLIT_PAIR
+        assert set(tree_node.metadata.get("poles", ())) == {1, 2}
+        assert len(tree_node.children) == 2
+        for child in tree_node.children:
+            assert child.node_type == TreeNodeType.SERIES_LOOP
+
+    def test_interlocked_branches_span_conflict_fuses(self) -> None:
+        """A rigid internal block pinning pole span fuses with peer series branches into a single cluster."""
+        edges: list[LayoutEdge] = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north),
+            LayoutEdge(src=1, dst=3, direction=Direction.east),
+            LayoutEdge(src=3, dst=4, direction=Direction.north),
+            LayoutEdge(src=4, dst=2, direction=Direction.west),
+            LayoutEdge(src=1, dst=4, direction=Direction.northeast),
+            LayoutEdge(src=2, dst=3, direction=Direction.southeast),
+            LayoutEdge(src=1, dst=20, direction=Direction.south),
+            LayoutEdge(src=20, dst=21, direction=Direction.east),
+            LayoutEdge(src=21, dst=2, direction=Direction.north),
+        ]
+        tree_node = build_block_spqr_tree(frozenset({1, 2, 3, 4, 20, 21}), edges)
+        assert tree_node.node_type == TreeNodeType.RIGID_CLUSTER
+        assert tree_node.rooms == frozenset({1, 2, 3, 4, 20, 21})
+        assert tree_node.metadata.get("cut_type") == CutType.SPLIT_PAIR
+        assert set(tree_node.metadata.get("poles", ())) == {1, 2}
+        assert tree_node.children == ()
+
+    def test_interlocked_branches_concentric_enclosure_fuses(self) -> None:
+        """A candidate branch exhibiting transverse bracketing around the pole axis fuses into a single cluster."""
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north),
+            # Inner branch in +X half-space
+            LayoutEdge(src=1, dst=3, direction=Direction.east),
+            LayoutEdge(src=3, dst=2, direction=Direction.west),
+            # Outer arch with transverse bracketing (spans both +X and -X)
+            LayoutEdge(src=1, dst=4, direction=Direction.south),
+            LayoutEdge(src=4, dst=5, direction=Direction.east),
+            LayoutEdge(src=5, dst=6, direction=Direction.north),
+            LayoutEdge(src=6, dst=7, direction=Direction.west),
+            LayoutEdge(src=7, dst=8, direction=Direction.south),
+            LayoutEdge(src=8, dst=2, direction=Direction.east),
+        ]
+        tree_node = build_block_spqr_tree(frozenset({1, 2, 3, 4, 5, 6, 7, 8}), edges)
+        assert tree_node.node_type == TreeNodeType.RIGID_CLUSTER
+        assert tree_node.rooms == frozenset({1, 2, 3, 4, 5, 6, 7, 8})
+        assert tree_node.children == ()
+
+    def test_interlocked_branches_overlapping_halfspace_fuses(self) -> None:
+        """Multiple candidate branches expanding into the same half-space fuse into a single cluster."""
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north),
+            # Branch 1 in +X half-space
+            LayoutEdge(src=1, dst=3, direction=Direction.east),
+            LayoutEdge(src=3, dst=30, direction=Direction.north),
+            LayoutEdge(src=30, dst=2, direction=Direction.west),
+            # Branch 2 also in +X half-space
+            LayoutEdge(src=1, dst=4, direction=Direction.south),
+            LayoutEdge(src=4, dst=5, direction=Direction.east),
+            LayoutEdge(src=5, dst=6, direction=Direction.north),
+            LayoutEdge(src=6, dst=7, direction=Direction.west),
+            LayoutEdge(src=7, dst=2, direction=Direction.south),
+        ]
+        tree_node = build_block_spqr_tree(frozenset({1, 2, 3, 30, 4, 5, 6, 7}), edges)
+        assert tree_node.node_type == TreeNodeType.RIGID_CLUSTER
+        assert tree_node.rooms == frozenset({1, 2, 3, 30, 4, 5, 6, 7})
+        assert tree_node.children == ()
+
+    def test_split_pair_fused_descended_from_outer_parent(self) -> None:
+        """When an outer parent cluster exists, an unsafe split pair descends as a combined child node."""
+        builder = SpqrTreeBuilder()
+        simplified = _make_simplified_graph(
+            rooms=[100, 101, 102, 103, 1, 2, 3, 4, 20, 21, 22, 23],
+            directed_edges=[
+                # Outer parent rigid cluster (3-connected square with diagonals)
+                (100, 101, Direction.north),
+                (101, 102, Direction.west),
+                (102, 103, Direction.south),
+                (103, 100, Direction.east),
+                (100, 102, Direction.northwest),
+                (103, 101, Direction.northeast),
+                # Attachment to poles
+                (100, 1, Direction.east),
+                (101, 2, Direction.east),
+                # Direct edge between poles
+                (1, 2, Direction.north),
+                # Rigid K4 branch pinning span = 1
+                (1, 3, Direction.east),
+                (3, 4, Direction.north),
+                (4, 2, Direction.west),
+                (1, 4, Direction.northeast),
+                (2, 3, Direction.southeast),
+                # Longer series loop branch requiring span >= 3
+                (1, 20, Direction.south),
+                (20, 21, Direction.east),
+                (21, 22, Direction.north),
+                (22, 23, Direction.west),
+                (23, 2, Direction.south),
+            ],
+        )
+        tree = builder.build_tree(simplified)
+        # Root must be the outer parent rigid cluster
+        assert tree.root.node_type == TreeNodeType.RIGID_CLUSTER
+        assert tree.root.rooms == frozenset({100, 101, 102, 103})
+        # Fused split pair descends as a single combined child node
+        assert len(tree.root.children) == 1
+        child = tree.root.children[0]
+        assert child.node_type == TreeNodeType.RIGID_CLUSTER
+        assert child.metadata.get("cut_type") == CutType.SPLIT_PAIR
+        assert child.rooms == frozenset({1, 2, 3, 4, 20, 21, 22, 23, 100, 101})
+        assert child.children == ()
