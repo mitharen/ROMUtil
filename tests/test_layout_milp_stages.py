@@ -846,7 +846,7 @@ class TestStage1Inventory:
         assert handler_inc._has_transverse_exit(p_check=1, p0=1, p1=2, primary_axis=0, c_sol=sol_p0) is True
 
     def test_split_pair_handler_align_children_branches(self) -> None:
-        """SplitPairHandler exercises align_children branches: empty groups, external poles, and non-axis alignment."""
+        """SplitPairHandler exercises align_children branches: empty groups and external poles."""
         c1 = SolveTreeNode(
             node_id="c1",
             node_type="leaf",
@@ -880,38 +880,13 @@ class TestStage1Inventory:
             gw_anchors,
             aligned,
             child_anchor_poles,
-            min_lens,
-            split_dirs,
         ) = handler.align_children(split_children_by_poles=groups, room_anchored_children=None)
 
         assert len(child_aligns) == 2
         assert frozenset({"c1", "c2"}) in equated
-        assert split_dirs[(10, 20)] == (1, 0, 0)
-        assert min_lens[(10, 20)] >= 3
-
-        sols_degen = {
-            "c1": NodeSolution("c1", {10: Coord3D(0, 0, 0), 20: Coord3D(0, 0, 0)}, ()),
-            "c2": NodeSolution("c2", {10: Coord3D(0, 0, 0), 20: Coord3D(0, 0, 0)}, ()),
-        }
-        handler_degen = SplitPairHandler(node=parent_no_poles, child_solutions=sols_degen, graph=_make_graph([1, 10, 20], []))
-        _, _, _, _, _, _, _, split_dirs_degen = handler_degen.align_children(
-            split_children_by_poles={(10, 20): [c1, c2]}
-        )
-        assert split_dirs_degen[(10, 20)] == (1, 0, 0)
-
-        class MissingKeyCoordMap(dict):
-            def __contains__(self, key: object) -> bool:
-                if key == 20:
-                    return False
-                return super().__contains__(key)
-
-        c_missing = SolveTreeNode(node_id="c_miss", node_type="leaf", rooms=frozenset({10}))
-        sols_miss = {
-            "c1": NodeSolution("c1", {10: Coord3D(0, 0, 0), 20: Coord3D(2, 0, 0)}, ()),
-            "c_miss": NodeSolution("c_miss", MissingKeyCoordMap({10: Coord3D(0, 0, 0), 20: Coord3D(0, 0, 0)}), ()),
-        }
-        handler_miss = SplitPairHandler(node=parent_no_poles, child_solutions=sols_miss, graph=_make_graph([1, 10, 20], []))
-        handler_miss.align_children(split_children_by_poles={(10, 20): [c1, c_missing]})
+        assert len(room_aligns) == 0
+        assert child_anchor_poles["c1"] == 10
+        assert child_anchor_poles["c2"] == 10
 
     def test_split_pair_handler_corridor_active_edges_edge_cases(self) -> None:
         """SplitPairHandler exercises cut edges, reverse parent-child edges, and self-loops in corridors."""
@@ -968,51 +943,30 @@ class TestStage1Inventory:
         assert "ext_c1_c2_10_3" not in {e.edge_id for e in corridors_eq}
 
     def test_split_pair_handler_direct_sp_edges_and_process_defaults(self) -> None:
-        """SplitPairHandler exercises direct sp active edges skips and process default arguments."""
+        """SplitPairHandler processes split pairs without synthetic edges, producing corridor active edges."""
         c1 = SolveTreeNode(
             node_id="c1",
             node_type="leaf",
-            rooms=frozenset({1, 2}),
+            rooms=frozenset({1, 2, 3}),
             metadata={"cut_contract": SplitPairCut(poles=(1, 2))},
         )
         parent = SolveTreeNode(
             node_id="p",
             node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
-            rooms=frozenset({1, 2}),
+            rooms=frozenset({1, 2, 10}),
             children=(c1,),
         )
         sols = {
-            "c1": NodeSolution("c1", {1: Coord3D(0, 0, 0), 2: Coord3D(2, 0, 0)}, ()),
+            "c1": NodeSolution("c1", {1: Coord3D(0, 0, 0), 2: Coord3D(2, 0, 0), 3: Coord3D(1, 0, 0)}, ()),
         }
-        graph = _make_graph([1, 2], [(1, 2, Direction.east, 2)])
+        graph = _make_graph([1, 2, 3, 10], [(10, 3, Direction.east, 2)])
         handler = SplitPairHandler(node=parent, child_solutions=sols, graph=graph)
 
-        sp_edges = handler.build_split_pair_active_edges(
-            split_children_by_poles={(1, 2): [c1]},
-            split_min_lengths={(1, 2): 2},
-            split_directions={(1, 2): (1, 0, 0)},
-            handled_pole_pairs=None,
-        )
-        assert len(sp_edges) == 1
-
-        sp_edges_handled = handler.build_split_pair_active_edges(
-            split_children_by_poles={(1, 2): [c1]},
-            split_min_lengths={(1, 2): 2},
-            split_directions={(1, 2): (1, 0, 0)},
-            handled_pole_pairs={(1, 2)},
-        )
-        assert len(sp_edges_handled) == 0
-
-        sp_edges_no_dir = handler.build_split_pair_active_edges(
-            split_children_by_poles={(1, 2): [c1]},
-            split_min_lengths={(1, 2): 2},
-            split_directions={},
-            handled_pole_pairs=set(),
-        )
-        assert len(sp_edges_no_dir) == 0
-
-        res = handler.process(room_anchored_children=None, handled_pole_pairs=None)
-        assert len(res.split_pair_edges) == 1
+        res = handler.process(room_anchored_children=None)
+        assert res.active_edges == res.corridor_edges
+        assert len(res.active_edges) == 1
+        assert res.active_edges[0].edge_id == "ext_c1_10_3"
+        assert len(res.room_alignments) == 1
 
     def test_gateway_cut_handler_edge_cases_and_error_handling(self) -> None:
         """GatewayCutHandler exercises metadata fallback, multiple anchors, reverse doorway edges, and invalid directions."""
@@ -1144,37 +1098,28 @@ class TestStage1Inventory:
         assert "c4" in res.aligned_children
 
     def test_build_internal_room_edges_invalid_directions_and_empty_rooms(self) -> None:
-        """Internal room edge builder handles empty rooms, split pair duplicates, and invalid directions."""
+        """Internal room edge builder handles empty rooms, self-loops, and invalid directions."""
         assert _build_internal_room_edges(
             graph=_make_graph([], []),
             rooms=(),
-            split_pole_pairs=set(),
-            split_min_lengths={},
-            split_children_by_poles={},
-            pole_edges_handled=set(),
         ) == []
 
         room_defs = {v: Room(vnum=v, name="", description="", exits=()) for v in [1, 2, 3]}
         edges = [
+            LayoutEdge(src=1, dst=1, direction=int(Direction.east), weight=1, cut=False),
             LayoutEdge(src=1, dst=2, direction=999, weight=1, cut=False),
             LayoutEdge(src=1, dst=2, direction=int(Direction.east), weight=1, cut=False),
             LayoutEdge(src=2, dst=3, direction=999, weight=1, cut=False),
             LayoutEdge(src=1, dst=3, direction=int(Direction.north), weight=1, cut=False),
         ]
         graph = LayoutGraph(rooms=room_defs, edges=tuple(edges))
-        pole_handled: set[tuple[int, int]] = set()
         active = _build_internal_room_edges(
             graph=graph,
             rooms=(1, 2, 3),
-            split_pole_pairs={(1, 2)},
-            split_min_lengths={(1, 2): 3},
-            split_children_by_poles={},
-            pole_edges_handled=pole_handled,
         )
-        assert len(active) == 1
-        assert active[0].src == 1
-        assert active[0].dst == 3
-        assert (1, 2) in pole_handled
+        assert len(active) == 2
+        edge_ids = {e.edge_id for e in active}
+        assert edge_ids == {"int_1_2", "int_1_3"}
 
     def test_inventory_cluster_missing_child_solution_and_empty_sub_boxes(self) -> None:
         """Stage 1 inventory assigns empty sub-boxes tuple when child cluster lacks a solution."""
@@ -1909,10 +1854,8 @@ class TestTypedChildHandlers:
         res = handler.process()
         assert len(res.room_alignments) == 2
         assert frozenset({"c1", "c2"}) in res.equated_children
-        assert res.split_min_lengths[(2, 5)] == 4
-        assert res.split_directions[(2, 5)] == (1, 0, 0)
-        assert len(res.active_edges) == 1
-        assert res.active_edges[0].edge_id == "sp_2_5"
+        assert res.active_edges == res.corridor_edges
+        assert len(res.active_edges) == 0
 
     def test_split_pair_handler_transverse_anchor_selection(self) -> None:
         """Transverse exits select the transverse anchor pole over default pole."""

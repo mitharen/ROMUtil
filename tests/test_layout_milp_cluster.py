@@ -2340,3 +2340,148 @@ class TestSplitPairBoundaryPortAlignment:
         sol = solve_cluster(parent, sols, graph)
         assert "sp_child" in sol.metadata["child_offsets"]
         assert "gw_child" in sol.metadata["child_offsets"]
+
+    def test_diagonal_split_pair_solves_to_optimal(self) -> None:
+        """A non-collinear split pair with diagonal poles solves to optimal status without coordinate collisions."""
+        # 4-room square district 1 <-> 11 <-> 2 <-> 21 <-> 1
+        # Connected to outer bypass 1 -> 100 -> 300 -> 301 -> 302 -> 200 -> 2
+        r1 = Room(
+            vnum=1,
+            name="R1",
+            description="",
+            exits=(
+                Exit(direction=Direction.east, dst_vnum=11),
+                Exit(direction=Direction.north, dst_vnum=21),
+                Exit(direction=Direction.south, dst_vnum=100),
+            ),
+        )
+        r11 = Room(
+            vnum=11,
+            name="R11",
+            description="",
+            exits=(
+                Exit(direction=Direction.west, dst_vnum=1),
+                Exit(direction=Direction.north, dst_vnum=2),
+            ),
+        )
+        r2 = Room(
+            vnum=2,
+            name="R2",
+            description="",
+            exits=(
+                Exit(direction=Direction.south, dst_vnum=11),
+                Exit(direction=Direction.west, dst_vnum=21),
+                Exit(direction=Direction.east, dst_vnum=200),
+            ),
+        )
+        r21 = Room(
+            vnum=21,
+            name="R21",
+            description="",
+            exits=(
+                Exit(direction=Direction.east, dst_vnum=2),
+                Exit(direction=Direction.south, dst_vnum=1),
+            ),
+        )
+        r100 = Room(
+            vnum=100,
+            name="R100",
+            description="",
+            exits=(
+                Exit(direction=Direction.north, dst_vnum=1),
+                Exit(direction=Direction.east, dst_vnum=300),
+            ),
+        )
+        r300 = Room(
+            vnum=300,
+            name="R300",
+            description="",
+            exits=(
+                Exit(direction=Direction.west, dst_vnum=100),
+                Exit(direction=Direction.east, dst_vnum=301),
+            ),
+        )
+        r301 = Room(
+            vnum=301,
+            name="R301",
+            description="",
+            exits=(
+                Exit(direction=Direction.west, dst_vnum=300),
+                Exit(direction=Direction.north, dst_vnum=302),
+            ),
+        )
+        r302 = Room(
+            vnum=302,
+            name="R302",
+            description="",
+            exits=(
+                Exit(direction=Direction.south, dst_vnum=301),
+                Exit(direction=Direction.north, dst_vnum=200),
+            ),
+        )
+        r200 = Room(
+            vnum=200,
+            name="R200",
+            description="",
+            exits=(
+                Exit(direction=Direction.south, dst_vnum=302),
+                Exit(direction=Direction.west, dst_vnum=2),
+            ),
+        )
+
+        rooms = {
+            1: r1,
+            11: r11,
+            2: r2,
+            21: r21,
+            100: r100,
+            300: r300,
+            301: r301,
+            302: r302,
+            200: r200,
+        }
+        all_exits = tuple(
+            exit
+            for room in rooms.values()
+            for exit in room.exits
+        )
+        world_graph = WorldGraph(rooms=rooms, exits=all_exits)
+
+        solver = HierarchicalLayoutSolver.production()
+        layout = solver.solve(world_graph)
+
+        assert layout.diagnostics.status == SolverStatus.OPTIMAL
+        assert len(set(layout.coordinates.values())) == len(layout.coordinates) == 9
+
+        # Relative coordinate assertions for square district
+        c1 = layout.coordinates[1]
+        c11 = layout.coordinates[11]
+        c2 = layout.coordinates[2]
+        c21 = layout.coordinates[21]
+
+        assert c11.x - c1.x >= 1
+        assert c11.y == c1.y
+        assert c2.y - c11.y >= 1
+        assert c2.x == c11.x
+        assert c21.y - c1.y >= 1
+        assert c21.x == c1.x
+        assert c2.x - c21.x >= 1
+        assert c2.y == c21.y
+
+        # Diagonal pole relationship: delta x >= 1 and delta y >= 1
+        assert c2.x - c1.x >= 1
+        assert c2.y - c1.y >= 1
+
+        # Relative coordinate assertions for outer bypass
+        c100 = layout.coordinates[100]
+        c300 = layout.coordinates[300]
+        c301 = layout.coordinates[301]
+        c302 = layout.coordinates[302]
+        c200 = layout.coordinates[200]
+
+        assert c100.y < c1.y
+        assert c300.x > c100.x
+        assert c301.x > c300.x
+        assert c302.y > c301.y
+        assert c200.y > c302.y
+        assert c200.x > c2.x
