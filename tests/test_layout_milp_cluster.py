@@ -2459,8 +2459,9 @@ class TestSplitPairBoundaryPortAlignment:
 
         inv = ClusterInventory.from_node(parent, sols, graph)
         assert len(inv.children) == 2
-        assert len(inv.room_alignments) == 1
+        assert len(inv.room_alignments) == 0
         assert any(e.edge_id.startswith("gw_gw_child") for e in inv.active_edges)
+        assert any(e.edge_id.startswith("sp_") for e in inv.active_edges)
 
         sol = solve_cluster(parent, sols, graph)
         assert "sp_child" in sol.metadata["child_offsets"]

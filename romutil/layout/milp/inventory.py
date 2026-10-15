@@ -66,7 +66,6 @@ class SplitPairResult:
     corridor_edges: tuple[ActiveEdge, ...]
     gateway_anchors: Mapping[str, frozenset[int]]
     aligned_children: frozenset[str]
-    child_anchor_poles: Mapping[str, int]
 
     @property
     def active_edges(self) -> tuple[ActiveEdge, ...]:
@@ -342,34 +341,6 @@ class SplitPairHandler:
 
         return split_children_by_poles
 
-    def _has_transverse_exit(
-        self,
-        p_check: int,
-        p0: int,
-        p1: int,
-        primary_axis: int,
-        c_sol: NodeSolution,
-    ) -> bool:
-        """Check if an exit edge from p_check is transverse to the primary split axis."""
-        for ge in self.graph.edges:
-            if ge.cut or {ge.src, ge.dst} == {p0, p1}:
-                continue
-            if ge.src == p_check and ge.dst in c_sol.local_coordinates and ge.dst not in (p0, p1):
-                try:
-                    disp = direction_to_displacement(ge.direction)
-                    if disp[primary_axis] == 0:
-                        return True
-                except ValueError:
-                    pass
-            elif ge.dst == p_check and ge.src in c_sol.local_coordinates and ge.src not in (p0, p1):
-                try:
-                    disp = direction_to_displacement(ge.direction)
-                    if disp[primary_axis] == 0:
-                        return True
-                except ValueError:
-                    pass
-        return False
-
     def _find_children_with_parent_corridors(
         self,
         split_children_by_poles: Mapping[tuple[int, int], Sequence[SolveTreeNode]],
@@ -409,7 +380,6 @@ class SplitPairHandler:
         set[frozenset[str]],
         dict[str, set[int]],
         set[str],
-        dict[str, int],
     ]:
         """Align split-pair children to parent rooms or sibling children."""
         if room_anchored_children is None:
@@ -422,55 +392,14 @@ class SplitPairHandler:
         equated_children: set[frozenset[str]] = set()
         gateway_anchors: dict[str, set[int]] = {c.node_id: set() for c in self.children}
         aligned_children: set[str] = set()
-        child_anchor_poles: dict[str, int] = {}
 
         for (p0, p1), split_children in split_children_by_poles.items():
             if not split_children:
                 continue
 
             for child in split_children:
-                c_sol = self.child_solutions[child.node_id]
-                anchor_pole = p0 if p0 in self.room_set else (p1 if p1 in self.room_set else p0)
-                if (
-                    p0 in self.room_set
-                    and p1 in self.room_set
-                    and p0 in c_sol.local_coordinates
-                    and p1 in c_sol.local_coordinates
-                ):
-                    pc0 = c_sol.local_coordinates[p0]
-                    pc1 = c_sol.local_coordinates[p1]
-                    pdx = pc1.x - pc0.x
-                    pdy = pc1.y - pc0.y
-                    pdz = pc1.z - pc0.z
-                    max_d = max(abs(pdx), abs(pdy), abs(pdz))
-                    primary_axis = 0 if abs(pdx) == max_d else (1 if abs(pdy) == max_d else 2)
-
-                    p0_trans = self._has_transverse_exit(p0, p0, p1, primary_axis, c_sol)
-                    p1_trans = self._has_transverse_exit(p1, p0, p1, primary_axis, c_sol)
-                    if p1_trans and not p0_trans:
-                        anchor_pole = p1
-                    elif p0_trans and not p1_trans:
-                        anchor_pole = p0
-
-                child_anchor_poles[child.node_id] = anchor_pole
-                pc_anchor = c_sol.local_coordinates[anchor_pole]
-
                 if child.node_id in children_with_corridors:
-                    # Child connects to parent rooms via boundary port corridor active edges.
-                    # Elastic active edges provide symmetric placement without rigid welding.
                     aligned_children.add(child.node_id)
-                elif anchor_pole in self.room_set:
-                    # Fallback rigid weld when no corridor active edges connect parent rooms.
-                    room_alignments.append(
-                        RoomChildAlignment(
-                            room_vnum=anchor_pole,
-                            child_id=child.node_id,
-                            child_coord=pc_anchor,
-                        )
-                    )
-                    gateway_anchors[child.node_id].add(anchor_pole)
-                    aligned_children.add(child.node_id)
-                    room_anchored_children.setdefault(anchor_pole, []).append(child.node_id)
 
             if len(split_children) > 1 and p0 not in self.room_set and p1 not in self.room_set:
                 base_child = split_children[0]
@@ -526,16 +455,14 @@ class SplitPairHandler:
             equated_children,
             gateway_anchors,
             aligned_children,
-            child_anchor_poles,
         )
 
     def build_corridor_active_edges(
         self,
         split_children_by_poles: Mapping[tuple[int, int], Sequence[SolveTreeNode]],
-        child_anchor_poles: Mapping[str, int],
         equated_children: set[frozenset[str]],
     ) -> tuple[list[ActiveEdge], dict[str, set[int]], set[str]]:
-        """Build active edges for external parent-to-split and inter-split corridors."""
+        """Build active edges for external parent-to-split, inter-split, and split-pair span corridors."""
         corridor_edges: list[ActiveEdge] = []
         gateway_anchors: dict[str, set[int]] = {c.node_id: set() for c in self.children}
         aligned_children: set[str] = set()
@@ -666,6 +593,57 @@ class SplitPairHandler:
                                     )
                                     aligned_children.add(sc.node_id)
 
+        # Couple split-pair containers whose poles are in parent room set via active edges
+        for (p0, p1), split_children in split_children_by_poles.items():
+            if p0 in self.room_set and p1 in self.room_set:
+                for sc in split_children:
+                    if sc.node_id in aligned_children:
+                        continue
+                    if sc.node_id not in self.child_solutions:
+                        continue
+                    c_sol = self.child_solutions[sc.node_id]
+                    if p0 not in c_sol.local_coordinates or p1 not in c_sol.local_coordinates:
+                        continue
+                    pc0 = c_sol.local_coordinates[p0]
+                    pc1 = c_sol.local_coordinates[p1]
+                    pdx = pc1.x - pc0.x
+                    pdy = pc1.y - pc0.y
+                    pdz = pc1.z - pc0.z
+                    max_d = max(abs(pdx), abs(pdy), abs(pdz))
+                    L_min = max(1, max_d)
+                    if abs(pdx) == max_d:
+                        split_dir = (1 if pdx >= 0 else -1, 0, 0)
+                    elif abs(pdy) == max_d:
+                        split_dir = (0, 1 if pdy >= 0 else -1, 0)
+                    else:
+                        split_dir = (0, 0, 1 if pdz >= 0 else -1)
+
+                    corridor_edges.append(
+                        ActiveEdge(
+                            edge_id=f"sp_port_{sc.node_id}_{p0}",
+                            src=p0,
+                            dst=(sc.node_id, p0),
+                            direction=(0, 0, 0),
+                            min_length=0,
+                            associated_rooms=frozenset({p0}),
+                            associated_children=frozenset({sc.node_id}),
+                        )
+                    )
+                    corridor_edges.append(
+                        ActiveEdge(
+                            edge_id=f"sp_span_{sc.node_id}_{p0}_{p1}",
+                            src=p0,
+                            dst=p1,
+                            direction=split_dir,
+                            min_length=L_min,
+                            associated_rooms=frozenset({p0, p1}),
+                            associated_children=frozenset({sc.node_id}),
+                            allow_transverse_slack=True,
+                        )
+                    )
+                    gateway_anchors[sc.node_id].update({p0, p1})
+                    aligned_children.add(sc.node_id)
+
         return corridor_edges, gateway_anchors, aligned_children
 
     def process(
@@ -685,7 +663,6 @@ class SplitPairHandler:
             equated_children,
             gateway_anchors,
             stage_aligned,
-            child_anchor_poles,
         ) = self.align_children(
             split_children_by_poles=grouped,
             room_anchored_children=room_anchored_children,
@@ -694,7 +671,6 @@ class SplitPairHandler:
 
         corridor_edges, corridor_gw, corridor_aligned = self.build_corridor_active_edges(
             split_children_by_poles=grouped,
-            child_anchor_poles=child_anchor_poles,
             equated_children=equated_children,
         )
 
@@ -744,7 +720,6 @@ class SplitPairHandler:
             corridor_edges=tuple(corridor_edges),
             gateway_anchors={k: frozenset(v) for k, v in gateway_anchors.items()},
             aligned_children=frozenset(all_aligned),
-            child_anchor_poles=child_anchor_poles,
         )
 
 
