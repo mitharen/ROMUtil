@@ -7,13 +7,17 @@ import pytest
 from romutil.layout import (
     ArticulationPointCut,
     BlockCutTreeBuilder,
+    CutType,
     HierarchicalLayoutSolver,
     LayoutEdge,
     LayoutGraph,
     SimplifiedGraph,
     SolveTree,
     SolveTreeNode,
+    SplitPairCut,
+    SpqrTreeBuilder,
     TreeBuilder,
+    TreeNodeType,
 )
 from romutil.models import Direction, Exit, Room
 from romutil.types import Coord3D, LayoutOptions, SolvedLayout, SolverStatus, WorldGraph
@@ -460,3 +464,65 @@ class TestHierarchicalLayoutSolverIntegration:
 
         assert isinstance(solved, SolvedLayout)
         assert solved.coordinates == {}
+
+
+class TestHierarchyTransverseCorridorSplit:
+    """Tests for hierarchical tree transformations and transverse corridor S-node splitting."""
+
+    def test_transverse_corridor_split_in_solve_tree(self) -> None:
+        """Transverse corridor splitting decomposes an S-node into sibling clusters in a SolveTree."""
+        from romutil.layout.hierarchy.spqr import _split_transverse_s_nodes
+
+        room_ids = [1, 2, 3, 4, 10, 11, 20]
+        edges = [
+            (1, 2, Direction.north),
+            (2, 3, Direction.east),
+            (3, 4, Direction.south),
+            (4, 1, Direction.west),
+            (1, 10, Direction.west),
+            (10, 11, Direction.north),
+            (11, 20, Direction.north),
+            (2, 20, Direction.west),
+        ]
+        layout_edges = [
+            LayoutEdge(src=u, dst=v, direction=d, cut=False)
+            for u, v, d in edges
+        ]
+        graph = LayoutGraph(
+            rooms={v: _make_room(v) for v in room_ids},
+            edges=tuple(layout_edges),
+        )
+
+        child = SolveTreeNode(
+            node_id="s_branch",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 10, 11, 20}),
+            children=(),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (1, 2),
+                "cut_contract": SplitPairCut(poles=(1, 2)),
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="parent_cluster",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3, 4}),
+            children=(child,),
+        )
+
+        transformed = _split_transverse_s_nodes(parent, graph)
+        assert len(transformed.children) == 2
+
+        child_anchors = {
+            c.metadata.get("anchor_vnum")
+            for c in transformed.children
+            if c.metadata.get("cut_type") == CutType.ARTICULATION_POINT
+        }
+        assert child_anchors == {1, 2}
+
+        child_1 = [c for c in transformed.children if c.metadata.get("anchor_vnum") == 1][0]
+        child_2 = [c for c in transformed.children if c.metadata.get("anchor_vnum") == 2][0]
+
+        assert 10 in child_1.rooms
+        assert 20 in child_2.rooms
