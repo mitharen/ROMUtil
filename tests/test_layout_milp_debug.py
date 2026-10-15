@@ -594,6 +594,65 @@ def test_render_debug_solve_tree_index_complete_hierarchy(tmp_path: Path):
     # Iframe preview element
     assert '<iframe id="svg-frame" src="cluster_root_rigid.svg"' in html_text
 
+    # Tree hierarchy CSS styling and indentation rules
+    assert ".tree-children {" in html_text
+    assert "margin-left: 14px;" in html_text
+    assert "border-left: 1px dashed #cbd5e1;" in html_text
+    assert ".tree-scroll > details.tree-item" in html_text
+    assert "details.tree-item:first-of-type" not in html_text
+
+
+def test_render_debug_solve_tree_index_hierarchy_indentation_css(tmp_path: Path):
+    """Verify hierarchical tree indentation CSS rules and DOM nesting in solve tree explorer."""
+    leaf_child = SolveTreeNode(
+        node_id="child_leaf",
+        node_type=TreeNodeType.BLOCK,
+        rooms=frozenset({101}),
+    )
+    branch_child = SolveTreeNode(
+        node_id="child_branch",
+        node_type=TreeNodeType.SERIES_LOOP,
+        rooms=frozenset({102}),
+        children=(leaf_child,),
+    )
+    root = SolveTreeNode(
+        node_id="root_cluster",
+        node_type=TreeNodeType.RIGID_CLUSTER,
+        rooms=frozenset({100, 101, 102}),
+        children=(branch_child,),
+    )
+    tree = SolveTree(root=root, components=())
+
+    out_dir = tmp_path / "tree_test"
+    index_file = render_debug_solve_tree_index(tree, out_dir, area_name="test_area")
+    html_text = index_file.read_text(encoding="utf-8")
+
+    # CSS indentation and alignment rules
+    assert ".tree-children {" in html_text
+    assert "margin-left: 14px;" in html_text
+    assert "padding-left: 6px;" in html_text
+    assert "border-left: 1px dashed #cbd5e1;" in html_text
+
+    # Root item targeting without unwanted outer indent
+    assert ".tree-scroll > details.tree-item" in html_text
+    assert ".tree-scroll > .tree-item" in html_text
+
+    # Negative check: no first-of-type selector collapsing first child nodes
+    assert "details.tree-item:first-of-type" not in html_text
+
+    # Caret and leaf alignment
+    assert ".caret {" in html_text
+    assert ".leaf-dot {" in html_text
+    assert "flex-shrink: 0;" in html_text
+
+    # DOM structure: root details contains tree-children, which contains child_branch details,
+    # which contains tree-children, which contains child_leaf leaf div.
+    assert '<details class="tree-item" open data-node-id="root_cluster"' in html_text
+    assert '<div class="tree-children">' in html_text
+    assert '<details class="tree-item" open data-node-id="child_branch"' in html_text
+    assert '<div class="tree-item leaf" data-node-id="child_leaf"' in html_text
+
+
 
 def test_render_debug_solve_tree_index_inferred_area_and_leaf_root(tmp_path: Path):
     root = SolveTreeNode(

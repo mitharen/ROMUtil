@@ -1135,19 +1135,26 @@ def render_debug_solve_tree_index(
       padding: 8px 6px;
     }}
     details.tree-item {{
-      margin-left: 12px;
-      border-left: 1px dashed #cbd5e1;
-      padding-left: 4px;
-    }}
-    details.tree-item:first-of-type {{
-      margin-left: 0;
+      margin: 0;
       border-left: none;
       padding-left: 0;
     }}
     div.tree-item.leaf {{
-      margin-left: 12px;
+      margin: 0;
+      border-left: none;
+      padding-left: 0;
+    }}
+    .tree-scroll > details.tree-item,
+    .tree-scroll > div.tree-item.leaf,
+    .tree-scroll > .tree-item {{
+      margin-left: 0;
+      border-left: none;
+      padding-left: 0;
+    }}
+    .tree-children {{
+      margin-left: 14px;
+      padding-left: 6px;
       border-left: 1px dashed #cbd5e1;
-      padding-left: 4px;
     }}
     .tree-row {{
       list-style: none;
@@ -1175,6 +1182,7 @@ def render_debug_solve_tree_index(
       font-size: 9px;
       color: #94a3b8;
       transition: transform 0.15s;
+      flex-shrink: 0;
     }}
     details[open] > summary > .caret {{
       transform: rotate(90deg);
@@ -1185,6 +1193,7 @@ def render_debug_solve_tree_index(
       text-align: center;
       font-size: 10px;
       color: #cbd5e1;
+      flex-shrink: 0;
     }}
     .badge-type {{
       font-size: 9px;
@@ -1194,6 +1203,7 @@ def render_debug_solve_tree_index(
       text-transform: uppercase;
       letter-spacing: 0.02em;
       white-space: nowrap;
+      flex-shrink: 0;
     }}
     .type-rigid {{ background: #dbeafe; color: #1e40af; }}
     .type-series {{ background: #f3e8ff; color: #6b21a8; }}
@@ -1210,6 +1220,7 @@ def render_debug_solve_tree_index(
       background: #fae8ff;
       color: #86198f;
       white-space: nowrap;
+      flex-shrink: 0;
     }}
     .node-title {{
       font-family: ui-monospace, monospace;
@@ -1219,6 +1230,7 @@ def render_debug_solve_tree_index(
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      min-width: 0;
     }}
     .pill-count {{
       font-size: 9px;
@@ -1227,6 +1239,7 @@ def render_debug_solve_tree_index(
       padding: 1px 4px;
       border-radius: 8px;
       white-space: nowrap;
+      flex-shrink: 0;
     }}
     .btn-svg-ext {{
       color: #94a3b8;
@@ -1235,6 +1248,7 @@ def render_debug_solve_tree_index(
       border-radius: 3px;
       font-size: 11px;
       line-height: 1;
+      flex-shrink: 0;
     }}
     .btn-svg-ext:hover {{ color: var(--primary); background: #e0e7ff; }}
     .component-divider {{
