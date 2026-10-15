@@ -85,14 +85,14 @@ class TestAddDisjunctiveBoxSeparation:
             pairs=pairs,
             get_box_a=lambda _: (0, 0, 0, 0, 0, 0),
             get_box_b=lambda _: (1, 1, 1, 1, 1, 1),
-            prefix="pr_",
+            prefix="parent_room_",
             m_big=100,
         )
 
-        assert hasattr(model, "pr_br")
-        assert not hasattr(model, "pr__br")
-        assert hasattr(model, "pr_sep_sum")
-        assert not hasattr(model, "pr__sep_sum")
+        assert hasattr(model, "parent_room_br")
+        assert not hasattr(model, "parent_room__br")
+        assert hasattr(model, "parent_room_sep_sum")
+        assert not hasattr(model, "parent_room__sep_sum")
 
     def test_prefix_named_sep(self) -> None:
         """Prefix 'sep' maps constraint lists to sep_sum and sep_r cleanly."""

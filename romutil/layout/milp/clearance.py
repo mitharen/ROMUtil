@@ -34,7 +34,7 @@ class ClearanceConstraintBuilder:
                 pairs=parent_pairs,
                 get_box_a=self.formulation.get_room_box,
                 get_box_b=self.formulation.get_room_box,
-                prefix="pr",
+                prefix="parent_room",
                 m_big=self.formulation.m_big,
             )
 
@@ -73,7 +73,7 @@ class ClearanceConstraintBuilder:
                 pairs=child_pairs,
                 get_box_a=self.formulation.get_child_sub_box,
                 get_box_b=self.formulation.get_child_sub_box,
-                prefix="cb",
+                prefix="child_child",
                 m_big=self.formulation.m_big,
             )
 
@@ -85,7 +85,7 @@ class ClearanceConstraintBuilder:
         gateway_anchors = self.formulation.inventory.gateway_anchors
         child_sub_boxes = self.formulation.inventory.child_sub_boxes
 
-        rc_pairs: list[tuple[int, tuple[str, int]]] = []
+        room_child_pairs: list[tuple[int, tuple[str, int]]] = []
         if rooms:
             for child in children:
                 c_sol = child_solutions.get(child.node_id)
@@ -95,15 +95,15 @@ class ClearanceConstraintBuilder:
                     for u in rooms:
                         if u not in anchors and u not in c_sol.local_coordinates:
                             for k in range(len(sb)):
-                                rc_pairs.append((u, (child.node_id, k)))
+                                room_child_pairs.append((u, (child.node_id, k)))
 
-        if rc_pairs:
+        if room_child_pairs:
             add_disjunctive_box_separation(
                 model=self.formulation.model,
-                pairs=rc_pairs,
+                pairs=room_child_pairs,
                 get_box_a=self.formulation.get_room_box,
                 get_box_b=self.formulation.get_child_sub_box,
-                prefix="rc",
+                prefix="room_child",
                 m_big=self.formulation.m_big,
             )
 
@@ -135,7 +135,7 @@ class ClearanceConstraintBuilder:
             pairs=corridor_room_pairs,
             get_box_a=lambda i: self.formulation.get_corridor_interior_box(active_edges[i]),
             get_box_b=self.formulation.get_room_box,
-            prefix="cwr",
+            prefix="corridor_room",
             m_big=self.formulation.m_big,
         )
 
@@ -180,7 +180,7 @@ class ClearanceConstraintBuilder:
                 pairs=corridor_child_pairs,
                 get_box_a=lambda i: self.formulation.get_corridor_full_box(active_edges[i]),
                 get_box_b=self.formulation.get_child_sub_box,
-                prefix="cws",
+                prefix="corridor_child",
                 m_big=self.formulation.m_big,
             )
 
@@ -217,7 +217,7 @@ class ClearanceConstraintBuilder:
             pairs=crossing_pairs,
             get_box_a=lambda i: self.formulation.get_corridor_full_box(active_edges[i]),
             get_box_b=lambda i: self.formulation.get_corridor_full_box(active_edges[i]),
-            prefix="cc",
+            prefix="corridor_crossing",
             m_big=self.formulation.m_big,
         )
 
@@ -284,7 +284,7 @@ class ClearanceConstraintBuilder:
                 pairs=doorway_child_pairs,
                 get_box_a=get_doorway_box,
                 get_box_b=self.formulation.get_child_sub_box,
-                prefix="dwc",
+                prefix="doorway_child",
                 m_big=self.formulation.m_big,
             )
 

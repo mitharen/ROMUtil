@@ -51,7 +51,7 @@ from romutil.layout.milp.normalization import (
 from romutil.layout.milp.solver import (
     SolvedClusterExtraction,
 )
-from romutil.models import Direction, Room
+from romutil.models import Direction, Exit, Room
 from romutil.types import Coord3D, LayoutOptions, LayoutSolverError, SolverStatus
 
 
@@ -1477,7 +1477,7 @@ class TestStage3Clearance:
     """Unit tests for Stage 3: Geometric Clearance & Separation Constraints."""
 
     def test_apply_clearance_constraints_parent_rooms(self) -> None:
-        """Room-room non-overlap separation constraints are attached with prefix 'pr'."""
+        """Room-room non-overlap separation constraints are attached with prefix 'parent_room'."""
         node = SolveTreeNode(node_id="p_rooms", node_type="block", rooms=frozenset({1, 2, 3}))
         graph = _make_graph([1, 2, 3], [(1, 2, Direction.east, 1), (2, 3, Direction.north, 1)])
         inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
@@ -1487,9 +1487,9 @@ class TestStage3Clearance:
         model = formulation.model
 
         # Parent-room separation variables and constraints
-        assert hasattr(model, "pr_br")
-        assert hasattr(model, "pr_sep_sum")
-        assert len(model.pr_sep_sum) == 3  # (1,2), (1,3), (2,3)
+        assert hasattr(model, "parent_room_br")
+        assert hasattr(model, "parent_room_sep_sum")
+        assert len(model.parent_room_sep_sum) == 3  # (1,2), (1,3), (2,3)
 
     def test_formulation_apply_clearances_member_method(self) -> None:
         """Direct invocation of formulation.apply_clearances() attaches clearance constraints."""
@@ -1498,9 +1498,9 @@ class TestStage3Clearance:
         inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
         formulation = ClusterFormulation(inventory=inv)
 
-        assert not hasattr(formulation.model, "pr_sep_sum")
+        assert not hasattr(formulation.model, "parent_room_sep_sum")
         formulation.apply_clearances()
-        assert hasattr(formulation.model, "pr_sep_sum")
+        assert hasattr(formulation.model, "parent_room_sep_sum")
 
     def test_formulation_apply_clearance_constraints_alias(self) -> None:
         """Calling formulation.apply_clearance_constraints() delegates cleanly to apply_clearances."""
@@ -1510,7 +1510,7 @@ class TestStage3Clearance:
         formulation = ClusterFormulation(inventory=inv)
 
         formulation.apply_clearance_constraints()
-        assert hasattr(formulation.model, "pr_sep_sum")
+        assert hasattr(formulation.model, "parent_room_sep_sum")
 
     def test_apply_clearance_constraints_child_and_corridors(self) -> None:
         """Child sub-box and corridor clearance constraints are created."""
@@ -1528,8 +1528,8 @@ class TestStage3Clearance:
         apply_clearance_constraints(formulation=formulation)
         model = formulation.model
 
-        assert hasattr(model, "rc_br")  # Room vs child separation
-        assert hasattr(model, "cwr_br")  # Corridor vs room separation
+        assert hasattr(model, "room_child_br")  # Room vs child separation
+        assert hasattr(model, "corridor_room_br")  # Corridor vs room separation
 
     def test_apply_clearances_child_child_separation(self) -> None:
         """Pairwise child-child sub-box separation is attached for non-shared children."""
@@ -1551,8 +1551,8 @@ class TestStage3Clearance:
         formulation = ClusterFormulation(inventory=inv)
 
         formulation.apply_clearances()
-        assert hasattr(formulation.model, "cb_br")
-        assert hasattr(formulation.model, "cb_sep_sum")
+        assert hasattr(formulation.model, "child_child_br")
+        assert hasattr(formulation.model, "child_child_sep_sum")
 
     def test_apply_clearances_corridor_child_and_crossing(self) -> None:
         """Corridor vs. sibling child and corridor crossing separation constraints are created."""
@@ -1604,8 +1604,30 @@ class TestStage3Clearance:
         formulation = ClusterFormulation(inventory=inv)
 
         formulation.apply_clearances()
-        assert hasattr(formulation.model, "cws_br")  # Corridor vs sibling child
-        assert hasattr(formulation.model, "cc_br")   # Corridor crossing
+        assert hasattr(formulation.model, "corridor_child_br")  # Corridor vs sibling child
+        assert hasattr(formulation.model, "corridor_crossing_br")   # Corridor crossing
+
+    def test_apply_clearances_doorway_child_clearance(self) -> None:
+        """External doorway clearance constraints separate boundary port exits from child sub-boxes."""
+        import dataclasses
+        child = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({10}))
+        parent = SolveTreeNode(node_id="p_door", node_type="container", rooms=frozenset({1}), children=(child,))
+        sol = NodeSolution(
+            node_id="c1",
+            local_coordinates={10: Coord3D(0, 0, 0)},
+            sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 0),),
+        )
+        base_graph = _make_graph([1, 10, 99], [(1, 99, Direction.east, 1)])
+        room_defs = dict(base_graph.rooms)
+        room_defs[1] = Room(vnum=1, name="Room 1", description="", exits=(Exit(direction=Direction.east, dst_vnum=99),))
+        graph = LayoutGraph(rooms=room_defs, edges=base_graph.edges)
+        inv = inventory_cluster(node=parent, child_solutions={"c1": sol}, graph=graph)
+        inv = dataclasses.replace(inv, boundary_ports=frozenset({1}))
+        formulation = ClusterFormulation(inventory=inv)
+
+        formulation.apply_doorway_clearance()
+        assert hasattr(formulation.model, "doorway_child_br")
+        assert hasattr(formulation.model, "doorway_child_sep_sum")
 
     def test_clearance_constraint_builder_direct(self) -> None:
         """ClearanceConstraintBuilder can be instantiated and executed directly."""
@@ -1616,7 +1638,7 @@ class TestStage3Clearance:
 
         builder = ClearanceConstraintBuilder(formulation)
         builder.build()
-        assert hasattr(formulation.model, "pr_sep_sum")
+        assert hasattr(formulation.model, "parent_room_sep_sum")
 
     def test_individual_clearance_methods_on_formulation(self) -> None:
         """Individual clearance separation methods on ClusterFormulation execute without error."""
@@ -1628,11 +1650,12 @@ class TestStage3Clearance:
         formulation.apply_parent_room_separation()
         formulation.apply_child_child_separation()
         formulation.apply_room_child_separation()
+        formulation.apply_doorway_clearance()
         formulation.apply_corridor_room_separation()
         formulation.apply_corridor_child_separation()
         formulation.apply_corridor_crossing_separation()
 
-        assert hasattr(formulation.model, "pr_sep_sum")
+        assert hasattr(formulation.model, "parent_room_sep_sum")
 
 
 class TestStage4Solver:
