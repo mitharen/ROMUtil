@@ -2202,6 +2202,23 @@ class TestSplitPairBoundaryPortAlignment:
         assert c5209.z == c5210.z == c5211.z == c5214.z
         assert c5209.y > c5210.y > c5211.y > c5214.y
 
+        # Entrance corridors 5214 -> 5215 and 5209 -> 5224 solve strictly horizontally with 0 shear
+        assert 5215 in layout.coordinates
+        assert 5224 in layout.coordinates
+        c5215 = layout.coordinates[5215]
+        c5224 = layout.coordinates[5224]
+        assert c5215.y == c5214.y
+        assert c5215.z == c5214.z
+        assert c5215.x < c5214.x
+        assert c5224.y == c5209.y
+        assert c5224.z == c5209.z
+        assert c5224.x < c5209.x
+
+        # Market and watchtower rooms assemble cleanly with zero collisions
+        market_watchtower_rooms = [5215, 5247, 5217, 5208, 5207, 5220, 5225, 5222, 5224, 5246]
+        market_coords = [layout.coordinates[r] for r in market_watchtower_rooms if r in layout.coordinates]
+        assert len(market_coords) == len(set(market_coords))
+
     def test_symmetric_split_pair_boundary_active_edges(self) -> None:
         """Both boundary poles of a split-pair child generate symmetric elastic active edges without rigid welds."""
         p0, p1 = 10, 20

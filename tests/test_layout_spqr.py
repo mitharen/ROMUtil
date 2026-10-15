@@ -6,6 +6,7 @@ import networkx as nx
 import pytest
 
 from romutil.layout import (
+    ArticulationPointCut,
     BlockCutTreeBuilder,
     CutType,
     HierarchicalLayoutSolver,
@@ -20,6 +21,7 @@ from romutil.layout import (
     TreeNodeType,
     build_block_spqr_tree,
 )
+from romutil.layout.hierarchy.spqr import _split_transverse_s_nodes
 from romutil.models import Direction, Exit, Room
 from romutil.parser import parse_file
 from romutil.types import LayoutOptions, SolvedLayout, SolverStatus, WorldGraph
@@ -554,3 +556,233 @@ class TestSafe2CutAllowlistContract:
         assert child.metadata.get("cut_type") == CutType.SPLIT_PAIR
         assert child.rooms == frozenset({1, 2, 3, 4, 20, 21, 22, 23, 100, 101})
         assert child.children == ()
+
+
+class TestTransverseCorridorSNodeSplitting:
+    """Unit and integration tests for SPQR tree-level transverse corridor S-node splitting."""
+
+    def test_transverse_corridor_s_node_split_detection_and_severing(self) -> None:
+        """Series loop with parallel entrance corridors severs transverse corridor into two sibling clusters."""
+        # Parent cluster has rooms {1, 2}
+        # S-node child across poles {1, 2} has rooms {1, 2, 10, 11, 20}
+        # Entrance from 1 to 10 is West
+        # Entrance from 2 to 20 is West
+        # Internal spine corridor from 10 to 11 is North (transverse)
+        # Internal spine corridor from 11 to 20 is North
+        edges = [
+            LayoutEdge(src=1, dst=10, direction=Direction.west),
+            LayoutEdge(src=10, dst=11, direction=Direction.north),
+            LayoutEdge(src=11, dst=20, direction=Direction.north),
+            LayoutEdge(src=2, dst=20, direction=Direction.west),
+        ]
+        graph = LayoutGraph(
+            rooms={v: _make_room(v) for v in (1, 2, 10, 11, 20)},
+            edges=tuple(edges),
+        )
+
+        child = SolveTreeNode(
+            node_id="s_loop",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 10, 11, 20}),
+            children=(),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (1, 2),
+                "cut_contract": SplitPairCut(poles=(1, 2)),
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="parent_cluster",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+
+        transformed = _split_transverse_s_nodes(parent, graph)
+        assert len(transformed.children) == 2
+        c_a, c_b = transformed.children
+
+        assert c_a.node_type == TreeNodeType.RIGID_CLUSTER
+        assert c_b.node_type == TreeNodeType.RIGID_CLUSTER
+        assert c_a.metadata.get("cut_type") == CutType.ARTICULATION_POINT
+        assert c_b.metadata.get("cut_type") == CutType.ARTICULATION_POINT
+
+        # Sibling clusters are anchored to the respective poles
+        anchors = {c_a.metadata.get("anchor_vnum"), c_b.metadata.get("anchor_vnum")}
+        assert anchors == {1, 2}
+
+        # Rooms are partitioned across the severed transverse corridor
+        assert c_a.rooms | c_b.rooms == frozenset({1, 2, 10, 11, 20})
+        assert c_a.rooms & c_b.rooms == frozenset()
+
+        if c_a.metadata.get("anchor_vnum") == 1:
+            assert c_a.rooms == frozenset({1, 10})
+            assert c_b.rooms == frozenset({2, 11, 20})
+        else:
+            assert c_b.rooms == frozenset({1, 10})
+            assert c_a.rooms == frozenset({2, 11, 20})
+
+    def test_transverse_corridor_nested_child_partition(self) -> None:
+        """Nested child clusters of an S-node partition to their respective split halves."""
+        edges = [
+            LayoutEdge(src=1, dst=10, direction=Direction.west),
+            LayoutEdge(src=10, dst=11, direction=Direction.north),
+            LayoutEdge(src=11, dst=20, direction=Direction.north),
+            LayoutEdge(src=2, dst=20, direction=Direction.west),
+            LayoutEdge(src=10, dst=100, direction=Direction.up),
+            LayoutEdge(src=20, dst=200, direction=Direction.up),
+        ]
+        graph = LayoutGraph(
+            rooms={v: _make_room(v) for v in (1, 2, 10, 11, 20, 100, 200)},
+            edges=tuple(edges),
+        )
+
+        nested_a = SolveTreeNode(
+            node_id="nested_tower_1",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({10, 100}),
+            children=(),
+            metadata={
+                "cut_type": CutType.ARTICULATION_POINT,
+                "anchor_vnum": 10,
+                "cut_contract": ArticulationPointCut(anchor_vnum=10),
+            },
+        )
+        nested_b = SolveTreeNode(
+            node_id="nested_tower_2",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({20, 200}),
+            children=(),
+            metadata={
+                "cut_type": CutType.ARTICULATION_POINT,
+                "anchor_vnum": 20,
+                "cut_contract": ArticulationPointCut(anchor_vnum=20),
+            },
+        )
+
+        child = SolveTreeNode(
+            node_id="s_loop_with_nested",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 10, 11, 20}),
+            children=(nested_a, nested_b),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (1, 2),
+                "cut_contract": SplitPairCut(poles=(1, 2)),
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="parent_cluster",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+
+        transformed = _split_transverse_s_nodes(parent, graph)
+        assert len(transformed.children) == 2
+        c_a, c_b = transformed.children
+
+        if c_a.metadata.get("anchor_vnum") == 1:
+            assert len(c_a.children) == 1
+            assert c_a.children[0].node_id == "nested_tower_1"
+            assert len(c_b.children) == 1
+            assert c_b.children[0].node_id == "nested_tower_2"
+        else:
+            assert len(c_b.children) == 1
+            assert c_b.children[0].node_id == "nested_tower_1"
+            assert len(c_a.children) == 1
+            assert c_a.children[0].node_id == "nested_tower_2"
+
+    def test_perpendicular_entrance_corridors_not_split(self) -> None:
+        """When entrance corridors are perpendicular, S-node is not split."""
+        # Pole 1 connects West, but pole 2 connects North (different cardinal axes)
+        edges = [
+            LayoutEdge(src=1, dst=10, direction=Direction.west),
+            LayoutEdge(src=10, dst=11, direction=Direction.north),
+            LayoutEdge(src=11, dst=20, direction=Direction.east),
+            LayoutEdge(src=2, dst=20, direction=Direction.north),
+        ]
+        graph = LayoutGraph(
+            rooms={v: _make_room(v) for v in (1, 2, 10, 11, 20)},
+            edges=tuple(edges),
+        )
+
+        child = SolveTreeNode(
+            node_id="s_loop_perp",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 10, 11, 20}),
+            children=(),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (1, 2),
+                "cut_contract": SplitPairCut(poles=(1, 2)),
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="parent_cluster",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+
+        transformed = _split_transverse_s_nodes(parent, graph)
+        assert len(transformed.children) == 1
+        assert transformed.children[0].node_id == "s_loop_perp"
+
+    def test_no_transverse_internal_corridor_not_split(self) -> None:
+        """When S-node spine contains no transverse corridors, S-node is not split."""
+        # Entrances along X (West), but internal corridor is also along X (West)
+        edges = [
+            LayoutEdge(src=1, dst=10, direction=Direction.west),
+            LayoutEdge(src=10, dst=20, direction=Direction.west),
+            LayoutEdge(src=2, dst=20, direction=Direction.west),
+        ]
+        graph = LayoutGraph(
+            rooms={v: _make_room(v) for v in (1, 2, 10, 20)},
+            edges=tuple(edges),
+        )
+
+        child = SolveTreeNode(
+            node_id="s_loop_collinear",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 10, 20}),
+            children=(),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (1, 2),
+                "cut_contract": SplitPairCut(poles=(1, 2)),
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="parent_cluster",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+
+        transformed = _split_transverse_s_nodes(parent, graph)
+        assert len(transformed.children) == 1
+        assert transformed.children[0].node_id == "s_loop_collinear"
+
+    def test_thalos_area_decomposition_splits_west_watchtowers(self) -> None:
+        """SpqrTreeBuilder automatically splits the West watchtowers S-node in Thalos into two sibling clusters."""
+        thalos_area = parse_file("tests/fixtures/areas/thalos.are")
+        world_graph = WorldGraph.from_area_data(thalos_area)
+        solver = HierarchicalLayoutSolver.production()
+        layout_graph = LayoutGraph.from_world_graph(world_graph)
+        simplified = solver.simplifier.simplify(layout_graph)
+        tree = solver.tree_builder.build_tree(simplified)
+
+        # West watchtowers S-node across poles 5209 and 5214 is split into sibling clusters
+        # Root cluster must have sibling children anchored at 5209 and 5214
+        root = tree.root
+        anchors = {c.metadata.get("anchor_vnum") for c in root.children}
+        assert 5209 in anchors
+        assert 5214 in anchors
+
+        child_5209 = [c for c in root.children if c.metadata.get("anchor_vnum") == 5209][0]
+        child_5214 = [c for c in root.children if c.metadata.get("anchor_vnum") == 5214][0]
+
+        # Room 5224 belongs to child_5209, room 5215 belongs to child_5214
+        assert 5224 in child_5209.rooms
+        assert 5215 in child_5214.rooms
