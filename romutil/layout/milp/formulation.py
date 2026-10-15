@@ -211,7 +211,7 @@ class ClusterFormulation:
 
                 if dx != 0:
                     model.edge_x.add(dst_x - src_x == model.L[i] * dx)
-                elif ae.allow_transverse_slack:
+                elif ae.allow_transverse_slack and dy != 0:
                     sp = model.s_transverse_p.add()
                     sm = model.s_transverse_m.add()
                     model.edge_x.add(dst_x - src_x == sp - sm)
@@ -220,7 +220,7 @@ class ClusterFormulation:
 
                 if dy != 0:
                     model.edge_y.add(dst_y - src_y == model.L[i] * dy)
-                elif ae.allow_transverse_slack:
+                elif ae.allow_transverse_slack and dx != 0:
                     sp = model.s_transverse_p.add()
                     sm = model.s_transverse_m.add()
                     model.edge_y.add(dst_y - src_y == sp - sm)
@@ -229,10 +229,6 @@ class ClusterFormulation:
 
                 if dz != 0:
                     model.edge_z.add(dst_z - src_z == model.L[i] * dz)
-                elif ae.allow_transverse_slack:
-                    sp = model.s_transverse_p.add()
-                    sm = model.s_transverse_m.add()
-                    model.edge_z.add(dst_z - src_z == sp - sm)
                 else:
                     model.edge_z.add(dst_z - src_z == 0)
 

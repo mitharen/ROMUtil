@@ -2189,6 +2189,114 @@ class TestSplitPairBoundaryPortAlignment:
         assert c5201.z == c5239.z == c5240.z == c5241.z
         assert c5201.y < c5239.y < c5240.y < c5241.y
 
+        # Rooms 5209, 5210, 5211 solve strictly on-axis with 5214 along North-South
+        assert 5209 in layout.coordinates
+        assert 5210 in layout.coordinates
+        assert 5211 in layout.coordinates
+        assert 5214 in layout.coordinates
+        c5209 = layout.coordinates[5209]
+        c5210 = layout.coordinates[5210]
+        c5211 = layout.coordinates[5211]
+        c5214 = layout.coordinates[5214]
+        assert c5209.x == c5210.x == c5211.x == c5214.x
+        assert c5209.z == c5210.z == c5211.z == c5214.z
+        assert c5209.y > c5210.y > c5211.y > c5214.y
+
+    def test_symmetric_split_pair_boundary_active_edges(self) -> None:
+        """Both boundary poles of a split-pair child generate symmetric elastic active edges without rigid welds."""
+        p0, p1 = 10, 20
+        child = SolveTreeNode(
+            node_id="c_symm",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 20, 30, 40}),
+            metadata={"cut_contract": SplitPairCut(poles=(p0, p1))},
+        )
+        parent = SolveTreeNode(
+            node_id="p_root",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({10, 20}),
+            children=(child,),
+        )
+        c_sol = NodeSolution(
+            node_id="c_symm",
+            local_coordinates={
+                10: Coord3D(0, 0, 0),
+                30: Coord3D(2, 0, 0),
+                40: Coord3D(2, 4, 0),
+                20: Coord3D(0, 4, 0),
+            },
+            sub_boxes=(BoundingBox3D(0, 2, 0, 4, 0, 0),),
+        )
+        graph = _make_graph(
+            rooms=[10, 20, 30, 40],
+            edges=[
+                (10, 30, Direction.east, 2),
+                (20, 40, Direction.east, 2),
+            ],
+        )
+
+        handler = SplitPairHandler(node=parent, child_solutions={"c_symm": c_sol}, graph=graph)
+        res = handler.process()
+
+        assert len(res.corridor_edges) == 2
+        edge_10 = next(e for e in res.corridor_edges if e.src == 10)
+        edge_20 = next(e for e in res.corridor_edges if e.src == 20)
+        assert edge_10.dst == ("c_symm", 30)
+        assert edge_20.dst == ("c_symm", 40)
+        assert edge_10.allow_transverse_slack is True
+        assert edge_20.allow_transverse_slack is True
+        assert edge_10.min_length == 2
+        assert edge_20.min_length == 2
+
+        # Symmetrical: neither pole is rigidly welded via RoomChildAlignment
+        assert len(res.room_alignments) == 0
+        assert res.gateway_anchors["c_symm"] == frozenset({10, 20})
+        assert "c_symm" in res.aligned_children
+
+    def test_dual_pole_corridor_stretching_and_transverse_slack(self) -> None:
+        """Both split-pair boundary corridors stretch elastically and accommodate transverse slack."""
+        p0, p1 = 1, 2
+        child = SolveTreeNode(
+            node_id="c_elastic",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 11, 12}),
+            metadata={"cut_contract": SplitPairCut(poles=(p0, p1))},
+        )
+        parent = SolveTreeNode(
+            node_id="p_elastic",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+        child_sol = NodeSolution(
+            node_id="c_elastic",
+            local_coordinates={
+                1: Coord3D(0, 0, 0),
+                11: Coord3D(2, 0, 0),
+                12: Coord3D(2, 2, 0),
+                2: Coord3D(0, 2, 0),
+            },
+            sub_boxes=(BoundingBox3D(2, 2, 0, 2, 0, 0),),
+        )
+        graph = _make_graph(
+            rooms=[1, 2, 11, 12],
+            edges=[
+                (1, 2, Direction.north, 4),
+                (1, 11, Direction.east, 1),
+                (2, 12, Direction.east, 1),
+            ],
+        )
+
+        parent_sol = solve_cluster(parent, {"c_elastic": child_sol}, graph)
+        p1_coord = parent_sol.local_coordinates[1]
+        p2_coord = parent_sol.local_coordinates[2]
+        c_off = parent_sol.metadata["child_offsets"]["c_elastic"]
+
+        assert p1_coord.x == p2_coord.x
+        assert p2_coord.y - p1_coord.y == 4
+        # Both corridors connect elastically with transverse slack
+        assert "c_elastic" in parent_sol.metadata["child_offsets"]
+
     def test_split_pair_transverse_boundary_port_alignment(self) -> None:
         """Split-pair child boundary port with transverse exit aligns strictly on-axis."""
         # Pole 1 and Pole 2 in parent. Child contains interior room 4.

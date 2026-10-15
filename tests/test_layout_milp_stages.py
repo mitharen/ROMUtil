@@ -225,8 +225,7 @@ class TestStage1Inventory:
         )
 
         assert inv.rooms == (1, 2, 3)
-        assert len(inv.room_alignments) == 1
-        assert inv.room_alignments[0].child_id == "c_sp"
+        assert len(inv.room_alignments) == 0
         # 3 -> 10 should be an external transverse active edge
         ext_edges = [e for e in inv.active_edges if e.edge_id.startswith("ext_")]
         assert len(ext_edges) == 1
@@ -834,7 +833,8 @@ class TestStage1Inventory:
         handler = SplitPairHandler(node=parent_p0, child_solutions={"c_p0": sol_p0}, graph=graph)
         res = handler.process()
         assert res.child_anchor_poles["c_p0"] == 1
-        assert any(a.room_vnum == 1 and a.child_id == "c_p0" for a in res.room_alignments)
+        assert len(res.room_alignments) == 0
+        assert any(e.edge_id == "ext_c_p0_1_10" for e in res.active_edges)
 
         # Incoming edges where dst == p_check with invalid direction and valid transverse displacement
         edges_incoming = [
@@ -966,7 +966,7 @@ class TestStage1Inventory:
         assert res.active_edges == res.corridor_edges
         assert len(res.active_edges) == 1
         assert res.active_edges[0].edge_id == "ext_c1_10_3"
-        assert len(res.room_alignments) == 1
+        assert len(res.room_alignments) == 0
 
     def test_gateway_cut_handler_edge_cases_and_error_handling(self) -> None:
         """GatewayCutHandler exercises metadata fallback, multiple anchors, reverse doorway edges, and invalid directions."""
@@ -1882,8 +1882,8 @@ class TestTypedChildHandlers:
         handler = SplitPairHandler(node=parent, child_solutions={"c_trans": c_sol}, graph=graph)
         res = handler.process()
         assert res.child_anchor_poles["c_trans"] == 2
-        assert len(res.room_alignments) == 1
-        assert res.room_alignments[0].room_vnum == 2
+        assert len(res.room_alignments) == 0
+        assert any(e.edge_id == "ext_c_trans_2_10" for e in res.active_edges)
 
     def test_split_pair_handler_child_child_alignment(self) -> None:
         """When poles are not in parent room set, secondary children align to base child."""
@@ -1915,9 +1915,13 @@ class TestTypedChildHandlers:
         assert len(res.room_alignments) == 0
         assert len(res.child_alignments) == 2
         assert res.child_alignments[0].base_child_id == "c1"
-        assert res.child_alignments[0].target_child_id == "c1"
+        assert res.child_alignments[0].target_child_id == "c2"
+        assert res.child_alignments[0].base_coord == Coord3D(0, 0, 0)
+        assert res.child_alignments[0].target_coord == Coord3D(1, 0, 0)
         assert res.child_alignments[1].base_child_id == "c1"
         assert res.child_alignments[1].target_child_id == "c2"
+        assert res.child_alignments[1].base_coord == Coord3D(3, 0, 0)
+        assert res.child_alignments[1].target_coord == Coord3D(4, 0, 0)
         assert frozenset({"c1", "c2"}) in res.equated_children
 
     def test_gateway_cut_handler_articulation_points_and_bridges(self) -> None:
