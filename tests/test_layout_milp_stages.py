@@ -798,8 +798,8 @@ class TestStage1Inventory:
         assert (3, 4) not in grouped
         assert (50, 60) in grouped
 
-    def test_split_pair_handler_transverse_exit_and_anchor_selection(self) -> None:
-        """SplitPairHandler selects anchor pole based on transverse exits and handles invalid directions."""
+    def test_split_pair_handler_corridor_coupling_and_edge_cases(self) -> None:
+        """SplitPairHandler emits corridor active edges connecting parent rooms to split children."""
         child_p0 = SolveTreeNode(
             node_id="c_p0",
             node_type="leaf",
@@ -832,18 +832,8 @@ class TestStage1Inventory:
 
         handler = SplitPairHandler(node=parent_p0, child_solutions={"c_p0": sol_p0}, graph=graph)
         res = handler.process()
-        assert res.child_anchor_poles["c_p0"] == 1
         assert len(res.room_alignments) == 0
         assert any(e.edge_id == "ext_c_p0_1_10" for e in res.active_edges)
-
-        # Incoming edges where dst == p_check with invalid direction and valid transverse displacement
-        edges_incoming = [
-            LayoutEdge(src=99, dst=1, direction=999, weight=1, cut=False),
-            LayoutEdge(src=10, dst=1, direction=int(Direction.north), weight=1, cut=False),
-        ]
-        graph_inc = LayoutGraph(rooms=room_defs, edges=tuple(edges_incoming))
-        handler_inc = SplitPairHandler(node=parent_p0, child_solutions={"c_p0": sol_p0}, graph=graph_inc)
-        assert handler_inc._has_transverse_exit(p_check=1, p0=1, p1=2, primary_axis=0, c_sol=sol_p0) is True
 
     def test_split_pair_handler_align_children_branches(self) -> None:
         """SplitPairHandler exercises align_children branches: empty groups and external poles."""
@@ -879,14 +869,11 @@ class TestStage1Inventory:
             equated,
             gw_anchors,
             aligned,
-            child_anchor_poles,
         ) = handler.align_children(split_children_by_poles=groups, room_anchored_children=None)
 
         assert len(child_aligns) == 2
         assert frozenset({"c1", "c2"}) in equated
         assert len(room_aligns) == 0
-        assert child_anchor_poles["c1"] == 10
-        assert child_anchor_poles["c2"] == 10
 
     def test_split_pair_handler_corridor_active_edges_edge_cases(self) -> None:
         """SplitPairHandler exercises cut edges, reverse parent-child edges, and self-loops in corridors."""
@@ -927,7 +914,6 @@ class TestStage1Inventory:
         handler = SplitPairHandler(node=parent, child_solutions=sols, graph=graph)
         corridors, gw, aligned = handler.build_corridor_active_edges(
             split_children_by_poles={(1, 2): [c1], (3, 4): [c2]},
-            child_anchor_poles={"c1": 1, "c2": 3},
             equated_children=set(),
         )
         edge_ids = {e.edge_id for e in corridors}
@@ -937,7 +923,6 @@ class TestStage1Inventory:
         # Equated children skip inter-split corridor construction
         corridors_eq, _, _ = handler.build_corridor_active_edges(
             split_children_by_poles={(1, 2): [c1], (3, 4): [c2]},
-            child_anchor_poles={"c1": 1, "c2": 3},
             equated_children={frozenset({"c1", "c2"})},
         )
         assert "ext_c1_c2_10_3" not in {e.edge_id for e in corridors_eq}
@@ -1875,13 +1860,13 @@ class TestTypedChildHandlers:
         assert set(c.node_id for c in grouped[(2, 5)]) == {"c1", "c2"}
 
         res = handler.process()
-        assert len(res.room_alignments) == 2
-        assert frozenset({"c1", "c2"}) in res.equated_children
+        assert len(res.room_alignments) == 0
         assert res.active_edges == res.corridor_edges
-        assert len(res.active_edges) == 0
+        assert len(res.active_edges) == 4
+        assert {"c1", "c2"}.issubset(res.aligned_children)
 
-    def test_split_pair_handler_transverse_anchor_selection(self) -> None:
-        """Transverse exits select the transverse anchor pole over default pole."""
+    def test_split_pair_handler_corridor_exit_coupling(self) -> None:
+        """Split pairs with exit edges connecting to parent rooms emit corridor active edges."""
         p0, p1 = 1, 2
         child = SolveTreeNode(
             node_id="c_trans",
@@ -1904,7 +1889,6 @@ class TestTypedChildHandlers:
 
         handler = SplitPairHandler(node=parent, child_solutions={"c_trans": c_sol}, graph=graph)
         res = handler.process()
-        assert res.child_anchor_poles["c_trans"] == 2
         assert len(res.room_alignments) == 0
         assert any(e.edge_id == "ext_c_trans_2_10" for e in res.active_edges)
 
@@ -2124,3 +2108,113 @@ class TestTypedChildHandlers:
         edge_ids = {e.edge_id for e in res.active_edges}
         assert "ccb_cb_ca_20_10" in edge_ids
         assert "ccb_cc_cb_30_20" in edge_ids
+
+    def test_split_pair_handler_active_edge_sp_port_and_span(self) -> None:
+        """Split pairs with poles in parent room set emit zero-length port weld and rigid span active edges."""
+        p0, p1 = 10, 20
+        child_x = SolveTreeNode(
+            node_id="cx",
+            node_type="leaf",
+            rooms=frozenset({10, 20}),
+            metadata={"cut_contract": SplitPairCut(poles=(p0, p1))},
+        )
+        parent_x = SolveTreeNode(
+            node_id="px",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({10, 20, 30}),
+            children=(child_x,),
+        )
+        sol_x = NodeSolution("cx", {10: Coord3D(0, 0, 0), 20: Coord3D(6, 0, 0)}, ())
+        graph = _make_graph([10, 20, 30], [(10, 20, Direction.east, 1)])
+
+        handler = SplitPairHandler(node=parent_x, child_solutions={"cx": sol_x}, graph=graph)
+        res = handler.process()
+
+        assert len(res.room_alignments) == 0
+        assert "cx" in res.aligned_children
+        assert res.gateway_anchors["cx"] == frozenset({10, 20})
+
+        port_edge = next(e for e in res.active_edges if e.edge_id == "sp_port_cx_10")
+        assert port_edge.src == 10
+        assert port_edge.dst == ("cx", 10)
+        assert port_edge.direction == (0, 0, 0)
+        assert port_edge.min_length == 0
+        assert port_edge.associated_rooms == frozenset({10})
+        assert port_edge.associated_children == frozenset({"cx"})
+
+        span_edge = next(e for e in res.active_edges if e.edge_id == "sp_span_cx_10_20")
+        assert span_edge.src == 10
+        assert span_edge.dst == 20
+        assert span_edge.direction == (1, 0, 0)
+        assert span_edge.min_length == 6
+        assert span_edge.associated_rooms == frozenset({10, 20})
+        assert span_edge.associated_children == frozenset({"cx"})
+        assert span_edge.allow_transverse_slack is True
+
+    def test_split_pair_handler_active_edge_span_directions(self) -> None:
+        """Split pairs derive primary span direction and minimum length across axes."""
+        p0, p1 = 10, 20
+        child_y = SolveTreeNode(
+            node_id="cy",
+            node_type="leaf",
+            rooms=frozenset({10, 20}),
+            metadata={"cut_contract": SplitPairCut(poles=(p0, p1))},
+        )
+        child_z = SolveTreeNode(
+            node_id="cz",
+            node_type="leaf",
+            rooms=frozenset({10, 20}),
+            metadata={"cut_contract": SplitPairCut(poles=(p0, p1))},
+        )
+        parent = SolveTreeNode(
+            node_id="p",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({10, 20}),
+            children=(child_y, child_z),
+        )
+        sol_y = NodeSolution("cy", {10: Coord3D(0, 0, 0), 20: Coord3D(0, -5, 0)}, ())
+        sol_z = NodeSolution("cz", {10: Coord3D(0, 0, 0), 20: Coord3D(0, 0, 3)}, ())
+        graph = _make_graph([10, 20], [])
+
+        handler = SplitPairHandler(node=parent, child_solutions={"cy": sol_y, "cz": sol_z}, graph=graph)
+        res = handler.process()
+
+        span_y = next(e for e in res.active_edges if e.edge_id == "sp_span_cy_10_20")
+        assert span_y.direction == (0, -1, 0)
+        assert span_y.min_length == 5
+
+        span_z = next(e for e in res.active_edges if e.edge_id == "sp_span_cz_10_20")
+        assert span_z.direction == (0, 0, 1)
+        assert span_z.min_length == 3
+
+    def test_split_pair_handler_active_edge_missing_solutions_and_ports(self) -> None:
+        """Split pairs with missing solutions or missing pole coordinates skip active edge generation safely."""
+        p0, p1 = 10, 20
+        child_no_sol = SolveTreeNode(
+            node_id="c_no_sol",
+            node_type="leaf",
+            rooms=frozenset({10, 20}),
+            metadata={"cut_contract": SplitPairCut(poles=(p0, p1))},
+        )
+        child_missing_pole = SolveTreeNode(
+            node_id="c_miss",
+            node_type="leaf",
+            rooms=frozenset({10, 20}),
+            metadata={"cut_contract": SplitPairCut(poles=(p0, p1))},
+        )
+        parent = SolveTreeNode(
+            node_id="p",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({10, 20}),
+            children=(child_no_sol, child_missing_pole),
+        )
+        # child_missing_pole only has pole 10, missing pole 20
+        sols = {"c_miss": NodeSolution("c_miss", {10: Coord3D(0, 0, 0)}, ())}
+        graph = _make_graph([10, 20], [])
+
+        handler = SplitPairHandler(node=parent, child_solutions=sols, graph=graph)
+        res = handler.process()
+
+        assert len(res.active_edges) == 0
+        assert "c_no_sol" not in res.aligned_children
+        assert "c_miss" not in res.aligned_children
