@@ -14,7 +14,7 @@ from romutil.layout import (
     HierarchicalLayoutAssembler,
     HierarchicalLayoutSolver,
     HierarchicalTreeSolver,
-    SpqrTreeBuilder,
+    PipelineTreeBuilder,
     WarpSeverer,
 )
 from romutil.models import AreaData, AreaHeader, merge_areas
@@ -144,7 +144,7 @@ def main(
 
         solver = HierarchicalLayoutSolver(
             simplifier=ChainedSimplifier([HallwayCompactor(), WarpSeverer()]),
-            tree_builder=SpqrTreeBuilder(),
+            tree_builder=PipelineTreeBuilder(),
             tree_solver=HierarchicalTreeSolver(),
             assembler=HierarchicalLayoutAssembler(),
         )

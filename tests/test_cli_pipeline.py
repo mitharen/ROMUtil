@@ -14,6 +14,7 @@ from romutil.layout import (
     HierarchicalLayoutSolver,
     HierarchicalTreeSolver,
     PassthroughSimplifier,
+    PipelineTreeBuilder,
     SpqrTreeBuilder,
     WarpSeverer,
     production,
@@ -36,7 +37,7 @@ class TestHierarchicalLayoutSolverProductionFactory:
         assert len(solver.simplifier.simplifiers) == 2
         assert isinstance(solver.simplifier.simplifiers[0], HallwayCompactor)
         assert isinstance(solver.simplifier.simplifiers[1], WarpSeverer)
-        assert isinstance(solver.tree_builder, SpqrTreeBuilder)
+        assert isinstance(solver.tree_builder, PipelineTreeBuilder)
         assert isinstance(solver.tree_solver, HierarchicalTreeSolver)
         assert isinstance(solver.assembler, HierarchicalLayoutAssembler)
 

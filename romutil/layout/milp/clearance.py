@@ -5,7 +5,7 @@ from __future__ import annotations
 import collections
 from typing import TYPE_CHECKING, Any
 
-from romutil.layout.hierarchy.block_cut import ArticulationPointCut, BridgeCut
+from romutil.layout.ir import ArticulationPointCut, BridgeCut
 from romutil.layout.milp.constraints import add_disjunctive_box_separation
 from romutil.layout.milp.inventory import direction_to_displacement
 

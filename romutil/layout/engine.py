@@ -77,7 +77,7 @@ class HierarchicalLayoutSolver:
         assembler: LayoutAssembler | None = None,
     ) -> None:
         from romutil.layout.assembly import HierarchicalLayoutAssembler
-        from romutil.layout.hierarchy import SpqrTreeBuilder
+        from romutil.layout.hierarchy import PipelineTreeBuilder
         from romutil.layout.milp import HierarchicalTreeSolver
         from romutil.layout.simplification import (
             ChainedSimplifier,
@@ -91,7 +91,7 @@ class HierarchicalLayoutSolver:
             else ChainedSimplifier([HallwayCompactor(), WarpSeverer()])
         )
         self.tree_builder: TreeBuilder = (
-            tree_builder if tree_builder is not None else SpqrTreeBuilder()
+            tree_builder if tree_builder is not None else PipelineTreeBuilder()
         )
         self.tree_solver: TreeSolver = (
             tree_solver if tree_solver is not None else HierarchicalTreeSolver()

@@ -217,6 +217,26 @@ class SolveTree:
         if not isinstance(self.components, tuple):
             object.__setattr__(self, "components", tuple(self.components))
 
+    @classmethod
+    def seed(cls, graph: LayoutGraph) -> SolveTree:
+        """Initialize a seed SolveTree containing all rooms in the graph."""
+        if not graph.rooms:
+            return cls(
+                root=SolveTreeNode(
+                    node_id="root",
+                    node_type=TreeNodeType.EMPTY,
+                    rooms=frozenset(),
+                ),
+                components=(),
+                graph=graph,
+            )
+        root = SolveTreeNode(
+            node_id="seed_root",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset(graph.rooms.keys()),
+        )
+        return cls(root=root, components=(root,), graph=graph)
+
 
 @dataclass(frozen=True)
 class NodeSolution:

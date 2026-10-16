@@ -6,25 +6,17 @@ from typing import Any, Sequence, cast
 
 import spqrtree
 
-from romutil.layout.hierarchy.block_cut import BlockCutTreeBuilder
-from romutil.layout.hierarchy.transforms import (
-    ArticulationChildAttachmentPass,
-    SplitPairAllowlistFusionPass,
-    TransverseSNodeSplitPass,
-    TreeTransformationPipeline,
-)
+from romutil.layout.hierarchy.transforms import TreeTransformationPass
 from romutil.layout.ir import (
     ArticulationPointCut,
     CutType,
     LayoutEdge,
-    SimplifiedGraph,
+    LayoutGraph,
     SolveTree,
     SolveTreeNode,
     SplitPairCut,
     TreeNodeType,
 )
-from romutil.layout.protocols import TreeBuilder
-from romutil.types import LayoutOptions
 
 
 def _collect_all_spqr_nodes(root: spqrtree.SPQRNode) -> list[spqrtree.SPQRNode]:
@@ -92,9 +84,6 @@ def _reroot_spqr_tree_to_primary_cluster(root: spqrtree.SPQRNode) -> spqrtree.SP
                 queue.append(neighbor_id)
 
     return target_root
-
-
-
 
 
 def build_block_spqr_tree(
@@ -199,7 +188,11 @@ def build_block_spqr_tree(
             source = spqr_node.skeleton.vertices
         else:
             node_type = TreeNodeType.RIGID_CLUSTER
-            source = spqr_node.skeleton.vertices if (spqr_node.skeleton and spqr_node.skeleton.vertices) else spqr_node.poles
+            source = (
+                spqr_node.skeleton.vertices
+                if (spqr_node.skeleton and spqr_node.skeleton.vertices)
+                else spqr_node.poles
+            )
 
         if parent is not None and len(attachment_poles) == 2:
             rooms = frozenset(cast(int, v) for v in source) - set(attachment_poles)
@@ -228,43 +221,25 @@ def build_block_spqr_tree(
             rooms=block_nodes,
         )
 
-class SpqrTreeBuilder(TreeBuilder):
-    """Stage 3 tree builder decomposing 0-cuts, 1-cuts (block-cut), and 2-cuts (SPQR)."""
 
-    def __init__(
-        self,
-        block_cut_builder: BlockCutTreeBuilder | None = None,
-        pipeline: TreeTransformationPipeline | None = None,
-    ) -> None:
-        self._block_cut_builder = block_cut_builder or BlockCutTreeBuilder()
-        self._pipeline = pipeline if pipeline is not None else self.default_pipeline()
+class SpqrDecompositionPass(TreeTransformationPass):
+    """Decompose biconnected blocks (>= 4 rooms) into SPQR trees (2-cuts)."""
+
+    def __init__(self, graph: LayoutGraph | None = None) -> None:
+        self._graph = graph
 
     @property
-    def pipeline(self) -> TreeTransformationPipeline:
-        """Post-processing transformation pipeline."""
-        return self._pipeline
+    def graph(self) -> LayoutGraph | None:
+        """Optional LayoutGraph override for decomposition."""
+        return self._graph
 
-    @classmethod
-    def default_pipeline(cls) -> TreeTransformationPipeline:
-        """Create canonical post-processing transformation pipeline."""
-        return TreeTransformationPipeline([
-            SplitPairAllowlistFusionPass(),
-            ArticulationChildAttachmentPass(),
-            TransverseSNodeSplitPass(),
-        ])
+    def apply(self, tree: SolveTree) -> SolveTree:
+        """Apply SPQR triconnected decomposition to biconnected blocks in a SolveTree."""
+        if tree.root.node_type == TreeNodeType.EMPTY:
+            return tree
 
-    def build_tree(
-        self,
-        simplified: SimplifiedGraph,
-        options: LayoutOptions | None = None,
-    ) -> SolveTree:
-        """Decompose a simplified graph into a hierarchical SolveTree with SPQR decomposition."""
-        block_cut_tree = self._block_cut_builder.build_tree(simplified, options)
-
-        if block_cut_tree.root.node_type == TreeNodeType.EMPTY:
-            return block_cut_tree
-
-        edges = simplified.graph.edges
+        graph = self._graph or tree.graph
+        edges = graph.edges if graph is not None else ()
 
         def _decompose_blocks(node: SolveTreeNode) -> SolveTreeNode:
             if node.node_type == TreeNodeType.WORLD_ROOT:
@@ -287,7 +262,10 @@ class SpqrTreeBuilder(TreeBuilder):
             if anchor is not None:
                 block_verts.add(anchor)
 
-            if len(block_verts) >= 4 and node.node_type in (TreeNodeType.BLOCK, TreeNodeType.BICONNECTED_BLOCK):
+            if len(block_verts) >= 4 and node.node_type in (
+                TreeNodeType.BLOCK,
+                TreeNodeType.BICONNECTED_BLOCK,
+            ):
                 spqr_root = build_block_spqr_tree(
                     block_nodes=frozenset(block_verts),
                     edges=edges,
@@ -312,11 +290,18 @@ class SpqrTreeBuilder(TreeBuilder):
                 metadata=node.metadata,
             )
 
-        raw_root = _decompose_blocks(block_cut_tree.root)
+        raw_root = _decompose_blocks(tree.root)
         if raw_root.node_type == TreeNodeType.WORLD_ROOT:
             components = raw_root.children
         else:
             components = (raw_root,)
 
-        raw_tree = SolveTree(root=raw_root, components=components, graph=simplified.graph)
-        return self._pipeline.apply(raw_tree)
+        return SolveTree(root=raw_root, components=components, graph=graph)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "SpqrTreeBuilder":
+        from romutil.layout.hierarchy.pipeline import PipelineTreeBuilder
+
+        return PipelineTreeBuilder
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
