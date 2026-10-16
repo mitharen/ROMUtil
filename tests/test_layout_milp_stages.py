@@ -1575,6 +1575,91 @@ class TestStage2Formulation:
         assert slack > 0
         assert slack == 2 * m_coord - 1
 
+    def test_quadratic_transverse_penalty_weight_calculation(self) -> None:
+        """Transverse slack penalty scales quadratically based on inventory active edge minimum length sum."""
+        node = SolveTreeNode(node_id="leaf_w", node_type="leaf", rooms=frozenset({1, 2}))
+
+        # 1. Empty active edges: falls back to baseline floor M=50, W=10 * 50^2 = 25000
+        inv_empty = ClusterInventory(
+            node=node,
+            rooms=(1, 2),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        formulation_empty = ClusterFormulation(inventory=inv_empty)
+        assert formulation_empty.m_scale == 50
+        assert formulation_empty.w_transverse == 25000.0
+
+        # 2. Sum of min_lengths < 50: still clamps to floor M=50, W=25000
+        ae1 = ActiveEdge(
+            edge_id="e1",
+            src=1,
+            dst=2,
+            direction=(1, 0, 0),
+            min_length=30,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+        )
+        inv_small = ClusterInventory(
+            node=node,
+            rooms=(1, 2),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(ae1,),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        formulation_small = ClusterFormulation(inventory=inv_small)
+        assert formulation_small.m_scale == 50
+        assert formulation_small.w_transverse == 25000.0
+
+        # 3. Sum of min_lengths > 50: M = sum(min_lengths), W = 10 * M^2
+        ae2 = ActiveEdge(
+            edge_id="e2",
+            src=1,
+            dst=2,
+            direction=(1, 0, 0),
+            min_length=70,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+        )
+        inv_large = ClusterInventory(
+            node=node,
+            rooms=(1, 2),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(ae2,),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        formulation_large = ClusterFormulation(inventory=inv_large)
+        assert formulation_large.m_scale == 70
+        assert formulation_large.w_transverse == 10.0 * (70**2)
+        assert formulation_large.w_transverse == 49000.0
+
+    def test_quadratic_transverse_penalty_explicit_override(self) -> None:
+        """Explicit w_transverse parameter overrides quadratic calculation in constructor and factory."""
+        node = SolveTreeNode(node_id="leaf_w_ovr", node_type="leaf", rooms=frozenset({1, 2}))
+        inv = inventory_cluster(node=node, child_solutions={}, graph=_make_graph([1, 2], []))
+
+        formulation = ClusterFormulation(inventory=inv, w_transverse=1234.0)
+        assert formulation.w_transverse == 1234.0
+
+        factory_formulation = formulate_cluster_model(inventory=inv, w_transverse=5678.0)
+        assert factory_formulation.w_transverse == 5678.0
+
 
 class TestStage3Clearance:
     """Unit tests for Stage 3: Geometric Clearance & Separation Constraints."""

@@ -119,6 +119,7 @@ class ClusterFormulation:
         inventory: ClusterInventory,
         options: LayoutOptions | None = None,
         m_coord: int | None = None,
+        w_transverse: float | None = None,
     ) -> None:
         """Initialize the MILP formulation with decision variables and base constraints.
 
@@ -127,11 +128,21 @@ class ClusterFormulation:
                 and active edges.
             options: Optional layout configuration parameters.
             m_coord: Optional explicit coordinate bound overriding dynamic calculation.
+            w_transverse: Optional explicit transverse slack penalty weight overriding quadratic scaling.
         """
         self.inventory = inventory
         self.options = options
         self.m_coord = m_coord if m_coord is not None else calculate_dynamic_bounds(inventory)
         self.m_big = 2 * self.m_coord
+        self.m_scale = max(
+            50,
+            sum(e.min_length for e in inventory.active_edges),
+        )
+        self.w_transverse = (
+            w_transverse
+            if w_transverse is not None
+            else 10.0 * (self.m_scale**2)
+        )
         self.model = pyo.ConcreteModel()
         self._build_model()
         self.clearance_builder = ClearanceConstraintBuilder(self)
@@ -245,7 +256,7 @@ class ClusterFormulation:
         )
         transverse_penalty = (
             sum(
-                500.0 * (model.s_transverse_p[k] + model.s_transverse_m[k])
+                self.w_transverse * (model.s_transverse_p[k] + model.s_transverse_m[k])
                 for k in model.s_transverse_p
             )
             if hasattr(model, "s_transverse_p") and len(model.s_transverse_p) > 0
@@ -371,6 +382,7 @@ def formulate_cluster_model(
     inventory: ClusterInventory,
     options: LayoutOptions | None = None,
     m_coord: int | None = None,
+    w_transverse: float | None = None,
 ) -> ClusterFormulation:
     """Build the baseline Pyomo model for layout cluster optimization.
 
@@ -381,11 +393,17 @@ def formulate_cluster_model(
             and active edges.
         options: Optional layout configuration parameters.
         m_coord: Optional explicit coordinate bound overriding dynamic calculation.
+        w_transverse: Optional explicit transverse slack penalty weight overriding quadratic scaling.
 
     Returns:
         ClusterFormulation wrapping the Pyomo model and coordinate accessors.
     """
-    return ClusterFormulation(inventory=inventory, options=options, m_coord=m_coord)
+    return ClusterFormulation(
+        inventory=inventory,
+        options=options,
+        m_coord=m_coord,
+        w_transverse=w_transverse,
+    )
 
 
 __all__ = [
