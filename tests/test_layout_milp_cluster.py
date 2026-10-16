@@ -2242,6 +2242,49 @@ class TestSplitPairBoundaryPortAlignment:
         assert layout.coordinates[5250] == Coord3D(1, 8, 2)
         assert layout.coordinates[5205] == Coord3D(1, 9, 2)
 
+    def test_midgaard_transverse_gate_corridors_strictly_on_axis(self) -> None:
+        """West Gate 3040 -> 3258 and East Gate 3041 -> 3266 in Midgaard solve strictly on-axis with zero transverse shear."""
+        from pathlib import Path
+        from romutil.parser import Parser
+
+        midgaard_path = Path("tests/fixtures/areas/midgaard.are")
+        area = Parser().parse(midgaard_path.read_text(encoding="latin-1"))
+        world_graph = WorldGraph.from_area_data(area)
+
+        solver = HierarchicalLayoutSolver.production()
+        layout = solver.solve(world_graph, LayoutOptions(timeout_seconds=30))
+
+        assert layout.diagnostics.status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE)
+        assert 3040 in layout.coordinates
+        assert 3041 in layout.coordinates
+        assert 3258 in layout.coordinates
+        assert 3266 in layout.coordinates
+
+        c3040 = layout.coordinates[3040]
+        c3041 = layout.coordinates[3041]
+        c3258 = layout.coordinates[3258]
+        c3266 = layout.coordinates[3266]
+
+        # West Gate 3040 connects North through 3257 to 3258 strictly on-axis (dx == 0)
+        assert c3258.x == c3040.x
+        assert c3258.y > c3040.y
+        assert c3258.z == c3040.z
+
+        # East Gate 3041 connects North through 3267 to 3266 strictly on-axis (dx == 0)
+        assert c3266.x == c3041.x
+        assert c3266.y > c3041.y
+        assert c3266.z == c3041.z
+
+        # Gate span dx(3040, 3041) >= 12
+        assert c3041.x - c3040.x >= 12
+
+        # Transverse corridor edges stretch elastically across the gate span
+        c3260 = layout.coordinates[3260]
+        c3261 = layout.coordinates[3261]
+        c3316 = layout.coordinates[3316]
+        assert c3261.x > c3260.x
+        assert c3266.x > c3316.x
+
     def test_symmetric_split_pair_boundary_active_edges(self) -> None:
         """Both boundary poles of a split-pair child generate symmetric elastic active edges without rigid welds."""
         p0, p1 = 10, 20
