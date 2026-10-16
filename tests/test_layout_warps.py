@@ -297,10 +297,10 @@ class TestWarpSeverer:
         assert severed.weight == 1
         assert (severed.src, severed.dst) != (1, 2)
 
-    def test_sever_prefers_highest_degree_nodes(self) -> None:
-        """WarpSeverer should prefer severing a chord between highest-degree nodes (hubs)."""
+    def test_sever_prefers_peripheral_low_degree_nodes(self) -> None:
+        """WarpSeverer should prefer severing a peripheral low-degree chord over higher-degree nodes."""
         # Cycle: 1 - 2 - 3 - 4 - 1 (all pure North)
-        # Hubs: 1 and 2 also connect to external nodes 10, 11 (deg 3 or 4)
+        # Hubs: 1 and 2 also connect to external nodes 10, 20 (deg 3)
         # Nodes 3 and 4 have degree 2
         rooms = {
             1: _make_room(1),
@@ -326,8 +326,8 @@ class TestWarpSeverer:
 
         assert len(simplified.severed_chords) == 1
         severed = simplified.severed_chords[0]
-        # (1, 2) has degrees 3+3=6, whereas other cycle edges have 3+2=5 or 2+2=4
-        assert {severed.src, severed.dst} == {1, 2}
+        # (3, 4) has degrees 2+2=4, whereas other cycle edges have 3+2=5 or 3+3=6
+        assert {severed.src, severed.dst} == {3, 4}
 
     def test_bidirectional_loop_severing(self) -> None:
         """Reciprocal edges between endpoints of severed chord are both severed."""

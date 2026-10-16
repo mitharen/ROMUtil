@@ -189,8 +189,6 @@ class WarpSeverer:
 
         # Check for non-Euclidean self-loops (1-cycles)
         for edge in list(active_edges):
-            if edge.src not in graph.rooms or edge.dst not in graph.rooms:
-                continue
             if edge.src == edge.dst:
                 try:
                     disp = direction_to_displacement(edge.direction)
@@ -205,8 +203,6 @@ class WarpSeverer:
         # Check for non-Euclidean 2-cycles (antiparallel edges between same pair of rooms)
         pair_to_edges: dict[tuple[int, int], list[LayoutEdge]] = collections.defaultdict(list)
         for edge in active_edges:
-            if edge.src not in graph.rooms or edge.dst not in graph.rooms:
-                continue
             pair = (min(edge.src, edge.dst), max(edge.src, edge.dst))
             pair_to_edges[pair].append(edge)
 
@@ -241,12 +237,27 @@ class WarpSeverer:
                 collections.defaultdict(list)
             )
             for edge in active_edges:
-                if edge.src not in graph.rooms or edge.dst not in graph.rooms:
-                    continue
                 if edge.src != edge.dst:
                     g.add_edge(edge.src, edge.dst)
                     pair = (min(edge.src, edge.dst), max(edge.src, edge.dst))
                     undirected_edge_map[pair].append(edge)
+
+            # Calculate node degree in reciprocal physical street network
+            bidir_degree: dict[int, int] = collections.defaultdict(int)
+            for pair, edges in undirected_edge_map.items():
+                u_pair, v_pair = pair
+                has_fwd = any(e.src == u_pair and e.dst == v_pair for e in edges)
+                has_bwd = any(e.src == v_pair and e.dst == u_pair for e in edges)
+                is_corridor = any(
+                    isinstance(e.metadata.get("corridor"), CorridorSegment)
+                    or bool(e.metadata.get("is_corridor"))
+                    or "corridor" in e.metadata
+                    or "corridor_segment" in e.metadata
+                    for e in edges
+                )
+                if (has_fwd and has_bwd) or is_corridor:
+                    bidir_degree[u_pair] += 1
+                    bidir_degree[v_pair] += 1
 
             cycles = nx.cycle_basis(g)
             if not cycles:
@@ -297,13 +308,25 @@ class WarpSeverer:
 
                     def chord_score(
                         pair: tuple[int, int],
-                    ) -> tuple[int, int, int, tuple[int, int]]:
+                    ) -> tuple[int, int, int, int, int, tuple[int, int]]:
                         u_node, v_node = pair
                         edges = undirected_edge_map.get(pair, [])
+                        has_fwd = any(e.src == u_node and e.dst == v_node for e in edges)
+                        has_bwd = any(e.src == v_node and e.dst == u_node for e in edges)
+                        is_corridor = any(
+                            isinstance(e.metadata.get("corridor"), CorridorSegment)
+                            or bool(e.metadata.get("is_corridor"))
+                            or "corridor" in e.metadata
+                            or "corridor_segment" in e.metadata
+                            for e in edges
+                        )
+                        is_bidirectional = (has_fwd and has_bwd) or is_corridor
+                        reciprocity_rank = 1 if is_bidirectional else 0
                         min_weight = min((e.weight for e in edges), default=1)
+                        b_sum = bidir_degree[u_node] + bidir_degree[v_node]
                         deg_sum = g.degree(u_node) + g.degree(v_node)
                         max_deg = max(g.degree(u_node), g.degree(v_node))
-                        return (min_weight, -deg_sum, -max_deg, pair)
+                        return (reciprocity_rank, min_weight, b_sum, deg_sum, max_deg, pair)
 
                     best_pair = min(candidate_pairs, key=chord_score)
                     edges_to_sever = list(undirected_edge_map[best_pair])
