@@ -288,12 +288,15 @@ class SplitPairHandler:
         node: SolveTreeNode,
         child_solutions: Mapping[str, NodeSolution],
         graph: LayoutGraph,
+        boundary_ports: frozenset[int] | None = None,
     ) -> None:
         self.node = node
         self.child_solutions = child_solutions
         self.graph = graph
         self.rooms = tuple(sorted(node.rooms))
         self.room_set = set(self.rooms)
+        self.boundary_ports = frozenset(boundary_ports or ())
+        self.all_local_rooms = set(self.rooms) | set(self.boundary_ports)
         self.children = tuple(node.children)
 
     def group_split_children(self) -> dict[tuple[int, int], list[SolveTreeNode]]:
@@ -356,11 +359,11 @@ class SplitPairHandler:
                 for edge in self.graph.edges:
                     if edge.cut or {edge.src, edge.dst} == {p0, p1}:
                         continue
-                    if edge.src in self.room_set and edge.dst in self.room_set:
+                    if edge.src in self.all_local_rooms and edge.dst in self.all_local_rooms:
                         continue
                     if (
-                        (edge.src in self.room_set and edge.dst in c_coords and edge.dst not in self.room_set)
-                        or (edge.dst in self.room_set and edge.src in c_coords and edge.src not in self.room_set)
+                        (edge.src in self.all_local_rooms and edge.dst in c_coords and edge.dst not in self.all_local_rooms)
+                        or (edge.dst in self.all_local_rooms and edge.src in c_coords and edge.src not in self.all_local_rooms)
                     ):
                         try:
                             direction_to_displacement(edge.direction)
@@ -476,7 +479,7 @@ class SplitPairHandler:
                         continue
                     if {edge.src, edge.dst} == {p0, p1}:
                         continue
-                    if edge.src in self.room_set and edge.dst in self.room_set:
+                    if edge.src in self.all_local_rooms and edge.dst in self.all_local_rooms:
                         continue
                     try:
                         disp = direction_to_displacement(edge.direction)
@@ -484,7 +487,7 @@ class SplitPairHandler:
                         continue
 
                     # Parent room to split-pair child room
-                    if edge.src in self.room_set and edge.dst in c_coords and edge.dst not in self.room_set:
+                    if edge.src in self.all_local_rooms and edge.dst in c_coords and edge.dst not in self.all_local_rooms:
                         u, v = edge.src, edge.dst
                         corridor_key: frozenset[EndpointRef] = frozenset([u, (sc.node_id, v)])
                         if corridor_key not in seen_split_corridors:
@@ -503,7 +506,7 @@ class SplitPairHandler:
                             )
                             gateway_anchors[sc.node_id].add(u)
                             aligned_children.add(sc.node_id)
-                    elif edge.dst in self.room_set and edge.src in c_coords and edge.src not in self.room_set:
+                    elif edge.dst in self.all_local_rooms and edge.src in c_coords and edge.src not in self.all_local_rooms:
                         u, v = edge.dst, edge.src
                         corridor_key_rev: frozenset[EndpointRef] = frozenset([u, (sc.node_id, v)])
                         if corridor_key_rev not in seen_split_corridors:
@@ -595,7 +598,9 @@ class SplitPairHandler:
 
         # Couple split-pair containers whose poles are in parent room set via active edges
         for (p0, p1), split_children in split_children_by_poles.items():
-            if p0 in self.room_set and p1 in self.room_set:
+            if p0 in self.all_local_rooms and p1 in self.all_local_rooms:
+                if len(split_children) > 1 and p0 not in self.room_set and p1 not in self.room_set:
+                    continue
                 for sc in split_children:
                     if sc.node_id in aligned_children:
                         continue
@@ -1162,7 +1167,12 @@ def inventory_cluster(
     room_anchored_children: dict[int, list[str]] = {}
 
     # 1. Split-pair children classification & active edges
-    split_handler = SplitPairHandler(node=node, child_solutions=child_solutions, graph=graph)
+    split_handler = SplitPairHandler(
+        node=node,
+        child_solutions=child_solutions,
+        graph=graph,
+        boundary_ports=boundary_ports,
+    )
     split_res = split_handler.process(
         room_anchored_children=room_anchored_children,
         aligned_children=aligned_children,
