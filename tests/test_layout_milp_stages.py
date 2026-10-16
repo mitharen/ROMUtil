@@ -22,15 +22,18 @@ from romutil.layout.ir import (
 from romutil.layout.milp import (
     ActiveEdge,
     ClearanceConstraintBuilder,
+    ClearanceViolation,
     ClusterFormulation,
     ClusterInventory,
     apply_clearance_constraints,
     calculate_dynamic_bounds,
+    detect_cluster_collisions,
     formulate_cluster_model,
     inventory_cluster,
     normalize_cluster_solution,
     solve_and_extract,
 )
+from romutil.layout.milp.cluster import solve_cluster
 from romutil.layout.milp.inventory import (
     ChildChildAlignment,
     GatewayCutHandler,
@@ -1285,8 +1288,11 @@ class TestStage2Formulation:
         box10 = formulation.get_room_box(10)
         assert box10 == (model.x[10], model.x[10], model.y[10], model.y[10], model.z[10], model.z[10])
 
-        # Objective exists
+        # Objective exists and redundant bbox variables are eliminated
         assert hasattr(model, "obj")
+        assert not hasattr(model, "x_min")
+        assert not hasattr(model, "x_max")
+        assert not hasattr(model, "bbox_bounds")
 
     def test_formulate_cluster_model_child_only(self) -> None:
         """Formulation with no parent rooms fixes the first child's origin."""
@@ -1753,6 +1759,476 @@ class TestStage3Clearance:
         formulation.apply_corridor_crossing_separation()
 
         assert hasattr(formulation.model, "parent_room_sep_sum")
+
+    def test_add_doorway_clearance_filtering_and_room_obstructions(self) -> None:
+        """add_doorway_clearance processes active directions, skips internal exits, and creates room separation."""
+        child = SolveTreeNode(node_id="c_d", node_type="leaf", rooms=frozenset({10}))
+        parent = SolveTreeNode(node_id="p_d", node_type="container", rooms=frozenset({1, 2}), children=(child,))
+        sol = NodeSolution("c_d", {10: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 0),))
+        base_graph = _make_graph([1, 2, 10, 99], [])
+        room_defs = dict(base_graph.rooms)
+        room_defs[1] = Room(
+            vnum=1,
+            name="R1",
+            description="",
+            exits=(
+                Exit(direction=Direction.east, dst_vnum=2),  # dst in sub_rooms -> skipped
+                Exit(direction=999, dst_vnum=99),  # invalid direction -> ValueError skipped
+                Exit(direction=Direction.north, dst_vnum=99),  # in active_dirs -> skipped
+                Exit(direction=Direction.south, dst_vnum=99),  # valid external doorway
+            ),
+        )
+        graph = LayoutGraph(rooms=room_defs, edges=base_graph.edges)
+
+        import dataclasses
+        inv = inventory_cluster(node=parent, child_solutions={"c_d": sol}, graph=graph)
+        inv = dataclasses.replace(
+            inv,
+            boundary_ports=frozenset({1}),
+            active_edges=(ActiveEdge("e_act", 1, 2, (0, 1, 0), 2, frozenset({1, 2}), frozenset()),),
+        )
+        formulation = ClusterFormulation(inventory=inv)
+        formulation.apply_doorway_clearance()
+        assert hasattr(formulation.model, "doorway_child_br")
+        assert hasattr(formulation.model, "doorway_room_br")
+
+    def test_add_corridor_filtering_branches(self) -> None:
+        """add_corridor_room_separation and add_corridor_child_separation handle skipped branches."""
+        c1 = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({10}))
+        parent = SolveTreeNode(node_id="p_flt", node_type="container", rooms=frozenset({1, 2, 3}), children=(c1,))
+        sol1 = NodeSolution("c1", {10: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 0),))
+        graph = _make_graph([1, 2, 3, 10], [])
+
+        import dataclasses
+        inv = inventory_cluster(node=parent, child_solutions={"c1": sol1}, graph=graph)
+        inv = dataclasses.replace(
+            inv,
+            active_edges=(
+                ActiveEdge("sp_virtual", 1, 2, (1, 0, 0), 2, frozenset({1, 2}), frozenset({"c1"})),
+                ActiveEdge("e_diag", 1, 2, (1, 1, 0), 2, frozenset({1, 2}), frozenset()),
+                ActiveEdge("e_ortho", 1, 2, (1, 0, 0), 2, frozenset({1, 2}), frozenset({"c1"})),
+            ),
+        )
+        formulation = ClusterFormulation(inventory=inv)
+        formulation.apply_corridor_room_separation()
+        formulation.apply_corridor_child_separation()
+        formulation.apply_corridor_crossing_separation()
+
+
+class TestStage3DelayedCutsAndCollisionDetector:
+    """Unit tests for Stage 3 geometric collision detection and delayed cutting-plane injection."""
+
+    def test_detect_and_inject_room_room_collision(self) -> None:
+        """Room-room collision detected at identical coordinates and separated by injected cut."""
+        node = SolveTreeNode(node_id="p_rr", node_type="leaf", rooms=frozenset({1, 2}))
+        graph = _make_graph([1, 2], [])
+        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
+        formulation = formulate_cluster_model(inventory=inv)
+
+        # Extraction with identical coordinates for room 1 and 2
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (0, 0, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        violations = detect_cluster_collisions(formulation, extraction)
+        assert len(violations) == 1
+        assert violations[0].category == "parent_room"
+        assert violations[0].item_a == 1
+        assert violations[0].item_b == 2
+
+        # Inject cut
+        builder = formulation.clearance_builder
+        assert not hasattr(formulation.model, "parent_room_br")
+        cuts_added = builder.inject_clearance_cuts(violations)
+        assert cuts_added == 1
+        assert hasattr(formulation.model, "parent_room_br")
+
+        # Deduplication check: injecting the same violation again adds 0 cuts
+        cuts_added_again = builder.inject_clearance_cuts(violations)
+        assert cuts_added_again == 0
+
+    def test_detect_and_inject_room_child_collision(self) -> None:
+        """Room penetrating child sub-box is detected and separated."""
+        child = SolveTreeNode(node_id="c_box", node_type="leaf", rooms=frozenset({10}))
+        parent = SolveTreeNode(node_id="p_rc", node_type="container", rooms=frozenset({1}), children=(child,))
+        sol = NodeSolution(
+            node_id="c_box",
+            local_coordinates={10: Coord3D(0, 0, 0)},
+            sub_boxes=(BoundingBox3D(0, 2, 0, 2, 0, 0),),
+        )
+        graph = _make_graph([1, 10], [])
+        inv = inventory_cluster(node=parent, child_solutions={"c_box": sol}, graph=graph)
+        formulation = formulate_cluster_model(inventory=inv)
+
+        # Room 1 at (1, 1, 0) penetrates child box at offset (0, 0, 0)
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={1: (1, 1, 0)},
+            raw_child_offsets={"c_box": (0, 0, 0)},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        violations = detect_cluster_collisions(formulation, extraction)
+        assert len(violations) == 1
+        assert violations[0].category == "room_child"
+        assert violations[0].item_a == 1
+        assert violations[0].item_b == ("c_box", 0)
+
+        cuts_added = formulation.clearance_builder.inject_clearance_cuts(violations)
+        assert cuts_added == 1
+        assert hasattr(formulation.model, "room_child_br")
+
+    def test_detect_and_inject_child_child_collision(self) -> None:
+        """Overlapping child sub-boxes are detected and separated."""
+        c1 = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({10}))
+        c2 = SolveTreeNode(node_id="c2", node_type="leaf", rooms=frozenset({20}))
+        parent = SolveTreeNode(node_id="p_cc", node_type="container", rooms=frozenset(), children=(c1, c2))
+        sol1 = NodeSolution("c1", {10: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 2, 0, 2, 0, 0),))
+        sol2 = NodeSolution("c2", {20: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 2, 0, 2, 0, 0),))
+        graph = _make_graph([10, 20], [])
+        inv = inventory_cluster(node=parent, child_solutions={"c1": sol1, "c2": sol2}, graph=graph)
+        formulation = formulate_cluster_model(inventory=inv)
+
+        # Offsets overlap at (0, 0, 0) and (1, 1, 0)
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={},
+            raw_child_offsets={"c1": (0, 0, 0), "c2": (1, 1, 0)},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        violations = detect_cluster_collisions(formulation, extraction)
+        assert any(v.category == "child_child" for v in violations)
+
+        cuts_added = formulation.clearance_builder.inject_clearance_cuts(violations)
+        assert cuts_added >= 1
+        assert hasattr(formulation.model, "child_child_br")
+
+    def test_detect_and_inject_corridor_room_collision(self) -> None:
+        """Corridor interior penetrating third-party room is detected and separated."""
+        rooms = [1, 2, 3]
+        edges = [(1, 2, Direction.east, 4)]
+        graph = _make_graph(rooms, edges)
+        node = SolveTreeNode(node_id="p_cr", node_type="leaf", rooms=frozenset(rooms))
+        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
+        formulation = formulate_cluster_model(inventory=inv)
+
+        # Room 1 at (0, 0, 0), Room 2 at (4, 0, 0), Room 3 placed right on the corridor interior at (2, 0, 0)
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (4, 0, 0), 3: (2, 0, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        violations = detect_cluster_collisions(formulation, extraction)
+        assert any(v.category == "corridor_room" and v.item_b == 3 for v in violations)
+
+        cuts_added = formulation.clearance_builder.inject_clearance_cuts(violations)
+        assert cuts_added >= 1
+        assert hasattr(formulation.model, "corridor_room_br")
+
+    def test_detect_and_inject_corridor_child_collision(self) -> None:
+        """Corridor interior penetrating sibling child sub-box is detected and separated."""
+        child = SolveTreeNode(node_id="c_sib", node_type="leaf", rooms=frozenset({10}))
+        parent = SolveTreeNode(node_id="p_cchild", node_type="container", rooms=frozenset({1, 2}), children=(child,))
+        sol = NodeSolution("c_sib", {10: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 2, 0, 2, 0, 0),))
+        graph = _make_graph([1, 2, 10], [(1, 2, Direction.east, 4)])
+        inv = inventory_cluster(node=parent, child_solutions={"c_sib": sol}, graph=graph)
+        formulation = formulate_cluster_model(inventory=inv)
+
+        # Corridor 1->2 runs (0, 1, 0) -> (4, 1, 0). Child placed at (1, 0, 0) so box spans (1..3, 0..2, 0..0)
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 1, 0), 2: (4, 1, 0)},
+            raw_child_offsets={"c_sib": (1, 0, 0)},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        violations = detect_cluster_collisions(formulation, extraction)
+        assert any(v.category == "corridor_child" for v in violations)
+
+        cuts_added = formulation.clearance_builder.inject_clearance_cuts(violations)
+        assert cuts_added >= 1
+        assert hasattr(formulation.model, "corridor_child_br")
+
+    def test_detect_and_inject_corridor_corridor_crossing(self) -> None:
+        """Crossing orthogonal corridor segments in 3D are detected and separated."""
+        rooms = [1, 2, 3, 4]
+        edges = [
+            (1, 2, Direction.east, 4),
+            (3, 4, Direction.north, 4),
+        ]
+        graph = _make_graph(rooms, edges)
+        node = SolveTreeNode(node_id="p_crossing", node_type="leaf", rooms=frozenset(rooms))
+        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
+        formulation = formulate_cluster_model(inventory=inv)
+
+        # Seg 1: (0, 2, 0) -> (4, 2, 0), Seg 2: (2, 0, 0) -> (2, 4, 0). They cross at (2, 2, 0).
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 2, 0), 2: (4, 2, 0), 3: (2, 0, 0), 4: (2, 4, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        violations = detect_cluster_collisions(formulation, extraction)
+        assert any(v.category == "corridor_crossing" for v in violations)
+
+        cuts_added = formulation.clearance_builder.inject_clearance_cuts(violations)
+        assert cuts_added >= 1
+        assert hasattr(formulation.model, "corridor_crossing_br")
+
+    def test_detect_and_inject_doorway_clearance(self) -> None:
+        """Boundary port doorway vector collisions with child sub-boxes and rooms are detected and separated."""
+        child = SolveTreeNode(node_id="c_door", node_type="leaf", rooms=frozenset({10}))
+        parent = SolveTreeNode(node_id="p_door", node_type="container", rooms=frozenset({1, 2}), children=(child,))
+        sol = NodeSolution("c_door", {10: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
+        base_graph = _make_graph([1, 2, 10, 99], [(1, 99, Direction.east, 1)])
+        room_defs = dict(base_graph.rooms)
+        room_defs[1] = Room(vnum=1, name="R1", description="", exits=(Exit(direction=Direction.east, dst_vnum=99),))
+        graph = LayoutGraph(rooms=room_defs, edges=base_graph.edges)
+
+        import dataclasses
+        inv = inventory_cluster(node=parent, child_solutions={"c_door": sol}, graph=graph)
+        inv = dataclasses.replace(inv, boundary_ports=frozenset({1}))
+        formulation = formulate_cluster_model(inventory=inv)
+
+        # Port 1 at (0, 0, 0), exit east -> doorway point (1, 0, 0).
+        # Child at (1, 0, 0) -> doorway_child collision.
+        # Room 2 at (1, 0, 0) -> doorway_room collision.
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0)},
+            raw_child_offsets={"c_door": (1, 0, 0)},
+            solver_status=SolverStatus.OPTIMAL,
+            raw_port_coords={1: (0, 0, 0)},
+        )
+
+        violations = detect_cluster_collisions(formulation, extraction)
+        categories = {v.category for v in violations}
+        assert "doorway_child" in categories
+        assert "doorway_room" in categories
+
+        cuts_added = formulation.clearance_builder.inject_clearance_cuts(violations)
+        assert cuts_added >= 2
+        assert hasattr(formulation.model, "doorway_child_br")
+        assert hasattr(formulation.model, "doorway_room_br")
+
+    def test_solve_cluster_iterative_clean_single_iteration(self) -> None:
+        """A simple non-colliding cluster solves in a single iteration without any Big-M binary cuts."""
+        rooms = [1, 2, 3]
+        edges = [(1, 2, Direction.east, 1), (2, 3, Direction.east, 1)]
+        graph = _make_graph(rooms, edges)
+        node = SolveTreeNode(node_id="p_clean", node_type="leaf", rooms=frozenset(rooms))
+
+        sol = solve_cluster(node, {}, graph)
+        assert sol.local_coordinates[1] == Coord3D(0, 0, 0)
+        assert sol.local_coordinates[2] == Coord3D(1, 0, 0)
+        assert sol.local_coordinates[3] == Coord3D(2, 0, 0)
+
+    def test_solve_cluster_max_iterations_exceeded_error(self) -> None:
+        """Iterative solver raises LayoutSolverError when collisions cannot be resolved in max_iterations."""
+        rooms = [1, 2]
+        graph = _make_graph(rooms, [])
+        node = SolveTreeNode(node_id="p_loop", node_type="leaf", rooms=frozenset(rooms))
+
+        mock_violation = ClearanceViolation(category="parent_room", item_a=1, item_b=2)
+        with patch(
+            "romutil.layout.milp.cluster.detect_cluster_collisions",
+            return_value=[mock_violation],
+        ):
+            with patch.object(ClearanceConstraintBuilder, "inject_clearance_cuts", return_value=1):
+                with pytest.raises(LayoutSolverError, match="failed to resolve all geometric collisions within 15 iterations"):
+                    solve_cluster(node, {}, graph)
+
+    def test_solve_cluster_unresolvable_cuts_error(self) -> None:
+        """Iterative solver raises LayoutSolverError when collisions exist but 0 cuts can be added."""
+        rooms = [1, 2]
+        graph = _make_graph(rooms, [])
+        node = SolveTreeNode(node_id="p_nocut", node_type="leaf", rooms=frozenset(rooms))
+
+        mock_violation = ClearanceViolation(category="parent_room", item_a=1, item_b=2)
+        with patch(
+            "romutil.layout.milp.cluster.detect_cluster_collisions",
+            return_value=[mock_violation],
+        ):
+            with patch.object(ClearanceConstraintBuilder, "inject_clearance_cuts", return_value=0):
+                with pytest.raises(LayoutSolverError, match="encountered unresolvable geometric collisions"):
+                    solve_cluster(node, {}, graph)
+
+    def test_extract_entity_coord_port_and_child_and_keyerror(self) -> None:
+        """_extract_entity_coord resolves boundary port, child coordinate, and raises KeyError on unknown."""
+        from romutil.layout.milp.clearance import _extract_entity_coord
+
+        c_sol = NodeSolution("c1", local_coordinates={10: Coord3D(2, 3, 4)}, sub_boxes=())
+        node = SolveTreeNode(node_id="p", node_type="leaf", rooms=frozenset({1}))
+        inv = ClusterInventory(
+            node=node,
+            rooms=(1,),
+            children=(),
+            child_solutions={"c1": c_sol},
+            boundary_ports=frozenset({2}),
+            active_edges=(),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+
+        ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0)},
+            raw_child_offsets={"c1": (10, 20, 30)},
+            solver_status=SolverStatus.OPTIMAL,
+            raw_port_coords={2: (5, 6, 7)},
+        )
+
+        # Boundary port
+        assert _extract_entity_coord(2, ext, inv) == (5, 6, 7)
+        # Child endpoint
+        assert _extract_entity_coord(("c1", 10), ext, inv) == (12, 23, 34)
+        # Unknown room
+        with pytest.raises(KeyError, match="not found in solved extraction"):
+            _extract_entity_coord(999, ext, inv)
+
+    def test_detect_corridor_child_negative_directions_and_l1_skip(self) -> None:
+        """Corridor-child collision detection handles negative X, Y, Z directions and skips unit-length corridors."""
+        child = SolveTreeNode(node_id="c_neg", node_type="leaf", rooms=frozenset({10}))
+        parent = SolveTreeNode(node_id="p_neg", node_type="container", rooms=frozenset({1, 2, 3, 4}), children=(child,))
+        sol = NodeSolution("c_neg", {10: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 2, 0, 2, 0, 2),))
+
+        # West direction: src=(4, 1, 1), dst=(0, 1, 1) -> dx = -1
+        # South direction: src=(1, 4, 1), dst=(1, 0, 1) -> dy = -1
+        # Down direction: src=(1, 1, 4), dst=(1, 1, 0) -> dz = -1
+        # Unit length edge: src=(1, 1, 0), dst=(2, 1, 0) -> L=1
+        inv = ClusterInventory(
+            node=parent,
+            rooms=(1, 2, 3, 4),
+            children=(child,),
+            child_solutions={"c_neg": sol},
+            boundary_ports=frozenset(),
+            active_edges=(
+                ActiveEdge("e_west", 1, 2, (-1, 0, 0), 4, frozenset({1, 2}), frozenset()),
+                ActiveEdge("e_south", 1, 3, (0, -1, 0), 4, frozenset({1, 3}), frozenset()),
+                ActiveEdge("e_down", 1, 4, (0, 0, -1), 4, frozenset({1, 4}), frozenset()),
+                ActiveEdge("e_unit", 1, 2, (1, 0, 0), 1, frozenset({1, 2}), frozenset()),
+            ),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+            child_sub_boxes={"c_neg": (BoundingBox3D(0, 2, 0, 2, 0, 2),)},
+        )
+        formulation = ClusterFormulation(inventory=inv)
+
+        ext = SolvedClusterExtraction(
+            raw_parent_coords={
+                1: (4, 4, 4),
+                2: (0, 4, 4),
+                3: (4, 0, 4),
+                4: (4, 4, 0),
+            },
+            raw_child_offsets={"c_neg": (2, 2, 2)},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        violations = detect_cluster_collisions(formulation, ext)
+        # Should not crash on any negative direction calculations
+        assert isinstance(violations, list)
+
+    def test_detect_corridor_crossing_filtering_branches(self) -> None:
+        """Parallel corridors and incident corridors are skipped in corridor crossing detection."""
+        rooms = [1, 2, 3, 4]
+        inv = ClusterInventory(
+            node=SolveTreeNode(node_id="p_flt", node_type="leaf", rooms=frozenset(rooms)),
+            rooms=(1, 2, 3, 4),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(
+                ActiveEdge("e_parallel1", 1, 2, (1, 0, 0), 2, frozenset({1, 2}), frozenset()),
+                ActiveEdge("e_parallel2", 3, 4, (1, 0, 0), 2, frozenset({3, 4}), frozenset()),
+                ActiveEdge("e_incident", 2, 3, (0, 1, 0), 2, frozenset({2, 3}), frozenset()),
+                ActiveEdge("sp_virtual", 1, 4, (0, 1, 0), 2, frozenset({1, 4}), frozenset()),
+            ),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        formulation = ClusterFormulation(inventory=inv)
+
+        ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (2, 0, 0), 3: (0, 2, 0), 4: (2, 2, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        violations = detect_cluster_collisions(formulation, ext)
+        crossing_viols = [v for v in violations if v.category == "corridor_crossing"]
+        assert len(crossing_viols) == 0
+
+    def test_inject_clearance_cuts_empty_violations(self) -> None:
+        """inject_clearance_cuts returns 0 immediately when violations list is empty."""
+        node = SolveTreeNode(node_id="p_empty", node_type="leaf", rooms=frozenset({1}))
+        inv = inventory_cluster(node=node, child_solutions={}, graph=_make_graph([1], []))
+        formulation = ClusterFormulation(inventory=inv)
+        assert formulation.clearance_builder.inject_clearance_cuts([]) == 0
+
+    def test_detect_cluster_collisions_missing_coordinates_and_keyerror(self) -> None:
+        """detect_cluster_collisions gracefully handles missing extraction coordinates and unknown endpoints."""
+        child = SolveTreeNode(node_id="c_miss", node_type="leaf", rooms=frozenset({10}))
+        parent = SolveTreeNode(node_id="p_miss", node_type="container", rooms=frozenset({1, 2}), children=(child,))
+        sol = NodeSolution("c_miss", {10: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 0),))
+        base_graph = _make_graph([1, 2, 10, 99], [(1, 2, Direction.east, 2)])
+        room_defs = dict(base_graph.rooms)
+        room_defs[1] = Room(vnum=1, name="", description="", exits=(Exit(direction=999, dst_vnum=99),))
+        graph = LayoutGraph(rooms=room_defs, edges=base_graph.edges)
+
+        import dataclasses
+        inv = inventory_cluster(node=parent, child_solutions={"c_miss": sol}, graph=graph)
+        inv = dataclasses.replace(
+            inv,
+            boundary_ports=frozenset({1, 999}),  # 999 not in graph.rooms
+        )
+        formulation = ClusterFormulation(inventory=inv)
+
+        # Extraction missing room 2 and child c_miss: _extract_entity_coord(2, ext, inv) will raise KeyError
+        ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        violations = detect_cluster_collisions(formulation, ext)
+        assert isinstance(violations, list)
+
+    def test_extract_entity_coord_with_port_metadata(self) -> None:
+        """_extract_entity_coord uses port_coordinates metadata when available."""
+        from romutil.layout.milp.clearance import _extract_entity_coord
+
+        c_sol = NodeSolution(
+            "c_meta",
+            local_coordinates={},
+            sub_boxes=(),
+            port_coordinates={10: Coord3D(5, 5, 5)},
+            metadata={"port_coordinates": {20: Coord3D(1, 2, 3)}},
+        )
+        node = SolveTreeNode(node_id="p", node_type="leaf", rooms=frozenset({1}))
+        inv = ClusterInventory(
+            node=node,
+            rooms=(1,),
+            children=(),
+            child_solutions={"c_meta": c_sol},
+            boundary_ports=frozenset(),
+            active_edges=(),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0)},
+            raw_child_offsets={"c_meta": (1, 1, 1)},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        assert _extract_entity_coord(("c_meta", 10), ext, inv) == (6, 6, 6)
+        assert _extract_entity_coord(("c_meta", 20), ext, inv) == (2, 3, 4)
 
 
 class TestStage4Solver:
