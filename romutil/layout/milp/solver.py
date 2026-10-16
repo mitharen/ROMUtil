@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping
 
 import pyomo.environ as pyo
@@ -19,6 +19,7 @@ class SolvedClusterExtraction:
     raw_parent_coords: Mapping[int, tuple[int, int, int]]
     raw_child_offsets: Mapping[str, tuple[int, int, int]]
     solver_status: SolverStatus
+    raw_port_coords: Mapping[int, tuple[int, int, int]] = field(default_factory=dict)
 
 
 def solve_and_extract(
@@ -104,6 +105,17 @@ def solve_and_extract(
             )
         raw_parent_coords[u] = (int(round(vx)), int(round(vy)), int(round(vz)))
 
+    raw_port_coords: dict[int, tuple[int, int, int]] = {}
+    for u in formulation.inventory.boundary_ports:
+        vx = pyo.value(formulation.model.x[u])
+        vy = pyo.value(formulation.model.y[u])
+        vz = pyo.value(formulation.model.z[u])
+        if vx is None or vy is None or vz is None:
+            raise LayoutSolverError(
+                f"MILP solver failed to retrieve coordinate values for boundary port {u} in cluster '{node.node_id}'."
+            )
+        raw_port_coords[u] = (int(round(vx)), int(round(vy)), int(round(vz)))
+
     raw_child_offsets: dict[str, tuple[int, int, int]] = {}
     for cid in child_ids:
         vcx = pyo.value(formulation.model.cx[cid])
@@ -128,6 +140,7 @@ def solve_and_extract(
         raw_parent_coords=raw_parent_coords,
         raw_child_offsets=raw_child_offsets,
         solver_status=solver_status,
+        raw_port_coords=raw_port_coords,
     )
 
 

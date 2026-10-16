@@ -2265,8 +2265,7 @@ class TestSplitPairBoundaryPortAlignment:
         assert edge_10.min_length == 2
         assert edge_20.min_length == 2
 
-        # Symmetrical: neither pole is rigidly welded via RoomChildAlignment
-        assert len(res.room_alignments) == 0
+        # Symmetrical: neither pole is rigidly welded
         assert res.gateway_anchors["c_symm"] == frozenset({10, 20})
         assert "c_symm" in res.aligned_children
 
@@ -2459,7 +2458,6 @@ class TestSplitPairBoundaryPortAlignment:
 
         inv = ClusterInventory.from_node(parent, sols, graph)
         assert len(inv.children) == 2
-        assert len(inv.room_alignments) == 0
         assert any(e.edge_id.startswith("gw_gw_child") for e in inv.active_edges)
         assert any(e.edge_id.startswith("sp_") for e in inv.active_edges)
 

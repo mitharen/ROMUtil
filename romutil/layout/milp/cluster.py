@@ -62,17 +62,17 @@ def solve_cluster(
         graph = LayoutGraph(rooms={}, edges=())
     rooms = sorted(node.rooms)
     children = list(node.children)
+    boundary_ports = frozenset(get_child_boundary_ports(node))
 
     if not rooms and not children:
         return normalize_empty_cluster(node)
 
-    if len(rooms) == 1 and not children:
+    if len(rooms) == 1 and not children and not boundary_ports:
         r = rooms[0]
-        boundary_ports = get_child_boundary_ports(node)
         return normalize_single_room_cluster(
             node=node,
             room=r,
-            is_boundary_port=(r in boundary_ports),
+            is_boundary_port=False,
         )
 
     try:
@@ -82,6 +82,7 @@ def solve_cluster(
             child_solutions=child_solutions,
             graph=graph,
             options=options,
+            boundary_ports=boundary_ports,
         )
 
         # Stage 2: Basic MILP Formulation

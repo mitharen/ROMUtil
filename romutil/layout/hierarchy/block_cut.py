@@ -137,10 +137,12 @@ class BlockCutTreeBuilder(TreeBuilder):
                     "cut_contract": ArticulationPointCut(anchor_vnum=anchor),
                 }
 
+            node_rooms = frozenset(blocks[b_idx]) - {anchor} if anchor is not None else blocks[b_idx]
+
             return SolveTreeNode(
                 node_id=curr_id,
                 node_type=TreeNodeType.BLOCK,
-                rooms=blocks[b_idx],
+                rooms=node_rooms,
                 children=tuple(child_nodes),
                 metadata=meta,
             )

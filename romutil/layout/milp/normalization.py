@@ -99,6 +99,10 @@ def normalize_cluster_solution(
         u: Coord3D(x - min_x, y - min_y, z - min_z)
         for u, (x, y, z) in extraction.raw_parent_coords.items()
     }
+    norm_port_coords = {
+        u: Coord3D(x - min_x, y - min_y, z - min_z)
+        for u, (x, y, z) in getattr(extraction, "raw_port_coords", {}).items()
+    }
     norm_child_offsets = {
         cid: Coord3D(x - min_x, y - min_y, z - min_z)
         for cid, (x, y, z) in extraction.raw_child_offsets.items()
@@ -121,15 +125,17 @@ def normalize_cluster_solution(
                 all_room_coords[u] = Coord3D(pt.x + c_off.x, pt.y + c_off.y, pt.z + c_off.z)
 
     if active_edges:
+        all_parent_and_port_coords = dict(norm_parent_coords)
+        all_parent_and_port_coords.update(norm_port_coords)
         for ae in active_edges:
             if (
                 isinstance(ae.src, int)
                 and isinstance(ae.dst, int)
-                and ae.src in norm_parent_coords
-                and ae.dst in norm_parent_coords
+                and ae.src in all_parent_and_port_coords
+                and ae.dst in all_parent_and_port_coords
             ):
-                p1 = norm_parent_coords[ae.src]
-                p2 = norm_parent_coords[ae.dst]
+                p1 = all_parent_and_port_coords[ae.src]
+                p2 = all_parent_and_port_coords[ae.dst]
                 dist = abs(p2.x - p1.x) + abs(p2.y - p1.y) + abs(p2.z - p1.z)
                 if dist > 1:
                     dx, dy, dz = ae.direction
@@ -154,8 +160,11 @@ def normalize_cluster_solution(
         "status": extraction.solver_status,
         "child_sub_boxes": sub_boxes_map,
         "all_room_coordinates": all_room_coords,
+        "port_coordinates": norm_port_coords,
     }
-    if all_pts:
+    if all_room_coords:
+        metadata["bounding_box"] = BoundingBox3D.from_coordinates(all_room_coords.values())
+    elif all_pts:
         max_x = max(p[0] for p in all_pts)
         max_y = max(p[1] for p in all_pts)
         max_z = max(p[2] for p in all_pts)
@@ -171,6 +180,7 @@ def normalize_cluster_solution(
     return NodeSolution(
         node_id=node.node_id,
         local_coordinates=norm_parent_coords,
+        port_coordinates=norm_port_coords,
         sub_boxes=(),
         metadata=metadata,
     )

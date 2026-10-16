@@ -316,7 +316,7 @@ class TestSpqrTreeBuilder:
 
         child = root.children[0]
         assert child.node_type == "series_loop"
-        assert child.rooms == frozenset({4, 5, 6, 7})
+        assert child.rooms == frozenset({5, 6, 7})
         assert child.metadata.get("cut_type") == "articulation_point"
         assert child.metadata.get("anchor_vnum") == 4
 
@@ -356,7 +356,7 @@ class TestSpqrTreeBuilder:
         assert len(s_node_3.children) == 1
         art_child = s_node_3.children[0]
         assert art_child.node_type == "series_loop"
-        assert art_child.rooms == frozenset({3, 5, 6, 7})
+        assert art_child.rooms == frozenset({5, 6, 7})
         assert art_child.metadata.get("anchor_vnum") == 3
 
     def test_articulation_child_attached_to_pole(self) -> None:
@@ -386,7 +386,7 @@ class TestSpqrTreeBuilder:
         assert root.rooms == frozenset({1, 2})
 
         # The C4 child should be attached directly to the root container because anchor 1 is a pole
-        c4_children = [c for c in root.children if c.rooms == frozenset({1, 5, 6, 7})]
+        c4_children = [c for c in root.children if c.rooms == frozenset({5, 6, 7})]
         assert len(c4_children) == 1
         assert c4_children[0].metadata.get("anchor_vnum") == 1
 
@@ -554,7 +554,7 @@ class TestSafe2CutAllowlistContract:
         child = tree.root.children[0]
         assert child.node_type == TreeNodeType.RIGID_CLUSTER
         assert child.metadata.get("cut_type") == CutType.SPLIT_PAIR
-        assert child.rooms == frozenset({1, 2, 3, 4, 20, 21, 22, 23, 100, 101})
+        assert child.rooms == frozenset({1, 2, 3, 4, 20, 21, 22, 23})
         assert child.children == ()
 
 

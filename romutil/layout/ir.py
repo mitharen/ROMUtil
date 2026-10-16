@@ -226,10 +226,18 @@ class NodeSolution:
     local_coordinates: Mapping[int, Coord3D]
     sub_boxes: tuple[BoundingBox3D, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    port_coordinates: Mapping[int, Coord3D] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.sub_boxes, tuple):
             object.__setattr__(self, "sub_boxes", tuple(self.sub_boxes))
+        if not isinstance(self.port_coordinates, dict):
+            object.__setattr__(self, "port_coordinates", dict(self.port_coordinates))
+
+    @property
+    def coordinates(self) -> Mapping[int, Coord3D]:
+        """Return canonical coordinates strictly for owned rooms."""
+        return self.local_coordinates
 
     @property
     def bounding_box(self) -> BoundingBox3D | None:

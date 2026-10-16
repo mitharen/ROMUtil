@@ -21,8 +21,8 @@ class ClearanceConstraintBuilder:
         self.formulation = formulation
 
     def add_parent_room_separation(self) -> None:
-        """Enforce pairwise room-room non-overlap separation among parent rooms."""
-        rooms = self.formulation.inventory.rooms
+        """Enforce pairwise room-room non-overlap separation among parent rooms and boundary ports."""
+        rooms = tuple(sorted(set(self.formulation.inventory.rooms) | set(self.formulation.inventory.boundary_ports)))
         if len(rooms) > 1:
             parent_pairs = [
                 (rooms[i], rooms[j])
@@ -55,7 +55,9 @@ class ClearanceConstraintBuilder:
                 sb1 = child_sub_boxes.get(c1.node_id, ())
                 sb2 = child_sub_boxes.get(c2.node_id, ())
                 if sol1 and sol2 and sb1 and sb2:
-                    shared = set(sol1.local_coordinates.keys()) & set(sol2.local_coordinates.keys())
+                    sol1_rooms = set(sol1.local_coordinates.keys()) | set(getattr(sol1, "port_coordinates", {}).keys())
+                    sol2_rooms = set(sol2.local_coordinates.keys()) | set(getattr(sol2, "port_coordinates", {}).keys())
+                    shared = sol1_rooms & sol2_rooms
                     is_sibling_one_cut = (
                         len(shared) == 1
                         and isinstance(c1.cut_contract, (ArticulationPointCut, BridgeCut))
@@ -79,7 +81,7 @@ class ClearanceConstraintBuilder:
 
     def add_room_child_separation(self) -> None:
         """Enforce parent room vs. child sub-box clearance."""
-        rooms = self.formulation.inventory.rooms
+        rooms = tuple(sorted(set(self.formulation.inventory.rooms) | set(self.formulation.inventory.boundary_ports)))
         children = self.formulation.inventory.children
         child_solutions = self.formulation.inventory.child_solutions
         gateway_anchors = self.formulation.inventory.gateway_anchors
@@ -92,8 +94,9 @@ class ClearanceConstraintBuilder:
                 sb = child_sub_boxes.get(child.node_id, ())
                 if c_sol and sb:
                     anchors = gateway_anchors.get(child.node_id, frozenset())
+                    c_ports = getattr(c_sol, "port_coordinates", {})
                     for u in rooms:
-                        if u not in anchors and u not in c_sol.local_coordinates:
+                        if u not in anchors and u not in c_sol.local_coordinates and u not in c_ports:
                             for k in range(len(sb)):
                                 room_child_pairs.append((u, (child.node_id, k)))
 
@@ -109,7 +112,7 @@ class ClearanceConstraintBuilder:
 
     def add_corridor_room_separation(self) -> None:
         """Enforce corridor segment non-penetration against third-party parent rooms."""
-        rooms = self.formulation.inventory.rooms
+        rooms = tuple(sorted(set(self.formulation.inventory.rooms) | set(self.formulation.inventory.boundary_ports)))
         active_edges = self.formulation.inventory.active_edges
         child_solutions = self.formulation.inventory.child_solutions
         edge_indices = list(range(len(active_edges)))
@@ -124,6 +127,7 @@ class ClearanceConstraintBuilder:
                         continue
                     if any(
                         w in child_solutions[cid].local_coordinates
+                        or w in getattr(child_solutions[cid], "port_coordinates", {})
                         for cid in ae.associated_children
                         if cid in child_solutions
                     ):
@@ -145,6 +149,7 @@ class ClearanceConstraintBuilder:
         children = self.formulation.inventory.children
         child_solutions = self.formulation.inventory.child_solutions
         child_sub_boxes = self.formulation.inventory.child_sub_boxes
+        gateway_anchors = self.formulation.inventory.gateway_anchors
         edge_indices = list(range(len(active_edges)))
 
         corridor_child_pairs: list[tuple[int, tuple[str, int]]] = []
@@ -162,11 +167,14 @@ class ClearanceConstraintBuilder:
                     sb = child_sub_boxes.get(s_id, ())
                     if not s_sol or not sb:
                         continue
-                    if any(r in s_sol.local_coordinates for r in ae.associated_rooms):
+                    s_ports = getattr(s_sol, "port_coordinates", {})
+                    s_anchors = gateway_anchors.get(s_id, frozenset())
+                    if any(r in s_sol.local_coordinates or r in s_ports or r in s_anchors for r in ae.associated_rooms):
                         continue
+                    s_all = set(s_sol.local_coordinates.keys()) | set(s_ports.keys())
                     if any(
-                        set(s_sol.local_coordinates.keys())
-                        & set(child_solutions[c_other].local_coordinates.keys())
+                        s_all
+                        & (set(child_solutions[c_other].local_coordinates.keys()) | set(getattr(child_solutions[c_other], "port_coordinates", {}).keys()))
                         for c_other in ae.associated_children
                         if c_other in child_solutions
                     ):
@@ -252,9 +260,10 @@ class ClearanceConstraintBuilder:
                 rev = (-ae.direction[0], -ae.direction[1], -ae.direction[2])
                 active_dirs[ae.dst].add(rev)
 
+        all_parent_rooms = set(rooms) | set(b_ports)
         doorway_child_pairs: list[tuple[tuple[int, tuple[int, int, int]], tuple[str, int]]] = []
         for u in b_ports:
-            if u not in rooms or u not in graph.rooms:
+            if u not in all_parent_rooms or u not in graph.rooms:
                 continue
             for ex in graph.rooms[u].exits:
                 if ex.dst_vnum not in sub_rooms:

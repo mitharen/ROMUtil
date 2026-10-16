@@ -8,7 +8,12 @@ import pyomo.environ as pyo
 
 from romutil.layout.geometry import BoundingBox3D
 from romutil.layout.milp.clearance import ClearanceConstraintBuilder
-from romutil.layout.milp.inventory import ActiveEdge, ClusterInventory, EndpointRef
+from romutil.layout.milp.inventory import (
+    ActiveEdge,
+    ClusterInventory,
+    EndpointRef,
+    get_child_coordinate,
+)
 from romutil.types import LayoutOptions
 
 
@@ -100,7 +105,7 @@ def calculate_dynamic_bounds(inventory: ClusterInventory) -> int:
     edge_scale = max(2 * edge_min_sum, 2 * max_edge_min)
 
     # 3. Parent room scale proportional to room count
-    room_scale = len(inventory.rooms) * 10
+    room_scale = max(len(inventory.rooms), len(inventory.boundary_ports)) * 10
 
     total_scale = child_spans + edge_scale + room_scale
     return max(baseline_floor, total_scale)
@@ -136,16 +141,23 @@ class ClusterFormulation:
         model = self.model
         m_coord = self.m_coord
 
-        # Parent room coordinates
-        if inventory.rooms:
-            model.x = pyo.Var(inventory.rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord))
-            model.y = pyo.Var(inventory.rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord))
-            model.z = pyo.Var(inventory.rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord))
+        # Local room and boundary port coordinates
+        local_rooms = tuple(sorted(set(inventory.rooms) | set(inventory.boundary_ports)))
+        if local_rooms:
+            model.x = pyo.Var(local_rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord))
+            model.y = pyo.Var(local_rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord))
+            model.z = pyo.Var(local_rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord))
 
-            anchor = inventory.rooms[0]
-            model.x[anchor].fix(0)
-            model.y[anchor].fix(0)
-            model.z[anchor].fix(0)
+            anchor: int | None = None
+            if inventory.boundary_ports:
+                anchor = min(inventory.boundary_ports)
+            elif inventory.rooms:
+                anchor = inventory.rooms[0]
+
+            if anchor is not None:
+                model.x[anchor].fix(0)
+                model.y[anchor].fix(0)
+                model.z[anchor].fix(0)
 
         # Child macro-box origins
         child_ids = [c.node_id for c in inventory.children]
@@ -153,27 +165,16 @@ class ClusterFormulation:
         model.cy = pyo.Var(child_ids, domain=pyo.Integers, bounds=(-m_coord, m_coord))
         model.cz = pyo.Var(child_ids, domain=pyo.Integers, bounds=(-m_coord, m_coord))
 
-        if not inventory.rooms and child_ids:
+        if not local_rooms and child_ids:
             first_c = child_ids[0]
             model.cx[first_c].fix(0)
             model.cy[first_c].fix(0)
             model.cz[first_c].fix(0)
 
-        # Gateway alignment equalities
+        # Gateway child-child alignment equalities
         model.align_x = pyo.ConstraintList()
         model.align_y = pyo.ConstraintList()
         model.align_z = pyo.ConstraintList()
-
-        for align in inventory.room_alignments:
-            model.align_x.add(
-                model.x[align.room_vnum] == model.cx[align.child_id] + align.child_coord.x
-            )
-            model.align_y.add(
-                model.y[align.room_vnum] == model.cy[align.child_id] + align.child_coord.y
-            )
-            model.align_z.add(
-                model.z[align.room_vnum] == model.cz[align.child_id] + align.child_coord.z
-            )
 
         for c_align in inventory.child_alignments:
             model.align_x.add(
@@ -241,7 +242,8 @@ class ClusterFormulation:
         model.z_max = pyo.Var(domain=pyo.Integers, bounds=(-m_coord, m_coord))
 
         model.bbox_bounds = pyo.ConstraintList()
-        for u in inventory.rooms:
+        rooms_to_bound = inventory.rooms if inventory.rooms else inventory.boundary_ports
+        for u in rooms_to_bound:
             model.bbox_bounds.add(model.x_max >= model.x[u])
             model.bbox_bounds.add(model.x_min <= model.x[u])
             model.bbox_bounds.add(model.y_max >= model.y[u])
@@ -300,7 +302,10 @@ class ClusterFormulation:
         if isinstance(ref, int):
             return (self.model.x[ref], self.model.y[ref], self.model.z[ref])
         cid, v = ref
-        loc = self.inventory.child_solutions[cid].local_coordinates[v]
+        c_sol = self.inventory.child_solutions[cid]
+        loc = get_child_coordinate(c_sol, v)
+        if loc is None:
+            loc = c_sol.local_coordinates[v]
         return (
             self.model.cx[cid] + loc.x,
             self.model.cy[cid] + loc.y,
