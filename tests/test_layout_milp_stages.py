@@ -37,7 +37,6 @@ from romutil.layout.milp.inventory import (
     GatewayCutResult,
     InterChildBridgeHandler,
     InterChildBridgeResult,
-    RoomChildAlignment,
     SplitPairHandler,
     SplitPairResult,
     _build_internal_room_edges,
@@ -225,7 +224,6 @@ class TestStage1Inventory:
         )
 
         assert inv.rooms == (1, 2, 3)
-        assert len(inv.room_alignments) == 0
         # 3 -> 10 should be an external transverse active edge
         ext_edges = [e for e in inv.active_edges if e.edge_id.startswith("ext_")]
         assert len(ext_edges) == 1
@@ -238,7 +236,7 @@ class TestStage1Inventory:
         c_art = SolveTreeNode(
             node_id="c_art",
             node_type="leaf",
-            rooms=frozenset({2, 20}),
+            rooms=frozenset({20}),
             metadata={"cut_contract": ArticulationPointCut(anchor_vnum=2)},
         )
         c_brg = SolveTreeNode(
@@ -261,8 +259,9 @@ class TestStage1Inventory:
         )
         sol_art = NodeSolution(
             node_id="c_art",
-            local_coordinates={2: Coord3D(0, 0, 0), 20: Coord3D(1, 0, 0)},
-            sub_boxes=(BoundingBox3D(0, 1, 0, 0, 0, 0),),
+            local_coordinates={20: Coord3D(1, 0, 0)},
+            port_coordinates={2: Coord3D(0, 0, 0)},
+            sub_boxes=(BoundingBox3D(1, 1, 0, 0, 0, 0),),
         )
         sol_brg = NodeSolution(
             node_id="c_brg",
@@ -280,7 +279,7 @@ class TestStage1Inventory:
             graph=graph,
         )
 
-        assert any(a.room_vnum == 2 and a.child_id == "c_art" for a in inv.room_alignments)
+        assert any(e.edge_id == "art_port_c_art_2" and e.src == 2 and e.dst == ("c_art", 2) for e in inv.active_edges)
         gw_edges = [e for e in inv.active_edges if e.edge_id.startswith("gw_")]
         assert len(gw_edges) == 1
         assert gw_edges[0].src == 1
@@ -832,7 +831,6 @@ class TestStage1Inventory:
 
         handler = SplitPairHandler(node=parent_p0, child_solutions={"c_p0": sol_p0}, graph=graph)
         res = handler.process()
-        assert len(res.room_alignments) == 0
         assert any(e.edge_id == "ext_c_p0_1_10" for e in res.active_edges)
 
     def test_split_pair_handler_align_children_branches(self) -> None:
@@ -864,7 +862,6 @@ class TestStage1Inventory:
 
         groups = {(10, 20): [c1, c2], (30, 40): []}
         (
-            room_aligns,
             child_aligns,
             equated,
             gw_anchors,
@@ -873,7 +870,6 @@ class TestStage1Inventory:
 
         assert len(child_aligns) == 2
         assert frozenset({"c1", "c2"}) in equated
-        assert len(room_aligns) == 0
 
     def test_split_pair_handler_corridor_active_edges_edge_cases(self) -> None:
         """SplitPairHandler exercises cut edges, reverse parent-child edges, and self-loops in corridors."""
@@ -951,7 +947,6 @@ class TestStage1Inventory:
         assert res.active_edges == res.corridor_edges
         assert len(res.active_edges) == 1
         assert res.active_edges[0].edge_id == "ext_c1_10_3"
-        assert len(res.room_alignments) == 0
 
     def test_gateway_cut_handler_edge_cases_and_error_handling(self) -> None:
         """GatewayCutHandler exercises metadata fallback, multiple anchors, reverse doorway edges, and invalid directions."""
@@ -1024,8 +1019,8 @@ class TestStage1Inventory:
 
         handler = GatewayCutHandler(node=parent, child_solutions=sols, graph=graph)
         # Direct call to process_articulation_points with room_anchored_children=None
-        art_aligns, _, _, _ = handler.process_articulation_points(aligned_children=set(), room_anchored_children=None)
-        assert len(art_aligns) >= 1
+        art_edges, _, _, _ = handler.process_articulation_points(aligned_children=set(), room_anchored_children=None)
+        assert len(art_edges) >= 1
 
         res = handler.process(aligned_children=None, room_anchored_children=None)
         assert frozenset({"c_art1", "c_art2"}) in res.equated_children
@@ -1275,7 +1270,6 @@ class TestStage2Formulation:
             child_solutions={},
             boundary_ports=frozenset(),
             active_edges=(),
-            room_alignments=(),
             child_alignments=(),
             gateway_anchors={},
             aligned_children=frozenset(),
@@ -1351,7 +1345,6 @@ class TestStage2Formulation:
             child_solutions={},
             boundary_ports=frozenset(),
             active_edges=(),
-            room_alignments=(),
             child_alignments=(),
             gateway_anchors={},
             aligned_children=frozenset(),
@@ -1382,7 +1375,6 @@ class TestStage2Formulation:
             child_solutions={},
             boundary_ports=frozenset(),
             active_edges=(),
-            room_alignments=(),
             child_alignments=(),
             gateway_anchors={},
             aligned_children=frozenset(),
@@ -1411,7 +1403,6 @@ class TestStage2Formulation:
             child_solutions={},
             boundary_ports=frozenset(),
             active_edges=(ae,),
-            room_alignments=(),
             child_alignments=(),
             gateway_anchors={},
             aligned_children=frozenset(),
@@ -1860,7 +1851,6 @@ class TestTypedChildHandlers:
         assert set(c.node_id for c in grouped[(2, 5)]) == {"c1", "c2"}
 
         res = handler.process()
-        assert len(res.room_alignments) == 0
         assert res.active_edges == res.corridor_edges
         assert len(res.active_edges) == 4
         assert {"c1", "c2"}.issubset(res.aligned_children)
@@ -1889,7 +1879,6 @@ class TestTypedChildHandlers:
 
         handler = SplitPairHandler(node=parent, child_solutions={"c_trans": c_sol}, graph=graph)
         res = handler.process()
-        assert len(res.room_alignments) == 0
         assert any(e.edge_id == "ext_c_trans_2_10" for e in res.active_edges)
 
     def test_split_pair_handler_child_child_alignment(self) -> None:
@@ -1919,7 +1908,6 @@ class TestTypedChildHandlers:
 
         handler = SplitPairHandler(node=parent, child_solutions={"c1": c1_sol, "c2": c2_sol}, graph=graph)
         res = handler.process()
-        assert len(res.room_alignments) == 0
         assert len(res.child_alignments) == 2
         assert res.child_alignments[0].base_child_id == "c1"
         assert res.child_alignments[0].target_child_id == "c2"
@@ -1936,13 +1924,13 @@ class TestTypedChildHandlers:
         c_art1 = SolveTreeNode(
             node_id="c_art1",
             node_type="leaf",
-            rooms=frozenset({1, 11}),
+            rooms=frozenset({11}),
             metadata={"cut_contract": ArticulationPointCut(anchor_vnum=1)},
         )
         c_art2 = SolveTreeNode(
             node_id="c_art2",
             node_type="leaf",
-            rooms=frozenset({1, 12}),
+            rooms=frozenset({12}),
             metadata={"cut_contract": ArticulationPointCut(anchor_vnum=1)},
         )
         c_brg_fwd = SolveTreeNode(
@@ -1969,8 +1957,8 @@ class TestTypedChildHandlers:
             children=(c_art1, c_art2, c_brg_fwd, c_brg_rev, c_door),
         )
         sols = {
-            "c_art1": NodeSolution("c_art1", {1: Coord3D(0, 0, 0), 11: Coord3D(1, 0, 0)}, ()),
-            "c_art2": NodeSolution("c_art2", {1: Coord3D(0, 0, 0), 12: Coord3D(0, 1, 0)}, ()),
+            "c_art1": NodeSolution("c_art1", {11: Coord3D(1, 0, 0)}, port_coordinates={1: Coord3D(0, 0, 0)}),
+            "c_art2": NodeSolution("c_art2", {12: Coord3D(0, 1, 0)}, port_coordinates={1: Coord3D(0, 0, 0)}),
             "c_brg_fwd": NodeSolution("c_brg_fwd", {21: Coord3D(0, 0, 0)}, ()),
             "c_brg_rev": NodeSolution("c_brg_rev", {31: Coord3D(0, 0, 0)}, ()),
             "c_door": NodeSolution("c_door", {41: Coord3D(0, 0, 0)}, ()),
@@ -1980,13 +1968,14 @@ class TestTypedChildHandlers:
         handler = GatewayCutHandler(node=parent, child_solutions=sols, graph=graph)
         res = handler.process()
 
-        assert len(res.room_alignments) == 2
         assert frozenset({"c_art1", "c_art2"}) in res.equated_children
         gw_edge_ids = {e.edge_id for e in res.active_edges}
+        assert "art_port_c_art1_1" in gw_edge_ids
+        assert "art_port_c_art2_1" in gw_edge_ids
         assert "gw_c_brg_fwd_2_21" in gw_edge_ids
         assert "gw_c_brg_rev_31_3" in gw_edge_ids
         assert "gw_c_door_4_41" in gw_edge_ids
-        assert len(res.active_edges) == 3
+        assert len(res.active_edges) == 5
 
     def test_inter_child_bridge_handler_edges(self) -> None:
         """InterChildBridgeHandler discovers edges connecting distinct children."""
@@ -2130,7 +2119,6 @@ class TestTypedChildHandlers:
         handler = SplitPairHandler(node=parent_x, child_solutions={"cx": sol_x}, graph=graph)
         res = handler.process()
 
-        assert len(res.room_alignments) == 0
         assert "cx" in res.aligned_children
         assert res.gateway_anchors["cx"] == frozenset({10, 20})
 

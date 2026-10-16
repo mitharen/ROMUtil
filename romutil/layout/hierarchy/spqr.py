@@ -358,7 +358,12 @@ def build_block_spqr_tree(
                 for c in sorted_children:
                     all_branch_rooms.update(_get_all_spqr_vertices(c))
 
-                if len(poles_to_use) == 2:
+                if parent is not None and len(attachment_poles) == 2:
+                    all_branch_rooms.difference_update(attachment_poles)
+                    metadata["cut_type"] = CutType.SPLIT_PAIR
+                    metadata["poles"] = attachment_poles
+                    metadata["cut_contract"] = SplitPairCut(poles=attachment_poles)
+                elif len(poles_to_use) == 2:
                     metadata["cut_type"] = CutType.SPLIT_PAIR
                     metadata["poles"] = poles_to_use
                     metadata["cut_contract"] = SplitPairCut(poles=poles_to_use)
@@ -372,11 +377,18 @@ def build_block_spqr_tree(
                 )
 
             converted_children = tuple(_convert(c, parent=spqr_node) for c in sorted_children)
-            rooms = frozenset(cast(int, v) for v in poles_to_use)
-            if len(poles_to_use) == 2:
+            if parent is not None and len(attachment_poles) == 2:
+                rooms = frozenset(cast(int, v) for v in poles_to_use) - set(attachment_poles)
                 metadata["cut_type"] = CutType.SPLIT_PAIR
-                metadata["poles"] = poles_to_use
-                metadata["cut_contract"] = SplitPairCut(poles=poles_to_use)
+                metadata["poles"] = attachment_poles
+                metadata["cut_contract"] = SplitPairCut(poles=attachment_poles)
+            else:
+                rooms = frozenset(cast(int, v) for v in poles_to_use)
+                if len(poles_to_use) == 2:
+                    metadata["cut_type"] = CutType.SPLIT_PAIR
+                    metadata["poles"] = poles_to_use
+                    metadata["cut_contract"] = SplitPairCut(poles=poles_to_use)
+
             return SolveTreeNode(
                 node_id=node_id,
                 node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
@@ -388,19 +400,21 @@ def build_block_spqr_tree(
         converted_children = tuple(_convert(c, parent=spqr_node) for c in sorted_children)
         if spqr_node.type == spqrtree.NodeType.R:
             node_type = TreeNodeType.RIGID_CLUSTER
-            rooms = frozenset(cast(int, v) for v in spqr_node.skeleton.vertices)
+            source = spqr_node.skeleton.vertices
         elif spqr_node.type == spqrtree.NodeType.S:
             node_type = TreeNodeType.SERIES_LOOP
-            rooms = frozenset(cast(int, v) for v in spqr_node.skeleton.vertices)
+            source = spqr_node.skeleton.vertices
         else:
             node_type = TreeNodeType.RIGID_CLUSTER
             source = spqr_node.skeleton.vertices if (spqr_node.skeleton and spqr_node.skeleton.vertices) else spqr_node.poles
-            rooms = frozenset(cast(int, v) for v in source)
 
         if parent is not None and len(attachment_poles) == 2:
+            rooms = frozenset(cast(int, v) for v in source) - set(attachment_poles)
             metadata["cut_type"] = CutType.SPLIT_PAIR
             metadata["poles"] = attachment_poles
             metadata["cut_contract"] = SplitPairCut(poles=attachment_poles)
+        else:
+            rooms = frozenset(cast(int, v) for v in source)
 
         return SolveTreeNode(
             node_id=node_id,
@@ -447,7 +461,7 @@ def _attach_articulation_children(
         target_child_id: str | None = None
         if anchor is not None and anchor not in spqr_node.rooms:
             for ch in spqr_node.children:
-                if anchor in ch.rooms:
+                if anchor in ch.rooms or anchor in _collect_subtree_rooms(ch):
                     target_child_id = ch.node_id
                     break
         if target_child_id is not None:
@@ -530,10 +544,6 @@ def _split_transverse_s_nodes(node: SolveTreeNode, graph: LayoutGraph) -> SolveT
             updated_children.append(child_processed)
             continue
 
-        if p0 not in child_processed.rooms or p1 not in child_processed.rooms:
-            updated_children.append(child_processed)
-            continue
-
         child_all_rooms = _collect_subtree_rooms(child_processed)
         internal_rooms = child_all_rooms - {p0, p1}
         if not internal_rooms:
@@ -574,7 +584,7 @@ def _split_transverse_s_nodes(node: SolveTreeNode, graph: LayoutGraph) -> SolveT
         entrance_axis = axis_0
         transverse_axis = 1 if entrance_axis == 0 else 0
 
-        spine_verts = set(child_processed.rooms)
+        spine_verts = set(child_processed.rooms) | {p0, p1}
         adj: dict[int, list[int]] = {v: [] for v in spine_verts}
         for e in graph.edges:
             if not e.cut and e.src in spine_verts and e.dst in spine_verts and {e.src, e.dst} != {p0, p1}:
@@ -657,10 +667,10 @@ def _split_transverse_s_nodes(node: SolveTreeNode, graph: LayoutGraph) -> SolveT
                     if nxt not in comp_a:
                         q_a.append(nxt)
 
-        rooms_a = frozenset(comp_a & spine_verts)
-        rooms_b = frozenset(spine_verts - rooms_a)
+        rooms_a = frozenset(comp_a & child_processed.rooms)
+        rooms_b = frozenset(child_processed.rooms - rooms_a)
 
-        if p0 not in rooms_a or p1 not in rooms_b:
+        if not rooms_a or not rooms_b or p0 not in comp_a or p1 in comp_a:
             updated_children.append(child_processed)
             continue
 
@@ -717,6 +727,19 @@ def _split_transverse_s_nodes(node: SolveTreeNode, graph: LayoutGraph) -> SolveT
     )
 
 
+def _strip_anchor(node: SolveTreeNode, anchor: int) -> SolveTreeNode:
+    """Recursively strip articulation anchor from an SPQR subtree to enforce disjoint ownership."""
+    new_rooms = frozenset(node.rooms) - {anchor}
+    new_children = tuple(_strip_anchor(c, anchor) for c in node.children)
+    return SolveTreeNode(
+        node_id=node.node_id,
+        node_type=node.node_type,
+        rooms=new_rooms,
+        children=new_children,
+        metadata=node.metadata,
+    )
+
+
 class SpqrTreeBuilder(TreeBuilder):
     """Stage 3 tree builder decomposing 0-cuts, 1-cuts (block-cut), and 2-cuts (SPQR)."""
 
@@ -750,14 +773,25 @@ class SpqrTreeBuilder(TreeBuilder):
             # First, recursively process articulation children
             child_nodes: list[SolveTreeNode] = [_transform_node(child) for child in node.children]
 
-            if len(node.rooms) >= 4 and node.node_type in (TreeNodeType.BLOCK, TreeNodeType.BICONNECTED_BLOCK):
+            anchor = node.metadata.get("anchor_vnum")
+            if anchor is None and isinstance(node.cut_contract, ArticulationPointCut):
+                anchor = node.cut_contract.anchor_vnum
+
+            block_verts = set(node.rooms)
+            if anchor is not None:
+                block_verts.add(anchor)
+
+            if len(block_verts) >= 4 and node.node_type in (TreeNodeType.BLOCK, TreeNodeType.BICONNECTED_BLOCK):
                 spqr_root = build_block_spqr_tree(
-                    block_nodes=frozenset(node.rooms),
+                    block_nodes=frozenset(block_verts),
                     edges=edges,
                     node_id_prefix=f"{node.node_id}_spqr",
                 )
                 merged_meta = dict(spqr_root.metadata)
                 merged_meta.update(node.metadata)
+
+                if anchor is not None:
+                    spqr_root = _strip_anchor(spqr_root, anchor)
 
                 spqr_root = SolveTreeNode(
                     node_id=spqr_root.node_id,

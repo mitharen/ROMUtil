@@ -36,13 +36,15 @@ class ActiveEdge:
     allow_transverse_slack: bool = False
 
 
-@dataclass(frozen=True)
-class RoomChildAlignment:
-    """Alignment equality between a parent room and a child boundary port."""
-
-    room_vnum: int
-    child_id: str
-    child_coord: Coord3D
+def get_child_coordinate(c_sol: NodeSolution, vnum: int) -> Coord3D | None:
+    """Extract local coordinate for a room or boundary port from a child solution."""
+    if vnum in c_sol.local_coordinates:
+        return c_sol.local_coordinates[vnum]
+    if hasattr(c_sol, "port_coordinates") and vnum in c_sol.port_coordinates:
+        return c_sol.port_coordinates[vnum]
+    if "port_coordinates" in c_sol.metadata and vnum in c_sol.metadata["port_coordinates"]:
+        return c_sol.metadata["port_coordinates"][vnum]
+    return None
 
 
 @dataclass(frozen=True)
@@ -60,7 +62,6 @@ class SplitPairResult:
     """Classification results produced by SplitPairHandler."""
 
     split_children_by_poles: dict[tuple[int, int], list[SolveTreeNode]]
-    room_alignments: tuple[RoomChildAlignment, ...]
     child_alignments: tuple[ChildChildAlignment, ...]
     equated_children: frozenset[frozenset[str]]
     corridor_edges: tuple[ActiveEdge, ...]
@@ -77,7 +78,6 @@ class SplitPairResult:
 class GatewayCutResult:
     """Classification results produced by GatewayCutHandler."""
 
-    room_alignments: tuple[RoomChildAlignment, ...]
     active_edges: tuple[ActiveEdge, ...]
     gateway_anchors: Mapping[str, frozenset[int]]
     aligned_children: frozenset[str]
@@ -102,7 +102,6 @@ class ClusterInventory:
     child_solutions: Mapping[str, NodeSolution]
     boundary_ports: frozenset[int]
     active_edges: tuple[ActiveEdge, ...]
-    room_alignments: tuple[RoomChildAlignment, ...]
     child_alignments: tuple[ChildChildAlignment, ...]
     gateway_anchors: Mapping[str, frozenset[int]]
     aligned_children: frozenset[str]
@@ -164,19 +163,13 @@ def derive_child_sub_boxes(
 ) -> tuple[BoundingBox3D, ...]:
     """Derive orthogonal keep-out sub-boxes for a child component within parent context.
 
-    Boundary ports connecting the child to parent rooms or sibling split pairs are
-    excluded from the keep-out footprint to allow external docking without triggering
-    Big-M non-overlap collisions. For leaf children, non-convex collections of interior
-    cells are partitioned into minimal disjoint orthogonal boxes. For composite children,
-    constituent parent rooms and translated child keep-out sub-boxes are aggregated and
-    decomposed into minimal disjoint orthogonal boxes (excluding boundary ports), preserving
-    interior voids and concavities within the cluster footprint.
+    Because child solutions strictly contain interior rooms, keep-out footprints
+    naturally and cleanly bound only interior rooms.
 
     Args:
         child: SolveTreeNode representing the child cluster.
         child_solution: Solved NodeSolution for the child cluster.
-        boundary_ports: Set of boundary port room IDs to exclude. If None, derived
-            from child cut contracts and metadata.
+        boundary_ports: Optional boundary port room IDs to exclude if present.
 
     Returns:
         Tuple of disjoint BoundingBox3D instances representing keep-out obstacles.
@@ -189,6 +182,10 @@ def derive_child_sub_boxes(
         for u, coord in child_solution.local_coordinates.items()
         if u in boundary_ports
     }
+    if hasattr(child_solution, "port_coordinates"):
+        for u, coord in child_solution.port_coordinates.items():
+            if u in boundary_ports:
+                boundary_port_coords.add(coord)
     if "all_room_coordinates" in child_solution.metadata:
         all_rooms = child_solution.metadata["all_room_coordinates"]
         for u in boundary_ports:
@@ -227,6 +224,10 @@ def derive_child_sub_boxes(
             for u, coord in child_solution.local_coordinates.items()
             if u not in boundary_ports and coord not in boundary_port_coords
         }
+        if "all_room_coordinates" in child_solution.metadata:
+            for u, coord in child_solution.metadata["all_room_coordinates"].items():
+                if u not in boundary_ports and coord not in boundary_port_coords:
+                    interior_cells.add(coord)
         if not interior_cells:
             return ()
         return decompose_into_orthogonal_sub_boxes(interior_cells)
@@ -238,7 +239,7 @@ def derive_child_sub_boxes(
             return (bbox,)
         return ()
 
-    # For composite children, derive occupied cells from all descendant rooms and translated child sub-boxes
+    # For composite children, derive occupied cells from constituent interior rooms and translated child sub-boxes
     occupied_cells: set[Coord3D] = set()
     if "all_room_coordinates" in child_solution.metadata:
         for u, coord in child_solution.metadata["all_room_coordinates"].items():
@@ -273,7 +274,6 @@ def derive_child_sub_boxes(
     if occupied_cells:
         return decompose_into_orthogonal_sub_boxes(occupied_cells)
 
-    # Fallback to coarse bounding box if no sub-boxes or internal cells could be resolved
     bbox = child_solution.bounding_box
     if bbox is not None:
         return (bbox,)
@@ -318,8 +318,8 @@ class SplitPairHandler:
 
             if poles is not None:
                 p0, p1 = poles[0], poles[1]
-                c_coords = self.child_solutions[child.node_id].local_coordinates
-                if p0 in c_coords and p1 in c_coords:
+                c_sol = self.child_solutions[child.node_id]
+                if get_child_coordinate(c_sol, p0) is not None and get_child_coordinate(c_sol, p1) is not None:
                     can_pair = (min(p0, p1), max(p0, p1))
                     split_children_by_poles.setdefault(can_pair, []).append(child)
 
@@ -334,8 +334,8 @@ class SplitPairHandler:
                 can_pair = (min(np0, np1), max(np0, np1))
                 for child in self.children:
                     if child.node_id in self.child_solutions:
-                        c_coords = self.child_solutions[child.node_id].local_coordinates
-                        if np0 in c_coords and np1 in c_coords:
+                        c_sol = self.child_solutions[child.node_id]
+                        if get_child_coordinate(c_sol, np0) is not None and get_child_coordinate(c_sol, np1) is not None:
                             if child not in split_children_by_poles.get(can_pair, []):
                                 split_children_by_poles.setdefault(can_pair, []).append(child)
 
@@ -351,7 +351,8 @@ class SplitPairHandler:
             for sc in split_children:
                 if sc.node_id not in self.child_solutions:
                     continue
-                c_coords = self.child_solutions[sc.node_id].local_coordinates
+                c_sol = self.child_solutions[sc.node_id]
+                c_coords = c_sol.local_coordinates
                 for edge in self.graph.edges:
                     if edge.cut or {edge.src, edge.dst} == {p0, p1}:
                         continue
@@ -375,19 +376,17 @@ class SplitPairHandler:
         room_anchored_children: dict[int, list[str]] | None = None,
         children_with_corridors: set[str] | None = None,
     ) -> tuple[
-        list[RoomChildAlignment],
         list[ChildChildAlignment],
         set[frozenset[str]],
         dict[str, set[int]],
         set[str],
     ]:
-        """Align split-pair children to parent rooms or sibling children."""
+        """Align split-pair children to sibling children."""
         if room_anchored_children is None:
             room_anchored_children = {}
         if children_with_corridors is None:
             children_with_corridors = self._find_children_with_parent_corridors(split_children_by_poles)
 
-        room_alignments: list[RoomChildAlignment] = []
         child_alignments: list[ChildChildAlignment] = []
         equated_children: set[frozenset[str]] = set()
         gateway_anchors: dict[str, set[int]] = {c.node_id: set() for c in self.children}
@@ -404,45 +403,47 @@ class SplitPairHandler:
             if len(split_children) > 1 and p0 not in self.room_set and p1 not in self.room_set:
                 base_child = split_children[0]
                 base_sol = self.child_solutions[base_child.node_id]
-                base_pc0 = base_sol.local_coordinates[p0]
-                base_pc1 = base_sol.local_coordinates[p1]
-                base_vec = (
-                    base_pc1.x - base_pc0.x,
-                    base_pc1.y - base_pc0.y,
-                    base_pc1.z - base_pc0.z,
-                )
-                for child in split_children[1:]:
-                    c_sol = self.child_solutions[child.node_id]
-                    pc0 = c_sol.local_coordinates[p0]
-                    pc1 = c_sol.local_coordinates[p1]
-                    child_vec = (
-                        pc1.x - pc0.x,
-                        pc1.y - pc0.y,
-                        pc1.z - pc0.z,
+                base_pc0 = get_child_coordinate(base_sol, p0)
+                base_pc1 = get_child_coordinate(base_sol, p1)
+                if base_pc0 is not None and base_pc1 is not None:
+                    base_vec = (
+                        base_pc1.x - base_pc0.x,
+                        base_pc1.y - base_pc0.y,
+                        base_pc1.z - base_pc0.z,
                     )
-                    child_alignments.append(
-                        ChildChildAlignment(
-                            base_child_id=base_child.node_id,
-                            target_child_id=child.node_id,
-                            base_coord=base_pc0,
-                            target_coord=pc0,
-                        )
-                    )
-                    if base_vec == child_vec:
-                        child_alignments.append(
-                            ChildChildAlignment(
-                                base_child_id=base_child.node_id,
-                                target_child_id=child.node_id,
-                                base_coord=base_pc1,
-                                target_coord=pc1,
+                    for child in split_children[1:]:
+                        c_sol = self.child_solutions[child.node_id]
+                        pc0 = get_child_coordinate(c_sol, p0)
+                        pc1 = get_child_coordinate(c_sol, p1)
+                        if pc0 is not None and pc1 is not None:
+                            child_vec = (
+                                pc1.x - pc0.x,
+                                pc1.y - pc0.y,
+                                pc1.z - pc0.z,
                             )
-                        )
-                    equated_children.add(frozenset({base_child.node_id, child.node_id}))
-                for idx1 in range(len(split_children)):
-                    for idx2 in range(idx1 + 1, len(split_children)):
-                        equated_children.add(
-                            frozenset({split_children[idx1].node_id, split_children[idx2].node_id})
-                        )
+                            child_alignments.append(
+                                ChildChildAlignment(
+                                    base_child_id=base_child.node_id,
+                                    target_child_id=child.node_id,
+                                    base_coord=base_pc0,
+                                    target_coord=pc0,
+                                )
+                            )
+                            if base_vec == child_vec:
+                                child_alignments.append(
+                                    ChildChildAlignment(
+                                        base_child_id=base_child.node_id,
+                                        target_child_id=child.node_id,
+                                        base_coord=base_pc1,
+                                        target_coord=pc1,
+                                    )
+                                )
+                            equated_children.add(frozenset({base_child.node_id, child.node_id}))
+                    for idx1 in range(len(split_children)):
+                        for idx2 in range(idx1 + 1, len(split_children)):
+                            equated_children.add(
+                                frozenset({split_children[idx1].node_id, split_children[idx2].node_id})
+                            )
 
         for _p_anchor, c_list in room_anchored_children.items():
             for idx1 in range(len(c_list)):
@@ -450,7 +451,6 @@ class SplitPairHandler:
                     equated_children.add(frozenset({c_list[idx1], c_list[idx2]}))
 
         return (
-            room_alignments,
             child_alignments,
             equated_children,
             gateway_anchors,
@@ -602,10 +602,10 @@ class SplitPairHandler:
                     if sc.node_id not in self.child_solutions:
                         continue
                     c_sol = self.child_solutions[sc.node_id]
-                    if p0 not in c_sol.local_coordinates or p1 not in c_sol.local_coordinates:
+                    pc0 = get_child_coordinate(c_sol, p0)
+                    pc1 = get_child_coordinate(c_sol, p1)
+                    if pc0 is None or pc1 is None:
                         continue
-                    pc0 = c_sol.local_coordinates[p0]
-                    pc1 = c_sol.local_coordinates[p1]
                     pdx = pc1.x - pc0.x
                     pdy = pc1.y - pc0.y
                     pdz = pc1.z - pc0.z
@@ -658,7 +658,6 @@ class SplitPairHandler:
         grouped = self.group_split_children()
         children_with_corridors = self._find_children_with_parent_corridors(grouped)
         (
-            room_alignments,
             child_alignments,
             equated_children,
             gateway_anchors,
@@ -714,7 +713,6 @@ class SplitPairHandler:
 
         return SplitPairResult(
             split_children_by_poles=grouped,
-            room_alignments=tuple(room_alignments),
             child_alignments=tuple(child_alignments),
             equated_children=frozenset(equated_children),
             corridor_edges=tuple(corridor_edges),
@@ -747,12 +745,12 @@ class GatewayCutHandler:
         self,
         aligned_children: set[str],
         room_anchored_children: dict[int, list[str]] | None = None,
-    ) -> tuple[list[RoomChildAlignment], dict[str, set[int]], set[str], set[frozenset[str]]]:
-        """Align 1-cut articulation point children to incident parent rooms."""
+    ) -> tuple[list[ActiveEdge], dict[str, set[int]], set[str], set[frozenset[str]]]:
+        """Align 1-cut articulation point children to incident parent rooms via active edges."""
         if room_anchored_children is None:
             room_anchored_children = {}
 
-        room_alignments: list[RoomChildAlignment] = []
+        active_edges: list[ActiveEdge] = []
         gateway_anchors: dict[str, set[int]] = {c.node_id: set() for c in self.children}
         new_aligned: set[str] = set()
         equated: set[frozenset[str]] = set()
@@ -763,7 +761,6 @@ class GatewayCutHandler:
             c_sol = self.child_solutions.get(child.node_id)
             if not c_sol:
                 continue
-            c_coords = c_sol.local_coordinates
             a: int | None = None
             contract = child.cut_contract
             if isinstance(contract, ArticulationPointCut):
@@ -777,22 +774,27 @@ class GatewayCutHandler:
                 if raw_a is not None:
                     a = int(raw_a)
 
-            if a is not None and a in self.room_set and a in c_coords:
-                pc = c_coords[a]
-                room_alignments.append(
-                    RoomChildAlignment(
-                        room_vnum=a,
-                        child_id=child.node_id,
-                        child_coord=pc,
+            if a is not None and a in self.room_set:
+                pc = get_child_coordinate(c_sol, a)
+                if pc is not None:
+                    active_edges.append(
+                        ActiveEdge(
+                            edge_id=f"art_port_{child.node_id}_{a}",
+                            src=a,
+                            dst=(child.node_id, a),
+                            direction=(0, 0, 0),
+                            min_length=0,
+                            associated_rooms=frozenset({a}),
+                            associated_children=frozenset({child.node_id}),
+                        )
                     )
-                )
-                gateway_anchors[child.node_id].add(a)
-                new_aligned.add(child.node_id)
-                for other_cid in room_anchored_children.get(a, []):
-                    equated.add(frozenset({other_cid, child.node_id}))
-                room_anchored_children.setdefault(a, []).append(child.node_id)
+                    gateway_anchors[child.node_id].add(a)
+                    new_aligned.add(child.node_id)
+                    for other_cid in room_anchored_children.get(a, []):
+                        equated.add(frozenset({other_cid, child.node_id}))
+                    room_anchored_children.setdefault(a, []).append(child.node_id)
 
-        return room_alignments, gateway_anchors, new_aligned, equated
+        return active_edges, gateway_anchors, new_aligned, equated
 
     def process_doorway_bridges(
         self,
@@ -910,14 +912,15 @@ class GatewayCutHandler:
         if room_anchored_children is None:
             room_anchored_children = {}
 
-        alignments, gw_anchors_art, art_aligned, equated = self.process_articulation_points(
+        art_edges, gw_anchors_art, art_aligned, equated = self.process_articulation_points(
             aligned_children=aligned_children,
             room_anchored_children=room_anchored_children,
         )
         combined_aligned = aligned_children | art_aligned
-        edges, gw_anchors_brg, brg_aligned = self.process_doorway_bridges(
+        brg_edges, gw_anchors_brg, brg_aligned = self.process_doorway_bridges(
             aligned_children=combined_aligned,
         )
+        edges = [*art_edges, *brg_edges]
         all_gw_anchors: dict[str, set[int]] = {c.node_id: set() for c in self.children}
         for k, v in gw_anchors_art.items():
             all_gw_anchors[k].update(v)
@@ -925,7 +928,6 @@ class GatewayCutHandler:
             all_gw_anchors[k].update(v)
 
         return GatewayCutResult(
-            room_alignments=tuple(alignments),
             active_edges=tuple(edges),
             gateway_anchors={k: frozenset(v) for k, v in all_gw_anchors.items()},
             aligned_children=frozenset(art_aligned | brg_aligned),
@@ -1127,6 +1129,7 @@ def inventory_cluster(
     child_solutions: Mapping[str, NodeSolution],
     graph: LayoutGraph,
     options: LayoutOptions | None = None,
+    boundary_ports: frozenset[int] | None = None,
 ) -> ClusterInventory:
     """Inventory rooms, child components, boundary ports, alignments, and active edges.
 
@@ -1140,6 +1143,7 @@ def inventory_cluster(
         child_solutions: Mapping of child node_id to already-solved NodeSolution.
         graph: Underlying LayoutGraph with room definitions and exit edges.
         options: Optional layout configuration parameters.
+        boundary_ports: Optional explicit boundary ports overriding node cut contracts.
 
     Returns:
         ClusterInventory containing classified interfaces, alignments, and active edges.
@@ -1147,7 +1151,8 @@ def inventory_cluster(
     rooms = tuple(sorted(node.rooms))
     children = tuple(node.children)
     child_ids = [c.node_id for c in children]
-    boundary_ports = frozenset(get_child_boundary_ports(node))
+    if boundary_ports is None:
+        boundary_ports = frozenset(get_child_boundary_ports(node))
 
     aligned_children: set[str] = set()
     if not rooms and child_ids:
@@ -1190,9 +1195,10 @@ def inventory_cluster(
     aligned_children.update(bridge_res.aligned_children)
 
     # 4. Direct internal room edges
+    all_local_rooms = sorted(set(rooms) | set(boundary_ports))
     direct_edges = _build_internal_room_edges(
         graph=graph,
-        rooms=rooms,
+        rooms=all_local_rooms,
     )
 
     # Combine active edges in deterministic order
@@ -1223,7 +1229,6 @@ def inventory_cluster(
         child_solutions=child_solutions,
         boundary_ports=boundary_ports,
         active_edges=tuple(active_edges),
-        room_alignments=(*split_res.room_alignments, *gw_res.room_alignments),
         child_alignments=split_res.child_alignments,
         gateway_anchors={k: frozenset(v) for k, v in gateway_anchors.items()},
         aligned_children=frozenset(aligned_children),
@@ -1248,11 +1253,11 @@ __all__ = [
     "GatewayCutResult",
     "InterChildBridgeHandler",
     "InterChildBridgeResult",
-    "RoomChildAlignment",
     "SplitPairChildClassifier",
     "SplitPairHandler",
     "SplitPairResult",
     "derive_child_sub_boxes",
     "get_child_boundary_ports",
+    "get_child_coordinate",
     "inventory_cluster",
 ]

@@ -211,7 +211,7 @@ class TestBlockCutTreeOneCuts:
         child = root.children[0]
         assert child.node_id == "comp_0_block_1"
         assert child.node_type == "block"
-        assert child.rooms == frozenset({3, 4, 5})
+        assert child.rooms == frozenset({4, 5})
         assert child.children == ()
         assert child.metadata == {
             "cut_type": "articulation_point",
@@ -239,7 +239,7 @@ class TestBlockCutTreeOneCuts:
         bridge_node = root.children[0]
         assert bridge_node.node_id == "comp_0_block_1"
         assert bridge_node.node_type == "block"
-        assert bridge_node.rooms == frozenset({3, 4})
+        assert bridge_node.rooms == frozenset({4})
         assert bridge_node.metadata == {
             "cut_type": "articulation_point",
             "anchor_vnum": 3,
@@ -250,7 +250,7 @@ class TestBlockCutTreeOneCuts:
         t2_node = bridge_node.children[0]
         assert t2_node.node_id == "comp_0_block_2"
         assert t2_node.node_type == "block"
-        assert t2_node.rooms == frozenset({4, 5, 6})
+        assert t2_node.rooms == frozenset({5, 6})
         assert t2_node.metadata == {
             "cut_type": "articulation_point",
             "anchor_vnum": 4,
@@ -280,19 +280,19 @@ class TestBlockCutTreeOneCuts:
 
         b1 = b0.children[0]
         assert b1.node_id == "comp_0_block_1"
-        assert b1.rooms == frozenset({3, 4, 5})
+        assert b1.rooms == frozenset({4, 5})
         assert b1.metadata["anchor_vnum"] == 3
         assert len(b1.children) == 1
 
         b2 = b1.children[0]
         assert b2.node_id == "comp_0_block_2"
-        assert b2.rooms == frozenset({5, 6, 7})
+        assert b2.rooms == frozenset({6, 7})
         assert b2.metadata["anchor_vnum"] == 5
         assert len(b2.children) == 1
 
         b3 = b2.children[0]
         assert b3.node_id == "comp_0_block_3"
-        assert b3.rooms == frozenset({7, 8, 9})
+        assert b3.rooms == frozenset({8, 9})
         assert b3.metadata["anchor_vnum"] == 7
         assert b3.children == ()
 
@@ -320,7 +320,7 @@ class TestBlockCutTreeOneCuts:
 
         c1, c2 = root.children
         assert c1.node_id == "comp_0_block_1"
-        assert c1.rooms == frozenset({3, 4, 10})
+        assert c1.rooms == frozenset({3, 4})
         assert c1.metadata == {
             "cut_type": "articulation_point",
             "anchor_vnum": 10,
@@ -328,7 +328,7 @@ class TestBlockCutTreeOneCuts:
         }
 
         assert c2.node_id == "comp_0_block_2"
-        assert c2.rooms == frozenset({5, 6, 10})
+        assert c2.rooms == frozenset({5, 6})
         assert c2.metadata == {
             "cut_type": "articulation_point",
             "anchor_vnum": 10,
@@ -356,7 +356,7 @@ class TestBlockCutTreeOneCuts:
 
         child = root.children[0]
         assert child.node_id == "comp_0_block_1"
-        assert child.rooms == frozenset({1, 2, 10})
+        assert child.rooms == frozenset({1, 2})
         assert child.metadata["anchor_vnum"] == 10
 
 
