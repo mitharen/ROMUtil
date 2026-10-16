@@ -209,9 +209,14 @@ Simplifies graph complexity while preserving topological invariants, outputting 
   - Retains intermediate room sequences in corridor metadata for exact linear decompression during assembly.
   - Reduces the combinatorial decision vertex count by 30–60% prior to tree decomposition and MILP solving.
 - **`WarpSeverer` (Cycle Relaxation & Non-Euclidean Chord Cuts)**:
-  - Extracts the cycle basis of internal in-area room connections and evaluates directional vector sums $\sum_{e \in \text{cycle}} \Delta \mathbf{p}(e)$, excluding external dangling exits to prevent synthetic bridges.
-  - Cycles with non-zero vector sums are non-Euclidean contradictions (e.g., 3 East, 2 North, 2 West, 2 South).
-  - Identifies minimal exit cut chords (`LayoutEdge.cut = True`) to mathematically sever contradictory loops into Euclidean-satisfiable topologies while preserving connection stubs and external area exits for rendering.
+  - Extracts the cycle basis across active graph edges and evaluates directional vector sums $\sum_{e \in \text{cycle}} \Delta \mathbf{p}(e)$ to detect spatial warp cycles.
+  - Cycles with non-zero vector sums (or sign contradictions preventing positive integer closure $\sum L_e \mathbf{d}_e = \mathbf{0}$) represent non-Euclidean contradictions.
+  - Severing applies a stratified chord selection priority to preserve core street networks:
+    1. *Reciprocity rank*: One-way / non-reciprocal exits (e.g. teleports, chutes, one-way ladders) are severed before bidirectional physical streets or collapsed corridors.
+    2. *Edge weight*: Shorter atomic connections are severed before expanded macro-corridors.
+    3. *Degree sum & max degree*: Peripheral, low-degree connections are severed before central arterial intersections and town squares.
+    4. *Canonical vertex ordering*: Deterministic tie-breaking on sorted endpoint identifiers.
+  - Minimal cut chords (`LayoutEdge.cut = True`) resolve contradictory loops into Euclidean-satisfiable topologies while preserving connection stubs and exit metadata for rendering.
 - **`ChainedSimplifier`**: Sequentially chains multiple simplifier passes (e.g., `HallwayCompactor` followed by `WarpSeverer`).
 
 #### Stage 3: Hierarchical Tree Decomposition (`TreeBuilder`)

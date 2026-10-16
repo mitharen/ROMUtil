@@ -181,6 +181,7 @@ class HallwayCompactor:
                     dst=end_vnum,
                     direction=direction,
                     weight=total_weight,
+                    metadata={"corridor": corridor, "is_corridor": True},
                 )
             )
             all_intermediate.update(intermediate)
