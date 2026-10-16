@@ -948,6 +948,127 @@ class TestStage1Inventory:
         assert len(res.active_edges) == 1
         assert res.active_edges[0].edge_id == "ext_c1_10_3"
 
+    def test_split_pair_handler_boundary_ports_empty_container(self) -> None:
+        """SplitPairHandler emits sp_port and sp_span active edges when poles reside in boundary_ports of an empty container."""
+        child = SolveTreeNode(
+            node_id="c_split",
+            node_type="leaf",
+            rooms=frozenset({10, 20}),
+            metadata={"cut_contract": SplitPairCut(poles=(10, 20))},
+        )
+        container = SolveTreeNode(
+            node_id="container",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset(),
+            children=(child,),
+        )
+        sol = NodeSolution("c_split", {10: Coord3D(0, 0, 0), 20: Coord3D(0, 2, 0)}, ())
+        graph = _make_graph([10, 20], [(10, 20, Direction.north, 2)])
+        handler = SplitPairHandler(
+            node=container,
+            child_solutions={"c_split": sol},
+            graph=graph,
+            boundary_ports=frozenset({10, 20}),
+        )
+
+        res = handler.process()
+        edge_ids = {e.edge_id for e in res.active_edges}
+        assert "sp_port_c_split_10" in edge_ids
+        assert "sp_span_c_split_10_20" in edge_ids
+
+        port_edge = next(e for e in res.active_edges if e.edge_id == "sp_port_c_split_10")
+        assert port_edge.src == 10
+        assert port_edge.dst == ("c_split", 10)
+        assert port_edge.direction == (0, 0, 0)
+        assert port_edge.min_length == 0
+
+        span_edge = next(e for e in res.active_edges if e.edge_id == "sp_span_c_split_10_20")
+        assert span_edge.src == 10
+        assert span_edge.dst == 20
+        assert span_edge.direction == (0, 1, 0)
+        assert span_edge.min_length == 2
+
+    def test_split_pair_handler_inherited_boundary_port(self) -> None:
+        """SplitPairHandler couples split-pair children when one pole is an owned room and the other is an inherited boundary port."""
+        child = SolveTreeNode(
+            node_id="c_split",
+            node_type="leaf",
+            rooms=frozenset({10, 20}),
+            metadata={"cut_contract": SplitPairCut(poles=(10, 20))},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type="container",
+            rooms=frozenset({20}),
+            children=(child,),
+        )
+        sol = NodeSolution("c_split", {10: Coord3D(0, 0, 0), 20: Coord3D(3, 0, 0)}, ())
+        graph = _make_graph([10, 20], [(10, 20, Direction.east, 3)])
+        handler = SplitPairHandler(
+            node=parent,
+            child_solutions={"c_split": sol},
+            graph=graph,
+            boundary_ports=frozenset({10}),
+        )
+
+        res = handler.process()
+        edge_ids = {e.edge_id for e in res.active_edges}
+        assert "sp_port_c_split_10" in edge_ids
+        assert "sp_span_c_split_10_20" in edge_ids
+
+    def test_split_pair_handler_boundary_port_corridor_exit(self) -> None:
+        """SplitPairHandler creates corridor active edges connecting inherited boundary ports to split child rooms."""
+        child = SolveTreeNode(
+            node_id="sc",
+            node_type="leaf",
+            rooms=frozenset({10, 20, 30}),
+            metadata={"cut_contract": SplitPairCut(poles=(10, 20))},
+        )
+        parent = SolveTreeNode(
+            node_id="p",
+            node_type="container",
+            rooms=frozenset({10, 20}),
+            children=(child,),
+        )
+        sol = NodeSolution("sc", {10: Coord3D(0, 0, 0), 20: Coord3D(2, 0, 0), 30: Coord3D(0, 1, 0)}, ())
+        graph = _make_graph([5, 10, 20, 30], [(5, 30, Direction.north, 1)])
+        handler = SplitPairHandler(
+            node=parent,
+            child_solutions={"sc": sol},
+            graph=graph,
+            boundary_ports=frozenset({5}),
+        )
+
+        res = handler.process()
+        assert any(e.edge_id == "ext_sc_5_30" for e in res.active_edges)
+
+    def test_inventory_cluster_passes_boundary_ports_to_split_pair_handler(self) -> None:
+        """inventory_cluster forwards boundary_ports down to SplitPairHandler to produce split active edges."""
+        child = SolveTreeNode(
+            node_id="c_split",
+            node_type="leaf",
+            rooms=frozenset({10, 20}),
+            metadata={"cut_contract": SplitPairCut(poles=(10, 20))},
+        )
+        container = SolveTreeNode(
+            node_id="container",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset(),
+            children=(child,),
+        )
+        sol = NodeSolution("c_split", {10: Coord3D(0, 0, 0), 20: Coord3D(0, 2, 0)}, ())
+        graph = _make_graph([10, 20], [(10, 20, Direction.north, 2)])
+        inv = inventory_cluster(
+            node=container,
+            child_solutions={"c_split": sol},
+            graph=graph,
+            boundary_ports=frozenset({10, 20}),
+        )
+
+        edge_ids = {e.edge_id for e in inv.active_edges}
+        assert "sp_port_c_split_10" in edge_ids
+        assert "sp_span_c_split_10_20" in edge_ids
+
     def test_gateway_cut_handler_edge_cases_and_error_handling(self) -> None:
         """GatewayCutHandler exercises metadata fallback, multiple anchors, reverse doorway edges, and invalid directions."""
         c_art1 = SolveTreeNode(

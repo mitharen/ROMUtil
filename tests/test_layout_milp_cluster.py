@@ -2219,6 +2219,16 @@ class TestSplitPairBoundaryPortAlignment:
         market_coords = [layout.coordinates[r] for r in market_watchtower_rooms if r in layout.coordinates]
         assert len(market_coords) == len(set(market_coords))
 
+        # Split-pair container rooms 5250 and 5205 solve coplanar at z=2, 1 step west of 5203 and 5204
+        assert 5203 in layout.coordinates
+        assert 5204 in layout.coordinates
+        assert 5205 in layout.coordinates
+        assert 5250 in layout.coordinates
+        assert layout.coordinates[5203] == Coord3D(2, 8, 2)
+        assert layout.coordinates[5204] == Coord3D(2, 9, 2)
+        assert layout.coordinates[5250] == Coord3D(1, 8, 2)
+        assert layout.coordinates[5205] == Coord3D(1, 9, 2)
+
     def test_symmetric_split_pair_boundary_active_edges(self) -> None:
         """Both boundary poles of a split-pair child generate symmetric elastic active edges without rigid welds."""
         p0, p1 = 10, 20
