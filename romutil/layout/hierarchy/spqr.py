@@ -9,6 +9,7 @@ import spqrtree
 from romutil.layout.hierarchy.block_cut import BlockCutTreeBuilder
 from romutil.layout.hierarchy.transforms import (
     ArticulationChildAttachmentPass,
+    SplitPairAllowlistFusionPass,
     TransverseSNodeSplitPass,
     TreeTransformationPipeline,
 )
@@ -23,8 +24,6 @@ from romutil.layout.ir import (
     TreeNodeType,
 )
 from romutil.layout.protocols import TreeBuilder
-from romutil.layout.simplification.warps import direction_to_displacement
-from romutil.models import Direction
 from romutil.types import LayoutOptions
 
 
@@ -95,186 +94,7 @@ def _reroot_spqr_tree_to_primary_cluster(root: spqrtree.SPQRNode) -> spqrtree.SP
     return target_root
 
 
-def _get_all_spqr_vertices(node: spqrtree.SPQRNode) -> set[int]:
-    """Collect all vertices across an SPQR component and its subtree."""
-    source = node.skeleton.vertices if node.skeleton else node.poles
-    vertices = set(cast(int, v) for v in source)
-    for child in node.children:
-        vertices.update(_get_all_spqr_vertices(child))
-    return vertices
 
-
-def _is_safe_2cut_allowlist(
-    spqr_p_node: spqrtree.SPQRNode,
-    poles: tuple[int, int],
-    edges: Sequence[LayoutEdge],
-) -> bool:
-    """Evaluate whether candidate branches of a P-node satisfy the Safe 2-Cut Allowlist Contract.
-
-    Criteria:
-      1. Elasticity: All candidate branches must be elastic series loops without internal
-         biconnected rigid blocks or cross-cycles.
-      2. Single Port per Pole: Each candidate branch connects to pole u through exactly
-         one exit direction and pole v through exactly one exit direction.
-      3. Disjoint Half-Spaces: Candidate branches expand into disjoint half-spaces relative
-         to the inter-pole axis without transverse bracketing.
-    """
-    if len(poles) != 2:
-        return False
-    u, v = poles
-
-    candidate_branches = spqr_p_node.children
-    if not candidate_branches:
-        return False
-
-    # Check 1 (Elasticity): All candidate branches must be elastic series loops
-    # without internal biconnected rigid blocks or cross-cycles.
-    for branch in candidate_branches:
-        if branch.type != spqrtree.NodeType.S:
-            return False
-        if branch.children:
-            return False
-
-    branch_paths: list[dict[int, tuple[int, int, int]]] = []
-    branch_exit_dirs_u: list[Direction] = []
-    branch_exit_dirs_v: list[Direction] = []
-
-    for branch in candidate_branches:
-        branch_verts = set(cast(int, x) for x in (branch.skeleton.vertices if branch.skeleton else branch.poles))
-        internal_rooms = branch_verts - {u, v}
-        if not internal_rooms:
-            return False
-
-        # Check 2 (Single Port per Pole): Each candidate branch connects to pole u
-        # through exactly one exit direction and pole v through exactly one exit direction.
-        u_dirs: set[Direction] = set()
-        v_dirs: set[Direction] = set()
-        for e in edges:
-            if e.cut:
-                continue
-            if e.src == u and e.dst in internal_rooms:
-                u_dirs.add(Direction(e.direction))
-            elif e.dst == u and e.src in internal_rooms:
-                u_dirs.add(Direction(e.direction).invert())
-
-            if e.src == v and e.dst in internal_rooms:
-                v_dirs.add(Direction(e.direction))
-            elif e.dst == v and e.src in internal_rooms:
-                v_dirs.add(Direction(e.direction).invert())
-
-        if len(u_dirs) != 1 or len(v_dirs) != 1:
-            return False
-
-        dir_u = next(iter(u_dirs))
-        dir_v = next(iter(v_dirs))
-        branch_exit_dirs_u.append(dir_u)
-        branch_exit_dirs_v.append(dir_v)
-
-        # Check elasticity / simple path structure by tracing from u to v
-        local_edges: dict[int, set[tuple[int, Direction]]] = {r: set() for r in branch_verts}
-        for e in edges:
-            if e.cut:
-                continue
-            if e.src in branch_verts and e.dst in branch_verts and {e.src, e.dst} != {u, v}:
-                local_edges[e.src].add((e.dst, Direction(e.direction)))
-                local_edges[e.dst].add((e.src, Direction(e.direction).invert()))
-
-        visited: set[int] = {u}
-        coords: dict[int, tuple[int, int, int]] = {u: (0, 0, 0)}
-
-        first_step = {nxt for nxt, d in local_edges[u] if nxt in internal_rooms and d == dir_u}
-        if len(first_step) != 1:
-            return False
-        curr = next(iter(first_step))
-        disp = direction_to_displacement(dir_u)
-        coords[curr] = disp
-        visited.add(curr)
-
-        while curr != v:
-            next_steps = {nxt for nxt, _ in local_edges[curr] if nxt not in visited and nxt in branch_verts}
-            if len(next_steps) != 1:
-                return False
-            nxt = next(iter(next_steps))
-            step_dirs = {d for n, d in local_edges[curr] if n == nxt}
-            if len(step_dirs) != 1:
-                return False
-            step_dir = next(iter(step_dirs))
-            s_disp = direction_to_displacement(step_dir)
-            c_curr = coords[curr]
-            coords[nxt] = (c_curr[0] + s_disp[0], c_curr[1] + s_disp[1], c_curr[2] + s_disp[2])
-            visited.add(nxt)
-            curr = nxt
-
-        if visited != branch_verts:
-            return False
-
-        branch_paths.append(coords)
-
-    # Check 3 (Disjoint Half-Spaces): Candidate branches expand into disjoint half-spaces
-    # relative to the inter-pole axis without transverse bracketing.
-    direct_edges = [e for e in edges if not e.cut and {e.src, e.dst} == {u, v}]
-    inter_axis: int | None = None
-    if direct_edges:
-        de = direct_edges[0]
-        d_dir = Direction(de.direction) if de.src == u else Direction(de.direction).invert()
-        disp_de = direction_to_displacement(d_dir)
-        for ax in (0, 1, 2):
-            if disp_de[ax] != 0:
-                inter_axis = ax
-                break
-
-    if inter_axis is None:
-        candidate_axes: set[int] = set()
-        for bp in branch_paths:
-            v_coord = bp[v]
-            max_d = max(abs(v_coord[0]), abs(v_coord[1]), abs(v_coord[2]))
-            if max_d > 0:
-                ax = 0 if abs(v_coord[0]) == max_d else (1 if abs(v_coord[1]) == max_d else 2)
-                candidate_axes.add(ax)
-        if len(candidate_axes) == 1:
-            inter_axis = next(iter(candidate_axes))
-        else:
-            return False
-
-    transverse_axes = [ax for ax in (0, 1, 2) if ax != inter_axis]
-
-    branch_signatures: list[tuple[int, ...]] = []
-    for i, bp in enumerate(branch_paths):
-        b_rooms = set(bp.keys())
-        sig_list: list[int] = []
-        for tax in transverse_axes:
-            vals = [bp[r][tax] for r in b_rooms]
-            min_val = min(vals)
-            max_val = max(vals)
-            # Transverse bracketing: expands on both negative and positive sides of the axis
-            if min_val < 0 and max_val > 0:
-                return False
-
-            u_step = direction_to_displacement(branch_exit_dirs_u[i])[tax]
-            v_step = direction_to_displacement(branch_exit_dirs_v[i])[tax]
-            if (u_step < 0 and v_step > 0) or (u_step > 0 and v_step < 0):
-                return False
-
-            if max_val > 0 or u_step > 0 or v_step > 0:
-                sig_list.append(1)
-            elif min_val < 0 or u_step < 0 or v_step < 0:
-                sig_list.append(-1)
-            else:
-                sig_list.append(0)
-
-        branch_signatures.append(tuple(sig_list))
-
-    # At most one branch can have signature (0, 0)
-    zero_count = sum(1 for sig in branch_signatures if all(s == 0 for s in sig))
-    if zero_count > 1:
-        return False
-
-    # Disjoint non-zero half-spaces
-    non_zero_sigs = [sig for sig in branch_signatures if any(s != 0 for s in sig)]
-    if len(non_zero_sigs) != len(set(non_zero_sigs)):
-        return False
-
-    return True
 
 
 def build_block_spqr_tree(
@@ -349,35 +169,6 @@ def build_block_spqr_tree(
                 else tuple(cast(int, v) for v in spqr_node.poles)
             )
             poles_to_use = tuple(sorted(raw_poles)) if len(raw_poles) == 2 else raw_poles
-            is_safe = len(poles_to_use) == 2 and _is_safe_2cut_allowlist(
-                spqr_node,
-                (poles_to_use[0], poles_to_use[1]),
-                edges,
-            )
-
-            if not is_safe:
-                all_branch_rooms: set[int] = set(poles_to_use)
-                for c in sorted_children:
-                    all_branch_rooms.update(_get_all_spqr_vertices(c))
-
-                if parent is not None and len(attachment_poles) == 2:
-                    all_branch_rooms.difference_update(attachment_poles)
-                    metadata["cut_type"] = CutType.SPLIT_PAIR
-                    metadata["poles"] = attachment_poles
-                    metadata["cut_contract"] = SplitPairCut(poles=attachment_poles)
-                elif len(poles_to_use) == 2:
-                    metadata["cut_type"] = CutType.SPLIT_PAIR
-                    metadata["poles"] = poles_to_use
-                    metadata["cut_contract"] = SplitPairCut(poles=poles_to_use)
-
-                return SolveTreeNode(
-                    node_id=node_id,
-                    node_type=TreeNodeType.RIGID_CLUSTER,
-                    rooms=frozenset(all_branch_rooms),
-                    children=(),
-                    metadata=metadata,
-                )
-
             converted_children = tuple(_convert(c, parent=spqr_node) for c in sorted_children)
             if parent is not None and len(attachment_poles) == 2:
                 rooms = frozenset(cast(int, v) for v in poles_to_use) - set(attachment_poles)
@@ -457,6 +248,7 @@ class SpqrTreeBuilder(TreeBuilder):
     def default_pipeline(cls) -> TreeTransformationPipeline:
         """Create canonical post-processing transformation pipeline."""
         return TreeTransformationPipeline([
+            SplitPairAllowlistFusionPass(),
             ArticulationChildAttachmentPass(),
             TransverseSNodeSplitPass(),
         ])

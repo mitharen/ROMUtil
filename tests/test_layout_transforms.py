@@ -8,6 +8,7 @@ from romutil.layout.hierarchy import (
     AnchorStrippingPass,
     ArticulationChildAttachmentPass,
     BlockCutTreeBuilder,
+    SplitPairAllowlistFusionPass,
     SpqrTreeBuilder,
     TransverseSNodeSplitPass,
     TreeTransformationPass,
@@ -68,6 +69,10 @@ class TestTransformationPassProtocol:
 
     def test_anchor_stripping_pass_implements_protocol(self) -> None:
         pass_instance = AnchorStrippingPass()
+        assert isinstance(pass_instance, TreeTransformationPass)
+
+    def test_split_pair_allowlist_fusion_pass_implements_protocol(self) -> None:
+        pass_instance = SplitPairAllowlistFusionPass()
         assert isinstance(pass_instance, TreeTransformationPass)
 
 
@@ -460,9 +465,10 @@ class TestSpqrTreeBuilderPipelineIntegration:
 
     def test_default_pipeline_composition(self) -> None:
         pipeline = SpqrTreeBuilder.default_pipeline()
-        assert len(pipeline.passes) == 2
-        assert isinstance(pipeline.passes[0], ArticulationChildAttachmentPass)
-        assert isinstance(pipeline.passes[1], TransverseSNodeSplitPass)
+        assert len(pipeline.passes) == 3
+        assert isinstance(pipeline.passes[0], SplitPairAllowlistFusionPass)
+        assert isinstance(pipeline.passes[1], ArticulationChildAttachmentPass)
+        assert isinstance(pipeline.passes[2], TransverseSNodeSplitPass)
 
 
 class TestTransformHelpersAndEdgeCases:
@@ -630,3 +636,697 @@ class TestTransformHelpersAndEdgeCases:
         c_1 = [c for c in res.children if c.metadata.get("anchor_vnum") == 1][0]
         assert len(c_1.children) == 1
         assert c_1.children[0].node_id == "nested_orphan"
+
+
+class TestSplitPairAllowlistFusionPass:
+    """Unit tests for SplitPairAllowlistFusionPass safe 2-cut allowlist evaluation and branch fusion."""
+
+    def test_empty_tree_unchanged(self) -> None:
+        """Empty solve tree is returned unchanged."""
+        empty_root = SolveTreeNode(
+            node_id="root",
+            node_type=TreeNodeType.EMPTY,
+            rooms=frozenset(),
+        )
+        tree = SolveTree(root=empty_root, components=())
+        pass_instance = SplitPairAllowlistFusionPass()
+        assert pass_instance.apply(tree) is tree
+
+    def test_none_graph_returns_unchanged(self) -> None:
+        """When no graph is provided, node and tree return unchanged."""
+        node = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(),
+        )
+        pass_instance = SplitPairAllowlistFusionPass(graph=None)
+        assert pass_instance.transform_node(node) is node
+
+        tree = SolveTree(root=node, components=(node,), graph=None)
+        assert pass_instance.apply(tree) is tree
+
+    def test_non_split_pair_node_unchanged(self) -> None:
+        """Rigid clusters and series loops are returned unchanged without evaluation."""
+        graph = _make_graph([1, 2], [(1, 2, Direction.north)])
+        node = SolveTreeNode(
+            node_id="rc",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(),
+        )
+        pass_instance = SplitPairAllowlistFusionPass(graph)
+        res = pass_instance.transform_node(node)
+        assert res.node_type == TreeNodeType.RIGID_CLUSTER
+        assert res.rooms == frozenset({1, 2})
+
+    def test_world_root_recursion(self) -> None:
+        """World root component recursively transforms and processes child components."""
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4],
+            edges=[
+                (1, 2, Direction.north),
+                (1, 3, Direction.east),
+                (3, 2, Direction.west),
+                (1, 4, Direction.west),
+                (4, 2, Direction.east),
+            ],
+        )
+        branch_a = SolveTreeNode(
+            node_id="b_a",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        branch_b = SolveTreeNode(
+            node_id="b_b",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({4}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        container = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(branch_a, branch_b),
+            metadata={"poles": (1, 2), "cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        world_root = SolveTreeNode(
+            node_id="world",
+            node_type=TreeNodeType.WORLD_ROOT,
+            rooms=frozenset(),
+            children=(container,),
+        )
+        tree = SolveTree(root=world_root, components=(container,), graph=graph)
+        transformed = SplitPairAllowlistFusionPass(graph).apply(tree)
+        assert transformed.root.node_type == TreeNodeType.WORLD_ROOT
+        assert len(transformed.root.children) == 1
+        assert transformed.root.children[0].node_type == TreeNodeType.SPLIT_PAIR_CONTAINER
+
+    def test_safe_branches_remain_split_pair_container(self) -> None:
+        """Valid elastic series loop branches in disjoint half-spaces satisfy contract and remain split pair."""
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4],
+            edges=[
+                (1, 2, Direction.north),
+                (1, 3, Direction.east),
+                (3, 2, Direction.west),
+                (1, 4, Direction.west),
+                (4, 2, Direction.east),
+            ],
+        )
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        b2 = SolveTreeNode(
+            node_id="b2",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({4}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        container = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(b1, b2),
+            metadata={"poles": (1, 2), "cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        res = SplitPairAllowlistFusionPass(graph).transform_node(container)
+        assert res.node_type == TreeNodeType.SPLIT_PAIR_CONTAINER
+        assert res.rooms == frozenset({1, 2})
+        assert len(res.children) == 2
+
+    def test_unsafe_rigid_branch_fuses(self) -> None:
+        """Candidate branch that is not a series loop (e.g. rigid cluster) fuses container into rigid cluster."""
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4, 5],
+            edges=[
+                (1, 2, Direction.north),
+                (1, 3, Direction.east),
+                (3, 4, Direction.north),
+                (4, 2, Direction.west),
+                (1, 5, Direction.west),
+                (5, 2, Direction.east),
+            ],
+        )
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({3, 4}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        b2 = SolveTreeNode(
+            node_id="b2",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({5}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        container = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(b1, b2),
+            metadata={"poles": (1, 2), "cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        res = SplitPairAllowlistFusionPass(graph).transform_node(container)
+        assert res.node_type == TreeNodeType.RIGID_CLUSTER
+        assert res.rooms == frozenset({1, 2, 3, 4, 5})
+        assert res.children == ()
+        assert res.metadata.get("poles") == (1, 2)
+
+    def test_unsafe_nested_branch_children_fuses(self) -> None:
+        """Candidate series loop branch containing nested SPQR children fails elasticity and fuses."""
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4, 5],
+            edges=[
+                (1, 2, Direction.north),
+                (1, 3, Direction.east),
+                (3, 2, Direction.west),
+                (1, 4, Direction.west),
+                (4, 2, Direction.east),
+            ],
+        )
+        nested = SolveTreeNode(
+            node_id="nested_spqr",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({5}),
+            children=(),
+        )
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3}),
+            children=(nested,),
+            metadata={"poles": (1, 2)},
+        )
+        b2 = SolveTreeNode(
+            node_id="b2",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({4}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        container = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(b1, b2),
+            metadata={"poles": (1, 2), "cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        res = SplitPairAllowlistFusionPass(graph).transform_node(container)
+        assert res.node_type == TreeNodeType.RIGID_CLUSTER
+        assert res.rooms == frozenset({1, 2, 3, 4, 5})
+
+    def test_unsafe_empty_internal_rooms_fuses(self) -> None:
+        """Candidate branch with no internal rooms fails contract and fuses."""
+        graph = _make_graph(
+            rooms=[1, 2],
+            edges=[(1, 2, Direction.north)],
+        )
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2}),  # internal rooms = rooms - {1, 2} is empty
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        container = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(b1,),
+            metadata={"poles": (1, 2)},
+        )
+        res = SplitPairAllowlistFusionPass(graph).transform_node(container)
+        assert res.node_type == TreeNodeType.RIGID_CLUSTER
+
+    def test_unsafe_multi_exit_ports_fuses(self) -> None:
+        """Branch connecting to pole with multiple exit directions fails port contract and fuses."""
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4],
+            edges=[
+                (1, 2, Direction.north),
+                # Branch 1 connects to pole 1 via both East (1->3) and North (1->4)
+                (1, 3, Direction.east),
+                (1, 4, Direction.north),
+                (3, 4, Direction.north),
+                (4, 2, Direction.west),
+            ],
+        )
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3, 4}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        container = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(b1,),
+            metadata={"poles": (1, 2)},
+        )
+        res = SplitPairAllowlistFusionPass(graph).transform_node(container)
+        assert res.node_type == TreeNodeType.RIGID_CLUSTER
+
+    def test_unsafe_disconnected_path_fuses(self) -> None:
+        """Branch without simple path reaching pole 2 fails path tracing and fuses."""
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4],
+            edges=[
+                (1, 2, Direction.north),
+                (1, 3, Direction.east),
+                # 3 and 4 are disconnected; 4 connects to 2
+                (4, 2, Direction.west),
+            ],
+        )
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3, 4}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        container = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(b1,),
+            metadata={"poles": (1, 2)},
+        )
+        res = SplitPairAllowlistFusionPass(graph).transform_node(container)
+        assert res.node_type == TreeNodeType.RIGID_CLUSTER
+
+    def test_unsafe_transverse_bracketing_fuses(self) -> None:
+        """Branch expanding into both positive and negative transverse half-spaces fails contract and fuses."""
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4, 5, 6, 7, 8],
+            edges=[
+                (1, 2, Direction.north),
+                (1, 3, Direction.east),
+                (3, 2, Direction.west),
+                # Outer loop expanding both east (+X) and west (-X)
+                (1, 4, Direction.south),
+                (4, 5, Direction.east),
+                (5, 6, Direction.north),
+                (6, 7, Direction.west),
+                (7, 8, Direction.south),
+                (8, 2, Direction.east),
+            ],
+        )
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        b2 = SolveTreeNode(
+            node_id="b2",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({4, 5, 6, 7, 8}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        container = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(b1, b2),
+            metadata={"poles": (1, 2)},
+        )
+        res = SplitPairAllowlistFusionPass(graph).transform_node(container)
+        assert res.node_type == TreeNodeType.RIGID_CLUSTER
+        assert res.rooms == frozenset({1, 2, 3, 4, 5, 6, 7, 8})
+
+    def test_unsafe_overlapping_halfspaces_fuses(self) -> None:
+        """Two candidate branches expanding into the same half-space fail disjointness and fuse."""
+        graph = _make_graph(
+            rooms=[1, 2, 3, 30, 4, 5, 6, 7],
+            edges=[
+                (1, 2, Direction.north),
+                (1, 3, Direction.east),
+                (3, 30, Direction.north),
+                (30, 2, Direction.west),
+                (1, 4, Direction.south),
+                (4, 5, Direction.east),
+                (5, 6, Direction.north),
+                (6, 7, Direction.west),
+                (7, 2, Direction.south),
+            ],
+        )
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3, 30}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        b2 = SolveTreeNode(
+            node_id="b2",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({4, 5, 6, 7}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        container = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(b1, b2),
+            metadata={"poles": (1, 2)},
+        )
+        res = SplitPairAllowlistFusionPass(graph).transform_node(container)
+        assert res.node_type == TreeNodeType.RIGID_CLUSTER
+        assert res.rooms == frozenset({1, 2, 3, 30, 4, 5, 6, 7})
+
+    def test_child_container_preserves_parent_poles_and_contracts(self) -> None:
+        """Child container attached to parent poles preserves cut contract and excludes parent poles on fusion."""
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4],
+            edges=[
+                (1, 2, Direction.north),
+                (1, 3, Direction.east),
+                (3, 2, Direction.west),
+                (1, 4, Direction.east),  # same half-space -> fails allowlist
+                (4, 2, Direction.west),
+            ],
+        )
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        b2 = SolveTreeNode(
+            node_id="b2",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({4}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        # Child container has rooms = frozenset() because parent owns poles (1, 2)
+        child_container = SolveTreeNode(
+            node_id="child_sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset(),
+            children=(b1, b2),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (1, 2),
+                "cut_contract": SplitPairCut(poles=(1, 2)),
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="parent_cluster",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(child_container,),
+        )
+        res = SplitPairAllowlistFusionPass(graph).transform_node(parent)
+        assert len(res.children) == 1
+        fused_child = res.children[0]
+        assert fused_child.node_type == TreeNodeType.RIGID_CLUSTER
+        # Internal rooms only (parent owns poles 1 and 2)
+        assert fused_child.rooms == frozenset({3, 4})
+        assert fused_child.metadata.get("cut_type") == CutType.SPLIT_PAIR
+        assert fused_child.metadata.get("poles") == (1, 2)
+        assert isinstance(fused_child.cut_contract, SplitPairCut)
+
+    def test_container_with_articulation_children_preserved(self) -> None:
+        """When unsafe split pair container fuses, articulation children are preserved on the fused node."""
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4, 10, 11],
+            edges=[
+                (1, 2, Direction.north),
+                (1, 3, Direction.east),
+                (3, 2, Direction.west),
+                (1, 4, Direction.east),  # same half-space -> fails allowlist
+                (4, 2, Direction.west),
+                # Articulation child on room 1
+                (1, 10, Direction.south),
+                (10, 11, Direction.east),
+                (11, 1, Direction.north),
+            ],
+        )
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        b2 = SolveTreeNode(
+            node_id="b2",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({4}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        art_child = SolveTreeNode(
+            node_id="art_block",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({10, 11}),
+            children=(),
+            metadata={"cut_type": CutType.ARTICULATION_POINT, "anchor_vnum": 1},
+        )
+        container = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(b1, b2, art_child),
+            metadata={"poles": (1, 2), "cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        res = SplitPairAllowlistFusionPass(graph).transform_node(container)
+        assert res.node_type == TreeNodeType.RIGID_CLUSTER
+        assert res.rooms == frozenset({1, 2, 3, 4})
+        assert len(res.children) == 1
+        assert res.children[0].node_id == "art_block"
+
+    def test_pipeline_integration_order(self) -> None:
+        """Default SPQR pipeline executes SplitPairAllowlistFusionPass before downstream passes."""
+        pipeline = SpqrTreeBuilder.default_pipeline()
+        passes = pipeline.passes
+        assert len(passes) == 3
+        assert isinstance(passes[0], SplitPairAllowlistFusionPass)
+        assert isinstance(passes[1], ArticulationChildAttachmentPass)
+        assert isinstance(passes[2], TransverseSNodeSplitPass)
+
+    def test_allowlist_poles_not_len_2_returns_false(self) -> None:
+        """Poles tuple with length != 2 fails allowlist contract."""
+        from romutil.layout.hierarchy.transforms import _is_safe_2cut_allowlist
+
+        node = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1}),
+            children=(),
+        )
+        assert not _is_safe_2cut_allowlist(node, (1,), ())  # type: ignore[arg-type]
+
+    def test_allowlist_no_candidate_branches_returns_false(self) -> None:
+        """Split-pair container with no candidate branches fails allowlist contract."""
+        from romutil.layout.hierarchy.transforms import _is_safe_2cut_allowlist
+
+        node = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(),
+        )
+        assert not _is_safe_2cut_allowlist(node, (1, 2), ())
+
+    def test_allowlist_cut_edges_ignored(self) -> None:
+        """Cut edges are ignored during exit port inspection and path tracing."""
+        from romutil.layout.hierarchy.transforms import _is_safe_2cut_allowlist
+
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north),
+            LayoutEdge(src=1, dst=3, direction=Direction.east),
+            LayoutEdge(src=3, dst=2, direction=Direction.west),
+            LayoutEdge(src=1, dst=3, direction=Direction.south, cut=True),
+        ]
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3}),
+            children=(),
+        )
+        node = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(b1,),
+        )
+        assert _is_safe_2cut_allowlist(node, (1, 2), edges)
+
+    def test_allowlist_incomplete_path_visit(self) -> None:
+        """Branch containing disconnected unvisited room fails path tracing."""
+        from romutil.layout.hierarchy.transforms import _is_safe_2cut_allowlist
+
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north),
+            LayoutEdge(src=1, dst=3, direction=Direction.east),
+            LayoutEdge(src=3, dst=2, direction=Direction.west),
+        ]
+        # Room 99 is disconnected from the path 1 -> 3 -> 2
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3, 99}),
+            children=(),
+        )
+        node = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(b1,),
+        )
+        assert not _is_safe_2cut_allowlist(node, (1, 2), edges)
+
+    def test_allowlist_opposing_u_v_steps(self) -> None:
+        """Branch with opposing transverse exit steps fails contract."""
+        from romutil.layout.hierarchy.transforms import _is_safe_2cut_allowlist
+
+        # u step is East (+X), v step is East into v (meaning step from last room to v is West, so v_step is -X)
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north),
+            LayoutEdge(src=1, dst=3, direction=Direction.east),
+            LayoutEdge(src=3, dst=4, direction=Direction.north),
+            LayoutEdge(src=4, dst=2, direction=Direction.east),
+        ]
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3, 4}),
+            children=(),
+        )
+        node = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(b1,),
+        )
+        assert not _is_safe_2cut_allowlist(node, (1, 2), edges)
+
+    def test_allowlist_multiple_zero_signatures(self) -> None:
+        """Multiple branches aligned along inter-pole axis with zero transverse signature fail contract."""
+        from romutil.layout.hierarchy.transforms import _is_safe_2cut_allowlist
+
+        # Two branches along North-South axis without transverse expansion
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north),
+            LayoutEdge(src=1, dst=3, direction=Direction.north),
+            LayoutEdge(src=3, dst=2, direction=Direction.north),
+            LayoutEdge(src=1, dst=4, direction=Direction.north),
+            LayoutEdge(src=4, dst=2, direction=Direction.north),
+        ]
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3}),
+            children=(),
+        )
+        b2 = SolveTreeNode(
+            node_id="b2",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({4}),
+            children=(),
+        )
+        node = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(b1, b2),
+        )
+        assert not _is_safe_2cut_allowlist(node, (1, 2), edges)
+
+    def test_allowlist_conflicting_candidate_axes_without_direct_edge(self) -> None:
+        """Conflicting inferred inter-pole axes without a direct edge fail contract."""
+        from romutil.layout.hierarchy.transforms import _is_safe_2cut_allowlist
+
+        # No direct edge between 1 and 2
+        # Branch 1 suggests X axis as primary (1 -> 3 east, 3 -> 2 east)
+        # Branch 2 suggests Y axis as primary (1 -> 4 north, 4 -> 2 north)
+        edges = [
+            LayoutEdge(src=1, dst=3, direction=Direction.east),
+            LayoutEdge(src=3, dst=2, direction=Direction.east),
+            LayoutEdge(src=1, dst=4, direction=Direction.north),
+            LayoutEdge(src=4, dst=2, direction=Direction.north),
+        ]
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3}),
+            children=(),
+        )
+        b2 = SolveTreeNode(
+            node_id="b2",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({4}),
+            children=(),
+        )
+        node = SolveTreeNode(
+            node_id="sp",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(b1, b2),
+        )
+        assert not _is_safe_2cut_allowlist(node, (1, 2), edges)
+
+    def test_poles_fallback_extraction_from_metadata_list_and_rooms(self) -> None:
+        """Poles are extracted from metadata list or node.rooms when cut_contract is absent."""
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4],
+            edges=[
+                (1, 2, Direction.north),
+                (1, 3, Direction.east),
+                (3, 2, Direction.west),
+                (1, 4, Direction.west),
+                (4, 2, Direction.east),
+            ],
+        )
+        b1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3}),
+            children=(),
+        )
+        b2 = SolveTreeNode(
+            node_id="b2",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({4}),
+            children=(),
+        )
+        # Case 1: metadata["poles"] is a list
+        c1 = SolveTreeNode(
+            node_id="c1",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset(),
+            children=(b1, b2),
+            metadata={"poles": [1, 2]},
+        )
+        pass_instance = SplitPairAllowlistFusionPass(graph)
+        res1 = pass_instance.transform_node(c1)
+        assert res1.node_type == TreeNodeType.SPLIT_PAIR_CONTAINER
+
+        # Case 2: no metadata poles, but len(rooms) == 2
+        c2 = SolveTreeNode(
+            node_id="c2",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(b1, b2),
+        )
+        res2 = pass_instance.transform_node(c2)
+        assert res2.node_type == TreeNodeType.SPLIT_PAIR_CONTAINER

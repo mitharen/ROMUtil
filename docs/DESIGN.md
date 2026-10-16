@@ -99,7 +99,8 @@ ROMUtil/
 │   │   │   └── primitives.py    # Coord3D, Segment3D, BoundingBox3D data structures
 │   │   ├── hierarchy/           # Stage 3 tree decomposition (0-cut, 1-cut, 2-cut)
 │   │   │   ├── block_cut.py     # BlockCutTreeBuilder (connected & biconnected components)
-│   │   │   └── spqr.py          # SpqrTreeBuilder (triconnected SPQR decomposition)
+│   │   │   ├── spqr.py          # SpqrTreeBuilder (triconnected SPQR decomposition)
+│   │   │   └── transforms.py    # TreeTransformationPass pipeline (allowlist fusion, articulation, S-node split)
 │   │   ├── ir.py                # Intermediate representations (LayoutGraph, SolveTree, NodeSolution)
 │   │   ├── milp/                # Stage 4 mathematical optimization solvers
 │   │   │   ├── clearance.py     # Stage 3: Disjunctive Big-M clearance & non-penetration constraints
@@ -225,6 +226,11 @@ Decomposes the simplified topology into a hierarchical `SolveTree` of localized 
     - `series_loop` ($S$-nodes): Cycles or series chains solved sequentially.
     - `split_pair_container` ($P$-nodes): Parallel paths between common split pairs.
   - Yields a tree of bounded localized clusters, reducing MILP decision variable bounds from global scales to local sub-problems.
+- **`TreeTransformationPipeline` & Transformation Passes (`transforms.py`)**:
+  - Applies sequential post-decomposition transformations over the `SolveTree`:
+    - `SplitPairAllowlistFusionPass`: Evaluates candidate branches of split-pair containers against the Safe 2-Cut Allowlist contract (branch elasticity, single port per pole, disjoint half-spaces); fuses unsafe containers into unified rigid clusters.
+    - `ArticulationChildAttachmentPass`: Routes articulation children to the specific descendant component containing their gateway anchor.
+    - `TransverseSNodeSplitPass`: Splits series loop children with parallel entrance corridors into sibling clusters anchored to their respective parent poles.
 
 #### Stage 4: Mathematical Optimization (`TreeSolver`)
 Assigns local 3D coordinates to rooms within each `SolveTreeNode` through Mixed-Integer Linear Programming (MILP) using Coin-OR CBC via Pyomo:
