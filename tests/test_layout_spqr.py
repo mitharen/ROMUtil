@@ -21,7 +21,7 @@ from romutil.layout import (
     TreeNodeType,
     build_block_spqr_tree,
 )
-from romutil.layout.hierarchy.spqr import _split_transverse_s_nodes
+from romutil.layout.hierarchy.transforms import TransverseSNodeSplitPass
 from romutil.models import Direction, Exit, Room
 from romutil.parser import parse_file
 from romutil.types import LayoutOptions, SolvedLayout, SolverStatus, WorldGraph
@@ -598,7 +598,7 @@ class TestTransverseCorridorSNodeSplitting:
             children=(child,),
         )
 
-        transformed = _split_transverse_s_nodes(parent, graph)
+        transformed = TransverseSNodeSplitPass(graph).transform_node(parent)
         assert len(transformed.children) == 2
         c_a, c_b = transformed.children
 
@@ -678,7 +678,7 @@ class TestTransverseCorridorSNodeSplitting:
             children=(child,),
         )
 
-        transformed = _split_transverse_s_nodes(parent, graph)
+        transformed = TransverseSNodeSplitPass(graph).transform_node(parent)
         assert len(transformed.children) == 2
         c_a, c_b = transformed.children
 
@@ -725,7 +725,7 @@ class TestTransverseCorridorSNodeSplitting:
             children=(child,),
         )
 
-        transformed = _split_transverse_s_nodes(parent, graph)
+        transformed = TransverseSNodeSplitPass(graph).transform_node(parent)
         assert len(transformed.children) == 1
         assert transformed.children[0].node_id == "s_loop_perp"
 
@@ -760,7 +760,7 @@ class TestTransverseCorridorSNodeSplitting:
             children=(child,),
         )
 
-        transformed = _split_transverse_s_nodes(parent, graph)
+        transformed = TransverseSNodeSplitPass(graph).transform_node(parent)
         assert len(transformed.children) == 1
         assert transformed.children[0].node_id == "s_loop_collinear"
 

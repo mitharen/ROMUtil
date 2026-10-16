@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-import collections
 from typing import Any, Sequence, cast
 
 import spqrtree
 
 from romutil.layout.hierarchy.block_cut import BlockCutTreeBuilder
+from romutil.layout.hierarchy.transforms import (
+    ArticulationChildAttachmentPass,
+    TransverseSNodeSplitPass,
+    TreeTransformationPipeline,
+)
 from romutil.layout.ir import (
     ArticulationPointCut,
-    BridgeCut,
     CutType,
     LayoutEdge,
-    LayoutGraph,
     SimplifiedGraph,
     SolveTree,
     SolveTreeNode,
@@ -435,316 +437,29 @@ def build_block_spqr_tree(
             rooms=block_nodes,
         )
 
-
-def _attach_articulation_children(
-    spqr_node: SolveTreeNode,
-    articulation_children: Sequence[SolveTreeNode],
-) -> SolveTreeNode:
-    """Attach block-cut child blocks to the SPQR node containing their articulation anchor."""
-    if not articulation_children:
-        return spqr_node
-
-    if not spqr_node.children:
-        return SolveTreeNode(
-            node_id=spqr_node.node_id,
-            node_type=spqr_node.node_type,
-            rooms=spqr_node.rooms,
-            children=tuple(list(spqr_node.children) + list(articulation_children)),
-            metadata=spqr_node.metadata,
-        )
-
-    direct_children: list[SolveTreeNode] = []
-    child_to_art_children: dict[str, list[SolveTreeNode]] = collections.defaultdict(list)
-
-    for art_child in articulation_children:
-        anchor = art_child.metadata.get("anchor_vnum")
-        target_child_id: str | None = None
-        if anchor is not None and anchor not in spqr_node.rooms:
-            for ch in spqr_node.children:
-                if anchor in ch.rooms or anchor in _collect_subtree_rooms(ch):
-                    target_child_id = ch.node_id
-                    break
-        if target_child_id is not None:
-            child_to_art_children[target_child_id].append(art_child)
-        else:
-            direct_children.append(art_child)
-
-    updated_spqr_children: list[SolveTreeNode] = []
-    for ch in spqr_node.children:
-        if ch.node_id in child_to_art_children:
-            updated_ch = _attach_articulation_children(ch, child_to_art_children[ch.node_id])
-            updated_spqr_children.append(updated_ch)
-        else:
-            updated_spqr_children.append(ch)
-
-    return SolveTreeNode(
-        node_id=spqr_node.node_id,
-        node_type=spqr_node.node_type,
-        rooms=spqr_node.rooms,
-        children=tuple(updated_spqr_children + direct_children),
-        metadata=spqr_node.metadata,
-    )
-
-
-def _collect_subtree_rooms(node: SolveTreeNode) -> set[int]:
-    """Collect all room IDs across a solve tree node and all its descendants."""
-    rooms = set(node.rooms)
-    for c in node.children:
-        rooms.update(_collect_subtree_rooms(c))
-    return rooms
-
-
-def _get_child_poles_or_anchor(child: SolveTreeNode) -> set[int]:
-    """Extract boundary poles or anchor room IDs from a child node."""
-    if isinstance(child.cut_contract, SplitPairCut):
-        return set(child.cut_contract.poles)
-    if isinstance(child.cut_contract, ArticulationPointCut):
-        return {child.cut_contract.anchor_vnum}
-    if isinstance(child.cut_contract, BridgeCut):
-        return set(child.cut_contract.bridge_edge)
-    if "poles" in child.metadata:
-        return set(child.metadata["poles"])
-    if "anchor_vnum" in child.metadata:
-        return {child.metadata["anchor_vnum"]}
-    return set()
-
-
-def _split_transverse_s_nodes(node: SolveTreeNode, graph: LayoutGraph) -> SolveTreeNode:
-    """Split series loop (S-node) children with parallel entrance corridors into sibling clusters.
-
-    When a series loop child across poles {p0, p1} connects to parent rooms via parallel entrance
-    corridors along the same cardinal axis, an inter-pole span discrepancy along the transverse
-    axis forces shear distortion if the child is solved as a single rigid origin component.
-    This transformation severs the first transverse internal spine corridor, decomposing the S-node
-    into two sibling SolveTreeNode clusters each anchored to its respective parent pole.
-    """
-    updated_children: list[SolveTreeNode] = []
-
-    for child in node.children:
-        child_processed = _split_transverse_s_nodes(child, graph)
-
-        if child_processed.node_type != TreeNodeType.SERIES_LOOP:
-            updated_children.append(child_processed)
-            continue
-
-        poles: tuple[int, int] | None = None
-        if isinstance(child_processed.cut_contract, SplitPairCut):
-            poles = child_processed.cut_contract.poles
-        elif "poles" in child_processed.metadata:
-            raw = child_processed.metadata["poles"]
-            if len(raw) == 2:
-                poles = (int(raw[0]), int(raw[1]))
-
-        if poles is None or len(poles) != 2:
-            updated_children.append(child_processed)
-            continue
-
-        p0, p1 = poles
-        if p0 not in node.rooms or p1 not in node.rooms:
-            updated_children.append(child_processed)
-            continue
-
-        child_all_rooms = _collect_subtree_rooms(child_processed)
-        internal_rooms = child_all_rooms - {p0, p1}
-        if not internal_rooms:
-            updated_children.append(child_processed)
-            continue
-
-        p0_dirs: set[Direction] = set()
-        p1_dirs: set[Direction] = set()
-        for e in graph.edges:
-            if e.cut:
-                continue
-            if e.src == p0 and e.dst in internal_rooms:
-                p0_dirs.add(Direction(e.direction))
-            elif e.dst == p0 and e.src in internal_rooms:
-                p0_dirs.add(Direction(e.direction).invert())
-
-            if e.src == p1 and e.dst in internal_rooms:
-                p1_dirs.add(Direction(e.direction))
-            elif e.dst == p1 and e.src in internal_rooms:
-                p1_dirs.add(Direction(e.direction).invert())
-
-        if len(p0_dirs) != 1 or len(p1_dirs) != 1:
-            updated_children.append(child_processed)
-            continue
-
-        dir_0 = next(iter(p0_dirs))
-        dir_1 = next(iter(p1_dirs))
-        disp_0 = direction_to_displacement(dir_0)
-        disp_1 = direction_to_displacement(dir_1)
-
-        axis_0 = 0 if disp_0[0] != 0 else (1 if disp_0[1] != 0 else (2 if disp_0[2] != 0 else None))
-        axis_1 = 0 if disp_1[0] != 0 else (1 if disp_1[1] != 0 else (2 if disp_1[2] != 0 else None))
-
-        if axis_0 is None or axis_1 is None or axis_0 != axis_1:
-            updated_children.append(child_processed)
-            continue
-
-        entrance_axis = axis_0
-        transverse_axis = 1 if entrance_axis == 0 else 0
-
-        spine_verts = set(child_processed.rooms) | {p0, p1}
-        adj: dict[int, list[int]] = {v: [] for v in spine_verts}
-        for e in graph.edges:
-            if not e.cut and e.src in spine_verts and e.dst in spine_verts and {e.src, e.dst} != {p0, p1}:
-                adj[e.src].append(e.dst)
-                adj[e.dst].append(e.src)
-
-        for sub_c in child_processed.children:
-            sub_poles = _get_child_poles_or_anchor(sub_c)
-            if len(sub_poles) == 2 and sub_poles <= spine_verts:
-                sq0, sq1 = tuple(sub_poles)
-                adj[sq0].append(sq1)
-                adj[sq1].append(sq0)
-
-        queue: list[list[int]] = [[p0]]
-        visited: set[int] = {p0}
-        spine_path: list[int] | None = None
-        while queue:
-            curr_path = queue.pop(0)
-            u = curr_path[-1]
-            if u == p1:
-                spine_path = curr_path
-                break
-            for v in adj[u]:
-                if v not in visited:
-                    visited.add(v)
-                    queue.append(curr_path + [v])
-
-        if not spine_path or len(spine_path) < 3:
-            updated_children.append(child_processed)
-            continue
-
-        sever_idx: int | None = None
-        for i in range(1, len(spine_path) - 2):
-            u_i = spine_path[i]
-            v_i = spine_path[i + 1]
-            matching_edges = [
-                e for e in graph.edges
-                if not e.cut and {e.src, e.dst} == {u_i, v_i}
-            ]
-            if matching_edges:
-                edge = matching_edges[0]
-                step_dir = Direction(edge.direction) if edge.src == u_i else Direction(edge.direction).invert()
-                disp = direction_to_displacement(step_dir)
-                if disp[transverse_axis] != 0:
-                    sever_idx = i
-                    break
-
-        if sever_idx is None:
-            updated_children.append(child_processed)
-            continue
-
-        u_star = spine_path[sever_idx]
-        v_star = spine_path[sever_idx + 1]
-
-        adj_severed: dict[int, list[int]] = {v: [] for v in spine_verts}
-        for e in graph.edges:
-            if (
-                not e.cut
-                and e.src in spine_verts
-                and e.dst in spine_verts
-                and {e.src, e.dst} != {p0, p1}
-                and {e.src, e.dst} != {u_star, v_star}
-            ):
-                adj_severed[e.src].append(e.dst)
-                adj_severed[e.dst].append(e.src)
-        for sub_c in child_processed.children:
-            sub_poles = _get_child_poles_or_anchor(sub_c)
-            if len(sub_poles) == 2 and sub_poles <= spine_verts and sub_poles != {u_star, v_star}:
-                sq0, sq1 = tuple(sub_poles)
-                adj_severed[sq0].append(sq1)
-                adj_severed[sq1].append(sq0)
-
-        comp_a: set[int] = set()
-        q_a = [p0]
-        while q_a:
-            curr = q_a.pop()
-            if curr not in comp_a:
-                comp_a.add(curr)
-                for nxt in adj_severed[curr]:
-                    if nxt not in comp_a:
-                        q_a.append(nxt)
-
-        rooms_a = frozenset(comp_a & child_processed.rooms)
-        rooms_b = frozenset(child_processed.rooms - rooms_a)
-
-        if not rooms_a or not rooms_b or p0 not in comp_a or p1 in comp_a:
-            updated_children.append(child_processed)
-            continue
-
-        children_a: list[SolveTreeNode] = []
-        children_b: list[SolveTreeNode] = []
-        for sub_c in child_processed.children:
-            sub_ports = _get_child_poles_or_anchor(sub_c)
-            if sub_ports and sub_ports <= rooms_a:
-                children_a.append(sub_c)
-            elif sub_ports and sub_ports <= rooms_b:
-                children_b.append(sub_c)
-            else:
-                sub_all = _collect_subtree_rooms(sub_c)
-                if len(sub_all & rooms_a) >= len(sub_all & rooms_b):
-                    children_a.append(sub_c)
-                else:
-                    children_b.append(sub_c)
-
-        meta_a = dict(child_processed.metadata)
-        meta_a["cut_type"] = CutType.ARTICULATION_POINT
-        meta_a["anchor_vnum"] = p0
-        meta_a["cut_contract"] = ArticulationPointCut(anchor_vnum=p0)
-        meta_a.pop("poles", None)
-
-        meta_b = dict(child_processed.metadata)
-        meta_b["cut_type"] = CutType.ARTICULATION_POINT
-        meta_b["anchor_vnum"] = p1
-        meta_b["cut_contract"] = ArticulationPointCut(anchor_vnum=p1)
-        meta_b.pop("poles", None)
-
-        node_a = SolveTreeNode(
-            node_id=f"{child_processed.node_id}_a",
-            node_type=TreeNodeType.RIGID_CLUSTER,
-            rooms=rooms_a,
-            children=tuple(children_a),
-            metadata=meta_a,
-        )
-        node_b = SolveTreeNode(
-            node_id=f"{child_processed.node_id}_b",
-            node_type=TreeNodeType.RIGID_CLUSTER,
-            rooms=rooms_b,
-            children=tuple(children_b),
-            metadata=meta_b,
-        )
-
-        updated_children.extend([node_a, node_b])
-
-    return SolveTreeNode(
-        node_id=node.node_id,
-        node_type=node.node_type,
-        rooms=node.rooms,
-        children=tuple(updated_children),
-        metadata=node.metadata,
-    )
-
-
-def _strip_anchor(node: SolveTreeNode, anchor: int) -> SolveTreeNode:
-    """Recursively strip articulation anchor from an SPQR subtree to enforce disjoint ownership."""
-    new_rooms = frozenset(node.rooms) - {anchor}
-    new_children = tuple(_strip_anchor(c, anchor) for c in node.children)
-    return SolveTreeNode(
-        node_id=node.node_id,
-        node_type=node.node_type,
-        rooms=new_rooms,
-        children=new_children,
-        metadata=node.metadata,
-    )
-
-
 class SpqrTreeBuilder(TreeBuilder):
     """Stage 3 tree builder decomposing 0-cuts, 1-cuts (block-cut), and 2-cuts (SPQR)."""
 
-    def __init__(self, block_cut_builder: BlockCutTreeBuilder | None = None) -> None:
+    def __init__(
+        self,
+        block_cut_builder: BlockCutTreeBuilder | None = None,
+        pipeline: TreeTransformationPipeline | None = None,
+    ) -> None:
         self._block_cut_builder = block_cut_builder or BlockCutTreeBuilder()
+        self._pipeline = pipeline if pipeline is not None else self.default_pipeline()
+
+    @property
+    def pipeline(self) -> TreeTransformationPipeline:
+        """Post-processing transformation pipeline."""
+        return self._pipeline
+
+    @classmethod
+    def default_pipeline(cls) -> TreeTransformationPipeline:
+        """Create canonical post-processing transformation pipeline."""
+        return TreeTransformationPipeline([
+            ArticulationChildAttachmentPass(),
+            TransverseSNodeSplitPass(),
+        ])
 
     def build_tree(
         self,
@@ -759,19 +474,18 @@ class SpqrTreeBuilder(TreeBuilder):
 
         edges = simplified.graph.edges
 
-        def _transform_node(node: SolveTreeNode) -> SolveTreeNode:
+        def _decompose_blocks(node: SolveTreeNode) -> SolveTreeNode:
             if node.node_type == TreeNodeType.WORLD_ROOT:
-                transformed_children = tuple(_transform_node(child) for child in node.children)
+                transformed_children = tuple(_decompose_blocks(child) for child in node.children)
                 return SolveTreeNode(
-                    node_id=node_id if (node_id := node.node_id) else "",
+                    node_id=node.node_id if node.node_id else "",
                     node_type=node.node_type,
                     rooms=node.rooms,
                     children=transformed_children,
                     metadata=node.metadata,
                 )
 
-            # First, recursively process articulation children
-            child_nodes: list[SolveTreeNode] = [_transform_node(child) for child in node.children]
+            child_nodes = [_decompose_blocks(child) for child in node.children]
 
             anchor = node.metadata.get("anchor_vnum")
             if anchor is None and isinstance(node.cut_contract, ArticulationPointCut):
@@ -790,17 +504,13 @@ class SpqrTreeBuilder(TreeBuilder):
                 merged_meta = dict(spqr_root.metadata)
                 merged_meta.update(node.metadata)
 
-                if anchor is not None:
-                    spqr_root = _strip_anchor(spqr_root, anchor)
-
-                spqr_root = SolveTreeNode(
+                return SolveTreeNode(
                     node_id=spqr_root.node_id,
                     node_type=spqr_root.node_type,
                     rooms=spqr_root.rooms,
-                    children=spqr_root.children,
+                    children=tuple(spqr_root.children) + tuple(child_nodes),
                     metadata=merged_meta,
                 )
-                return _attach_articulation_children(spqr_root, child_nodes)
 
             return SolveTreeNode(
                 node_id=node.node_id,
@@ -810,11 +520,11 @@ class SpqrTreeBuilder(TreeBuilder):
                 metadata=node.metadata,
             )
 
-        new_root = _transform_node(block_cut_tree.root)
-        new_root = _split_transverse_s_nodes(new_root, simplified.graph)
-        if new_root.node_type == TreeNodeType.WORLD_ROOT:
-            components = new_root.children
+        raw_root = _decompose_blocks(block_cut_tree.root)
+        if raw_root.node_type == TreeNodeType.WORLD_ROOT:
+            components = raw_root.children
         else:
-            components = (new_root,)
+            components = (raw_root,)
 
-        return SolveTree(root=new_root, components=components, graph=simplified.graph)
+        raw_tree = SolveTree(root=raw_root, components=components, graph=simplified.graph)
+        return self._pipeline.apply(raw_tree)
