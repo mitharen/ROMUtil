@@ -2,8 +2,18 @@
 
 from __future__ import annotations
 
-from romutil.layout.hierarchy.block_cut import BlockCutTreeBuilder
-from romutil.layout.hierarchy.spqr import SpqrTreeBuilder, build_block_spqr_tree
+from romutil.layout.hierarchy.block_cut import (
+    BlockCutDecompositionPass,
+    BlockCutTreeBuilder,
+)
+from romutil.layout.hierarchy.pipeline import (
+    PipelineTreeBuilder,
+    SpqrTreeBuilder,
+)
+from romutil.layout.hierarchy.spqr import (
+    SpqrDecompositionPass,
+    build_block_spqr_tree,
+)
 from romutil.layout.hierarchy.transforms import (
     AnchorStrippingPass,
     ArticulationChildAttachmentPass,
@@ -18,8 +28,11 @@ from romutil.layout.hierarchy.transforms import (
 __all__ = [
     "AnchorStrippingPass",
     "ArticulationChildAttachmentPass",
+    "BlockCutDecompositionPass",
     "BlockCutTreeBuilder",
+    "PipelineTreeBuilder",
     "SplitPairAllowlistFusionPass",
+    "SpqrDecompositionPass",
     "SpqrTreeBuilder",
     "TransverseSNodeSplitPass",
     "TreeTransformationPass",

@@ -756,3 +756,15 @@ class TransverseSNodeSplitPass:
         new_root = self.transform_node(tree.root, graph)
         components = new_root.children if new_root.node_type == TreeNodeType.WORLD_ROOT else (new_root,)
         return SolveTree(root=new_root, components=components, graph=tree.graph)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "BlockCutDecompositionPass":
+        from romutil.layout.hierarchy.block_cut import BlockCutDecompositionPass
+
+        return BlockCutDecompositionPass
+    if name == "SpqrDecompositionPass":
+        from romutil.layout.hierarchy.spqr import SpqrDecompositionPass
+
+        return SpqrDecompositionPass
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

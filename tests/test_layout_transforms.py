@@ -7,8 +7,11 @@ import pytest
 from romutil.layout.hierarchy import (
     AnchorStrippingPass,
     ArticulationChildAttachmentPass,
+    BlockCutDecompositionPass,
     BlockCutTreeBuilder,
+    PipelineTreeBuilder,
     SplitPairAllowlistFusionPass,
+    SpqrDecompositionPass,
     SpqrTreeBuilder,
     TransverseSNodeSplitPass,
     TreeTransformationPass,
@@ -464,11 +467,14 @@ class TestSpqrTreeBuilderPipelineIntegration:
         assert isinstance(tree, SolveTree)
 
     def test_default_pipeline_composition(self) -> None:
-        pipeline = SpqrTreeBuilder.default_pipeline()
-        assert len(pipeline.passes) == 3
-        assert isinstance(pipeline.passes[0], SplitPairAllowlistFusionPass)
-        assert isinstance(pipeline.passes[1], ArticulationChildAttachmentPass)
-        assert isinstance(pipeline.passes[2], TransverseSNodeSplitPass)
+        for builder_cls in (PipelineTreeBuilder, SpqrTreeBuilder):
+            pipeline = builder_cls.default_pipeline()
+            assert len(pipeline.passes) == 5
+            assert isinstance(pipeline.passes[0], BlockCutDecompositionPass)
+            assert isinstance(pipeline.passes[1], SpqrDecompositionPass)
+            assert isinstance(pipeline.passes[2], SplitPairAllowlistFusionPass)
+            assert isinstance(pipeline.passes[3], ArticulationChildAttachmentPass)
+            assert isinstance(pipeline.passes[4], TransverseSNodeSplitPass)
 
 
 class TestTransformHelpersAndEdgeCases:
@@ -1115,13 +1121,15 @@ class TestSplitPairAllowlistFusionPass:
         assert res.children[0].node_id == "art_block"
 
     def test_pipeline_integration_order(self) -> None:
-        """Default SPQR pipeline executes SplitPairAllowlistFusionPass before downstream passes."""
-        pipeline = SpqrTreeBuilder.default_pipeline()
+        """Default hierarchical pipeline executes decomposition passes then fusion then downstream passes."""
+        pipeline = PipelineTreeBuilder.default_pipeline()
         passes = pipeline.passes
-        assert len(passes) == 3
-        assert isinstance(passes[0], SplitPairAllowlistFusionPass)
-        assert isinstance(passes[1], ArticulationChildAttachmentPass)
-        assert isinstance(passes[2], TransverseSNodeSplitPass)
+        assert len(passes) == 5
+        assert isinstance(passes[0], BlockCutDecompositionPass)
+        assert isinstance(passes[1], SpqrDecompositionPass)
+        assert isinstance(passes[2], SplitPairAllowlistFusionPass)
+        assert isinstance(passes[3], ArticulationChildAttachmentPass)
+        assert isinstance(passes[4], TransverseSNodeSplitPass)
 
     def test_allowlist_poles_not_len_2_returns_false(self) -> None:
         """Poles tuple with length != 2 fails allowlist contract."""
@@ -1330,3 +1338,246 @@ class TestSplitPairAllowlistFusionPass:
         )
         res2 = pass_instance.transform_node(c2)
         assert res2.node_type == TreeNodeType.SPLIT_PAIR_CONTAINER
+
+
+class TestUnifiedHierarchicalPipeline:
+    """Verify SolveTree.seed, decomposition passes, and unified pipeline tree construction."""
+
+    def test_solve_tree_seed_empty(self) -> None:
+        graph = LayoutGraph(rooms={}, edges=())
+        tree = SolveTree.seed(graph)
+        assert tree.root.node_id == "root"
+        assert tree.root.node_type == TreeNodeType.EMPTY
+        assert tree.root.rooms == frozenset()
+        assert tree.components == ()
+        assert tree.graph is graph
+
+    def test_solve_tree_seed_with_rooms(self) -> None:
+        rooms = {1: _make_room(1), 2: _make_room(2), 3: _make_room(3)}
+        graph = LayoutGraph(rooms=rooms, edges=())
+        tree = SolveTree.seed(graph)
+        assert tree.root.node_id == "seed_root"
+        assert tree.root.node_type == TreeNodeType.BLOCK
+        assert tree.root.rooms == frozenset({1, 2, 3})
+        assert tree.components == (tree.root,)
+        assert tree.graph is graph
+
+    def test_block_cut_decomposition_pass_empty(self) -> None:
+        graph = LayoutGraph(rooms={}, edges=())
+        seed = SolveTree.seed(graph)
+        decomp = BlockCutDecompositionPass()
+        result = decomp.apply(seed)
+        assert result.root.node_id == "empty"
+        assert result.root.node_type == TreeNodeType.EMPTY
+        assert result.root.rooms == frozenset()
+        assert result.components == ()
+
+    def test_block_cut_decomposition_pass_single_room(self) -> None:
+        graph = LayoutGraph(rooms={42: _make_room(42)}, edges=())
+        seed = SolveTree.seed(graph)
+        result = BlockCutDecompositionPass().apply(seed)
+        assert len(result.components) == 1
+        assert result.root == result.components[0]
+        assert result.root.node_id == "comp_0_block_0"
+        assert result.root.node_type == TreeNodeType.BICONNECTED_BLOCK
+        assert result.root.rooms == frozenset({42})
+        assert result.root.children == ()
+
+    def test_block_cut_decomposition_pass_disconnected_components(self) -> None:
+        rooms = {10: _make_room(10), 20: _make_room(20)}
+        graph = LayoutGraph(rooms=rooms, edges=())
+        seed = SolveTree.seed(graph)
+        result = BlockCutDecompositionPass().apply(seed)
+        assert result.root.node_id == "world_root"
+        assert result.root.node_type == TreeNodeType.WORLD_ROOT
+        assert len(result.components) == 2
+        assert result.components == result.root.children
+        c0, c1 = result.components
+        assert c0.node_id == "comp_0_block_0"
+        assert c0.rooms == frozenset({10})
+        assert c1.node_id == "comp_1_block_0"
+        assert c1.rooms == frozenset({20})
+
+    def test_block_cut_decomposition_pass_cut_vertex(self) -> None:
+        # Two triangles 1-2-3 and 3-4-5 meeting at articulation point 3
+        rooms = {v: _make_room(v) for v in (1, 2, 3, 4, 5)}
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north, cut=False),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, cut=False),
+            LayoutEdge(src=3, dst=1, direction=Direction.south, cut=False),
+            LayoutEdge(src=3, dst=4, direction=Direction.east, cut=False),
+            LayoutEdge(src=4, dst=5, direction=Direction.north, cut=False),
+            LayoutEdge(src=5, dst=3, direction=Direction.west, cut=False),
+        ]
+        graph = LayoutGraph(rooms=rooms, edges=tuple(edges))
+        seed = SolveTree.seed(graph)
+        pass_instance = BlockCutDecompositionPass()
+        assert pass_instance.graph is None
+        result = pass_instance.apply(seed)
+        assert len(result.components) == 1
+        root = result.root
+        assert root.node_type == TreeNodeType.BLOCK
+        assert len(root.children) == 1
+        child = root.children[0]
+        assert child.node_type == TreeNodeType.BLOCK
+        assert child.metadata.get("cut_type") == CutType.ARTICULATION_POINT
+        assert child.metadata.get("anchor_vnum") == 3
+        assert isinstance(child.cut_contract, ArticulationPointCut)
+        assert child.cut_contract.anchor_vnum == 3
+
+    def test_spqr_decomposition_pass_empty(self) -> None:
+        graph = LayoutGraph(rooms={}, edges=())
+        seed = SolveTree.seed(graph)
+        pass_instance = SpqrDecompositionPass(graph=graph)
+        assert pass_instance.graph is graph
+        result = pass_instance.apply(seed)
+        assert result.root.node_type == TreeNodeType.EMPTY
+
+    def test_spqr_decomposition_pass_small_block(self) -> None:
+        # Triangle 1-2-3 has 3 rooms (< 4), remains untouched
+        rooms = {v: _make_room(v) for v in (1, 2, 3)}
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north, cut=False),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, cut=False),
+            LayoutEdge(src=3, dst=1, direction=Direction.south, cut=False),
+        ]
+        graph = LayoutGraph(rooms=rooms, edges=tuple(edges))
+        seed = SolveTree.seed(graph)
+        bct_tree = BlockCutDecompositionPass().apply(seed)
+        spqr_tree = SpqrDecompositionPass().apply(bct_tree)
+        assert spqr_tree.root.node_type == TreeNodeType.BICONNECTED_BLOCK
+        assert spqr_tree.root.rooms == frozenset({1, 2, 3})
+
+    def test_spqr_decomposition_pass_4cycle(self) -> None:
+        # 4-cycle 1-2-3-4 decomposes into SERIES_LOOP
+        rooms = {v: _make_room(v) for v in (1, 2, 3, 4)}
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north, cut=False),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, cut=False),
+            LayoutEdge(src=3, dst=4, direction=Direction.south, cut=False),
+            LayoutEdge(src=4, dst=1, direction=Direction.west, cut=False),
+        ]
+        graph = LayoutGraph(rooms=rooms, edges=tuple(edges))
+        seed = SolveTree.seed(graph)
+        bct_tree = BlockCutDecompositionPass().apply(seed)
+        spqr_tree = SpqrDecompositionPass().apply(bct_tree)
+        assert spqr_tree.root.node_type == TreeNodeType.SERIES_LOOP
+
+    def test_spqr_decomposition_pass_k4(self) -> None:
+        # K4 complete graph decomposes into RIGID_CLUSTER
+        rooms = {v: _make_room(v) for v in (1, 2, 3, 4)}
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north, cut=False),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, cut=False),
+            LayoutEdge(src=3, dst=4, direction=Direction.south, cut=False),
+            LayoutEdge(src=4, dst=1, direction=Direction.west, cut=False),
+            LayoutEdge(src=1, dst=3, direction=Direction.northeast, cut=False),
+            LayoutEdge(src=2, dst=4, direction=Direction.southeast, cut=False),
+        ]
+        graph = LayoutGraph(rooms=rooms, edges=tuple(edges))
+        seed = SolveTree.seed(graph)
+        bct_tree = BlockCutDecompositionPass().apply(seed)
+        spqr_tree = SpqrDecompositionPass().apply(bct_tree)
+        assert spqr_tree.root.node_type == TreeNodeType.RIGID_CLUSTER
+
+    def test_spqr_decomposition_pass_world_root(self) -> None:
+        # Two independent 4-cycles under a WORLD_ROOT
+        rooms = {v: _make_room(v) for v in (1, 2, 3, 4, 10, 20, 30, 40)}
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north, cut=False),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, cut=False),
+            LayoutEdge(src=3, dst=4, direction=Direction.south, cut=False),
+            LayoutEdge(src=4, dst=1, direction=Direction.west, cut=False),
+            LayoutEdge(src=10, dst=20, direction=Direction.north, cut=False),
+            LayoutEdge(src=20, dst=30, direction=Direction.east, cut=False),
+            LayoutEdge(src=30, dst=40, direction=Direction.south, cut=False),
+            LayoutEdge(src=40, dst=10, direction=Direction.west, cut=False),
+        ]
+        graph = LayoutGraph(rooms=rooms, edges=tuple(edges))
+        seed = SolveTree.seed(graph)
+        bct_tree = BlockCutDecompositionPass().apply(seed)
+        assert bct_tree.root.node_type == TreeNodeType.WORLD_ROOT
+        spqr_tree = SpqrDecompositionPass().apply(bct_tree)
+        assert spqr_tree.root.node_type == TreeNodeType.WORLD_ROOT
+        assert len(spqr_tree.root.children) == 2
+        for child in spqr_tree.root.children:
+            assert child.node_type == TreeNodeType.SERIES_LOOP
+
+    def test_pipeline_tree_builder_custom_pipeline(self) -> None:
+        class DummyPass:
+            def apply(self, tree: SolveTree) -> SolveTree:
+                return tree
+
+        dummy = DummyPass()
+        custom_pipe = TreeTransformationPipeline([dummy])
+        builder = PipelineTreeBuilder(pipeline=custom_pipe)
+        assert builder.pipeline is custom_pipe
+
+    def test_pipeline_tree_builder_custom_block_cut_injection(self) -> None:
+        custom_bct = BlockCutTreeBuilder()
+        builder = PipelineTreeBuilder(block_cut_builder=custom_bct)
+        rooms = {v: _make_room(v) for v in (1, 2, 3, 4)}
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north, cut=False),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, cut=False),
+            LayoutEdge(src=3, dst=4, direction=Direction.south, cut=False),
+            LayoutEdge(src=4, dst=1, direction=Direction.west, cut=False),
+        ]
+        graph = LayoutGraph(rooms=rooms, edges=tuple(edges))
+        simplified = SimplifiedGraph(graph=graph)
+        tree = builder.build_tree(simplified)
+        assert tree.root.node_type == TreeNodeType.SERIES_LOOP
+
+        # Builder without _pass falls back to default BlockCutDecompositionPass
+        class DummyBuilder:
+            pass
+
+        fallback_builder = PipelineTreeBuilder(block_cut_builder=DummyBuilder())  # type: ignore[arg-type]
+        assert isinstance(fallback_builder.pipeline.passes[0], BlockCutDecompositionPass)
+
+    def test_module_getattr_exports(self) -> None:
+        import romutil.layout.hierarchy.spqr as spqr_mod
+        import romutil.layout.hierarchy.transforms as transforms_mod
+
+        assert spqr_mod.SpqrTreeBuilder is PipelineTreeBuilder
+        with pytest.raises(AttributeError):
+            getattr(spqr_mod, "non_existent_attribute")
+
+        assert transforms_mod.BlockCutDecompositionPass is BlockCutDecompositionPass
+        assert transforms_mod.SpqrDecompositionPass is SpqrDecompositionPass
+        with pytest.raises(AttributeError):
+            getattr(transforms_mod, "non_existent_attribute")
+
+    @pytest.mark.parametrize("fixture_name", ["school", "thalos", "arachnos", "midgaard"])
+    def test_pipeline_tree_builder_fixtures(self, fixture_name: str) -> None:
+        from romutil.layout.hierarchy.transforms import _collect_subtree_rooms
+        from romutil.parser import parse_file
+        from romutil.types import WorldGraph
+
+        area = parse_file(f"tests/fixtures/areas/{fixture_name}.are")
+        world_graph = WorldGraph.from_area_data(area)
+        layout_graph = LayoutGraph.from_world_graph(world_graph)
+        simplified = SimplifiedGraph(graph=layout_graph)
+
+        builder = PipelineTreeBuilder()
+        tree = builder.build_tree(simplified)
+
+        assert isinstance(tree, SolveTree)
+        assert tree.root.node_type in (
+            TreeNodeType.WORLD_ROOT,
+            TreeNodeType.RIGID_CLUSTER,
+            TreeNodeType.SERIES_LOOP,
+            TreeNodeType.BLOCK,
+            TreeNodeType.BICONNECTED_BLOCK,
+        )
+
+        all_tree_rooms = _collect_subtree_rooms(tree.root)
+        expected_rooms = set(simplified.graph.rooms.keys())
+        assert all_tree_rooms == expected_rooms
+
+        # SpqrTreeBuilder alias produces identical tree structure
+        legacy_builder = SpqrTreeBuilder()
+        legacy_tree = legacy_builder.build_tree(simplified)
+        assert _collect_subtree_rooms(legacy_tree.root) == expected_rooms
+        assert legacy_tree.root.node_type == tree.root.node_type
+        assert len(legacy_tree.components) == len(tree.components)

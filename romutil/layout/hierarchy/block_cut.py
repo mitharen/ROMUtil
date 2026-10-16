@@ -7,10 +7,12 @@ from typing import Any
 
 import networkx as nx
 
+from romutil.layout.hierarchy.transforms import TreeTransformationPass
 from romutil.layout.ir import (
     ArticulationPointCut,
     BridgeCut,
     CutType,
+    LayoutGraph,
     SimplifiedGraph,
     SolveTree,
     SolveTreeNode,
@@ -20,31 +22,37 @@ from romutil.layout.protocols import TreeBuilder
 from romutil.types import LayoutOptions
 
 
-class BlockCutTreeBuilder(TreeBuilder):
-    """Stage 3 tree builder decomposing layout graphs via 0-cut components and 1-cut block-cut trees."""
+class BlockCutDecompositionPass(TreeTransformationPass):
+    """Decompose disconnected components (0-cuts) and biconnected blocks with 1-cut articulation trees (1-cuts)."""
 
-    def build_tree(
-        self,
-        simplified: SimplifiedGraph,
-        options: LayoutOptions | None = None,
-    ) -> SolveTree:
-        """Decompose a simplified graph into a hierarchical SolveTree."""
-        if not simplified.graph.rooms:
+    def __init__(self, graph: LayoutGraph | None = None) -> None:
+        self._graph = graph
+
+    @property
+    def graph(self) -> LayoutGraph | None:
+        """Optional LayoutGraph override for decomposition."""
+        return self._graph
+
+    def apply(self, tree: SolveTree) -> SolveTree:
+        """Decompose a SolveTree or seed into 0-cut components and 1-cut block-cut trees."""
+        target_graph = self._graph or tree.graph
+        if target_graph is None or not target_graph.rooms or tree.root.node_type == TreeNodeType.EMPTY:
             return SolveTree(
                 root=SolveTreeNode(
                     node_id="empty",
                     node_type=TreeNodeType.EMPTY,
                     rooms=frozenset(),
                 ),
-                graph=simplified.graph,
+                components=(),
+                graph=target_graph,
             )
 
         graph = nx.Graph()
-        for vnum in simplified.graph.rooms:
+        for vnum in target_graph.rooms:
             graph.add_node(vnum)
 
-        for edge in simplified.graph.edges:
-            if not edge.cut and edge.src in simplified.graph.rooms and edge.dst in simplified.graph.rooms:
+        for edge in target_graph.edges:
+            if not edge.cut and edge.src in target_graph.rooms and edge.dst in target_graph.rooms:
                 graph.add_edge(edge.src, edge.dst)
 
         raw_components = list(nx.connected_components(graph))
@@ -57,7 +65,7 @@ class BlockCutTreeBuilder(TreeBuilder):
             comp_nodes.append(comp_node)
 
         if len(comp_nodes) == 1:
-            return SolveTree(root=comp_nodes[0], components=tuple(comp_nodes), graph=simplified.graph)
+            return SolveTree(root=comp_nodes[0], components=tuple(comp_nodes), graph=target_graph)
 
         world_root = SolveTreeNode(
             node_id="world_root",
@@ -65,7 +73,7 @@ class BlockCutTreeBuilder(TreeBuilder):
             rooms=frozenset(),
             children=tuple(comp_nodes),
         )
-        return SolveTree(root=world_root, components=tuple(comp_nodes), graph=simplified.graph)
+        return SolveTree(root=world_root, components=tuple(comp_nodes), graph=target_graph)
 
     def _build_component_tree(
         self,
@@ -148,3 +156,19 @@ class BlockCutTreeBuilder(TreeBuilder):
             )
 
         return build_node(root_block_idx, None)
+
+
+class BlockCutTreeBuilder(TreeBuilder):
+    """Stage 3 tree builder decomposing layout graphs via 0-cut components and 1-cut block-cut trees."""
+
+    def __init__(self, pass_: BlockCutDecompositionPass | None = None) -> None:
+        self._pass = pass_ or BlockCutDecompositionPass()
+
+    def build_tree(
+        self,
+        simplified: SimplifiedGraph,
+        options: LayoutOptions | None = None,
+    ) -> SolveTree:
+        """Decompose a simplified graph into a hierarchical SolveTree."""
+        seed = SolveTree.seed(simplified.graph)
+        return self._pass.apply(seed)

@@ -35,7 +35,7 @@ flowchart TD
     subgraph Subsystem2["Subsystem 2: Hierarchical Solving Engine"]
         D --> S1["Stage 1: Ingestion (LayoutGraph)"]
         S1 --> S2["Stage 2: Simplification (HallwayCompactor & WarpSeverer)"]
-        S2 --> S3["Stage 3: Tree Decomposition (BlockCutTreeBuilder & SpqrTreeBuilder)"]
+        S2 --> S3["Stage 3: Tree Decomposition (PipelineTreeBuilder)"]
         S3 --> S4["Stage 4: Mathematical Optimization (HierarchicalTreeSolver / MILP)"]
         S4 --> S5["Stage 5: Coordinate Assembly (HierarchicalLayoutAssembler)"]
         S5 --> L["SolvedLayout (3D Coordinates & Diagnostics)"]
@@ -68,7 +68,7 @@ flowchart TD
 2. **Hierarchical Solving Engine**:
    - Ingests the `WorldGraph` into an internal `LayoutGraph`.
    - Simplifies degree-2 straight corridors (`HallwayCompactor`) and cuts non-Euclidean cycle chords (`WarpSeverer`).
-   - Recursively decomposes the biconnected and triconnected structure into a hierarchical tree (`BlockCutTreeBuilder` and `SpqrTreeBuilder`).
+   - Recursively decomposes the biconnected and triconnected structure into a hierarchical tree via the transformation pipeline (`PipelineTreeBuilder`).
    - Solves leaf clusters and parent containers via Mixed-Integer Linear Programming (`HierarchicalClusterSolver`, `HierarchicalTreeSolver`).
    - Assembles coordinates top-down, decompresses collapsed corridors, and normalizes coordinates (`HierarchicalLayoutAssembler`) into a `SolvedLayout`.
 3. **Decoupled Rendering Subsystem**:
@@ -98,8 +98,9 @@ ROMUtil/
 │   │   │   ├── intersections.py # 3D segment-segment and segment-box intersection tests
 │   │   │   └── primitives.py    # Coord3D, Segment3D, BoundingBox3D data structures
 │   │   ├── hierarchy/           # Stage 3 tree decomposition (0-cut, 1-cut, 2-cut)
-│   │   │   ├── block_cut.py     # BlockCutTreeBuilder (connected & biconnected components)
-│   │   │   ├── spqr.py          # SpqrTreeBuilder (triconnected SPQR decomposition)
+│   │   │   ├── block_cut.py     # BlockCutDecompositionPass & BlockCutTreeBuilder (connected & biconnected components)
+│   │   │   ├── pipeline.py      # PipelineTreeBuilder (unified hierarchical transformation pipeline)
+│   │   │   ├── spqr.py          # SpqrDecompositionPass & build_block_spqr_tree (triconnected SPQR decomposition)
 │   │   │   └── transforms.py    # TreeTransformationPass pipeline (allowlist fusion, articulation, S-node split)
 │   │   ├── ir.py                # Intermediate representations (LayoutGraph, SolveTree, NodeSolution)
 │   │   ├── milp/                # Stage 4 mathematical optimization solvers
@@ -189,7 +190,7 @@ The solving engine calculates 3D coordinates `(x, y, z)` for every room in a `Wo
 flowchart LR
     WG["WorldGraph"] --> Stage1["Stage 1: Ingestion<br/>LayoutGraph.from_world_graph"]
     Stage1 --> Stage2["Stage 2: Simplification<br/>HallwayCompactor + WarpSeverer"]
-    Stage2 --> Stage3["Stage 3: Tree Decomposition<br/>BlockCutTreeBuilder / SpqrTreeBuilder"]
+    Stage2 --> Stage3["Stage 3: Tree Decomposition<br/>PipelineTreeBuilder"]
     Stage3 --> Stage4["Stage 4: Mathematical Optimization<br/>HierarchicalTreeSolver / MILP"]
     Stage4 --> Stage5["Stage 5: Coordinate Assembly<br/>HierarchicalLayoutAssembler"]
     Stage5 --> SL["SolvedLayout"]
@@ -214,23 +215,21 @@ Simplifies graph complexity while preserving topological invariants, outputting 
 - **`ChainedSimplifier`**: Sequentially chains multiple simplifier passes (e.g., `HallwayCompactor` followed by `WarpSeverer`).
 
 #### Stage 3: Hierarchical Tree Decomposition (`TreeBuilder`)
-Decomposes the simplified topology into a hierarchical `SolveTree` of localized subproblems:
-- **`BlockCutTreeBuilder` (0-cut and 1-cut decomposition)**:
-  - Partitions disconnected components (0-cuts) into independent weakly connected components.
-  - Computes biconnected components (blocks) via Hopcroft-Tarjan articulation point identification (1-cuts).
-  - Articulation rooms act as shared gateway anchor points between adjacent blocks.
-- **`SpqrTreeBuilder` (2-cut split pairs)**:
-  - Refines blocks by identifying 2-cut separation pairs (split pairs).
-  - Categorizes nodes into:
-    - `rigid_cluster` ($R$-nodes): Triconnected components solved via leaf MILP formulation.
-    - `series_loop` ($S$-nodes): Cycles or series chains solved sequentially.
-    - `split_pair_container` ($P$-nodes): Parallel paths between common split pairs.
-  - Yields a tree of bounded localized clusters, reducing MILP decision variable bounds from global scales to local sub-problems.
-- **`TreeTransformationPipeline` & Transformation Passes (`transforms.py`)**:
-  - Applies sequential post-decomposition transformations over the `SolveTree`:
-    - `SplitPairAllowlistFusionPass`: Evaluates candidate branches of split-pair containers against the Safe 2-Cut Allowlist contract (branch elasticity, single port per pole, disjoint half-spaces); fuses unsafe containers into unified rigid clusters.
-    - `ArticulationChildAttachmentPass`: Routes articulation children to the specific descendant component containing their gateway anchor.
-    - `TransverseSNodeSplitPass`: Splits series loop children with parallel entrance corridors into sibling clusters anchored to their respective parent poles.
+Decomposes the simplified topology into a hierarchical `SolveTree` of localized subproblems via a sequential pipeline of transformation passes:
+- **`SolveTree.seed`**: Initializes an initial seed tree rooted at a single block node containing all rooms in the layout graph.
+- **`PipelineTreeBuilder` (`pipeline.py`)**: Executes the canonical 5-pass transformation pipeline:
+  1. **`BlockCutDecompositionPass` (`block_cut.py`)**: Partitions disconnected components (0-cuts) into independent weakly connected components under `world_root` and decomposes biconnected blocks via articulation points (1-cuts) into a block-cut tree. Articulation rooms act as shared gateway anchor points between adjacent blocks.
+  2. **`SpqrDecompositionPass` (`spqr.py`)**: Refines biconnected blocks with $\ge 4$ rooms by identifying 2-cut separation pairs (split pairs), categorizing nodes into:
+     - `rigid_cluster` ($R$-nodes): Triconnected components solved via leaf MILP formulation.
+     - `series_loop` ($S$-nodes): Cycles or series chains solved sequentially.
+     - `split_pair_container` ($P$-nodes): Parallel paths between common split pairs.
+  3. **`SplitPairAllowlistFusionPass` (`transforms.py`)**: Evaluates candidate branches of split-pair containers against the Safe 2-Cut Allowlist contract (branch elasticity, single port per pole, disjoint half-spaces); fuses unsafe containers into unified rigid clusters.
+  4. **`ArticulationChildAttachmentPass` (`transforms.py`)**: Routes articulation children to the deepest descendant component containing their gateway anchor and strips parent anchors for disjoint ownership.
+  5. **`TransverseSNodeSplitPass` (`transforms.py`)**: Splits series loop children with parallel entrance corridors into sibling clusters anchored to their respective parent poles.
+- **Tree Builders**:
+  - `PipelineTreeBuilder`: The canonical `TreeBuilder` implementing this transformation pipeline.
+  - `BlockCutTreeBuilder`: Facade executing `SolveTree.seed` through `BlockCutDecompositionPass`.
+  - `SpqrTreeBuilder`: Alias for `PipelineTreeBuilder`.
 
 #### Stage 4: Mathematical Optimization (`TreeSolver`)
 Assigns local 3D coordinates to rooms within each `SolveTreeNode` through Mixed-Integer Linear Programming (MILP) using Coin-OR CBC via Pyomo:
@@ -268,7 +267,7 @@ Reconstructs global coordinates from tree solutions via `HierarchicalLayoutAssem
 - **Result Contract**: Returns a `SolvedLayout` containing `coordinates` (`Mapping[int, Coord3D]`) and `LayoutDiagnostics` (`SolverStatus`, execution duration).
 
 #### Convenience Factory Method
-`HierarchicalLayoutSolver.production(...)` (also exported as `production` from `romutil.layout`) instantiates the complete 5-stage production pipeline configured with `ChainedSimplifier([HallwayCompactor(), WarpSeverer()])`, `SpqrTreeBuilder()`, `HierarchicalTreeSolver()`, and `HierarchicalLayoutAssembler()`.
+`HierarchicalLayoutSolver.production(...)` (also exported as `production` from `romutil.layout`) instantiates the complete 5-stage production pipeline configured with `ChainedSimplifier([HallwayCompactor(), WarpSeverer()])`, `PipelineTreeBuilder()`, `HierarchicalTreeSolver()`, and `HierarchicalLayoutAssembler()`.
 
 ---
 
@@ -319,7 +318,7 @@ The console entry point `romutil` (invoked via `uv run romutil`) wires the 3 sub
      ```python
      solver = HierarchicalLayoutSolver(
          simplifier=ChainedSimplifier([HallwayCompactor(), WarpSeverer()]),
-         tree_builder=SpqrTreeBuilder(),
+         tree_builder=PipelineTreeBuilder(),
          tree_solver=HierarchicalTreeSolver(),
          assembler=HierarchicalLayoutAssembler(),
      )
