@@ -471,7 +471,7 @@ class TestHierarchyTransverseCorridorSplit:
 
     def test_transverse_corridor_split_in_solve_tree(self) -> None:
         """Transverse corridor splitting decomposes an S-node into sibling clusters in a SolveTree."""
-        from romutil.layout.hierarchy.spqr import _split_transverse_s_nodes
+        from romutil.layout.hierarchy.transforms import TransverseSNodeSplitPass
 
         room_ids = [1, 2, 3, 4, 10, 11, 20]
         edges = [
@@ -511,7 +511,7 @@ class TestHierarchyTransverseCorridorSplit:
             children=(child,),
         )
 
-        transformed = _split_transverse_s_nodes(parent, graph)
+        transformed = TransverseSNodeSplitPass(graph).transform_node(parent)
         assert len(transformed.children) == 2
 
         child_anchors = {

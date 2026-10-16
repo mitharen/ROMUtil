@@ -17,8 +17,13 @@ from romutil.layout.geometry import (
     segments_intersect_3d,
 )
 from romutil.layout.hierarchy import (
+    AnchorStrippingPass,
+    ArticulationChildAttachmentPass,
     BlockCutTreeBuilder,
     SpqrTreeBuilder,
+    TransverseSNodeSplitPass,
+    TreeTransformationPass,
+    TreeTransformationPipeline,
     build_block_spqr_tree,
 )
 from romutil.layout.ir import (
@@ -60,6 +65,8 @@ from romutil.types import LayoutSolverError
 production = HierarchicalLayoutSolver.production
 
 __all__ = [
+    "AnchorStrippingPass",
+    "ArticulationChildAttachmentPass",
     "ArticulationPointCut",
     "BlockCutTreeBuilder",
     "BoundingBox3D",
@@ -87,10 +94,13 @@ __all__ = [
     "SolveTreeNode",
     "SplitPairCut",
     "SpqrTreeBuilder",
+    "TransverseSNodeSplitPass",
     "TreeBuilder",
     "TreeNodeType",
     "TreeSolution",
     "TreeSolver",
+    "TreeTransformationPass",
+    "TreeTransformationPipeline",
     "WarpSeverer",
     "build_block_spqr_tree",
     "direction_to_displacement",
