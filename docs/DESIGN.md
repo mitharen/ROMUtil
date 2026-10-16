@@ -209,9 +209,9 @@ Simplifies graph complexity while preserving topological invariants, outputting 
   - Retains intermediate room sequences in corridor metadata for exact linear decompression during assembly.
   - Reduces the combinatorial decision vertex count by 30–60% prior to tree decomposition and MILP solving.
 - **`WarpSeverer` (Cycle Relaxation & Non-Euclidean Chord Cuts)**:
-  - Extracts the cycle basis of the graph and evaluates directional vector sums $\sum_{e \in \text{cycle}} \Delta \mathbf{p}(e)$.
+  - Extracts the cycle basis of internal in-area room connections and evaluates directional vector sums $\sum_{e \in \text{cycle}} \Delta \mathbf{p}(e)$, excluding external dangling exits to prevent synthetic bridges.
   - Cycles with non-zero vector sums are non-Euclidean contradictions (e.g., 3 East, 2 North, 2 West, 2 South).
-  - Identifies minimal exit cut chords (`LayoutEdge.cut = True`) to mathematically sever contradictory loops into Euclidean-satisfiable topologies while preserving connection stubs for rendering.
+  - Identifies minimal exit cut chords (`LayoutEdge.cut = True`) to mathematically sever contradictory loops into Euclidean-satisfiable topologies while preserving connection stubs and external area exits for rendering.
 - **`ChainedSimplifier`**: Sequentially chains multiple simplifier passes (e.g., `HallwayCompactor` followed by `WarpSeverer`).
 
 #### Stage 3: Hierarchical Tree Decomposition (`TreeBuilder`)
