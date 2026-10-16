@@ -7,6 +7,7 @@ from romutil.layout.hierarchy.spqr import SpqrTreeBuilder, build_block_spqr_tree
 from romutil.layout.hierarchy.transforms import (
     AnchorStrippingPass,
     ArticulationChildAttachmentPass,
+    SplitPairAllowlistFusionPass,
     TransverseSNodeSplitPass,
     TreeTransformationPass,
     TreeTransformationPipeline,
@@ -18,6 +19,7 @@ __all__ = [
     "AnchorStrippingPass",
     "ArticulationChildAttachmentPass",
     "BlockCutTreeBuilder",
+    "SplitPairAllowlistFusionPass",
     "SpqrTreeBuilder",
     "TransverseSNodeSplitPass",
     "TreeTransformationPass",

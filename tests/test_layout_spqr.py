@@ -21,7 +21,10 @@ from romutil.layout import (
     TreeNodeType,
     build_block_spqr_tree,
 )
-from romutil.layout.hierarchy.transforms import TransverseSNodeSplitPass
+from romutil.layout.hierarchy.transforms import (
+    SplitPairAllowlistFusionPass,
+    TransverseSNodeSplitPass,
+)
 from romutil.models import Direction, Exit, Room
 from romutil.parser import parse_file
 from romutil.types import LayoutOptions, SolvedLayout, SolverStatus, WorldGraph
@@ -189,7 +192,15 @@ class TestBuildBlockSpqrTree:
                 if u < v and not (u == 1 and v == 2):
                     edges.append(LayoutEdge(src=u, dst=v, direction=Direction.north))
 
-        tree_node = build_block_spqr_tree(frozenset({1, 2, 3, 4, 5, 6}), edges)
+        # Raw SPQR decomposition produces a split-pair container with 2 rigid children
+        raw_node = build_block_spqr_tree(frozenset({1, 2, 3, 4, 5, 6}), edges)
+        assert raw_node.node_type == TreeNodeType.SPLIT_PAIR_CONTAINER
+        assert raw_node.rooms == frozenset({1, 2})
+        assert len(raw_node.children) == 2
+
+        # Allowlist fusion pass fuses into a combined rigid cluster
+        graph = LayoutGraph(rooms={v: _make_room(v) for v in range(1, 7)}, edges=tuple(edges))
+        tree_node = SplitPairAllowlistFusionPass(graph).transform_node(raw_node)
         assert tree_node.node_type == TreeNodeType.RIGID_CLUSTER
         assert tree_node.rooms == frozenset({1, 2, 3, 4, 5, 6})
         assert set(tree_node.metadata.get("poles", ())) == {1, 2}
@@ -444,7 +455,9 @@ class TestSafe2CutAllowlistContract:
             LayoutEdge(src=1, dst=4, direction=Direction.west),
             LayoutEdge(src=4, dst=2, direction=Direction.east),
         ]
-        tree_node = build_block_spqr_tree(frozenset({1, 2, 3, 4}), edges)
+        raw_node = build_block_spqr_tree(frozenset({1, 2, 3, 4}), edges)
+        graph = LayoutGraph(rooms={v: _make_room(v) for v in range(1, 5)}, edges=tuple(edges))
+        tree_node = SplitPairAllowlistFusionPass(graph).transform_node(raw_node)
         assert tree_node.node_type == TreeNodeType.SPLIT_PAIR_CONTAINER
         assert tree_node.rooms == frozenset({1, 2})
         assert tree_node.metadata.get("cut_type") == CutType.SPLIT_PAIR
@@ -466,7 +479,9 @@ class TestSafe2CutAllowlistContract:
             LayoutEdge(src=20, dst=21, direction=Direction.east),
             LayoutEdge(src=21, dst=2, direction=Direction.north),
         ]
-        tree_node = build_block_spqr_tree(frozenset({1, 2, 3, 4, 20, 21}), edges)
+        raw_node = build_block_spqr_tree(frozenset({1, 2, 3, 4, 20, 21}), edges)
+        graph = LayoutGraph(rooms={v: _make_room(v) for v in {1, 2, 3, 4, 20, 21}}, edges=tuple(edges))
+        tree_node = SplitPairAllowlistFusionPass(graph).transform_node(raw_node)
         assert tree_node.node_type == TreeNodeType.RIGID_CLUSTER
         assert tree_node.rooms == frozenset({1, 2, 3, 4, 20, 21})
         assert tree_node.metadata.get("cut_type") == CutType.SPLIT_PAIR
@@ -488,7 +503,9 @@ class TestSafe2CutAllowlistContract:
             LayoutEdge(src=7, dst=8, direction=Direction.south),
             LayoutEdge(src=8, dst=2, direction=Direction.east),
         ]
-        tree_node = build_block_spqr_tree(frozenset({1, 2, 3, 4, 5, 6, 7, 8}), edges)
+        raw_node = build_block_spqr_tree(frozenset({1, 2, 3, 4, 5, 6, 7, 8}), edges)
+        graph = LayoutGraph(rooms={v: _make_room(v) for v in range(1, 9)}, edges=tuple(edges))
+        tree_node = SplitPairAllowlistFusionPass(graph).transform_node(raw_node)
         assert tree_node.node_type == TreeNodeType.RIGID_CLUSTER
         assert tree_node.rooms == frozenset({1, 2, 3, 4, 5, 6, 7, 8})
         assert tree_node.children == ()
@@ -508,7 +525,9 @@ class TestSafe2CutAllowlistContract:
             LayoutEdge(src=6, dst=7, direction=Direction.west),
             LayoutEdge(src=7, dst=2, direction=Direction.south),
         ]
-        tree_node = build_block_spqr_tree(frozenset({1, 2, 3, 30, 4, 5, 6, 7}), edges)
+        raw_node = build_block_spqr_tree(frozenset({1, 2, 3, 30, 4, 5, 6, 7}), edges)
+        graph = LayoutGraph(rooms={v: _make_room(v) for v in {1, 2, 3, 30, 4, 5, 6, 7}}, edges=tuple(edges))
+        tree_node = SplitPairAllowlistFusionPass(graph).transform_node(raw_node)
         assert tree_node.node_type == TreeNodeType.RIGID_CLUSTER
         assert tree_node.rooms == frozenset({1, 2, 3, 30, 4, 5, 6, 7})
         assert tree_node.children == ()

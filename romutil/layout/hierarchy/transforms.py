@@ -260,6 +260,264 @@ class AnchorStrippingPass:
         return SolveTree(root=new_root, components=components, graph=tree.graph)
 
 
+def _collect_spqr_branch_rooms(node: SolveTreeNode) -> set[int]:
+    """Collect room IDs across an SPQR component and its non-articulation descendants."""
+    rooms = set(node.rooms)
+    for c in node.children:
+        if not _is_articulation_child(c):
+            rooms.update(_collect_spqr_branch_rooms(c))
+    return rooms
+
+
+def _is_safe_2cut_allowlist(
+    node: SolveTreeNode,
+    poles: tuple[int, int],
+    edges: Sequence[LayoutEdge],
+) -> bool:
+    """Evaluate whether candidate branches of a split-pair container satisfy the Safe 2-Cut Allowlist Contract.
+
+    Criteria:
+      1. Elasticity: All candidate branches must be elastic series loops without internal
+         biconnected rigid blocks or cross-cycles.
+      2. Single Port per Pole: Each candidate branch connects to pole u through exactly
+         one exit direction and pole v through exactly one exit direction.
+      3. Disjoint Half-Spaces: Candidate branches expand into disjoint half-spaces relative
+         to the inter-pole axis without transverse bracketing.
+    """
+    if len(poles) != 2:
+        return False
+    u, v = poles
+
+    candidate_branches = [c for c in node.children if not _is_articulation_child(c)]
+    if not candidate_branches:
+        return False
+
+    # Check 1 (Elasticity): All candidate branches must be elastic series loops
+    # without internal biconnected rigid blocks or cross-cycles.
+    for branch in candidate_branches:
+        if branch.node_type != TreeNodeType.SERIES_LOOP:
+            return False
+        spqr_sub_children = [c for c in branch.children if not _is_articulation_child(c)]
+        if spqr_sub_children:
+            return False
+
+    branch_paths: list[dict[int, tuple[int, int, int]]] = []
+    branch_exit_dirs_u: list[Direction] = []
+    branch_exit_dirs_v: list[Direction] = []
+
+    for branch in candidate_branches:
+        internal_rooms = _collect_spqr_branch_rooms(branch) - {u, v}
+        if not internal_rooms:
+            return False
+        branch_verts = internal_rooms | {u, v}
+
+        # Check 2 (Single Port per Pole): Each candidate branch connects to pole u
+        # through exactly one exit direction and pole v through exactly one exit direction.
+        u_dirs: set[Direction] = set()
+        v_dirs: set[Direction] = set()
+        for e in edges:
+            if e.cut:
+                continue
+            if e.src == u and e.dst in internal_rooms:
+                u_dirs.add(Direction(e.direction))
+            elif e.dst == u and e.src in internal_rooms:
+                u_dirs.add(Direction(e.direction).invert())
+
+            if e.src == v and e.dst in internal_rooms:
+                v_dirs.add(Direction(e.direction))
+            elif e.dst == v and e.src in internal_rooms:
+                v_dirs.add(Direction(e.direction).invert())
+
+        if len(u_dirs) != 1 or len(v_dirs) != 1:
+            return False
+
+        dir_u = next(iter(u_dirs))
+        dir_v = next(iter(v_dirs))
+        branch_exit_dirs_u.append(dir_u)
+        branch_exit_dirs_v.append(dir_v)
+
+        # Check elasticity / simple path structure by tracing from u to v
+        local_edges: dict[int, set[tuple[int, Direction]]] = {r: set() for r in branch_verts}
+        for e in edges:
+            if e.cut:
+                continue
+            if e.src in branch_verts and e.dst in branch_verts and {e.src, e.dst} != {u, v}:
+                local_edges[e.src].add((e.dst, Direction(e.direction)))
+                local_edges[e.dst].add((e.src, Direction(e.direction).invert()))
+
+        visited: set[int] = {u}
+        coords: dict[int, tuple[int, int, int]] = {u: (0, 0, 0)}
+
+        first_step = {nxt for nxt, d in local_edges[u] if nxt in internal_rooms and d == dir_u}
+        if len(first_step) != 1:
+            return False
+        curr = next(iter(first_step))
+        disp = direction_to_displacement(dir_u)
+        coords[curr] = disp
+        visited.add(curr)
+
+        while curr != v:
+            next_steps = {nxt for nxt, _ in local_edges[curr] if nxt not in visited and nxt in branch_verts}
+            if len(next_steps) != 1:
+                return False
+            nxt = next(iter(next_steps))
+            step_dirs = {d for n, d in local_edges[curr] if n == nxt}
+            if len(step_dirs) != 1:
+                return False
+            step_dir = next(iter(step_dirs))
+            s_disp = direction_to_displacement(step_dir)
+            c_curr = coords[curr]
+            coords[nxt] = (c_curr[0] + s_disp[0], c_curr[1] + s_disp[1], c_curr[2] + s_disp[2])
+            visited.add(nxt)
+            curr = nxt
+
+        if visited != branch_verts:
+            return False
+
+        branch_paths.append(coords)
+
+    # Check 3 (Disjoint Half-Spaces): Candidate branches expand into disjoint half-spaces
+    # relative to the inter-pole axis without transverse bracketing.
+    direct_edges = [e for e in edges if not e.cut and {e.src, e.dst} == {u, v}]
+    inter_axis: int | None = None
+    if direct_edges:
+        de = direct_edges[0]
+        d_dir = Direction(de.direction) if de.src == u else Direction(de.direction).invert()
+        disp_de = direction_to_displacement(d_dir)
+        for ax in (0, 1, 2):
+            if disp_de[ax] != 0:
+                inter_axis = ax
+                break
+
+    if inter_axis is None:
+        candidate_axes: set[int] = set()
+        for bp in branch_paths:
+            v_coord = bp[v]
+            max_d = max(abs(v_coord[0]), abs(v_coord[1]), abs(v_coord[2]))
+            if max_d > 0:
+                ax = 0 if abs(v_coord[0]) == max_d else (1 if abs(v_coord[1]) == max_d else 2)
+                candidate_axes.add(ax)
+        if len(candidate_axes) == 1:
+            inter_axis = next(iter(candidate_axes))
+        else:
+            return False
+
+    transverse_axes = [ax for ax in (0, 1, 2) if ax != inter_axis]
+
+    branch_signatures: list[tuple[int, ...]] = []
+    for i, bp in enumerate(branch_paths):
+        b_rooms = set(bp.keys())
+        sig_list: list[int] = []
+        for tax in transverse_axes:
+            vals = [bp[r][tax] for r in b_rooms]
+            min_val = min(vals)
+            max_val = max(vals)
+            # Transverse bracketing: expands on both negative and positive sides of the axis
+            if min_val < 0 and max_val > 0:
+                return False
+
+            u_step = direction_to_displacement(branch_exit_dirs_u[i])[tax]
+            v_step = direction_to_displacement(branch_exit_dirs_v[i])[tax]
+            if (u_step < 0 and v_step > 0) or (u_step > 0 and v_step < 0):
+                return False
+
+            if max_val > 0 or u_step > 0 or v_step > 0:
+                sig_list.append(1)
+            elif min_val < 0 or u_step < 0 or v_step < 0:
+                sig_list.append(-1)
+            else:
+                sig_list.append(0)
+
+        branch_signatures.append(tuple(sig_list))
+
+    # At most one branch can have signature (0, 0)
+    zero_count = sum(1 for sig in branch_signatures if all(s == 0 for s in sig))
+    if zero_count > 1:
+        return False
+
+    # Disjoint non-zero half-spaces
+    non_zero_sigs = [sig for sig in branch_signatures if any(s != 0 for s in sig)]
+    if len(non_zero_sigs) != len(set(non_zero_sigs)):
+        return False
+
+    return True
+
+
+class SplitPairAllowlistFusionPass:
+    """Evaluate candidate branches of split-pair containers against the Safe 2-Cut Allowlist contract.
+
+    Containers satisfying the contract remain split-pair containers for independent child solving.
+    Containers that fail are fused into a single combined RIGID_CLUSTER node.
+    """
+
+    def __init__(self, graph: LayoutGraph | None = None) -> None:
+        self._graph = graph
+
+    def _is_safe_allowlist(self, node: SolveTreeNode, poles: tuple[int, int], graph: LayoutGraph) -> bool:
+        """Evaluate candidate branches against the safe 2-cut allowlist contract."""
+        return _is_safe_2cut_allowlist(node, poles, graph.edges)
+
+    def transform_node(self, node: SolveTreeNode, graph: LayoutGraph | None = None) -> SolveTreeNode:
+        """Recursively evaluate safe 2-cut allowlist and fuse unsafe split-pair containers bottom-up."""
+        target_graph = graph or self._graph
+        if target_graph is None:
+            return node
+
+        if node.node_type == TreeNodeType.WORLD_ROOT:
+            transformed_children = tuple(self.transform_node(child, target_graph) for child in node.children)
+            return SolveTreeNode(
+                node_id=node.node_id if node.node_id else "",
+                node_type=node.node_type,
+                rooms=node.rooms,
+                children=transformed_children,
+                metadata=node.metadata,
+            )
+
+        # Recursively process children first (bottom-up)
+        transformed_children = tuple(self.transform_node(child, target_graph) for child in node.children)
+        current = SolveTreeNode(
+            node_id=node.node_id,
+            node_type=node.node_type,
+            rooms=node.rooms,
+            children=transformed_children,
+            metadata=node.metadata,
+        )
+
+        if current.node_type == TreeNodeType.SPLIT_PAIR_CONTAINER:
+            poles: tuple[int, int] | None = None
+            if isinstance(current.cut_contract, SplitPairCut) and len(current.cut_contract.poles) == 2:
+                poles = (current.cut_contract.poles[0], current.cut_contract.poles[1])
+            elif "poles" in current.metadata and len(current.metadata["poles"]) == 2:
+                raw_poles = tuple(current.metadata["poles"])
+                poles = (int(raw_poles[0]), int(raw_poles[1]))
+            elif len(current.rooms) == 2:
+                sorted_rooms = tuple(sorted(current.rooms))
+                poles = (sorted_rooms[0], sorted_rooms[1])
+
+            if poles is not None and not self._is_safe_allowlist(current, poles, target_graph):
+                art_children = tuple(c for c in current.children if _is_articulation_child(c))
+                fused_rooms = frozenset(_collect_spqr_branch_rooms(current))
+                return SolveTreeNode(
+                    node_id=current.node_id,
+                    node_type=TreeNodeType.RIGID_CLUSTER,
+                    rooms=fused_rooms,
+                    children=art_children,
+                    metadata=dict(current.metadata),
+                )
+
+        return current
+
+    def apply(self, tree: SolveTree) -> SolveTree:
+        """Apply safe 2-cut allowlist evaluation and branch fusion to a SolveTree."""
+        graph = self._graph or tree.graph
+        if graph is None or tree.root.node_type == TreeNodeType.EMPTY:
+            return tree
+
+        new_root = self.transform_node(tree.root, graph)
+        components = new_root.children if new_root.node_type == TreeNodeType.WORLD_ROOT else (new_root,)
+        return SolveTree(root=new_root, components=components, graph=tree.graph)
+
+
 class TransverseSNodeSplitPass:
     """Split series loop (S-node) children with parallel entrance corridors into sibling clusters.
 
