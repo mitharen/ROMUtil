@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from romutil.layout.milp.clearance import (
     ClearanceConstraintBuilder,
+    ClearanceViolation,
     apply_clearance_constraints,
+    detect_cluster_collisions,
 )
 from romutil.layout.milp.cluster import (
     HierarchicalClusterSolver,
@@ -40,6 +42,7 @@ from romutil.types import LayoutSolverError
 __all__ = [
     "ActiveEdge",
     "ClearanceConstraintBuilder",
+    "ClearanceViolation",
     "ClusterFormulation",
     "ClusterInventory",
     "GatewayCutHandler",
@@ -53,6 +56,7 @@ __all__ = [
     "apply_clearance_constraints",
     "calculate_dynamic_bounds",
     "derive_child_sub_boxes",
+    "detect_cluster_collisions",
     "formulate_cluster_model",
     "inventory_cluster",
     "normalize_cluster_solution",

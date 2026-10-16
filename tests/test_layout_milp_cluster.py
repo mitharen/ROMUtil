@@ -548,6 +548,14 @@ class TestParentFallbackAndRobustness:
             with pytest.raises(LayoutSolverError):
                 solve_cluster(parent, {child.node_id: child_sol}, graph)
 
+    def test_solve_cluster_unexpected_exception_wrapping(self) -> None:
+        """Unexpected non-LayoutSolverError exceptions in solve_cluster are wrapped in LayoutSolverError."""
+        node = SolveTreeNode(node_id="p_unexp", node_type="leaf", rooms=frozenset({1, 2}))
+        graph = _make_graph([1, 2], [(1, 2, Direction.east, 1)])
+        with patch("romutil.layout.milp.cluster.formulate_cluster_model", side_effect=RuntimeError("Simulated formulation error")):
+            with pytest.raises(LayoutSolverError, match="MILP solver failed for cluster 'p_unexp': Simulated formulation error"):
+                solve_cluster(node, {}, graph)
+
     def test_solver_infeasible_status_raises_error(self) -> None:
         """Infeasible solver status cleanly raises LayoutSolverError."""
         parent_rooms = [1, 2]

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Mapping
 
 from romutil.layout.ir import LayoutGraph, NodeSolution, SolveTreeNode
+from romutil.layout.milp.clearance import detect_cluster_collisions
 from romutil.layout.milp.formulation import formulate_cluster_model
 from romutil.layout.milp.inventory import (
     get_child_boundary_ports,
@@ -16,7 +17,7 @@ from romutil.layout.milp.normalization import (
     normalize_empty_cluster,
     normalize_single_room_cluster,
 )
-from romutil.layout.milp.solver import solve_and_extract
+from romutil.layout.milp.solver import SolvedClusterExtraction, solve_and_extract
 from romutil.types import LayoutOptions, LayoutSolverError
 
 
@@ -30,12 +31,11 @@ def solve_cluster(
 ) -> NodeSolution:
     """Solve layout cluster embedding constituent rooms and child macro-boxes via MILP.
 
-    Coordinates the canonical 5-stage MILP pipeline:
+    Coordinates the canonical MILP layout optimization pipeline:
       1. Inventory & Interface Classification (inventory_cluster)
       2. Basic MILP Formulation (formulate_cluster_model)
-      3. Geometric Clearance & Separation Constraints (formulation.apply_clearances)
-      4. Solve & Extraction (solve_and_extract)
-      5. Coordinate Normalization (normalize_cluster_solution)
+      3. Iterative Cutting-Plane Clearance & Solve (detect_cluster_collisions & solve_and_extract)
+      4. Coordinate Normalization (normalize_cluster_solution)
 
     Args:
         node: SolveTreeNode representing the cluster to lay out.
@@ -88,15 +88,32 @@ def solve_cluster(
         # Stage 2: Basic MILP Formulation
         formulation = formulate_cluster_model(inventory=inventory, options=options)
 
-        # Stage 3: Geometric Clearance & Separation Constraints
-        formulation.apply_clearances()
+        # Stage 3: Iterative Cutting-Plane Clearance & Solve
+        max_iterations = 15
+        extraction: SolvedClusterExtraction | None = None
+        for _ in range(max_iterations):
+            extraction = solve_and_extract(
+                formulation=formulation,
+                solver_name=solver_name,
+                options=options,
+            )
+            violations = detect_cluster_collisions(
+                formulation=formulation,
+                extraction=extraction,
+            )
+            if not violations:
+                break
+            new_cuts = formulation.clearance_builder.inject_clearance_cuts(violations)
+            if new_cuts == 0:
+                raise LayoutSolverError(
+                    f"MILP solver encountered unresolvable geometric collisions for cluster '{node.node_id}'."
+                )
+        else:
+            raise LayoutSolverError(
+                f"MILP solver failed to resolve all geometric collisions within {max_iterations} iterations for cluster '{node.node_id}'."
+            )
 
-        # Stage 4: Solve & Extraction
-        extraction = solve_and_extract(
-            formulation=formulation,
-            solver_name=solver_name,
-            options=options,
-        )
+        assert extraction is not None
 
         debug_dir = (
             debug_solve_dir

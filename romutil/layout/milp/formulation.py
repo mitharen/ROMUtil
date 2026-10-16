@@ -134,6 +134,7 @@ class ClusterFormulation:
         self.m_big = 2 * self.m_coord
         self.model = pyo.ConcreteModel()
         self._build_model()
+        self.clearance_builder = ClearanceConstraintBuilder(self)
 
     def _build_model(self) -> None:
         """Declare variables, fix anchors, and attach baseline constraints and objective."""
@@ -144,9 +145,9 @@ class ClusterFormulation:
         # Local room and boundary port coordinates
         local_rooms = tuple(sorted(set(inventory.rooms) | set(inventory.boundary_ports)))
         if local_rooms:
-            model.x = pyo.Var(local_rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord))
-            model.y = pyo.Var(local_rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord))
-            model.z = pyo.Var(local_rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord))
+            model.x = pyo.Var(local_rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord), initialize=0)
+            model.y = pyo.Var(local_rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord), initialize=0)
+            model.z = pyo.Var(local_rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord), initialize=0)
 
             anchor: int | None = None
             if inventory.boundary_ports:
@@ -161,9 +162,9 @@ class ClusterFormulation:
 
         # Child macro-box origins
         child_ids = [c.node_id for c in inventory.children]
-        model.cx = pyo.Var(child_ids, domain=pyo.Integers, bounds=(-m_coord, m_coord))
-        model.cy = pyo.Var(child_ids, domain=pyo.Integers, bounds=(-m_coord, m_coord))
-        model.cz = pyo.Var(child_ids, domain=pyo.Integers, bounds=(-m_coord, m_coord))
+        model.cx = pyo.Var(child_ids, domain=pyo.Integers, bounds=(-m_coord, m_coord), initialize=0)
+        model.cy = pyo.Var(child_ids, domain=pyo.Integers, bounds=(-m_coord, m_coord), initialize=0)
+        model.cz = pyo.Var(child_ids, domain=pyo.Integers, bounds=(-m_coord, m_coord), initialize=0)
 
         if not local_rooms and child_ids:
             first_c = child_ids[0]
@@ -233,43 +234,6 @@ class ClusterFormulation:
                 else:
                     model.edge_z.add(dst_z - src_z == 0)
 
-        # Parent bounding box variables and constraints
-        model.x_min = pyo.Var(domain=pyo.Integers, bounds=(-m_coord, m_coord))
-        model.x_max = pyo.Var(domain=pyo.Integers, bounds=(-m_coord, m_coord))
-        model.y_min = pyo.Var(domain=pyo.Integers, bounds=(-m_coord, m_coord))
-        model.y_max = pyo.Var(domain=pyo.Integers, bounds=(-m_coord, m_coord))
-        model.z_min = pyo.Var(domain=pyo.Integers, bounds=(-m_coord, m_coord))
-        model.z_max = pyo.Var(domain=pyo.Integers, bounds=(-m_coord, m_coord))
-
-        model.bbox_bounds = pyo.ConstraintList()
-        rooms_to_bound = inventory.rooms if inventory.rooms else inventory.boundary_ports
-        for u in rooms_to_bound:
-            model.bbox_bounds.add(model.x_max >= model.x[u])
-            model.bbox_bounds.add(model.x_min <= model.x[u])
-            model.bbox_bounds.add(model.y_max >= model.y[u])
-            model.bbox_bounds.add(model.y_min <= model.y[u])
-            model.bbox_bounds.add(model.z_max >= model.z[u])
-            model.bbox_bounds.add(model.z_min <= model.z[u])
-
-        for child in inventory.children:
-            cid = child.node_id
-            c_sol = inventory.child_solutions.get(cid)
-            box = c_sol.bounding_box if c_sol else None
-            if box is not None:
-                model.bbox_bounds.add(model.x_max >= model.cx[cid] + box.max_x)
-                model.bbox_bounds.add(model.x_min <= model.cx[cid] + box.min_x)
-                model.bbox_bounds.add(model.y_max >= model.cy[cid] + box.max_y)
-                model.bbox_bounds.add(model.y_min <= model.cy[cid] + box.min_y)
-                model.bbox_bounds.add(model.z_max >= model.cz[cid] + box.max_z)
-                model.bbox_bounds.add(model.z_min <= model.cz[cid] + box.min_z)
-            else:
-                model.bbox_bounds.add(model.x_max >= model.cx[cid])
-                model.bbox_bounds.add(model.x_min <= model.cx[cid])
-                model.bbox_bounds.add(model.y_max >= model.cy[cid])
-                model.bbox_bounds.add(model.y_min <= model.cy[cid])
-                model.bbox_bounds.add(model.z_max >= model.cz[cid])
-                model.bbox_bounds.add(model.z_min <= model.cz[cid])
-
         # Objective function
         stretch_expr = (
             sum(
@@ -287,13 +251,8 @@ class ClusterFormulation:
             if hasattr(model, "s_transverse_p") and len(model.s_transverse_p) > 0
             else 0
         )
-        span_expr = (
-            (model.x_max - model.x_min)
-            + (model.y_max - model.y_min)
-            + (model.z_max - model.z_min)
-        )
         model.obj = pyo.Objective(
-            expr=stretch_expr + span_expr + transverse_penalty,
+            expr=stretch_expr + transverse_penalty,
             sense=pyo.minimize,
         )
 
@@ -373,7 +332,7 @@ class ClusterFormulation:
 
     def apply_clearances(self) -> None:
         """Enforce disjunctive Big-M geometric clearance and non-overlap constraints."""
-        ClearanceConstraintBuilder(self).build()
+        self.clearance_builder.build()
 
     def apply_clearance_constraints(self) -> None:
         """Enforce disjunctive Big-M geometric clearance constraints (alias for apply_clearances)."""
@@ -381,31 +340,31 @@ class ClusterFormulation:
 
     def apply_parent_room_separation(self) -> None:
         """Enforce room-room non-overlap separation among parent rooms."""
-        ClearanceConstraintBuilder(self).add_parent_room_separation()
+        self.clearance_builder.add_parent_room_separation()
 
     def apply_child_child_separation(self) -> None:
         """Enforce pairwise child-child sub-box separation among non-shared child clusters."""
-        ClearanceConstraintBuilder(self).add_child_child_separation()
+        self.clearance_builder.add_child_child_separation()
 
     def apply_room_child_separation(self) -> None:
         """Enforce parent room vs. child sub-box clearance."""
-        ClearanceConstraintBuilder(self).add_room_child_separation()
+        self.clearance_builder.add_room_child_separation()
 
     def apply_doorway_clearance(self) -> None:
         """Enforce external doorway clearance for boundary ports against child sub-boxes and parent rooms."""
-        ClearanceConstraintBuilder(self).add_doorway_clearance()
+        self.clearance_builder.add_doorway_clearance()
 
     def apply_corridor_room_separation(self) -> None:
         """Enforce corridor segment non-penetration against third-party parent rooms."""
-        ClearanceConstraintBuilder(self).add_corridor_room_separation()
+        self.clearance_builder.add_corridor_room_separation()
 
     def apply_corridor_child_separation(self) -> None:
         """Enforce corridor segment non-penetration against sibling child sub-boxes."""
-        ClearanceConstraintBuilder(self).add_corridor_child_separation()
+        self.clearance_builder.add_corridor_child_separation()
 
     def apply_corridor_crossing_separation(self) -> None:
         """Enforce corridor crossing separation between non-incident orthogonal corridor segments."""
-        ClearanceConstraintBuilder(self).add_corridor_crossing_separation()
+        self.clearance_builder.add_corridor_crossing_separation()
 
 
 def formulate_cluster_model(

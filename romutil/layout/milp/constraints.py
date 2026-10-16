@@ -45,6 +45,12 @@ def add_disjunctive_box_separation(
 
     pair_list = list(pairs)
     clean_prefix = prefix.rstrip("_") if prefix else ""
+    target_prefix = clean_prefix
+    if clean_prefix and hasattr(model, f"{clean_prefix}_br"):
+        idx = 1
+        while hasattr(model, f"{clean_prefix}_{idx}_br"):
+            idx += 1
+        target_prefix = f"{clean_prefix}_{idx}"
 
     var_r = pyo.Var(pair_list, domain=pyo.Binary)
     var_l = pyo.Var(pair_list, domain=pyo.Binary)
@@ -61,15 +67,15 @@ def add_disjunctive_box_separation(
     sep_u = pyo.ConstraintList()
     sep_d = pyo.ConstraintList()
 
-    if clean_prefix:
-        setattr(model, f"{clean_prefix}_br", var_r)
-        setattr(model, f"{clean_prefix}_bl", var_l)
-        setattr(model, f"{clean_prefix}_ba", var_a)
-        setattr(model, f"{clean_prefix}_bb", var_b)
-        setattr(model, f"{clean_prefix}_bu", var_u)
-        setattr(model, f"{clean_prefix}_bd", var_d)
+    if target_prefix:
+        setattr(model, f"{target_prefix}_br", var_r)
+        setattr(model, f"{target_prefix}_bl", var_l)
+        setattr(model, f"{target_prefix}_ba", var_a)
+        setattr(model, f"{target_prefix}_bb", var_b)
+        setattr(model, f"{target_prefix}_bu", var_u)
+        setattr(model, f"{target_prefix}_bd", var_d)
 
-        sep_base = clean_prefix if clean_prefix.endswith("sep") else f"{clean_prefix}_sep"
+        sep_base = target_prefix if target_prefix.endswith("sep") else f"{target_prefix}_sep"
         setattr(model, f"{sep_base}_sum", sep_sum)
         setattr(model, f"{sep_base}_r", sep_r)
         setattr(model, f"{sep_base}_l", sep_l)
