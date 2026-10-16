@@ -525,27 +525,64 @@ class TransverseSNodeSplitPass:
     corridors along the same cardinal axis, an inter-pole span discrepancy along the transverse
     axis forces shear distortion if the child is solved as a single rigid origin component.
     This transformation severs the first transverse internal spine corridor, decomposing the S-node
-    into two sibling SolveTreeNode clusters each anchored to its respective parent pole.
+    into two sibling SolveTreeNode clusters each anchored to its respective pole.
+
+    If an S-node's immediate container parent does not own its boundary poles (as in split-pair
+    containers with empty canonical room sets), the split articulation clusters bubble up to the
+    nearest owning ancestor S-node or R-node. Any split-pair container left with only a single
+    child is collapsed and promoted. S-nodes whose poles are directly connected by an edge
+    preserve tight Euclidean cycles and are never severed.
     """
 
     def __init__(self, graph: LayoutGraph | None = None) -> None:
         self._graph = graph
 
-    def transform_node(self, node: SolveTreeNode, graph: LayoutGraph | None = None) -> SolveTreeNode:
+    def transform_node(
+        self,
+        node: SolveTreeNode,
+        graph: LayoutGraph | None = None,
+        ancestor_stack: Sequence[SolveTreeNode] | None = None,
+    ) -> SolveTreeNode:
         """Recursively split transverse S-nodes on a SolveTreeNode."""
         target_graph = graph or self._graph
         if target_graph is None:
             return node
-        return self._split_node(node, target_graph)
+        new_node, _ = self._split_node(node, target_graph, list(ancestor_stack or []))
+        return new_node
 
-    def _split_node(self, node: SolveTreeNode, graph: LayoutGraph) -> SolveTreeNode:
+    def _split_node(
+        self,
+        node: SolveTreeNode,
+        graph: LayoutGraph,
+        ancestor_stack: list[SolveTreeNode],
+    ) -> tuple[SolveTreeNode, list[SolveTreeNode]]:
+        original_child_count = len(node.children)
         updated_children: list[SolveTreeNode] = []
+        pending_bubbles: list[SolveTreeNode] = []
 
+        new_stack = ancestor_stack + [node]
         for child in node.children:
-            child_processed = self._split_node(child, graph)
+            ch_processed, ch_bubbles = self._split_node(child, graph, new_stack)
+            updated_children.append(ch_processed)
+            pending_bubbles.extend(ch_bubbles)
 
+        # Adopt any bubbled children whose articulation anchor is owned by this node
+        adopted: list[SolveTreeNode] = []
+        still_bubbling: list[SolveTreeNode] = []
+        for b in pending_bubbles:
+            anchor = _get_anchor_vnum(b)
+            if anchor is not None and anchor in node.rooms:
+                adopted.append(b)
+            else:
+                still_bubbling.append(b)
+
+        updated_children.extend(adopted)
+
+        final_children: list[SolveTreeNode] = []
+
+        for child_processed in updated_children:
             if child_processed.node_type != TreeNodeType.SERIES_LOOP:
-                updated_children.append(child_processed)
+                final_children.append(child_processed)
                 continue
 
             poles: tuple[int, int] | None = None
@@ -557,18 +594,34 @@ class TransverseSNodeSplitPass:
                     poles = (int(raw[0]), int(raw[1]))
 
             if poles is None or len(poles) != 2:
-                updated_children.append(child_processed)
+                final_children.append(child_processed)
                 continue
 
             p0, p1 = poles
-            if p0 not in node.rooms or p1 not in node.rooms:
-                updated_children.append(child_processed)
-                continue
+
+            # Identify the owning node: either the immediate parent or closest ancestor
+            owning_node: SolveTreeNode | None = None
+            if p0 in node.rooms and p1 in node.rooms:
+                owning_node = node
+            else:
+                for anc in reversed(ancestor_stack):
+                    if p0 in anc.rooms and p1 in anc.rooms:
+                        owning_node = anc
+                        break
+
+            if owning_node is None:
+                if ancestor_stack and ancestor_stack[0].node_type == TreeNodeType.WORLD_ROOT:
+                    owning_node = ancestor_stack[0]
+                elif node.node_type == TreeNodeType.WORLD_ROOT:
+                    owning_node = node
+                else:
+                    final_children.append(child_processed)
+                    continue
 
             child_all_rooms = _collect_subtree_rooms(child_processed)
             internal_rooms = child_all_rooms - {p0, p1}
             if not internal_rooms:
-                updated_children.append(child_processed)
+                final_children.append(child_processed)
                 continue
 
             p0_dirs: set[Direction] = set()
@@ -587,7 +640,7 @@ class TransverseSNodeSplitPass:
                     p1_dirs.add(Direction(e.direction).invert())
 
             if len(p0_dirs) != 1 or len(p1_dirs) != 1:
-                updated_children.append(child_processed)
+                final_children.append(child_processed)
                 continue
 
             dir_0 = next(iter(p0_dirs))
@@ -599,7 +652,7 @@ class TransverseSNodeSplitPass:
             axis_1 = 0 if disp_1[0] != 0 else (1 if disp_1[1] != 0 else (2 if disp_1[2] != 0 else None))
 
             if axis_0 is None or axis_1 is None or axis_0 != axis_1:
-                updated_children.append(child_processed)
+                final_children.append(child_processed)
                 continue
 
             entrance_axis = axis_0
@@ -634,8 +687,33 @@ class TransverseSNodeSplitPass:
                         queue.append(curr_path + [v])
 
             if not spine_path or len(spine_path) < 3:
-                updated_children.append(child_processed)
+                final_children.append(child_processed)
                 continue
+
+            # If boundary poles are directly connected by an edge and the child spine's
+            # transverse displacement matches the direct edge displacement, the Euclidean
+            # cycle is tight with zero discrepancy; preserve it intact.
+            direct_edges = [
+                (Direction(e.direction) if e.src == p0 else Direction(e.direction).invert())
+                for e in graph.edges
+                if not e.cut and {e.src, e.dst} == {p0, p1}
+            ]
+            if direct_edges:
+                direct_disp = direction_to_displacement(direct_edges[0])
+                direct_trans = direct_disp[transverse_axis]
+                child_trans = 0
+                for i in range(len(spine_path) - 1):
+                    u_i, v_i = spine_path[i], spine_path[i + 1]
+                    s_dirs = [
+                        (Direction(e.direction) if e.src == u_i else Direction(e.direction).invert())
+                        for e in graph.edges
+                        if not e.cut and ((e.src == u_i and e.dst == v_i) or (e.dst == u_i and e.src == v_i))
+                    ]
+                    if s_dirs:
+                        child_trans += direction_to_displacement(s_dirs[0])[transverse_axis]
+                if direct_trans == child_trans:
+                    final_children.append(child_processed)
+                    continue
 
             sever_idx: int | None = None
             for i in range(1, len(spine_path) - 2):
@@ -652,9 +730,26 @@ class TransverseSNodeSplitPass:
                     if disp[transverse_axis] != 0:
                         sever_idx = i
                         break
+                else:
+                    for sub_c in child_processed.children:
+                        sub_poles = _get_child_poles_or_anchor(sub_c)
+                        if set(sub_poles) == {u_i, v_i}:
+                            sub_rooms = _collect_subtree_rooms(sub_c) - {u_i, v_i}
+                            sub_dirs = [
+                                (Direction(e.direction) if e.src == u_i else Direction(e.direction).invert())
+                                for e in graph.edges
+                                if not e.cut and ((e.src == u_i and e.dst in sub_rooms) or (e.dst == u_i and e.src in sub_rooms))
+                            ]
+                            if sub_dirs:
+                                disp = direction_to_displacement(sub_dirs[0])
+                                if disp[transverse_axis] != 0:
+                                    sever_idx = i
+                                    break
+                    if sever_idx is not None:
+                        break
 
             if sever_idx is None:
-                updated_children.append(child_processed)
+                final_children.append(child_processed)
                 continue
 
             u_star = spine_path[sever_idx]
@@ -673,7 +768,7 @@ class TransverseSNodeSplitPass:
                     adj_severed[e.dst].append(e.src)
             for sub_c in child_processed.children:
                 sub_poles = _get_child_poles_or_anchor(sub_c)
-                if len(sub_poles) == 2 and sub_poles <= spine_verts and sub_poles != {u_star, v_star}:
+                if len(sub_poles) == 2 and sub_poles <= spine_verts and set(sub_poles) != {u_star, v_star}:
                     sq0, sq1 = tuple(sub_poles)
                     adj_severed[sq0].append(sq1)
                     adj_severed[sq1].append(sq0)
@@ -692,7 +787,7 @@ class TransverseSNodeSplitPass:
             rooms_b = frozenset(child_processed.rooms - rooms_a)
 
             if not rooms_a or not rooms_b or p0 not in comp_a or p1 in comp_a:
-                updated_children.append(child_processed)
+                final_children.append(child_processed)
                 continue
 
             children_a: list[SolveTreeNode] = []
@@ -737,14 +832,34 @@ class TransverseSNodeSplitPass:
                 metadata=meta_b,
             )
 
-            updated_children.extend([node_a, node_b])
+            if owning_node is node:
+                final_children.extend([node_a, node_b])
+            else:
+                still_bubbling.extend([node_a, node_b])
 
-        return SolveTreeNode(
-            node_id=node.node_id,
-            node_type=node.node_type,
-            rooms=node.rooms,
-            children=tuple(updated_children),
-            metadata=node.metadata,
+        # If container was left with 1 child after a split, collapse and promote it
+        if (
+            (node.node_type == TreeNodeType.SPLIT_PAIR_CONTAINER or not node.rooms)
+            and node.node_type != TreeNodeType.WORLD_ROOT
+            and original_child_count > 1
+            and len(final_children) == 1
+            and not adopted
+        ):
+            return final_children[0], still_bubbling
+
+        if node.node_type == TreeNodeType.WORLD_ROOT and still_bubbling:
+            final_children.extend(still_bubbling)
+            still_bubbling = []
+
+        return (
+            SolveTreeNode(
+                node_id=node.node_id,
+                node_type=node.node_type,
+                rooms=node.rooms,
+                children=tuple(final_children),
+                metadata=node.metadata,
+            ),
+            still_bubbling,
         )
 
     def apply(self, tree: SolveTree) -> SolveTree:
@@ -753,7 +868,7 @@ class TransverseSNodeSplitPass:
         if graph is None or tree.root.node_type == TreeNodeType.EMPTY:
             return tree
 
-        new_root = self.transform_node(tree.root, graph)
+        new_root, _ = self._split_node(tree.root, graph, [])
         components = new_root.children if new_root.node_type == TreeNodeType.WORLD_ROOT else (new_root,)
         return SolveTree(root=new_root, components=components, graph=tree.graph)
 

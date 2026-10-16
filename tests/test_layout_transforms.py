@@ -44,12 +44,22 @@ def _make_room(vnum: int) -> Room:
     )
 
 
-def _make_graph(rooms: list[int], edges: list[tuple[int, int, Direction]]) -> LayoutGraph:
+def _make_graph(
+    rooms: list[int],
+    edges: list[tuple[int, int, Direction]],
+    cuts: Sequence[tuple[int, int]] | None = None,
+) -> LayoutGraph:
     """Helper to construct a LayoutGraph."""
+    cut_set = set(cuts) if cuts else set()
     return LayoutGraph(
         rooms={v: _make_room(v) for v in rooms},
         edges=tuple(
-            LayoutEdge(src=u, dst=v, direction=d, cut=False)
+            LayoutEdge(
+                src=u,
+                dst=v,
+                direction=d,
+                cut=((u, v) in cut_set or (v, u) in cut_set),
+            )
             for u, v, d in edges
         ),
     )
@@ -642,6 +652,310 @@ class TestTransformHelpersAndEdgeCases:
         c_1 = [c for c in res.children if c.metadata.get("anchor_vnum") == 1][0]
         assert len(c_1.children) == 1
         assert c_1.children[0].node_id == "nested_orphan"
+
+    def test_transverse_s_node_split_sibling_bubbling_past_container(self) -> None:
+        """S-node under split-pair container splits, bubbles to owning grandparent, and collapses container."""
+        # Graph with poles 1, 2 owned by grandparent.
+        # Inside s_split (poles 1, 2): 1 -> 10 (North), 10 -> 11 (East), 11 -> 20 (South), 20 -> 2 (South invert).
+        # Inside s_other (poles 1, 2): 1 -> 30 (East), 30 -> 2 (East).
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 20, 30],
+            edges=[
+                (1, 10, Direction.north),
+                (10, 11, Direction.east),
+                (11, 20, Direction.north),
+                (2, 20, Direction.north),
+                (1, 30, Direction.east),
+                (30, 2, Direction.east),
+            ],
+        )
+        s_split = SolveTreeNode(
+            node_id="s_split",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        s_other = SolveTreeNode(
+            node_id="s_other",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({30}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        container = SolveTreeNode(
+            node_id="p_container",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset(),
+            children=(s_split, s_other),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        grandparent = SolveTreeNode(
+            node_id="grandparent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(container,),
+        )
+
+        res = TransverseSNodeSplitPass(graph).transform_node(grandparent)
+
+        # Container is collapsed into promoted s_other, and s_split is bubbled into two articulation clusters
+        child_ids = {c.node_id for c in res.children}
+        assert "s_other" in child_ids
+        assert "s_split_a" in child_ids
+        assert "s_split_b" in child_ids
+        assert len(res.children) == 3
+
+        c_a = [c for c in res.children if c.node_id == "s_split_a"][0]
+        c_b = [c for c in res.children if c.node_id == "s_split_b"][0]
+        assert c_a.metadata.get("anchor_vnum") == 1
+        assert c_b.metadata.get("anchor_vnum") == 2
+        assert c_a.rooms == frozenset({10})
+        assert c_b.rooms == frozenset({11, 20})
+
+    def test_transverse_s_node_split_direct_edge_cycle_preserved(self) -> None:
+        """S-node whose poles are directly connected by an edge preserves tight Euclidean cycle and is never severed."""
+        # Poles 1 and 2 are directly connected by an edge in graph
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 20],
+            edges=[
+                (1, 2, Direction.north),
+                (1, 10, Direction.west),
+                (10, 11, Direction.north),
+                (11, 20, Direction.east),
+                (2, 20, Direction.west),
+            ],
+        )
+        child = SolveTreeNode(
+            node_id="s_cycle",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+
+        res = TransverseSNodeSplitPass(graph).transform_node(parent)
+        # s_cycle must remain intact as a single child
+        assert len(res.children) == 1
+        assert res.children[0].node_id == "s_cycle"
+
+    def test_transverse_s_node_split_compound_child_transverse_span(self) -> None:
+        """S-node whose internal spine path is bridged transversely by a child node severs across that child span."""
+        # S-node connects to parent 1, 2 via North entrances:
+        # 1 -> 10 (North), 2 -> 20 (North).
+        # Between 10 and 20, span is bridged by child_bridge (poles 10, 20) with East entrance: 10 -> 30 (East), 30 -> 20 (East).
+        graph = _make_graph(
+            rooms=[1, 2, 10, 20, 30],
+            edges=[
+                (1, 10, Direction.north),
+                (2, 20, Direction.north),
+                (10, 30, Direction.east),
+                (30, 20, Direction.east),
+            ],
+        )
+        child_bridge = SolveTreeNode(
+            node_id="bridge_child",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({30}),
+            children=(),
+            metadata={"poles": (10, 20), "cut_type": CutType.SPLIT_PAIR},
+        )
+        s_compound = SolveTreeNode(
+            node_id="s_compound",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 20}),
+            children=(child_bridge,),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(s_compound,),
+        )
+
+        res = TransverseSNodeSplitPass(graph).transform_node(parent)
+        assert len(res.children) == 2
+        c_a = [c for c in res.children if c.node_id == "s_compound_a"][0]
+        c_b = [c for c in res.children if c.node_id == "s_compound_b"][0]
+        assert c_a.rooms == frozenset({10})
+        assert c_b.rooms == frozenset({20})
+        assert len(c_a.children) == 1
+        assert c_a.children[0].node_id == "bridge_child"
+
+    def test_transverse_s_node_split_no_owning_ancestor_skips(self) -> None:
+        """S-node whose poles are not owned by any ancestor is skipped without severing."""
+        graph = _make_graph(
+            rooms=[10, 11, 20],
+            edges=[
+                (99, 10, Direction.north),
+                (10, 11, Direction.east),
+                (11, 20, Direction.north),
+                (100, 20, Direction.north),
+            ],
+        )
+        child = SolveTreeNode(
+            node_id="orphan_s",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 20}),
+            children=(),
+            metadata={"poles": (99, 100)},
+        )
+        parent = SolveTreeNode(
+            node_id="empty_parent",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset(),
+            children=(child,),
+        )
+        res = TransverseSNodeSplitPass(graph).transform_node(parent)
+        assert len(res.children) == 1
+        assert res.children[0].node_id == "orphan_s"
+
+    def test_transverse_s_node_split_child_partition_fallback_side_b(self) -> None:
+        """Subtree fallback partition assigns nested child to side B when overlapping with rooms_b."""
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 20],
+            edges=[
+                (1, 10, Direction.west),
+                (10, 11, Direction.north),
+                (11, 20, Direction.north),
+                (2, 20, Direction.west),
+            ],
+        )
+        nested = SolveTreeNode(
+            node_id="nested_on_b",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({20}),  # Belongs to comp_b
+            children=(),
+        )
+        child = SolveTreeNode(
+            node_id="s_b_nested",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 10, 11, 20}),
+            children=(nested,),
+            metadata={"poles": (1, 2)},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+        res = TransverseSNodeSplitPass(graph).transform_node(parent)
+        assert len(res.children) == 2
+        c_2 = [c for c in res.children if c.metadata.get("anchor_vnum") == 2][0]
+        assert len(c_2.children) == 1
+        assert c_2.children[0].node_id == "nested_on_b"
+
+    def test_transverse_s_node_split_empty_internals_and_invalid_poles(self) -> None:
+        """S-node with no internal rooms or invalid pole metadata is skipped without error."""
+        graph = _make_graph(rooms=[1, 2], edges=[])
+        # Only poles in rooms, no internal rooms
+        c1 = SolveTreeNode(
+            node_id="s_empty_internals",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2}),
+            children=(),
+            metadata={"poles": (1, 2)},
+        )
+        # Invalid poles metadata (not length 2)
+        c2 = SolveTreeNode(
+            node_id="s_bad_poles",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 3}),
+            children=(),
+            metadata={"poles": (1,)},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(c1, c2),
+        )
+        res = TransverseSNodeSplitPass(graph).transform_node(parent)
+        assert len(res.children) == 2
+
+    def test_transverse_s_node_split_world_root_bubble_adoption(self) -> None:
+        """Articulations that bubble past intermediate containers are adopted at world root."""
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 20],
+            edges=[
+                (1, 10, Direction.north),
+                (10, 11, Direction.east),
+                (11, 20, Direction.north),
+                (2, 20, Direction.north),
+            ],
+        )
+        s_child = SolveTreeNode(
+            node_id="s_deep",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        container1 = SolveTreeNode(
+            node_id="cont1",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset(),
+            children=(s_child,),
+        )
+        container2 = SolveTreeNode(
+            node_id="cont2",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset(),
+            children=(container1,),
+        )
+        world_root = SolveTreeNode(
+            node_id="world_root",
+            node_type=TreeNodeType.WORLD_ROOT,
+            rooms=frozenset(),
+            children=(container2,),
+        )
+        tree = SolveTree(root=world_root, components=(container2,), graph=graph)
+        res = TransverseSNodeSplitPass(graph).apply(tree)
+        # World root absorbs bubbles that reached the top without owner
+        assert len(res.root.children) >= 2
+
+    def test_transverse_s_node_split_cut_edges_and_contract_poles(self) -> None:
+        """Cut edges and invalid contract poles are handled gracefully."""
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 20],
+            edges=[
+                (1, 10, Direction.north),
+                (10, 11, Direction.east),
+                (11, 20, Direction.north),
+                (2, 20, Direction.north),
+            ],
+            cuts=[(1, 10)],  # Cut edge from p0
+        )
+        s_cut = SolveTreeNode(
+            node_id="s_cut",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 20}),
+            children=(),
+            metadata={"cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        s_bad_contract = SolveTreeNode(
+            node_id="s_bad_contract",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 20}),
+            children=(),
+            metadata={"cut_contract": SplitPairCut(poles=(1,))},  # Bad length
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(s_cut, s_bad_contract),
+        )
+        res = TransverseSNodeSplitPass(graph).transform_node(parent)
+        assert len(res.children) == 2
 
 
 class TestSplitPairAllowlistFusionPass:
