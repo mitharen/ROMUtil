@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Sequence
 from unittest.mock import MagicMock, patch
 
@@ -30,6 +31,7 @@ from romutil.layout import (
     build_block_spqr_tree,
     solve_cluster,
 )
+from romutil.layout.milp.formulation import ClusterFormulation
 from romutil.layout.milp.inventory import (
     ClusterInventory,
     GatewayCutHandler,
@@ -37,7 +39,10 @@ from romutil.layout.milp.inventory import (
     SplitPairHandler,
     derive_child_sub_boxes,
     get_child_boundary_ports,
+    inventory_cluster,
 )
+from romutil.layout.milp.solver import solve_and_extract
+from romutil.parser import parse_file
 from romutil.layout.geometry import (
     BoundingBox3D,
     Segment3D,
@@ -2627,6 +2632,72 @@ class TestSplitPairBoundaryPortAlignment:
         assert c302.y > c301.y
         assert c200.y > c302.y
         assert c200.x > c2.x
+
+    def test_on_axis_stretch_preferred_over_transverse_shear(self) -> None:
+        """Solver strictly chooses edge stretch over diagonal transverse shear under quadratic penalty."""
+        s_child = SolveTreeNode(
+            node_id="s_child",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 4}),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (1, 2),
+                "cut_contract": SplitPairCut(poles=(1, 2)),
+            },
+        )
+        r_parent = SolveTreeNode(
+            node_id="r_parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3}),
+            children=(s_child,),
+        )
+        child_sol = NodeSolution(
+            node_id="s_child",
+            local_coordinates={1: Coord3D(0, 0, 0), 4: Coord3D(0, 2, 0), 2: Coord3D(1, 2, 0)},
+            sub_boxes=(BoundingBox3D(0, 1, 0, 2, 0, 0),),
+        )
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4],
+            edges=[
+                (1, 3, Direction.east, 2),
+                (3, 2, Direction.north, 4),
+                (1, 4, Direction.north, 2),
+                (4, 2, Direction.east, 1),
+            ],
+        )
+
+        inv = inventory_cluster(r_parent, {"s_child": child_sol}, graph)
+
+        # 1. Artificially low transverse penalty: taking 1 unit of transverse shear is cheaper than stretching
+        formulation_cheap = ClusterFormulation(inv, w_transverse=5.0)
+        formulation_cheap.apply_clearances()
+        solve_and_extract(formulation_cheap, options=LayoutOptions())
+        sp_cheap = [formulation_cheap.model.s_transverse_p[k].value for k in formulation_cheap.model.s_transverse_p]
+        assert any(v > 0 for v in sp_cheap)
+
+        # 2. Quadratic transverse penalty: edge stretching is strictly cheaper than transverse shear
+        formulation_quad = ClusterFormulation(inv)
+        formulation_quad.apply_clearances()
+        solve_and_extract(formulation_quad, options=LayoutOptions())
+        sp_quad = [formulation_quad.model.s_transverse_p[k].value for k in formulation_quad.model.s_transverse_p]
+        sm_quad = [formulation_quad.model.s_transverse_m[k].value for k in formulation_quad.model.s_transverse_m]
+        assert all(v == 0.0 for v in sp_quad)
+        assert all(v == 0.0 for v in sm_quad)
+
+    def test_midgaard_park_entrance_and_small_path_on_axis(self) -> None:
+        """Park Entrance (3105) and Small Path (3108) in midgaard.are align strictly on-axis with zero transverse shear."""
+        area = parse_file(Path("tests/fixtures/areas/midgaard.are"))
+        world_graph = WorldGraph.from_area_data(area)
+        solver = HierarchicalLayoutSolver.production()
+        result = solver.solve(world_graph)
+        coords = result.coordinates
+
+        p3105 = coords[3105]
+        p3108 = coords[3108]
+        # Exit 3105 -> 3108 is South (Direction.south: dx=0, dy=-1, dz=0)
+        assert p3105.x == p3108.x
+        assert p3108.y < p3105.y
+        assert p3105.z == p3108.z
 
 
 class TestSafe2CutAllowlistEndToEnd:
