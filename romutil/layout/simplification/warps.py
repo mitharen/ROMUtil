@@ -189,6 +189,8 @@ class WarpSeverer:
 
         # Check for non-Euclidean self-loops (1-cycles)
         for edge in list(active_edges):
+            if edge.src not in graph.rooms or edge.dst not in graph.rooms:
+                continue
             if edge.src == edge.dst:
                 try:
                     disp = direction_to_displacement(edge.direction)
@@ -203,6 +205,8 @@ class WarpSeverer:
         # Check for non-Euclidean 2-cycles (antiparallel edges between same pair of rooms)
         pair_to_edges: dict[tuple[int, int], list[LayoutEdge]] = collections.defaultdict(list)
         for edge in active_edges:
+            if edge.src not in graph.rooms or edge.dst not in graph.rooms:
+                continue
             pair = (min(edge.src, edge.dst), max(edge.src, edge.dst))
             pair_to_edges[pair].append(edge)
 
@@ -237,6 +241,8 @@ class WarpSeverer:
                 collections.defaultdict(list)
             )
             for edge in active_edges:
+                if edge.src not in graph.rooms or edge.dst not in graph.rooms:
+                    continue
                 if edge.src != edge.dst:
                     g.add_edge(edge.src, edge.dst)
                     pair = (min(edge.src, edge.dst), max(edge.src, edge.dst))
