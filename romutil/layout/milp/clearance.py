@@ -86,12 +86,15 @@ class ClearanceConstraintBuilder:
         child_solutions = self.formulation.inventory.child_solutions
         child_sub_boxes = self.formulation.inventory.child_sub_boxes
 
+        equated = self.formulation.inventory.equated_children
         child_pairs: list[tuple[tuple[str, int], tuple[str, int]]] = []
         for i in range(len(children)):
             for j in range(i + 1, len(children)):
                 c1 = children[i]
                 c2 = children[j]
                 if c1.node_id == c2.node_id:
+                    continue
+                if frozenset({c1.node_id, c2.node_id}) in equated:
                     continue
                 sol1 = child_solutions.get(c1.node_id)
                 sol2 = child_solutions.get(c2.node_id)
@@ -696,11 +699,14 @@ def detect_cluster_collisions(
                     )
 
     # Category 3: Child-Child Collisions
+    equated = inventory.equated_children
     for i in range(len(children)):
         for j in range(i + 1, len(children)):
             c1 = children[i]
             c2 = children[j]
             if c1.node_id == c2.node_id:
+                continue
+            if frozenset({c1.node_id, c2.node_id}) in equated:
                 continue
             sol1 = child_solutions.get(c1.node_id)
             sol2 = child_solutions.get(c2.node_id)
