@@ -1223,11 +1223,19 @@ def inventory_cluster(
     child_sub_boxes: dict[str, tuple[BoundingBox3D, ...]] = {}
     for child in children:
         if child.node_id in child_solutions:
-            child_ports = frozenset(get_child_boundary_ports(child))
+            child_ports = set(get_child_boundary_ports(child))
+            for (p0, p1), s_children in split_res.split_children_by_poles.items():
+                if any(c.node_id == child.node_id for c in s_children):
+                    child_ports.add(p0)
+                    child_ports.add(p1)
+            child_ports.update(
+                set(child_solutions[child.node_id].local_coordinates.keys())
+                & (set(rooms) | set(boundary_ports))
+            )
             child_sub_boxes[child.node_id] = derive_child_sub_boxes(
                 child=child,
                 child_solution=child_solutions[child.node_id],
-                boundary_ports=child_ports,
+                boundary_ports=frozenset(child_ports),
             )
         else:
             child_sub_boxes[child.node_id] = ()
