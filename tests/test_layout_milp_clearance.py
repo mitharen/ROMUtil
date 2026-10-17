@@ -318,6 +318,14 @@ class TestAreaClearanceIntegrity:
         assert coords[3028] != coords[3049], "3028 (Thieves Bar) and 3049 (Levee) collide"
         assert coords[3029] != coords[3203], "3029 (The Secret Yard) and 3203 (On the River) collide"
 
+        # Verify Clan Road corridor does not penetrate or collide with the Cleric Inner Sanctum or Temple of Mota
+        clan_road_rooms = {3258, 3266, 3315}
+        cleric_sanctum_rooms = {3001, 3002, 3003}
+        for r_clan in clan_road_rooms:
+            for r_cleric in cleric_sanctum_rooms:
+                assert coords[r_clan] != coords[r_cleric], f"{r_clan} and {r_cleric} collide"
+        assert coords[3258].y != coords[3001].y, "Clan Road penetrates Cleric Inner Sanctum latitude"
+
     def test_thalos_zero_room_collisions(self) -> None:
         """Thalos layout contains zero duplicate room coordinates across all clusters."""
         from romutil.layout.engine import HierarchicalLayoutSolver

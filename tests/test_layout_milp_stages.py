@@ -2780,6 +2780,62 @@ class TestTypedChildHandlers:
         assert "ccb_cb_ca_20_10" in edge_ids
         assert "ccb_cc_cb_30_20" in edge_ids
 
+    def test_inter_child_bridge_handler_already_aligned_with_boundary_ports(self) -> None:
+        """InterChildBridgeHandler creates active edges between already-aligned children for designated severed corridors."""
+        c1 = SolveTreeNode(
+            node_id="c1",
+            node_type="leaf",
+            rooms=frozenset({10}),
+            metadata={"boundary_ports": (100,), "severed_bridge_edges": ((100, 200),)},
+        )
+        c2 = SolveTreeNode(
+            node_id="c2",
+            node_type="leaf",
+            rooms=frozenset({20}),
+            metadata={"boundary_ports": (200,)},
+        )
+        parent = SolveTreeNode(
+            node_id="p",
+            node_type="container",
+            rooms=frozenset({1, 2}),
+            children=(c1, c2),
+        )
+        sols = {
+            "c1": NodeSolution(
+                node_id="c1",
+                local_coordinates={10: Coord3D(0, 0, 0)},
+                port_coordinates={100: Coord3D(1, 0, 0)},
+            ),
+            "c2": NodeSolution(
+                node_id="c2",
+                local_coordinates={20: Coord3D(0, 0, 0)},
+                port_coordinates={200: Coord3D(-1, 0, 0)},
+            ),
+        }
+        graph = _make_graph([1, 2, 10, 20, 100, 200], [(100, 200, Direction.east, 3)])
+        handler = InterChildBridgeHandler(node=parent, child_solutions=sols, graph=graph)
+        res = handler.process(aligned_children={"c1", "c2"}, equated_children=set())
+        assert len(res.active_edges) == 1
+        edge = res.active_edges[0]
+        assert edge.src == ("c1", 100)
+        assert edge.dst == ("c2", 200)
+        assert edge.allow_transverse_slack is True
+        assert edge.min_length == 3
+
+        # Spurious edges between already-aligned children not declared as severed corridors are suppressed
+        parent_no_severed = SolveTreeNode(
+            node_id="p_none",
+            node_type="container",
+            rooms=frozenset({1, 2}),
+            children=(
+                SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({10}), metadata={"boundary_ports": (100,)}),
+                SolveTreeNode(node_id="c2", node_type="leaf", rooms=frozenset({20}), metadata={"boundary_ports": (200,)}),
+            ),
+        )
+        handler_no_severed = InterChildBridgeHandler(node=parent_no_severed, child_solutions=sols, graph=graph)
+        res_no_severed = handler_no_severed.process(aligned_children={"c1", "c2"}, equated_children=set())
+        assert len(res_no_severed.active_edges) == 0
+
     def test_split_pair_handler_active_edge_sp_port_and_span(self) -> None:
         """Split pairs with poles in parent room set emit zero-length port weld and rigid span active edges."""
         p0, p1 = 10, 20

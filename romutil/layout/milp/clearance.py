@@ -53,14 +53,18 @@ class ClearanceConstraintBuilder:
         dx, dy, dz = disp
         return (x + dx, x + dx, y + dy, y + dy, z + dz, z + dz)
 
+    @property
+    def local_rooms(self) -> tuple[int, ...]:
+        """Return the local rooms and external boundary ports instantiated in formulation.model.x."""
+        if hasattr(self.formulation, "local_rooms"):
+            return self.formulation.local_rooms
+        if hasattr(self.formulation.model, "x"):
+            return tuple(sorted(self.formulation.model.x.keys()))
+        return self.formulation.inventory.rooms
+
     def add_parent_room_separation(self) -> None:
         """Enforce pairwise room-room non-overlap separation among parent rooms and boundary ports."""
-        rooms = tuple(
-            sorted(
-                set(self.formulation.inventory.rooms)
-                | set(self.formulation.inventory.boundary_ports)
-            )
-        )
+        rooms = self.local_rooms
         if len(rooms) > 1:
             parent_pairs = [
                 (rooms[i], rooms[j])
@@ -125,12 +129,7 @@ class ClearanceConstraintBuilder:
 
     def add_room_child_separation(self) -> None:
         """Enforce parent room vs. child sub-box clearance."""
-        rooms = tuple(
-            sorted(
-                set(self.formulation.inventory.rooms)
-                | set(self.formulation.inventory.boundary_ports)
-            )
-        )
+        rooms = self.local_rooms
         children = self.formulation.inventory.children
         child_solutions = self.formulation.inventory.child_solutions
         gateway_anchors = self.formulation.inventory.gateway_anchors
@@ -167,12 +166,7 @@ class ClearanceConstraintBuilder:
 
     def add_corridor_room_separation(self) -> None:
         """Enforce corridor segment non-penetration against third-party parent rooms."""
-        rooms = tuple(
-            sorted(
-                set(self.formulation.inventory.rooms)
-                | set(self.formulation.inventory.boundary_ports)
-            )
-        )
+        rooms = self.local_rooms
         active_edges = self.formulation.inventory.active_edges
         child_solutions = self.formulation.inventory.child_solutions
         edge_indices = list(range(len(active_edges)))
@@ -357,7 +351,7 @@ class ClearanceConstraintBuilder:
                 rev = (-ae.direction[0], -ae.direction[1], -ae.direction[2])
                 active_dirs[ae.dst].add(rev)
 
-        all_parent_rooms = set(rooms) | set(b_ports)
+        all_parent_rooms = set(self.local_rooms)
         doorway_child_pairs: list[
             tuple[tuple[int, tuple[int, int, int]], tuple[str, int]]
         ] = []

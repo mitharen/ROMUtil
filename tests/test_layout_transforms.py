@@ -957,6 +957,62 @@ class TestTransformHelpersAndEdgeCases:
         res = TransverseSNodeSplitPass(graph).transform_node(parent)
         assert len(res.children) == 2
 
+    def test_transverse_s_node_split_boundary_ports_severed_edges(self) -> None:
+        """TransverseSNodeSplitPass exports severed corridor boundary ports on node_a and node_b excluding local cluster rooms."""
+        graph = _make_graph(
+            rooms=[1, 2, 10, 20, 100, 200],
+            edges=[
+                (1, 10, Direction.north),
+                (2, 20, Direction.north),
+                (10, 20, Direction.east),
+                (10, 100, Direction.east),
+                (100, 200, Direction.east),
+                (200, 20, Direction.east),
+            ],
+        )
+        child_a = SolveTreeNode(
+            node_id="child_a",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({100}),
+            children=(),
+            metadata={"cut_contract": ArticulationPointCut(anchor_vnum=10)},
+        )
+        child_b = SolveTreeNode(
+            node_id="child_b",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({200}),
+            children=(),
+            metadata={"cut_contract": ArticulationPointCut(anchor_vnum=20)},
+        )
+        s_node = SolveTreeNode(
+            node_id="s_node",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 20}),
+            children=(child_a, child_b),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(s_node,),
+        )
+        res = TransverseSNodeSplitPass(graph).transform_node(parent)
+        assert len(res.children) == 2
+        node_a = [c for c in res.children if c.node_id == "s_node_a"][0]
+        node_b = [c for c in res.children if c.node_id == "s_node_b"][0]
+
+        assert node_a.rooms == frozenset({10})
+        assert node_b.rooms == frozenset({20})
+
+        # Boundary ports must include 100 on node_a and 200 on node_b, but NOT local rooms 10 or 20
+        assert node_a.metadata.get("boundary_ports") == (100,)
+        assert node_b.metadata.get("boundary_ports") == (200,)
+        assert node_a.metadata.get("severed_bridge_edges") == ((10, 20), (100, 200))
+        assert node_b.metadata.get("severed_bridge_edges") == ((10, 20), (100, 200))
+        assert res.metadata.get("severed_bridge_edges") == ((10, 20), (100, 200))
+
+
 
 class TestSplitPairAllowlistFusionPass:
     """Unit tests for SplitPairAllowlistFusionPass safe 2-cut allowlist evaluation and branch fusion."""

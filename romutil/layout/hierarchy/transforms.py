@@ -59,6 +59,14 @@ def _collect_subtree_rooms(node: SolveTreeNode) -> set[int]:
     return rooms
 
 
+def _collect_subtree_severed_edges(node: SolveTreeNode) -> set[tuple[int, int]]:
+    """Collect all severed bridge edges declared across a node and all its descendants."""
+    edges: set[tuple[int, int]] = set(node.metadata.get("severed_bridge_edges", ()))
+    for c in node.children:
+        edges.update(_collect_subtree_severed_edges(c))
+    return edges
+
+
 def _get_child_poles_or_anchor(child: SolveTreeNode) -> set[int]:
     """Extract boundary poles or anchor room IDs from a child node."""
     if isinstance(child.cut_contract, SplitPairCut):
@@ -579,6 +587,7 @@ class TransverseSNodeSplitPass:
         updated_children.extend(adopted)
 
         final_children: list[SolveTreeNode] = []
+        split_severed: set[tuple[int, int]] = set()
 
         for child_processed in updated_children:
             if child_processed.node_type != TreeNodeType.SERIES_LOOP:
@@ -817,6 +826,65 @@ class TransverseSNodeSplitPass:
             meta_b["cut_contract"] = ArticulationPointCut(anchor_vnum=p1)
             meta_b.pop("poles", None)
 
+            subtree_rooms_a = set(rooms_a)
+            for c in children_a:
+                subtree_rooms_a.update(_collect_subtree_rooms(c))
+
+            subtree_rooms_b = set(rooms_b)
+            for c in children_b:
+                subtree_rooms_b.update(_collect_subtree_rooms(c))
+
+            descendant_severed = _collect_subtree_severed_edges(child_processed)
+
+            severed_ports_a: set[int] = set()
+            severed_ports_b: set[int] = set()
+            cross_edges: list[tuple[int, int]] = []
+
+            for e in graph.edges:
+                if e.cut:
+                    continue
+                edge_pair = (min(e.src, e.dst), max(e.src, e.dst))
+                if edge_pair in descendant_severed:
+                    continue
+                if e.src in subtree_rooms_a and e.dst in subtree_rooms_b:
+                    severed_ports_a.add(e.src)
+                    severed_ports_b.add(e.dst)
+                    cross_edges.append(edge_pair)
+                elif e.src in subtree_rooms_b and e.dst in subtree_rooms_a:
+                    severed_ports_b.add(e.src)
+                    severed_ports_a.add(e.dst)
+                    cross_edges.append(edge_pair)
+
+            if u_star in subtree_rooms_a:
+                severed_ports_a.add(u_star)
+            elif u_star in subtree_rooms_b:
+                severed_ports_b.add(u_star)
+
+            if v_star in subtree_rooms_a:
+                severed_ports_a.add(v_star)
+            elif v_star in subtree_rooms_b:
+                severed_ports_b.add(v_star)
+
+            if not cross_edges and {u_star, v_star}:
+                cross_edges.append((min(u_star, v_star), max(u_star, v_star)))
+
+            severed_edges = tuple(sorted(set(cross_edges)))
+
+            existing_ports = set(child_processed.metadata.get("boundary_ports", ()))
+            severed_ports_a.update(existing_ports & subtree_rooms_a)
+            severed_ports_b.update(existing_ports & subtree_rooms_b)
+
+            ports_a = tuple(sorted(severed_ports_a - rooms_a))
+            ports_b = tuple(sorted(severed_ports_b - rooms_b))
+            if ports_a:
+                meta_a["boundary_ports"] = ports_a
+            if ports_b:
+                meta_b["boundary_ports"] = ports_b
+
+            if severed_edges:
+                meta_a["severed_bridge_edges"] = severed_edges
+                meta_b["severed_bridge_edges"] = severed_edges
+
             node_a = SolveTreeNode(
                 node_id=f"{child_processed.node_id}_a",
                 node_type=TreeNodeType.RIGID_CLUSTER,
@@ -834,6 +902,8 @@ class TransverseSNodeSplitPass:
 
             if owning_node is node:
                 final_children.extend([node_a, node_b])
+                if severed_edges:
+                    split_severed.update(severed_edges)
             else:
                 still_bubbling.extend([node_a, node_b])
 
@@ -851,13 +921,22 @@ class TransverseSNodeSplitPass:
             final_children.extend(still_bubbling)
             still_bubbling = []
 
+        new_metadata = dict(node.metadata)
+        node_severed = set(new_metadata.get("severed_bridge_edges", ()))
+        node_severed.update(split_severed)
+        for b in adopted:
+            if "severed_bridge_edges" in b.metadata:
+                node_severed.update(b.metadata["severed_bridge_edges"])
+        if node_severed:
+            new_metadata["severed_bridge_edges"] = tuple(sorted(node_severed))
+
         return (
             SolveTreeNode(
                 node_id=node.node_id,
                 node_type=node.node_type,
                 rooms=node.rooms,
                 children=tuple(final_children),
-                metadata=node.metadata,
+                metadata=new_metadata,
             ),
             still_bubbling,
         )

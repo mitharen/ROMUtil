@@ -44,6 +44,8 @@ def get_child_coordinate(c_sol: NodeSolution, vnum: int) -> Coord3D | None:
         return c_sol.port_coordinates[vnum]
     if "port_coordinates" in c_sol.metadata and vnum in c_sol.metadata["port_coordinates"]:
         return c_sol.metadata["port_coordinates"][vnum]
+    if "all_room_coordinates" in c_sol.metadata and vnum in c_sol.metadata["all_room_coordinates"]:
+        return c_sol.metadata["all_room_coordinates"][vnum]
     return None
 
 
@@ -153,7 +155,55 @@ def get_child_boundary_ports(child: SolveTreeNode) -> set[int]:
         raw_anchor = child.metadata.get("anchor_vnum")
         if raw_anchor is not None:
             ports.add(int(raw_anchor))
+
+    if "boundary_ports" in child.metadata:
+        for p in child.metadata["boundary_ports"]:
+            ports.add(int(p))
+    contract_ports = getattr(child.cut_contract, "boundary_ports", None)
+    if contract_ports:
+        for p in contract_ports:
+            ports.add(int(p))
     return ports
+
+
+def get_child_contract_interface_rooms(child: SolveTreeNode) -> set[int]:
+    """Return anchor and pole rooms exposed as external interfaces by child cut contract."""
+    ports: set[int] = set()
+    contract = child.cut_contract
+    if isinstance(contract, SplitPairCut):
+        ports.update(contract.poles)
+    elif isinstance(contract, (ArticulationPointCut, BridgeCut)):
+        anchor = getattr(contract, "anchor_vnum", None)
+        if anchor is not None:
+            ports.add(int(anchor))
+        bridge_edge = getattr(contract, "bridge_edge", None)
+        if bridge_edge is not None:
+            ports.update(int(v) for v in bridge_edge)
+    elif "poles" in child.metadata:
+        raw_poles = child.metadata["poles"]
+        if len(raw_poles) == 2:
+            ports.add(int(raw_poles[0]))
+            ports.add(int(raw_poles[1]))
+    elif "anchor_vnum" in child.metadata:
+        raw_anchor = child.metadata.get("anchor_vnum")
+        if raw_anchor is not None:
+            ports.add(int(raw_anchor))
+    return ports
+
+
+def get_child_strictly_interior_rooms(
+    child: SolveTreeNode,
+    child_solution: NodeSolution | None,
+) -> set[int]:
+    """Return rooms in child solution that are internal and not contract interface ports."""
+    if child_solution is None:
+        return set()
+    all_rooms = set(child_solution.local_coordinates.keys())
+    if "all_room_coordinates" in child_solution.metadata:
+        all_rooms.update(child_solution.metadata["all_room_coordinates"].keys())
+    interface_ports = get_child_contract_interface_rooms(child)
+    return all_rooms - interface_ports
+
 
 
 def derive_child_sub_boxes(
@@ -296,8 +346,14 @@ class SplitPairHandler:
         self.rooms = tuple(sorted(node.rooms))
         self.room_set = set(self.rooms)
         self.boundary_ports = frozenset(boundary_ports or ())
-        self.all_local_rooms = set(self.rooms) | set(self.boundary_ports)
         self.children = tuple(node.children)
+        child_strictly_interior: set[int] = set()
+        for child in self.children:
+            child_strictly_interior.update(
+                get_child_strictly_interior_rooms(child, self.child_solutions.get(child.node_id))
+            )
+        self.external_ports = frozenset(p for p in self.boundary_ports if p not in child_strictly_interior)
+        self.all_local_rooms = set(self.rooms) | set(self.external_ports)
 
     def group_split_children(self) -> dict[tuple[int, int], list[SolveTreeNode]]:
         """Identify split-pair children and group them by canonical poles (min, max)."""
@@ -975,122 +1031,232 @@ class InterChildBridgeHandler:
             )
 
         current_aligned = set(aligned_children)
+        seen_bridges: set[frozenset[tuple[str, int]]] = set()
+
+        # Build map of available interface coordinates for each child (excluding parent rooms)
+        parent_rooms = set(self.node.rooms)
+        child_coords: dict[str, dict[int, Coord3D]] = {}
         for child in self.children:
-            if child.node_id in current_aligned:
+            cid = child.node_id
+            c_sol = self.child_solutions.get(cid)
+            if not c_sol:
                 continue
+            coords: dict[int, Coord3D] = {}
+            if hasattr(c_sol, "port_coordinates") and c_sol.port_coordinates:
+                coords.update(c_sol.port_coordinates)
+            if "port_coordinates" in c_sol.metadata and c_sol.metadata["port_coordinates"]:
+                coords.update(c_sol.metadata["port_coordinates"])
+            coords.update(c_sol.local_coordinates)
+            if "all_room_coordinates" in c_sol.metadata:
+                b_ports = get_child_boundary_ports(child)
+                for p in b_ports:
+                    if p in c_sol.metadata["all_room_coordinates"]:
+                        coords[p] = c_sol.metadata["all_room_coordinates"][p]
+            child_coords[cid] = {r: pt for r, pt in coords.items() if r not in parent_rooms}
+
+        # 1. 1-cut BridgeCut contracts between sibling children
+        for child in self.children:
             c_sol = self.child_solutions.get(child.node_id)
             if not c_sol:
                 continue
-            c_coords = c_sol.local_coordinates
+            c_coords = child_coords.get(child.node_id, {})
 
             contract = child.cut_contract
             if isinstance(contract, BridgeCut):
                 u, v = contract.bridge_edge
+                if u in parent_rooms or v in parent_rooms:
+                    continue
                 for other in self.children:
-                    if other.node_id == child.node_id or other.node_id not in current_aligned:
+                    if other.node_id == child.node_id:
                         continue
                     if frozenset({other.node_id, child.node_id}) in equated_children:
                         continue
-                    other_coords = (
-                        self.child_solutions[other.node_id].local_coordinates
-                        if other.node_id in self.child_solutions
-                        else {}
-                    )
+                    other_coords = child_coords.get(other.node_id, {})
                     if u in other_coords and v in c_coords:
-                        try:
-                            disp = direction_to_displacement(contract.direction)
-                            active_edges.append(
-                                ActiveEdge(
-                                    edge_id=f"ccb_{other.node_id}_{child.node_id}_{u}_{v}",
-                                    src=(other.node_id, u),
-                                    dst=(child.node_id, v),
-                                    direction=disp,
-                                    min_length=max(1, contract.weight),
-                                    associated_rooms=frozenset(),
-                                    associated_children=frozenset({other.node_id, child.node_id}),
+                        bridge_key = frozenset({(other.node_id, u), (child.node_id, v)})
+                        if bridge_key not in seen_bridges:
+                            seen_bridges.add(bridge_key)
+                            try:
+                                disp = direction_to_displacement(contract.direction)
+                                active_edges.append(
+                                    ActiveEdge(
+                                        edge_id=f"ccb_{other.node_id}_{child.node_id}_{u}_{v}",
+                                        src=(other.node_id, u),
+                                        dst=(child.node_id, v),
+                                        direction=disp,
+                                        min_length=max(1, contract.weight),
+                                        associated_rooms=frozenset(),
+                                        associated_children=frozenset({other.node_id, child.node_id}),
+                                        allow_transverse_slack=True,
+                                    )
                                 )
-                            )
-                            current_aligned.add(child.node_id)
-                            new_aligned.add(child.node_id)
-                            break
-                        except ValueError:
-                            pass
+                            except ValueError:
+                                pass
                     elif v in other_coords and u in c_coords:
-                        try:
-                            disp = direction_to_displacement(contract.direction)
-                            active_edges.append(
-                                ActiveEdge(
-                                    edge_id=f"ccb_{child.node_id}_{other.node_id}_{u}_{v}",
-                                    src=(child.node_id, u),
-                                    dst=(other.node_id, v),
-                                    direction=disp,
-                                    min_length=max(1, contract.weight),
-                                    associated_rooms=frozenset(),
-                                    associated_children=frozenset({child.node_id, other.node_id}),
+                        bridge_key = frozenset({(child.node_id, u), (other.node_id, v)})
+                        if bridge_key not in seen_bridges:
+                            seen_bridges.add(bridge_key)
+                            try:
+                                disp = direction_to_displacement(contract.direction)
+                                active_edges.append(
+                                    ActiveEdge(
+                                        edge_id=f"ccb_{child.node_id}_{other.node_id}_{u}_{v}",
+                                        src=(child.node_id, u),
+                                        dst=(other.node_id, v),
+                                        direction=disp,
+                                        min_length=max(1, contract.weight),
+                                        associated_rooms=frozenset(),
+                                        associated_children=frozenset({child.node_id, other.node_id}),
+                                        allow_transverse_slack=True,
+                                    )
                                 )
-                            )
-                            current_aligned.add(child.node_id)
-                            new_aligned.add(child.node_id)
-                            break
-                        except ValueError:
-                            pass
+                            except ValueError:
+                                pass
 
-            if child.node_id in current_aligned:
-                continue
+        # Collect designated severed corridor bridge edges from node and child metadata
+        severed_bridge_edges: set[frozenset[int]] = set()
+        if "severed_bridge_edges" in self.node.metadata:
+            for edge in self.node.metadata["severed_bridge_edges"]:
+                severed_bridge_edges.add(frozenset(edge))
+        for child in self.children:
+            if "severed_bridge_edges" in child.metadata:
+                for edge in child.metadata["severed_bridge_edges"]:
+                    severed_bridge_edges.add(frozenset(edge))
 
+        room_to_children: dict[int, list[str]] = {}
+        for cid, coords in child_coords.items():
+            for r in coords:
+                room_to_children.setdefault(r, []).append(cid)
+
+        # 2. Designated severed corridor bridges from TransverseSNodeSplitPass
+        if severed_bridge_edges:
             for edge in self.graph.edges:
                 if edge.cut:
                     continue
-                for other in self.children:
-                    if other.node_id == child.node_id or other.node_id not in current_aligned:
-                        continue
-                    if frozenset({other.node_id, child.node_id}) in equated_children:
-                        continue
-                    other_coords = (
-                        self.child_solutions[other.node_id].local_coordinates
-                        if other.node_id in self.child_solutions
-                        else {}
-                    )
-                    if edge.src in other_coords and edge.dst in c_coords:
-                        try:
-                            disp = direction_to_displacement(edge.direction)
-                            active_edges.append(
-                                ActiveEdge(
-                                    edge_id=f"ccb_{other.node_id}_{child.node_id}_{edge.src}_{edge.dst}",
-                                    src=(other.node_id, edge.src),
-                                    dst=(child.node_id, edge.dst),
-                                    direction=disp,
-                                    min_length=max(1, edge.weight),
-                                    associated_rooms=frozenset(),
-                                    associated_children=frozenset({other.node_id, child.node_id}),
-                                )
+                u, v = edge.src, edge.dst
+                if frozenset({u, v}) not in severed_bridge_edges:
+                    continue
+                if u in parent_rooms or v in parent_rooms:
+                    continue
+                if u not in room_to_children or v not in room_to_children:
+                    continue
+                try:
+                    disp = direction_to_displacement(edge.direction)
+                except ValueError:
+                    continue
+
+                for c1_id in room_to_children[u]:
+                    for c2_id in room_to_children[v]:
+                        if c1_id == c2_id:
+                            continue
+                        if frozenset({c1_id, c2_id}) in equated_children:
+                            continue
+                        bridge_key = frozenset({(c1_id, u), (c2_id, v)})
+                        if bridge_key in seen_bridges:
+                            continue
+                        seen_bridges.add(bridge_key)
+
+                        active_edges.append(
+                            ActiveEdge(
+                                edge_id=f"ccb_{c1_id}_{c2_id}_{u}_{v}",
+                                src=(c1_id, u),
+                                dst=(c2_id, v),
+                                direction=disp,
+                                min_length=max(1, edge.weight),
+                                associated_rooms=frozenset(),
+                                associated_children=frozenset({c1_id, c2_id}),
+                                allow_transverse_slack=True,
                             )
-                            current_aligned.add(child.node_id)
-                            new_aligned.add(child.node_id)
-                            break
-                        except ValueError:
-                            pass
-                    elif edge.dst in other_coords and edge.src in c_coords:
-                        try:
-                            disp = direction_to_displacement(edge.direction)
-                            active_edges.append(
-                                ActiveEdge(
-                                    edge_id=f"ccb_{child.node_id}_{other.node_id}_{edge.src}_{edge.dst}",
-                                    src=(child.node_id, edge.src),
-                                    dst=(other.node_id, edge.dst),
-                                    direction=disp,
-                                    min_length=max(1, edge.weight),
-                                    associated_rooms=frozenset(),
-                                    associated_children=frozenset({child.node_id, other.node_id}),
-                                )
-                            )
-                            current_aligned.add(child.node_id)
-                            new_aligned.add(child.node_id)
-                            break
-                        except ValueError:
-                            pass
+                        )
+
+        # 3. Propagate alignment along active edges connecting unaligned to aligned children
+        changed = True
+        while changed:
+            changed = False
+            for ae in active_edges:
+                c_pair = list(ae.associated_children)
+                if len(c_pair) != 2:
+                    continue
+                c1, c2 = c_pair[0], c_pair[1]
+                if c1 in current_aligned and c2 not in current_aligned:
+                    current_aligned.add(c2)
+                    new_aligned.add(c2)
+                    changed = True
+                elif c2 in current_aligned and c1 not in current_aligned:
+                    current_aligned.add(c1)
+                    new_aligned.add(c1)
+                    changed = True
+
+        # 4. Uncut graph edges to align unaligned children to the tree
+        changed = True
+        while changed:
+            changed = False
+            for child in self.children:
                 if child.node_id in current_aligned:
-                    break
+                    continue
+                c_coords = child_coords.get(child.node_id, {})
+                for edge in self.graph.edges:
+                    if edge.cut:
+                        continue
+                    u, v = edge.src, edge.dst
+                    if u in parent_rooms or v in parent_rooms:
+                        continue
+                    for other in self.children:
+                        if other.node_id == child.node_id or other.node_id not in current_aligned:
+                            continue
+                        if frozenset({other.node_id, child.node_id}) in equated_children:
+                            continue
+                        other_coords = child_coords.get(other.node_id, {})
+                        if u in other_coords and v in c_coords:
+                            bridge_key = frozenset({(other.node_id, u), (child.node_id, v)})
+                            if bridge_key in seen_bridges:
+                                continue
+                            try:
+                                disp = direction_to_displacement(edge.direction)
+                                seen_bridges.add(bridge_key)
+                                active_edges.append(
+                                    ActiveEdge(
+                                        edge_id=f"ccb_{other.node_id}_{child.node_id}_{u}_{v}",
+                                        src=(other.node_id, u),
+                                        dst=(child.node_id, v),
+                                        direction=disp,
+                                        min_length=max(1, edge.weight),
+                                        associated_rooms=frozenset(),
+                                        associated_children=frozenset({other.node_id, child.node_id}),
+                                    )
+                                )
+                                current_aligned.add(child.node_id)
+                                new_aligned.add(child.node_id)
+                                changed = True
+                                break
+                            except ValueError:
+                                pass
+                        elif v in other_coords and u in c_coords:
+                            bridge_key = frozenset({(child.node_id, u), (other.node_id, v)})
+                            if bridge_key in seen_bridges:
+                                continue
+                            try:
+                                disp = direction_to_displacement(edge.direction)
+                                seen_bridges.add(bridge_key)
+                                active_edges.append(
+                                    ActiveEdge(
+                                        edge_id=f"ccb_{child.node_id}_{other.node_id}_{u}_{v}",
+                                        src=(child.node_id, u),
+                                        dst=(other.node_id, v),
+                                        direction=disp,
+                                        min_length=max(1, edge.weight),
+                                        associated_rooms=frozenset(),
+                                        associated_children=frozenset({child.node_id, other.node_id}),
+                                    )
+                                )
+                                current_aligned.add(child.node_id)
+                                new_aligned.add(child.node_id)
+                                changed = True
+                                break
+                            except ValueError:
+                                pass
+                    if child.node_id in current_aligned:
+                        break
 
         return InterChildBridgeResult(
             active_edges=tuple(active_edges),
@@ -1204,8 +1370,14 @@ def inventory_cluster(
     )
     aligned_children.update(bridge_res.aligned_children)
 
-    # 4. Direct internal room edges
-    all_local_rooms = sorted(set(rooms) | set(boundary_ports))
+    child_strictly_interior: set[int] = set()
+    for child in children:
+        child_strictly_interior.update(
+            get_child_strictly_interior_rooms(child, child_solutions.get(child.node_id))
+        )
+
+    external_ports = {p for p in boundary_ports if p not in child_strictly_interior}
+    all_local_rooms = sorted(set(rooms) | external_ports)
     direct_edges = _build_internal_room_edges(
         graph=graph,
         rooms=all_local_rooms,
