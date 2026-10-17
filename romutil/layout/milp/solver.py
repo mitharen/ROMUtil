@@ -106,15 +106,17 @@ def solve_and_extract(
         raw_parent_coords[u] = (int(round(vx)), int(round(vy)), int(round(vz)))
 
     raw_port_coords: dict[int, tuple[int, int, int]] = {}
-    for u in formulation.inventory.boundary_ports:
-        vx = pyo.value(formulation.model.x[u])
-        vy = pyo.value(formulation.model.y[u])
-        vz = pyo.value(formulation.model.z[u])
-        if vx is None or vy is None or vz is None:
-            raise LayoutSolverError(
-                f"MILP solver failed to retrieve coordinate values for boundary port {u} in cluster '{node.node_id}'."
-            )
-        raw_port_coords[u] = (int(round(vx)), int(round(vy)), int(round(vz)))
+    if hasattr(formulation.model, "x"):
+        for u in formulation.inventory.boundary_ports:
+            if u in formulation.model.x:
+                vx = pyo.value(formulation.model.x[u])
+                vy = pyo.value(formulation.model.y[u])
+                vz = pyo.value(formulation.model.z[u])
+                if vx is None or vy is None or vz is None:
+                    raise LayoutSolverError(
+                        f"MILP solver failed to retrieve coordinate values for boundary port {u} in cluster '{node.node_id}'."
+                    )
+                raw_port_coords[u] = (int(round(vx)), int(round(vy)), int(round(vz)))
 
     raw_child_offsets: dict[str, tuple[int, int, int]] = {}
     for cid in child_ids:

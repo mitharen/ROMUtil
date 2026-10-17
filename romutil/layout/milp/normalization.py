@@ -124,6 +124,13 @@ def normalize_cluster_solution(
             for u, pt in c_sol.metadata["all_room_coordinates"].items():
                 all_room_coords[u] = Coord3D(pt.x + c_off.x, pt.y + c_off.y, pt.z + c_off.z)
 
+    from romutil.layout.milp.inventory import get_child_boundary_ports
+
+    b_ports = get_child_boundary_ports(node)
+    for u in b_ports:
+        if u in all_room_coords:
+            norm_port_coords[u] = all_room_coords[u]
+
     if active_edges:
         all_parent_and_port_coords = dict(norm_parent_coords)
         all_parent_and_port_coords.update(norm_port_coords)

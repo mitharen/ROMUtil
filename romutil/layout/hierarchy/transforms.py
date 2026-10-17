@@ -817,6 +817,49 @@ class TransverseSNodeSplitPass:
             meta_b["cut_contract"] = ArticulationPointCut(anchor_vnum=p1)
             meta_b.pop("poles", None)
 
+            subtree_rooms_a = set(rooms_a)
+            for c in children_a:
+                subtree_rooms_a.update(_collect_subtree_rooms(c))
+
+            subtree_rooms_b = set(rooms_b)
+            for c in children_b:
+                subtree_rooms_b.update(_collect_subtree_rooms(c))
+
+            severed_ports_a: set[int] = set()
+            severed_ports_b: set[int] = set()
+
+            for e in graph.edges:
+                if e.cut:
+                    continue
+                if e.src in subtree_rooms_a and e.dst in subtree_rooms_b:
+                    severed_ports_a.add(e.src)
+                    severed_ports_b.add(e.dst)
+                elif e.src in subtree_rooms_b and e.dst in subtree_rooms_a:
+                    severed_ports_b.add(e.src)
+                    severed_ports_a.add(e.dst)
+
+            if u_star in subtree_rooms_a:
+                severed_ports_a.add(u_star)
+            elif u_star in subtree_rooms_b:
+                severed_ports_b.add(u_star)
+
+            if v_star in subtree_rooms_a:
+                severed_ports_a.add(v_star)
+            elif v_star in subtree_rooms_b:
+                severed_ports_b.add(v_star)
+
+            existing_ports = set(child_processed.metadata.get("boundary_ports", ()))
+            severed_ports_a.update(existing_ports & subtree_rooms_a)
+            severed_ports_b.update(existing_ports & subtree_rooms_b)
+
+            ports_a = tuple(sorted(severed_ports_a - rooms_a))
+            ports_b = tuple(sorted(severed_ports_b - rooms_b))
+            if ports_a:
+                meta_a["boundary_ports"] = ports_a
+            if ports_b:
+                meta_b["boundary_ports"] = ports_b
+
+
             node_a = SolveTreeNode(
                 node_id=f"{child_processed.node_id}_a",
                 node_type=TreeNodeType.RIGID_CLUSTER,

@@ -13,6 +13,7 @@ from romutil.layout.milp.inventory import (
     ClusterInventory,
     EndpointRef,
     get_child_coordinate,
+    get_child_strictly_interior_rooms,
 )
 from romutil.types import LayoutOptions
 
@@ -154,15 +155,23 @@ class ClusterFormulation:
         m_coord = self.m_coord
 
         # Local room and boundary port coordinates
-        local_rooms = tuple(sorted(set(inventory.rooms) | set(inventory.boundary_ports)))
+        child_strictly_interior: set[int] = set()
+        for child in inventory.children:
+            child_strictly_interior.update(
+                get_child_strictly_interior_rooms(child, inventory.child_solutions.get(child.node_id))
+            )
+
+        external_ports = {p for p in inventory.boundary_ports if p not in child_strictly_interior}
+        local_rooms = tuple(sorted(set(inventory.rooms) | external_ports))
+        self.local_rooms = local_rooms
         if local_rooms:
             model.x = pyo.Var(local_rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord), initialize=0)
             model.y = pyo.Var(local_rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord), initialize=0)
             model.z = pyo.Var(local_rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord), initialize=0)
 
             anchor: int | None = None
-            if inventory.boundary_ports:
-                anchor = min(inventory.boundary_ports)
+            if external_ports:
+                anchor = min(external_ports)
             elif inventory.rooms:
                 anchor = inventory.rooms[0]
 
