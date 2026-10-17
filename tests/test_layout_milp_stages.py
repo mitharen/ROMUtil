@@ -1720,7 +1720,7 @@ class TestStage3Clearance:
         assert hasattr(model, "corridor_room_br")  # Corridor vs room separation
 
     def test_apply_clearances_child_child_separation(self) -> None:
-        """Pairwise child-child sub-box separation is attached for non-shared children."""
+        """Pairwise child-child sub-box separation is attached for child clusters."""
         c1 = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({10}))
         c2 = SolveTreeNode(node_id="c2", node_type="leaf", rooms=frozenset({20}))
         parent = SolveTreeNode(node_id="p_cc", node_type="container", rooms=frozenset({1}), children=(c1, c2))

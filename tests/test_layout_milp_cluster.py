@@ -273,14 +273,15 @@ class TestParentClusterMILP:
         """2-Cut split pair where child subtrees contain the poles aligns poles precisely."""
         poles = (1, 2)
         c1_rooms = [1, 2, 3]
-        c2_rooms = [1, 2, 4]
-        all_rooms = [1, 2, 3, 4]
+        c2_rooms = [1, 2, 4, 5]
+        all_rooms = [1, 2, 3, 4, 5]
 
         edges = [
             (1, 3, Direction.north, 1),
             (3, 2, Direction.north, 1),
-            (1, 4, Direction.north, 1),
-            (4, 2, Direction.north, 1),
+            (1, 4, Direction.east, 1),
+            (4, 5, Direction.north, 2),
+            (5, 2, Direction.west, 1),
         ]
         graph = _make_graph(all_rooms, edges)
 

@@ -12,7 +12,6 @@ from romutil.layout.geometry import (
     segment_room_penetration,
     segments_intersect_3d,
 )
-from romutil.layout.ir import ArticulationPointCut, BridgeCut
 from romutil.layout.milp.constraints import add_disjunctive_box_separation
 from romutil.layout.milp.inventory import (
     EndpointRef,
@@ -82,47 +81,34 @@ class ClearanceConstraintBuilder:
             )
 
     def add_child_child_separation(self) -> None:
-        """Enforce pairwise child-child sub-box separation among non-shared child clusters and 1-cut siblings."""
+        """Enforce pairwise child-child sub-box separation across all child clusters."""
         children = self.formulation.inventory.children
         child_solutions = self.formulation.inventory.child_solutions
         child_sub_boxes = self.formulation.inventory.child_sub_boxes
-        equated = self.formulation.inventory.equated_children
 
         child_pairs: list[tuple[tuple[str, int], tuple[str, int]]] = []
         for i in range(len(children)):
             for j in range(i + 1, len(children)):
                 c1 = children[i]
                 c2 = children[j]
+                if c1.node_id == c2.node_id:
+                    continue
                 sol1 = child_solutions.get(c1.node_id)
                 sol2 = child_solutions.get(c2.node_id)
                 sb1 = child_sub_boxes.get(c1.node_id, ())
                 sb2 = child_sub_boxes.get(c2.node_id, ())
                 if sol1 and sol2 and sb1 and sb2:
-                    sol1_rooms = set(sol1.local_coordinates.keys()) | set(
-                        getattr(sol1, "port_coordinates", {}).keys()
-                    )
-                    sol2_rooms = set(sol2.local_coordinates.keys()) | set(
-                        getattr(sol2, "port_coordinates", {}).keys()
-                    )
-                    shared = sol1_rooms & sol2_rooms
-                    is_sibling_one_cut = (
-                        len(shared) == 1
-                        and isinstance(c1.cut_contract, (ArticulationPointCut, BridgeCut))
-                        and isinstance(c2.cut_contract, (ArticulationPointCut, BridgeCut))
-                        and frozenset({c1.node_id, c2.node_id}) not in equated
-                    )
-                    if not shared or is_sibling_one_cut:
-                        for k1 in range(len(sb1)):
-                            for k2 in range(len(sb2)):
-                                pair = ((c1.node_id, k1), (c2.node_id, k2))
-                                child_pairs.append(pair)
-                                self.separated_pairs.add(
-                                    (
-                                        "child_child",
-                                        min(pair[0], pair[1]),
-                                        max(pair[0], pair[1]),
-                                    )
+                    for k1 in range(len(sb1)):
+                        for k2 in range(len(sb2)):
+                            pair = ((c1.node_id, k1), (c2.node_id, k2))
+                            child_pairs.append(pair)
+                            self.separated_pairs.add(
+                                (
+                                    "child_child",
+                                    min(pair[0], pair[1]),
+                                    max(pair[0], pair[1]),
                                 )
+                            )
 
         if child_pairs:
             add_disjunctive_box_separation(
@@ -710,11 +696,12 @@ def detect_cluster_collisions(
                     )
 
     # Category 3: Child-Child Collisions
-    equated = inventory.equated_children
     for i in range(len(children)):
         for j in range(i + 1, len(children)):
             c1 = children[i]
             c2 = children[j]
+            if c1.node_id == c2.node_id:
+                continue
             sol1 = child_solutions.get(c1.node_id)
             sol2 = child_solutions.get(c2.node_id)
             sb1 = child_sub_boxes.get(c1.node_id, ())
@@ -726,44 +713,30 @@ def detect_cluster_collisions(
                 or c2.node_id not in extraction.raw_child_offsets
             ):
                 continue
-            sol1_rooms = set(sol1.local_coordinates.keys()) | set(
-                getattr(sol1, "port_coordinates", {}).keys()
-            )
-            sol2_rooms = set(sol2.local_coordinates.keys()) | set(
-                getattr(sol2, "port_coordinates", {}).keys()
-            )
-            shared = sol1_rooms & sol2_rooms
-            is_sibling_one_cut = (
-                len(shared) == 1
-                and isinstance(c1.cut_contract, (ArticulationPointCut, BridgeCut))
-                and isinstance(c2.cut_contract, (ArticulationPointCut, BridgeCut))
-                and frozenset({c1.node_id, c2.node_id}) not in equated
-            )
-            if not shared or is_sibling_one_cut:
-                for k1 in range(len(sb1)):
-                    box1 = _extract_child_sub_box_bounds(
-                        (c1.node_id, k1), extraction, inventory
+            for k1 in range(len(sb1)):
+                box1 = _extract_child_sub_box_bounds(
+                    (c1.node_id, k1), extraction, inventory
+                )
+                for k2 in range(len(sb2)):
+                    box2 = _extract_child_sub_box_bounds(
+                        (c2.node_id, k2), extraction, inventory
                     )
-                    for k2 in range(len(sb2)):
-                        box2 = _extract_child_sub_box_bounds(
-                            (c2.node_id, k2), extraction, inventory
-                        )
-                        if (
-                            max(box1[0], box2[0]) <= min(box1[1], box2[1])
-                            and max(box1[2], box2[2]) <= min(box1[3], box2[3])
-                            and max(box1[4], box2[4]) <= min(box1[5], box2[5])
-                        ):
-                            violations.append(
-                                ClearanceViolation(
-                                    category="child_child",
-                                    item_a=(c1.node_id, k1),
-                                    item_b=(c2.node_id, k2),
-                                    description=(
-                                        f"Child '{c1.node_id}' sub-box {k1} overlaps "
-                                        f"child '{c2.node_id}' sub-box {k2}."
-                                    ),
-                                )
+                    if (
+                        max(box1[0], box2[0]) <= min(box1[1], box2[1])
+                        and max(box1[2], box2[2]) <= min(box1[3], box2[3])
+                        and max(box1[4], box2[4]) <= min(box1[5], box2[5])
+                    ):
+                        violations.append(
+                            ClearanceViolation(
+                                category="child_child",
+                                item_a=(c1.node_id, k1),
+                                item_b=(c2.node_id, k2),
+                                description=(
+                                    f"Child '{c1.node_id}' sub-box {k1} overlaps "
+                                    f"child '{c2.node_id}' sub-box {k2}."
+                                ),
                             )
+                        )
 
     # Category 4: Corridor-Room Collisions
     for i, ae in enumerate(active_edges):
