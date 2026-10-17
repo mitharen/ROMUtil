@@ -1008,6 +1008,9 @@ class TestTransformHelpersAndEdgeCases:
         # Boundary ports must include 100 on node_a and 200 on node_b, but NOT local rooms 10 or 20
         assert node_a.metadata.get("boundary_ports") == (100,)
         assert node_b.metadata.get("boundary_ports") == (200,)
+        assert node_a.metadata.get("severed_bridge_edges") == ((10, 20), (100, 200))
+        assert node_b.metadata.get("severed_bridge_edges") == ((10, 20), (100, 200))
+        assert res.metadata.get("severed_bridge_edges") == ((10, 20), (100, 200))
 
 
 
