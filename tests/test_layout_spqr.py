@@ -8,6 +8,7 @@ import pytest
 from romutil.layout import (
     ArticulationPointCut,
     BlockCutTreeBuilder,
+    BridgeCut,
     CutType,
     HierarchicalLayoutSolver,
     LayoutEdge,
@@ -24,6 +25,7 @@ from romutil.layout import (
 from romutil.layout.hierarchy.transforms import (
     SplitPairAllowlistFusionPass,
     TransverseSNodeSplitPass,
+    _get_anchor_vnum,
 )
 from romutil.models import Direction, Exit, Room
 from romutil.parser import parse_file
@@ -623,23 +625,23 @@ class TestTransverseCorridorSNodeSplitting:
 
         assert c_a.node_type == TreeNodeType.RIGID_CLUSTER
         assert c_b.node_type == TreeNodeType.RIGID_CLUSTER
-        assert c_a.metadata.get("cut_type") == CutType.ARTICULATION_POINT
-        assert c_b.metadata.get("cut_type") == CutType.ARTICULATION_POINT
+        assert isinstance(c_a.cut_contract, BridgeCut)
+        assert isinstance(c_b.cut_contract, BridgeCut)
 
         # Sibling clusters are anchored to the respective poles
-        anchors = {c_a.metadata.get("anchor_vnum"), c_b.metadata.get("anchor_vnum")}
+        anchors = {_get_anchor_vnum(c_a), _get_anchor_vnum(c_b)}
         assert anchors == {1, 2}
 
-        # Rooms are partitioned across the severed transverse corridor
-        assert c_a.rooms | c_b.rooms == frozenset({1, 2, 10, 11, 20})
+        # Rooms are partitioned across the severed transverse corridor (poles owned by ancestor)
+        assert c_a.rooms | c_b.rooms == frozenset({10, 11, 20})
         assert c_a.rooms & c_b.rooms == frozenset()
 
-        if c_a.metadata.get("anchor_vnum") == 1:
-            assert c_a.rooms == frozenset({1, 10})
-            assert c_b.rooms == frozenset({2, 11, 20})
+        if _get_anchor_vnum(c_a) == 1:
+            assert c_a.rooms == frozenset({10})
+            assert c_b.rooms == frozenset({11, 20})
         else:
-            assert c_b.rooms == frozenset({1, 10})
-            assert c_a.rooms == frozenset({2, 11, 20})
+            assert c_b.rooms == frozenset({10})
+            assert c_a.rooms == frozenset({11, 20})
 
     def test_transverse_corridor_nested_child_partition(self) -> None:
         """Nested child clusters of an S-node partition to their respective split halves."""
@@ -701,7 +703,7 @@ class TestTransverseCorridorSNodeSplitting:
         assert len(transformed.children) == 2
         c_a, c_b = transformed.children
 
-        if c_a.metadata.get("anchor_vnum") == 1:
+        if _get_anchor_vnum(c_a) == 1:
             assert len(c_a.children) == 1
             assert c_a.children[0].node_id == "nested_tower_1"
             assert len(c_b.children) == 1
@@ -795,12 +797,12 @@ class TestTransverseCorridorSNodeSplitting:
         # West watchtowers S-node across poles 5209 and 5214 is split into sibling clusters
         # Root cluster must have sibling children anchored at 5209 and 5214
         root = tree.root
-        anchors = {c.metadata.get("anchor_vnum") for c in root.children}
+        anchors = {_get_anchor_vnum(c) for c in root.children}
         assert 5209 in anchors
         assert 5214 in anchors
 
-        child_5209 = [c for c in root.children if c.metadata.get("anchor_vnum") == 5209][0]
-        child_5214 = [c for c in root.children if c.metadata.get("anchor_vnum") == 5214][0]
+        child_5209 = [c for c in root.children if _get_anchor_vnum(c) == 5209][0]
+        child_5214 = [c for c in root.children if _get_anchor_vnum(c) == 5214][0]
 
         # Room 5224 belongs to child_5209, room 5215 belongs to child_5214
         assert 5224 in child_5209.rooms

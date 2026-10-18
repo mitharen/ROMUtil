@@ -7,6 +7,7 @@ import pytest
 from romutil.layout import (
     ArticulationPointCut,
     BlockCutTreeBuilder,
+    BridgeCut,
     CutType,
     HierarchicalLayoutSolver,
     LayoutEdge,
@@ -19,6 +20,7 @@ from romutil.layout import (
     TreeBuilder,
     TreeNodeType,
 )
+from romutil.layout.hierarchy.transforms import _get_anchor_vnum
 from romutil.models import Direction, Exit, Room
 from romutil.types import Coord3D, LayoutOptions, SolvedLayout, SolverStatus, WorldGraph
 
@@ -515,14 +517,14 @@ class TestHierarchyTransverseCorridorSplit:
         assert len(transformed.children) == 2
 
         child_anchors = {
-            c.metadata.get("anchor_vnum")
+            _get_anchor_vnum(c)
             for c in transformed.children
-            if c.metadata.get("cut_type") == CutType.ARTICULATION_POINT
+            if isinstance(c.cut_contract, BridgeCut)
         }
         assert child_anchors == {1, 2}
 
-        child_1 = [c for c in transformed.children if c.metadata.get("anchor_vnum") == 1][0]
-        child_2 = [c for c in transformed.children if c.metadata.get("anchor_vnum") == 2][0]
+        child_1 = [c for c in transformed.children if _get_anchor_vnum(c) == 1][0]
+        child_2 = [c for c in transformed.children if _get_anchor_vnum(c) == 2][0]
 
         assert 10 in child_1.rooms
         assert 20 in child_2.rooms

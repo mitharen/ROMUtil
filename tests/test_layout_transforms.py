@@ -19,6 +19,7 @@ from romutil.layout.hierarchy import (
     attach_articulation_children,
     strip_anchor,
 )
+from romutil.layout.hierarchy.transforms import _get_anchor_vnum
 from romutil.layout.ir import (
     ArticulationPointCut,
     BridgeCut,
@@ -410,8 +411,10 @@ class TestTransverseSNodeSplitPass:
         c_a, c_b = transformed.root.children
         assert c_a.node_type == TreeNodeType.RIGID_CLUSTER
         assert c_b.node_type == TreeNodeType.RIGID_CLUSTER
-        assert {c_a.metadata.get("anchor_vnum"), c_b.metadata.get("anchor_vnum")} == {1, 2}
-        assert c_a.rooms | c_b.rooms == frozenset({1, 2, 10, 11, 20})
+        assert isinstance(c_a.cut_contract, BridgeCut)
+        assert isinstance(c_b.cut_contract, BridgeCut)
+        assert {_get_anchor_vnum(c_a), _get_anchor_vnum(c_b)} == {1, 2}
+        assert c_a.rooms | c_b.rooms == frozenset({10, 11, 20})
 
     def test_perpendicular_entrance_corridors_not_split(self) -> None:
         graph = _make_graph(
@@ -445,6 +448,147 @@ class TestTransverseSNodeSplitPass:
         transformed = pass_instance.apply(tree)
         assert len(transformed.root.children) == 1
         assert transformed.root.children[0].node_id == "s_loop_perp"
+
+    def test_transverse_s_node_split_assigns_bridge_cut_contract(self) -> None:
+        """Split transverse S-node assigns BridgeCut contracts with correct directions and weights."""
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 20],
+            edges=[
+                (1, 10, Direction.north),
+                (10, 11, Direction.east),
+                (11, 20, Direction.north),
+                (2, 20, Direction.north),
+            ],
+        )
+        child = SolveTreeNode(
+            node_id="s_corridor",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 10, 11, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+        res = TransverseSNodeSplitPass(graph).transform_node(parent)
+        assert len(res.children) == 2
+        c_a = [c for c in res.children if c.node_id == "s_corridor_a"][0]
+        c_b = [c for c in res.children if c.node_id == "s_corridor_b"][0]
+
+        # Verify contracts
+        assert isinstance(c_a.cut_contract, BridgeCut)
+        assert c_a.cut_contract.bridge_edge == (1, 10)
+        assert c_a.cut_contract.direction == int(Direction.north)
+        assert c_a.cut_contract.weight == 1
+
+        assert isinstance(c_b.cut_contract, BridgeCut)
+        assert c_b.cut_contract.bridge_edge == (2, 20)
+        assert c_b.cut_contract.direction == int(Direction.north)
+        assert c_b.cut_contract.weight == 1
+
+        # Verify metadata
+        assert c_a.metadata.get("cut_type") == CutType.BRIDGE
+        assert c_a.metadata.get("bridge_edge") == (1, 10)
+        assert c_a.metadata.get("direction") == int(Direction.north)
+        assert c_a.metadata.get("weight") == 1
+        assert "anchor_vnum" not in c_a.metadata
+        assert "poles" not in c_a.metadata
+
+        assert c_b.metadata.get("cut_type") == CutType.BRIDGE
+        assert c_b.metadata.get("bridge_edge") == (2, 20)
+        assert c_b.metadata.get("direction") == int(Direction.north)
+        assert c_b.metadata.get("weight") == 1
+        assert "anchor_vnum" not in c_b.metadata
+        assert "poles" not in c_b.metadata
+
+        # Verify disjoint room ownership (poles 1 and 2 excluded)
+        assert 1 not in c_a.rooms and 2 not in c_a.rooms
+        assert 1 not in c_b.rooms and 2 not in c_b.rooms
+
+    def test_transverse_s_node_split_entrance_edge_reverse_direction(self) -> None:
+        """Split transverse S-node correctly handles reversed entrance edges."""
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 20],
+            edges=[
+                (10, 1, Direction.south),
+                (10, 11, Direction.east),
+                (11, 20, Direction.north),
+                (20, 2, Direction.south),
+            ],
+        )
+        child = SolveTreeNode(
+            node_id="s_corridor_rev",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 10, 11, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+        res = TransverseSNodeSplitPass(graph).transform_node(parent)
+        assert len(res.children) == 2
+        c_a = [c for c in res.children if c.node_id == "s_corridor_rev_a"][0]
+        c_b = [c for c in res.children if c.node_id == "s_corridor_rev_b"][0]
+
+        assert isinstance(c_a.cut_contract, BridgeCut)
+        assert c_a.cut_contract.bridge_edge == (1, 10)
+        assert c_a.cut_contract.direction == int(Direction.north)
+
+        assert isinstance(c_b.cut_contract, BridgeCut)
+        assert c_b.cut_contract.bridge_edge == (2, 20)
+        assert c_b.cut_contract.direction == int(Direction.north)
+
+    def test_transverse_s_node_split_ambiguous_entrance_fallback_articulation_point(self) -> None:
+        """Ambiguous entrance edges from poles fallback gracefully to ArticulationPointCut."""
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 12, 20, 21],
+            edges=[
+                (1, 10, Direction.north),
+                (1, 11, Direction.north),
+                (10, 11, Direction.north),
+                (11, 12, Direction.north),
+                (12, 20, Direction.east),
+                (20, 21, Direction.north),
+                (2, 20, Direction.north),
+                (2, 21, Direction.north),
+            ],
+        )
+        child = SolveTreeNode(
+            node_id="s_corridor_ambig",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 10, 11, 12, 20, 21}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+        res = TransverseSNodeSplitPass(graph).transform_node(parent)
+        assert len(res.children) == 2
+        c_a = [c for c in res.children if c.node_id == "s_corridor_ambig_a"][0]
+        c_b = [c for c in res.children if c.node_id == "s_corridor_ambig_b"][0]
+
+        assert isinstance(c_a.cut_contract, ArticulationPointCut)
+        assert c_a.cut_contract.anchor_vnum == 1
+        assert c_a.metadata.get("cut_type") == CutType.ARTICULATION_POINT
+        assert c_a.metadata.get("anchor_vnum") == 1
+        assert "poles" not in c_a.metadata
+
+        assert isinstance(c_b.cut_contract, ArticulationPointCut)
+        assert c_b.cut_contract.anchor_vnum == 2
+        assert c_b.metadata.get("cut_type") == CutType.ARTICULATION_POINT
+        assert c_b.metadata.get("anchor_vnum") == 2
+        assert "poles" not in c_b.metadata
 
 
 class TestSpqrTreeBuilderPipelineIntegration:
@@ -499,7 +643,7 @@ class TestTransformHelpersAndEdgeCases:
             rooms=frozenset({1}),
             metadata={"cut_contract": BridgeCut(bridge_edge=(1, 2), direction=0)},
         )
-        assert _get_child_poles_or_anchor(bridge) == {1, 2}
+        assert _get_child_poles_or_anchor(bridge) == {2}
 
         meta_poles = SolveTreeNode(
             node_id="mp",
@@ -544,6 +688,24 @@ class TestTransformHelpersAndEdgeCases:
         )
         assert _is_articulation_child(node_by_meta_anchor) is True
         assert _get_anchor_vnum(node_by_meta_anchor) == 42
+
+        node_by_bridge = SolveTreeNode(
+            node_id="br",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({10}),
+            metadata={"cut_contract": BridgeCut(bridge_edge=(1, 10), direction=0)},
+        )
+        assert _is_articulation_child(node_by_bridge) is True
+        assert _get_anchor_vnum(node_by_bridge) == 1
+
+        node_by_bridge_meta = SolveTreeNode(
+            node_id="bm",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({10}),
+            metadata={"bridge_edge": (2, 10)},
+        )
+        assert _is_articulation_child(node_by_bridge_meta) is True
+        assert _get_anchor_vnum(node_by_bridge_meta) == 2
 
     def test_attach_articulation_children_unmatched_anchor(self) -> None:
         spqr_node = SolveTreeNode(
@@ -649,7 +811,7 @@ class TestTransformHelpersAndEdgeCases:
         )
         res = TransverseSNodeSplitPass(graph).transform_node(parent)
         assert len(res.children) == 2
-        c_1 = [c for c in res.children if c.metadata.get("anchor_vnum") == 1][0]
+        c_1 = [c for c in res.children if _get_anchor_vnum(c) == 1][0]
         assert len(c_1.children) == 1
         assert c_1.children[0].node_id == "nested_orphan"
 
@@ -708,8 +870,12 @@ class TestTransformHelpersAndEdgeCases:
 
         c_a = [c for c in res.children if c.node_id == "s_split_a"][0]
         c_b = [c for c in res.children if c.node_id == "s_split_b"][0]
-        assert c_a.metadata.get("anchor_vnum") == 1
-        assert c_b.metadata.get("anchor_vnum") == 2
+        assert isinstance(c_a.cut_contract, BridgeCut)
+        assert isinstance(c_b.cut_contract, BridgeCut)
+        assert c_a.cut_contract.bridge_edge == (1, 10)
+        assert c_b.cut_contract.bridge_edge == (2, 20)
+        assert _get_anchor_vnum(c_a) == 1
+        assert _get_anchor_vnum(c_b) == 2
         assert c_a.rooms == frozenset({10})
         assert c_b.rooms == frozenset({11, 20})
 
@@ -849,7 +1015,7 @@ class TestTransformHelpersAndEdgeCases:
         )
         res = TransverseSNodeSplitPass(graph).transform_node(parent)
         assert len(res.children) == 2
-        c_2 = [c for c in res.children if c.metadata.get("anchor_vnum") == 2][0]
+        c_2 = [c for c in res.children if _get_anchor_vnum(c) == 2][0]
         assert len(c_2.children) == 1
         assert c_2.children[0].node_id == "nested_on_b"
 
