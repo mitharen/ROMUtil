@@ -554,6 +554,38 @@ class SplitPairAllowlistFusionPass:
         return SolveTree(root=new_root, components=components, graph=tree.graph)
 
 
+def _is_biconnected_block_root(
+    node: SolveTreeNode,
+    ancestor_stack: Sequence[SolveTreeNode],
+) -> bool:
+    """Return True if node is the root of a biconnected block."""
+    if node.node_type == TreeNodeType.WORLD_ROOT:
+        return False
+    if not ancestor_stack:
+        return True
+    parent = ancestor_stack[-1]
+    if parent.node_type == TreeNodeType.WORLD_ROOT:
+        return True
+    if _is_one_cut_child(node):
+        return True
+    return False
+
+
+def _get_block_root(
+    node: SolveTreeNode,
+    ancestor_stack: Sequence[SolveTreeNode],
+) -> SolveTreeNode:
+    """Return the nearest ancestor (or node itself) that forms the root of a biconnected block."""
+    if _is_biconnected_block_root(node, ancestor_stack):
+        return node
+    for i in range(len(ancestor_stack) - 1, -1, -1):
+        anc = ancestor_stack[i]
+        anc_ancestors = ancestor_stack[:i]
+        if _is_biconnected_block_root(anc, anc_ancestors):
+            return anc
+    return node
+
+
 class TransverseSNodeSplitPass:
     """Split series loop (S-node) children with parallel entrance corridors into sibling clusters.
 
@@ -565,9 +597,10 @@ class TransverseSNodeSplitPass:
 
     If an S-node's immediate container parent does not own its boundary poles (as in split-pair
     containers with empty canonical room sets), the split articulation clusters bubble up to the
-    nearest owning ancestor S-node or R-node. Any split-pair container left with only a single
-    child is collapsed and promoted. S-nodes whose poles are directly connected by an edge
-    preserve tight Euclidean cycles and are never severed.
+    nearest owning ancestor S-node or R-node, or are adopted at the block root level if no higher
+    ancestor owns both poles. Any split-pair container left with only a single child is collapsed
+    and promoted. S-nodes whose poles are directly connected by an edge preserve tight Euclidean
+    cycles and are never severed.
     """
 
     def __init__(self, graph: LayoutGraph | None = None) -> None:
@@ -612,6 +645,13 @@ class TransverseSNodeSplitPass:
             else:
                 still_bubbling.append(b)
 
+        # If this node is the root of a biconnected block, adopt all remaining
+        # bubbled articulation clusters directly to preserve elasticity at the block root.
+        is_block_root = _is_biconnected_block_root(node, ancestor_stack)
+        if is_block_root and still_bubbling:
+            adopted.extend(still_bubbling)
+            still_bubbling = []
+
         updated_children.extend(adopted)
 
         final_children: list[SolveTreeNode] = []
@@ -636,24 +676,26 @@ class TransverseSNodeSplitPass:
 
             p0, p1 = poles
 
-            # Identify the owning node: either the immediate parent or closest ancestor
+            # Identify the owning node: either the immediate parent or closest ancestor owning both poles
             owning_node: SolveTreeNode | None = None
             if p0 in node.rooms and p1 in node.rooms:
                 owning_node = node
             else:
-                for anc in reversed(ancestor_stack):
+                for i in range(len(ancestor_stack) - 1, -1, -1):
+                    anc = ancestor_stack[i]
+                    if anc.node_type == TreeNodeType.WORLD_ROOT:
+                        break
                     if p0 in anc.rooms and p1 in anc.rooms:
                         owning_node = anc
                         break
+                    if _is_biconnected_block_root(anc, ancestor_stack[:i]):
+                        break
 
             if owning_node is None:
-                if ancestor_stack and ancestor_stack[0].node_type == TreeNodeType.WORLD_ROOT:
-                    owning_node = ancestor_stack[0]
-                elif node.node_type == TreeNodeType.WORLD_ROOT:
+                if node.node_type == TreeNodeType.WORLD_ROOT:
                     owning_node = node
                 else:
-                    final_children.append(child_processed)
-                    continue
+                    owning_node = _get_block_root(node, ancestor_stack)
 
             child_all_rooms = _collect_subtree_rooms(child_processed)
             internal_rooms = child_all_rooms - {p0, p1}

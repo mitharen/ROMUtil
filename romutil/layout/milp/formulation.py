@@ -170,10 +170,10 @@ class ClusterFormulation:
             model.z = pyo.Var(local_rooms, domain=pyo.Integers, bounds=(-m_coord, m_coord), initialize=0)
 
             anchor: int | None = None
-            if external_ports:
+            if inventory.rooms:
+                anchor = min(inventory.rooms)
+            elif external_ports:
                 anchor = min(external_ports)
-            elif inventory.rooms:
-                anchor = inventory.rooms[0]
 
             if anchor is not None:
                 model.x[anchor].fix(0)

@@ -19,73 +19,6 @@ from romutil.layout.ir import (
 )
 
 
-def _collect_all_spqr_nodes(root: spqrtree.SPQRNode) -> list[spqrtree.SPQRNode]:
-    """Collect all nodes in an SPQR tree via depth-first traversal."""
-    nodes: list[spqrtree.SPQRNode] = []
-
-    def _visit(node: spqrtree.SPQRNode) -> None:
-        nodes.append(node)
-        for child in node.children:
-            _visit(child)
-
-    _visit(root)
-    return nodes
-
-
-def _reroot_spqr_tree_to_primary_cluster(root: spqrtree.SPQRNode) -> spqrtree.SPQRNode:
-    """Reroot SPQR tree so that the primary rigid cluster (R-node) forms the tree root."""
-    all_nodes = _collect_all_spqr_nodes(root)
-    r_nodes = [n for n in all_nodes if n.type == spqrtree.NodeType.R]
-    if not r_nodes:
-        return root
-
-    # If the root is a P-node, only consider R-nodes that are external parent clusters
-    # (i.e. whose boundary poles differ from the root P-node poles).
-    if root.type == spqrtree.NodeType.P:
-        root_poles = set(root.poles)
-        external_r_nodes = [n for n in r_nodes if set(n.poles) != root_poles]
-        if not external_r_nodes:
-            return root
-        candidates = external_r_nodes
-    else:
-        candidates = r_nodes
-
-    def _node_rank(n: spqrtree.SPQRNode) -> tuple[int, tuple[int, ...]]:
-        verts = tuple(sorted(cast(int, v) for v in (n.skeleton.vertices if n.skeleton else n.poles)))
-        return (len(verts), verts)
-
-    target_root = max(candidates, key=_node_rank)
-    if target_root is root:
-        return root
-
-    node_by_id = {id(n): n for n in all_nodes}
-    adj: dict[int, list[int]] = {id(n): [] for n in all_nodes}
-    for n in all_nodes:
-        if n.parent is not None:
-            adj[id(n)].append(id(n.parent))
-        for child in n.children:
-            adj[id(n)].append(id(child))
-
-    visited: set[int] = {id(target_root)}
-    target_root.parent = None
-    target_root.children = []
-    queue: list[int] = [id(target_root)]
-
-    while queue:
-        curr_id = queue.pop(0)
-        curr = node_by_id[curr_id]
-        for neighbor_id in adj[curr_id]:
-            if neighbor_id not in visited:
-                visited.add(neighbor_id)
-                neighbor = node_by_id[neighbor_id]
-                neighbor.parent = curr
-                neighbor.children = []
-                curr.children.append(neighbor)
-                queue.append(neighbor_id)
-
-    return target_root
-
-
 def build_block_spqr_tree(
     block_nodes: frozenset[int],
     edges: Sequence[LayoutEdge],
@@ -212,8 +145,7 @@ def build_block_spqr_tree(
 
     try:
         spqr_tree_root = spqrtree.build_spqr_tree(multigraph)
-        rerooted_root = _reroot_spqr_tree_to_primary_cluster(spqr_tree_root)
-        return _convert(rerooted_root, parent=None)
+        return _convert(spqr_tree_root, parent=None)
     except (ValueError, IndexError, RuntimeError):
         return SolveTreeNode(
             node_id=f"{node_id_prefix}_0",

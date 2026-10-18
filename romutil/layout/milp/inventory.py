@@ -49,6 +49,18 @@ def get_child_coordinate(c_sol: NodeSolution, vnum: int) -> Coord3D | None:
     return None
 
 
+def get_all_child_coordinates(c_sol: NodeSolution) -> Mapping[int, Coord3D]:
+    """Return all known coordinates for child rooms and boundary ports."""
+    coords = dict(c_sol.local_coordinates)
+    if hasattr(c_sol, "port_coordinates") and c_sol.port_coordinates:
+        coords.update(c_sol.port_coordinates)
+    elif "port_coordinates" in c_sol.metadata:
+        coords.update(c_sol.metadata["port_coordinates"])
+    if "all_room_coordinates" in c_sol.metadata:
+        coords.update(c_sol.metadata["all_room_coordinates"])
+    return coords
+
+
 @dataclass(frozen=True)
 class ChildChildAlignment:
     """Alignment equality between two sibling child boundary ports."""
@@ -529,7 +541,7 @@ class SplitPairHandler:
 
         for (p0, p1), split_children in split_children_by_poles.items():
             for sc in split_children:
-                c_coords = self.child_solutions[sc.node_id].local_coordinates
+                c_coords = get_all_child_coordinates(self.child_solutions[sc.node_id])
                 for edge in self.graph.edges:
                     if edge.cut:
                         continue
@@ -597,7 +609,7 @@ class SplitPairHandler:
                             if edge.src == edge.dst:
                                 continue
                             other_coords = (
-                                self.child_solutions[other.node_id].local_coordinates
+                                get_all_child_coordinates(self.child_solutions[other.node_id])
                                 if other.node_id in self.child_solutions
                                 else {}
                             )
@@ -816,16 +828,16 @@ class GatewayCutHandler:
         new_aligned: set[str] = set()
         equated: set[frozenset[str]] = set()
 
+        seen_art_ports: set[tuple[str, int]] = set()
+
         for child in self.children:
-            if child.node_id in aligned_children or child.node_id in new_aligned:
-                continue
             c_sol = self.child_solutions.get(child.node_id)
             if not c_sol:
                 continue
-            a: int | None = None
+            ports: set[int] = set()
             contract = child.cut_contract
             if isinstance(contract, ArticulationPointCut):
-                a = contract.anchor_vnum
+                ports.add(contract.anchor_vnum)
             elif (
                 child.cut_type == CutType.ARTICULATION_POINT
                 or child.metadata.get("cut_type") in (CutType.ARTICULATION_POINT, "articulation_point")
@@ -833,27 +845,31 @@ class GatewayCutHandler:
             ):
                 raw_a = child.metadata.get("anchor_vnum")
                 if raw_a is not None:
-                    a = int(raw_a)
+                    ports.add(int(raw_a))
 
-            if a is not None and a in self.room_set:
-                pc = get_child_coordinate(c_sol, a)
-                if pc is not None:
-                    active_edges.append(
-                        ActiveEdge(
-                            edge_id=f"art_port_{child.node_id}_{a}",
-                            src=a,
-                            dst=(child.node_id, a),
-                            direction=(0, 0, 0),
-                            min_length=0,
-                            associated_rooms=frozenset({a}),
-                            associated_children=frozenset({child.node_id}),
+            for a in sorted(ports):
+                if a in self.room_set and (child.node_id, a) not in seen_art_ports:
+                    pc = get_child_coordinate(c_sol, a)
+                    if pc is not None:
+                        seen_art_ports.add((child.node_id, a))
+                        active_edges.append(
+                            ActiveEdge(
+                                edge_id=f"art_port_{child.node_id}_{a}",
+                                src=a,
+                                dst=(child.node_id, a),
+                                direction=(0, 0, 0),
+                                min_length=0,
+                                associated_rooms=frozenset({a}),
+                                associated_children=frozenset({child.node_id}),
+                            )
                         )
-                    )
-                    gateway_anchors[child.node_id].add(a)
-                    new_aligned.add(child.node_id)
-                    for other_cid in room_anchored_children.get(a, []):
-                        equated.add(frozenset({other_cid, child.node_id}))
-                    room_anchored_children.setdefault(a, []).append(child.node_id)
+                        gateway_anchors[child.node_id].add(a)
+                        new_aligned.add(child.node_id)
+                        for other_cid in room_anchored_children.get(a, []):
+                            if other_cid != child.node_id:
+                                equated.add(frozenset({other_cid, child.node_id}))
+                        if child.node_id not in room_anchored_children.setdefault(a, []):
+                            room_anchored_children[a].append(child.node_id)
 
         return active_edges, gateway_anchors, new_aligned, equated
 
@@ -1504,14 +1520,8 @@ def inventory_cluster(
     )
 
 
-SplitPairChildClassifier = SplitPairHandler
-ArticulationPointHandler = GatewayCutHandler
-BridgeCutHandler = GatewayCutHandler
-
 __all__ = [
     "ActiveEdge",
-    "ArticulationPointHandler",
-    "BridgeCutHandler",
     "ChildChildAlignment",
     "ClusterInventory",
     "EndpointRef",
@@ -1519,10 +1529,10 @@ __all__ = [
     "GatewayCutResult",
     "InterChildBridgeHandler",
     "InterChildBridgeResult",
-    "SplitPairChildClassifier",
     "SplitPairHandler",
     "SplitPairResult",
     "derive_child_sub_boxes",
+    "get_all_child_coordinates",
     "get_child_boundary_ports",
     "get_child_coordinate",
     "inventory_cluster",

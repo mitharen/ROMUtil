@@ -2880,3 +2880,46 @@ class TestSafe2CutAllowlistEndToEnd:
                     assert dx > 0 and dy == 0 and dz == 0
                 elif e.direction == Direction.west:
                     assert dx < 0 and dy == 0 and dz == 0
+
+
+class TestInventoryCoordinatesAndAnchorPriority:
+    """Unit tests for get_all_child_coordinates, formulation anchor priority, and port coincidence."""
+
+    def test_get_all_child_coordinates_combines_sources(self) -> None:
+        """get_all_child_coordinates merges local_coordinates, port_coordinates, and all_room_coordinates."""
+        from romutil.layout.milp.inventory import get_all_child_coordinates
+
+        c_sol = NodeSolution(
+            node_id="child_1",
+            local_coordinates={1: Coord3D(10, 20, 0)},
+            port_coordinates={2: Coord3D(30, 40, 0)},
+            metadata={"all_room_coordinates": {3: Coord3D(50, 60, 0)}},
+        )
+        coords = get_all_child_coordinates(c_sol)
+        assert coords[1] == Coord3D(10, 20, 0)
+        assert coords[2] == Coord3D(30, 40, 0)
+        assert coords[3] == Coord3D(50, 60, 0)
+
+    def test_formulation_anchor_selection_prioritizes_owned_rooms(self) -> None:
+        """formulate_cluster_model anchors min(inventory.rooms) over external_ports."""
+        from romutil.layout.milp.formulation import formulate_cluster_model
+
+        inv = ClusterInventory(
+            node=SolveTreeNode(node_id="test", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({100, 200})),
+            rooms=(100, 200),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset({50}),  # external port 50 is smaller than 100
+            active_edges=(),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+            child_sub_boxes={},
+            graph=LayoutGraph(rooms={}, edges=()),
+        )
+        form = formulate_cluster_model(inv)
+        # Room 100 should be anchored to 0, not external port 50
+        assert form.model.x[100].is_fixed()
+        assert form.model.x[100].value == 0
+        assert not form.model.x[50].is_fixed()
