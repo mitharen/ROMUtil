@@ -225,15 +225,26 @@ class ClearanceConstraintBuilder:
                     sb = child_sub_boxes.get(s_id, ())
                     if not s_sol or not sb:
                         continue
+                    s_ports = getattr(s_sol, "port_coordinates", {})
                     if any(
                         r in s_sol.local_coordinates
+                        or r in s_ports
                         for r in ae.associated_rooms
                     ):
                         continue
-                    s_all = set(s_sol.local_coordinates.keys())
+                    s_all = set(s_sol.local_coordinates.keys()) | set(s_ports.keys())
                     if any(
                         s_all
-                        & set(child_solutions[c_other].local_coordinates.keys())
+                        & (
+                            set(child_solutions[c_other].local_coordinates.keys())
+                            | set(
+                                getattr(
+                                    child_solutions[c_other],
+                                    "port_coordinates",
+                                    {},
+                                ).keys()
+                            )
+                        )
                         for c_other in ae.associated_children
                         if c_other in child_solutions
                     ):
@@ -809,14 +820,23 @@ def detect_cluster_collisions(
             sb = child_sub_boxes.get(s_id, ())
             if not s_sol or not sb or s_id not in extraction.raw_child_offsets:
                 continue
+            s_ports = getattr(s_sol, "port_coordinates", {})
             if any(
-                r in s_sol.local_coordinates
+                r in s_sol.local_coordinates or r in s_ports
                 for r in ae.associated_rooms
             ):
                 continue
-            s_all = set(s_sol.local_coordinates.keys())
+            s_all = set(s_sol.local_coordinates.keys()) | set(s_ports.keys())
             if any(
-                s_all & set(child_solutions[c_other].local_coordinates.keys())
+                s_all
+                & (
+                    set(child_solutions[c_other].local_coordinates.keys())
+                    | set(
+                        getattr(
+                            child_solutions[c_other], "port_coordinates", {}
+                        ).keys()
+                    )
+                )
                 for c_other in ae.associated_children
                 if c_other in child_solutions
             ):
