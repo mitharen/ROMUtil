@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import collections
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from romutil.layout.geometry import (
     BoundingBox3D,
@@ -14,6 +14,7 @@ from romutil.layout.geometry import (
 )
 from romutil.layout.milp.constraints import add_disjunctive_box_separation
 from romutil.layout.milp.inventory import (
+    ActiveEdge,
     EndpointRef,
     direction_to_displacement,
     get_child_coordinate,
@@ -21,7 +22,7 @@ from romutil.layout.milp.inventory import (
 from romutil.types import Coord3D
 
 if TYPE_CHECKING:
-    from romutil.layout.ir import SolveTreeNode
+    from romutil.layout.ir import NodeSolution, SolveTreeNode
     from romutil.layout.milp.formulation import ClusterFormulation
     from romutil.layout.milp.inventory import ClusterInventory
     from romutil.layout.milp.solver import SolvedClusterExtraction
@@ -207,10 +208,10 @@ class ClearanceConstraintBuilder:
         children = self.formulation.inventory.children
         child_solutions = self.formulation.inventory.child_solutions
         child_sub_boxes = self.formulation.inventory.child_sub_boxes
-        gateway_anchors = self.formulation.inventory.gateway_anchors
         edge_indices = list(range(len(active_edges)))
 
-        corridor_child_pairs: list[tuple[int, tuple[str, int]]] = []
+        corridor_child_tp_pairs: list[tuple[int, tuple[str, int]]] = []
+        corridor_child_assoc_pairs: list[tuple[int, tuple[str, int]]] = []
         if edge_indices and len(children) > 0:
             for i, ae in enumerate(active_edges):
                 if ae.edge_id.startswith("sp_"):
@@ -219,50 +220,77 @@ class ClearanceConstraintBuilder:
                     continue
                 for s_child in children:
                     s_id = s_child.node_id
-                    if s_id in ae.associated_children:
-                        continue
                     s_sol = child_solutions.get(s_id)
                     sb = child_sub_boxes.get(s_id, ())
                     if not s_sol or not sb:
                         continue
-                    s_ports = getattr(s_sol, "port_coordinates", {})
-                    if any(
-                        r in s_sol.local_coordinates
-                        or r in s_ports
-                        for r in ae.associated_rooms
-                    ):
-                        continue
-                    s_all = set(s_sol.local_coordinates.keys()) | set(s_ports.keys())
-                    if any(
-                        s_all
-                        & (
-                            set(child_solutions[c_other].local_coordinates.keys())
-                            | set(
-                                getattr(
-                                    child_solutions[c_other],
-                                    "port_coordinates",
-                                    {},
-                                ).keys()
-                            )
-                        )
-                        for c_other in ae.associated_children
-                        if c_other in child_solutions
-                    ):
-                        continue
-                    for k in range(len(sb)):
-                        pair = (i, (s_id, k))
-                        corridor_child_pairs.append(pair)
-                        self.separated_pairs.add(("corridor_child", pair[0], pair[1]))
 
-        if corridor_child_pairs:
+                    if s_id in ae.associated_children:
+                        exempt_boxes = get_incident_child_sub_box_indices(
+                            s_id, s_sol, sb, ae, child_solutions
+                        )
+                        for k in range(len(sb)):
+                            if k in exempt_boxes:
+                                continue
+                            pair = (i, (s_id, k))
+                            corridor_child_assoc_pairs.append(pair)
+                            self.separated_pairs.add(("corridor_child", pair[0], pair[1]))
+                    else:
+                        s_ports = getattr(s_sol, "port_coordinates", {})
+                        if any(
+                            r in s_sol.local_coordinates
+                            or r in s_ports
+                            for r in ae.associated_rooms
+                        ):
+                            continue
+                        s_all = set(s_sol.local_coordinates.keys()) | set(s_ports.keys())
+                        if any(
+                            s_all
+                            & (
+                                set(child_solutions[c_other].local_coordinates.keys())
+                                | set(
+                                    getattr(
+                                        child_solutions[c_other],
+                                        "port_coordinates",
+                                        {},
+                                    ).keys()
+                                )
+                            )
+                            for c_other in ae.associated_children
+                            if c_other in child_solutions
+                        ):
+                            continue
+                        exempt_boxes = get_incident_child_sub_box_indices(
+                            s_id, s_sol, sb, ae, child_solutions
+                        )
+                        for k in range(len(sb)):
+                            if k in exempt_boxes:
+                                continue
+                            pair = (i, (s_id, k))
+                            corridor_child_tp_pairs.append(pair)
+                            self.separated_pairs.add(("corridor_child", pair[0], pair[1]))
+
+        if corridor_child_tp_pairs:
             add_disjunctive_box_separation(
                 model=self.formulation.model,
-                pairs=corridor_child_pairs,
+                pairs=corridor_child_tp_pairs,
                 get_box_a=lambda i: self.formulation.get_corridor_full_box(
                     active_edges[i]
                 ),
                 get_box_b=self.formulation.get_child_sub_box,
                 prefix="corridor_child",
+                m_big=self.formulation.m_big,
+            )
+
+        if corridor_child_assoc_pairs:
+            add_disjunctive_box_separation(
+                model=self.formulation.model,
+                pairs=corridor_child_assoc_pairs,
+                get_box_a=lambda i: self.formulation.get_corridor_interior_box(
+                    active_edges[i]
+                ),
+                get_box_b=self.formulation.get_child_sub_box,
+                prefix="corridor_child_assoc" if corridor_child_tp_pairs else "corridor_child",
                 m_big=self.formulation.m_big,
             )
 
@@ -494,16 +522,36 @@ class ClearanceConstraintBuilder:
                     m_big=self.formulation.m_big,
                 )
             elif cat == "corridor_child":
-                add_disjunctive_box_separation(
-                    model=self.formulation.model,
-                    pairs=pairs,
-                    get_box_a=lambda i: self.formulation.get_corridor_full_box(
-                        self.formulation.inventory.active_edges[i]
-                    ),
-                    get_box_b=self.formulation.get_child_sub_box,
-                    prefix="corridor_child",
-                    m_big=self.formulation.m_big,
-                )
+                tp_pairs: list[tuple[int, tuple[str, int]]] = []
+                assoc_pairs: list[tuple[int, tuple[str, int]]] = []
+                for ae_idx, (cid, k) in pairs:
+                    ae = self.formulation.inventory.active_edges[ae_idx]
+                    if cid in ae.associated_children:
+                        assoc_pairs.append((ae_idx, (cid, k)))
+                    else:
+                        tp_pairs.append((ae_idx, (cid, k)))
+                if tp_pairs:
+                    add_disjunctive_box_separation(
+                        model=self.formulation.model,
+                        pairs=tp_pairs,
+                        get_box_a=lambda i: self.formulation.get_corridor_full_box(
+                            self.formulation.inventory.active_edges[i]
+                        ),
+                        get_box_b=self.formulation.get_child_sub_box,
+                        prefix="corridor_child",
+                        m_big=self.formulation.m_big,
+                    )
+                if assoc_pairs:
+                    add_disjunctive_box_separation(
+                        model=self.formulation.model,
+                        pairs=assoc_pairs,
+                        get_box_a=lambda i: self.formulation.get_corridor_interior_box(
+                            self.formulation.inventory.active_edges[i]
+                        ),
+                        get_box_b=self.formulation.get_child_sub_box,
+                        prefix="corridor_child_assoc" if tp_pairs else "corridor_child",
+                        m_big=self.formulation.m_big,
+                    )
             elif cat == "corridor_crossing":
                 add_disjunctive_box_separation(
                     model=self.formulation.model,
@@ -595,6 +643,118 @@ def _extract_child_sub_box_bounds(
         cz + sb.min_z,
         cz + sb.max_z,
     )
+
+
+def get_incident_child_sub_box_indices(
+    child_id: str,
+    child_solution: NodeSolution,
+    sub_boxes: Sequence[BoundingBox3D],
+    ae: ActiveEdge,
+    child_solutions: Mapping[str, NodeSolution] | None = None,
+) -> set[int]:
+    """Identify sub-box indices of child_id enclosing boundary ports incident to active edge ae.
+
+    For an active edge incident to child_id at one or more boundary ports with relative
+    coordinate (x, y, z) within the child coordinate frame, identify the specific sub-box
+    index b_i of child child_id whose closed bounds enclose or are adjacent (L_inf distance <= 1)
+    to that port coordinate. Exempt only those specific incident sub-boxes from collision
+    detection and Big-M separation against ae, while keeping all other sub-boxes active obstacles.
+
+    Args:
+        child_id: Identifier of the child cluster.
+        child_solution: Solved NodeSolution for child_id.
+        sub_boxes: Sequence of keep-out sub-boxes for child_id.
+        ae: ActiveEdge corridor segment being checked.
+        child_solutions: Optional mapping of child IDs to NodeSolutions for resolving
+            inter-child shared boundary ports.
+
+    Returns:
+        Set of integer indices into sub_boxes that enclose or are adjacent to incident port coordinates.
+    """
+    if not sub_boxes:
+        return set()
+
+    incident_coords: list[Coord3D] = []
+
+    def _collect_vnum(vnum: int) -> None:
+        coord = get_child_coordinate(child_solution, vnum)
+        if coord is not None:
+            incident_coords.append(coord)
+
+    # 1. Inspect active edge endpoints
+    if isinstance(ae.src, tuple):
+        src_cid, src_v = ae.src
+        if src_cid == child_id:
+            _collect_vnum(src_v)
+        elif child_solutions and src_cid in child_solutions:
+            _collect_vnum(src_v)
+    elif isinstance(ae.src, int):
+        _collect_vnum(ae.src)
+
+    if isinstance(ae.dst, tuple):
+        dst_cid, dst_v = ae.dst
+        if dst_cid == child_id:
+            _collect_vnum(dst_v)
+        elif child_solutions and dst_cid in child_solutions:
+            _collect_vnum(dst_v)
+    elif isinstance(ae.dst, int):
+        _collect_vnum(ae.dst)
+
+    # 2. Inspect rooms associated with the edge
+    for r in ae.associated_rooms:
+        _collect_vnum(r)
+
+    if not incident_coords:
+        return set()
+
+    norm_boxes: list[BoundingBox3D] = [
+        raw_b
+        if isinstance(raw_b, BoundingBox3D)
+        else BoundingBox3D.from_coordinates([raw_b[0], raw_b[1]])
+        for raw_b in sub_boxes
+    ]
+
+    exempt: set[int] = set()
+    # Pass 1: Strict enclosure
+    for k, box in enumerate(norm_boxes):
+        for pt in incident_coords:
+            if (
+                box.min_x <= pt.x <= box.max_x
+                and box.min_y <= pt.y <= box.max_y
+                and box.min_z <= pt.z <= box.max_z
+            ):
+                exempt.add(k)
+                break
+
+    # Pass 2: Boundary port carve-out adjacent fallback (L_inf distance <= 1)
+    for pt in incident_coords:
+        pt_covered = any(
+            box.min_x <= pt.x <= box.max_x
+            and box.min_y <= pt.y <= box.max_y
+            and box.min_z <= pt.z <= box.max_z
+            for box in norm_boxes
+        )
+        if not pt_covered:
+            min_dist = float("inf")
+            for box in norm_boxes:
+                dist = max(
+                    max(0, box.min_x - pt.x, pt.x - box.max_x),
+                    max(0, box.min_y - pt.y, pt.y - box.max_y),
+                    max(0, box.min_z - pt.z, pt.z - box.max_z),
+                )
+                if dist < min_dist:
+                    min_dist = dist
+            if min_dist <= 1:
+                for k, box in enumerate(norm_boxes):
+                    dist = max(
+                        max(0, box.min_x - pt.x, pt.x - box.max_x),
+                        max(0, box.min_y - pt.y, pt.y - box.max_y),
+                        max(0, box.min_z - pt.z, pt.z - box.max_z),
+                    )
+                    if dist == min_dist:
+                        exempt.add(k)
+
+    return exempt
 
 
 def detect_cluster_collisions(
@@ -814,35 +974,18 @@ def detect_cluster_collisions(
 
         for s_child in children:
             s_id = s_child.node_id
-            if s_id in ae.associated_children:
-                continue
             s_sol = child_solutions.get(s_id)
             sb = child_sub_boxes.get(s_id, ())
             if not s_sol or not sb or s_id not in extraction.raw_child_offsets:
                 continue
-            s_ports = getattr(s_sol, "port_coordinates", {})
-            if any(
-                r in s_sol.local_coordinates or r in s_ports
-                for r in ae.associated_rooms
-            ):
-                continue
-            s_all = set(s_sol.local_coordinates.keys()) | set(s_ports.keys())
-            if any(
-                s_all
-                & (
-                    set(child_solutions[c_other].local_coordinates.keys())
-                    | set(
-                        getattr(
-                            child_solutions[c_other], "port_coordinates", {}
-                        ).keys()
-                    )
-                )
-                for c_other in ae.associated_children
-                if c_other in child_solutions
-            ):
-                continue
+
+            exempt_boxes = get_incident_child_sub_box_indices(
+                s_id, s_sol, sb, ae, child_solutions
+            )
 
             for k in range(len(sb)):
+                if k in exempt_boxes:
+                    continue
                 box = _extract_child_sub_box_bounds(
                     (s_id, k), extraction, inventory
                 )
@@ -1028,4 +1171,5 @@ __all__ = [
     "_extract_entity_coord",
     "apply_clearance_constraints",
     "detect_cluster_collisions",
+    "get_incident_child_sub_box_indices",
 ]

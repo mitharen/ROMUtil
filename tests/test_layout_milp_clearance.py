@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import dataclasses
 from pathlib import Path
 
 from romutil.layout.geometry import BoundingBox3D
@@ -18,8 +19,10 @@ from romutil.layout.milp import (
     ClusterFormulation,
     detect_cluster_collisions,
     formulate_cluster_model,
+    get_incident_child_sub_box_indices,
     inventory_cluster,
 )
+from romutil.layout.milp.inventory import ActiveEdge
 from romutil.layout.milp.solver import SolvedClusterExtraction
 from romutil.models import Direction, Room
 from romutil.parser import parse_file
@@ -344,3 +347,174 @@ class TestAreaClearanceIntegrity:
             if count > 1
         }
         assert duplicate_coords == {}, f"Found overlapping rooms in Thalos: {duplicate_coords}"
+
+
+class TestPortScopedSubBoxCorridorClearance:
+    """Unit tests for port-scoped child sub-box corridor clearance exemptions."""
+
+    def test_get_incident_child_sub_box_indices_strictly_enclosed(self) -> None:
+        """Active edges incident to specific ports strictly enclose and exempt only that sub-box."""
+        sol = NodeSolution(
+            node_id="c_l",
+            local_coordinates={
+                10: Coord3D(1, 1, 0),
+                20: Coord3D(6, 1, 0),
+            },
+            port_coordinates={
+                100: Coord3D(1, 1, 0),
+                200: Coord3D(6, 1, 0),
+            },
+            sub_boxes=(
+                BoundingBox3D(0, 2, 0, 2, 0, 0),  # Sub-box 0 encloses room 10 / port 100
+                BoundingBox3D(5, 7, 0, 2, 0, 0),  # Sub-box 1 encloses room 20 / port 200
+            ),
+        )
+
+        # Edge incident to room 10 on c_l
+        ae1 = ActiveEdge(
+            edge_id="ae_port10",
+            src=("c_l", 10),
+            dst=1,
+            direction=(0, -1, 0),
+            min_length=2,
+            associated_rooms=frozenset({10, 1}),
+            associated_children=frozenset({"c_l"}),
+        )
+        exempt1 = get_incident_child_sub_box_indices("c_l", sol, sol.sub_boxes, ae1)
+        assert exempt1 == {0}
+
+        # Edge incident to port 200 on c_l
+        ae2 = ActiveEdge(
+            edge_id="ae_port200",
+            src=2,
+            dst=("c_l", 200),
+            direction=(1, 0, 0),
+            min_length=2,
+            associated_rooms=frozenset({2, 200}),
+            associated_children=frozenset({"c_l"}),
+        )
+        exempt2 = get_incident_child_sub_box_indices("c_l", sol, sol.sub_boxes, ae2)
+        assert exempt2 == {1}
+
+        # Edge not incident to c_l
+        ae_other = ActiveEdge(
+            edge_id="ae_ext",
+            src=1,
+            dst=2,
+            direction=(1, 0, 0),
+            min_length=2,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+        )
+        exempt_other = get_incident_child_sub_box_indices("c_l", sol, sol.sub_boxes, ae_other)
+        assert exempt_other == set()
+
+    def test_get_incident_child_sub_box_indices_carved_out_adjacent_port(self) -> None:
+        """Boundary ports carved out of keep-out sub-boxes fall back to adjacent sub-box."""
+        sol = NodeSolution(
+            node_id="c_carved",
+            local_coordinates={10: Coord3D(2, 2, 0)},
+            port_coordinates={
+                1: Coord3D(0, 2, 0),  # Chebyshev distance 1 from box 0 ([1, 3] x [1, 3])
+            },
+            sub_boxes=(
+                BoundingBox3D(1, 3, 1, 3, 0, 0),  # Sub-box 0 adjacent to port 1
+                BoundingBox3D(8, 10, 1, 3, 0, 0),  # Sub-box 1 distant
+            ),
+        )
+
+        ae = ActiveEdge(
+            edge_id="ae_carved",
+            src=("c_carved", 1),
+            dst=99,
+            direction=(-1, 0, 0),
+            min_length=2,
+            associated_rooms=frozenset({1, 99}),
+            associated_children=frozenset({"c_carved"}),
+        )
+        exempt = get_incident_child_sub_box_indices("c_carved", sol, sol.sub_boxes, ae)
+        assert exempt == {0}
+
+    def test_get_incident_child_sub_box_indices_multi_port(self) -> None:
+        """Active edges touching multiple boundary ports exempt all incident sub-boxes."""
+        sol = NodeSolution(
+            node_id="c_multi",
+            local_coordinates={10: Coord3D(1, 1, 0), 20: Coord3D(6, 1, 0)},
+            sub_boxes=(
+                BoundingBox3D(0, 2, 0, 2, 0, 0),
+                BoundingBox3D(5, 7, 0, 2, 0, 0),
+            ),
+        )
+
+        # Intra-cluster corridor spanning between room 10 and room 20
+        ae = ActiveEdge(
+            edge_id="ae_internal",
+            src=("c_multi", 10),
+            dst=("c_multi", 20),
+            direction=(1, 0, 0),
+            min_length=5,
+            associated_rooms=frozenset({10, 20}),
+            associated_children=frozenset({"c_multi"}),
+        )
+        exempt = get_incident_child_sub_box_indices("c_multi", sol, sol.sub_boxes, ae)
+        assert exempt == {0, 1}
+
+    def test_corridor_child_collision_detects_penetration_of_non_incident_wing(self) -> None:
+        """Corridor entering one sub-box of a child cluster detects collision when penetrating another wing."""
+        # U-shaped child cluster with wing 0 and wing 1 at the same latitude
+        child = SolveTreeNode(node_id="c_ushape", node_type="leaf", rooms=frozenset({10, 20}))
+        parent = SolveTreeNode(node_id="p_root", node_type="container", rooms=frozenset({1, 2}), children=(child,))
+        sol = NodeSolution(
+            node_id="c_ushape",
+            local_coordinates={
+                10: Coord3D(1, 1, 0),  # Wing 0 port
+                20: Coord3D(5, 1, 0),  # Wing 1 interior room
+            },
+            sub_boxes=(
+                BoundingBox3D(0, 2, 0, 2, 0, 0),  # Sub-box 0: Wing 0 containing port 10
+                BoundingBox3D(4, 6, 0, 2, 0, 0),  # Sub-box 1: Wing 1 containing room 20
+            ),
+        )
+
+        graph = _make_graph([1, 2, 10, 20], [])
+        inv = inventory_cluster(node=parent, child_solutions={"c_ushape": sol}, graph=graph)
+
+        # Active edge incident to room 10 in wing 0, running East direction (1, 0, 0)
+        # Slices across x in [2, 7] at latitude y=1, directly penetrating wing 1 ([4, 6])
+        inv = dataclasses.replace(
+            inv,
+            active_edges=(
+                ActiveEdge(
+                    edge_id="ae_piercing",
+                    src=("c_ushape", 10),
+                    dst=2,
+                    direction=(1, 0, 0),
+                    min_length=7,
+                    associated_rooms=frozenset({10, 2}),
+                    associated_children=frozenset({"c_ushape"}),
+                ),
+            ),
+        )
+        formulation = formulate_cluster_model(inventory=inv)
+
+        # Extraction where ae_piercing runs from (1, 1, 0) to (8, 1, 0)
+        # Child offset is (0, 0, 0), so wing 1 spans [4, 6] x [0, 2] x [0, 0]
+        # Corridor interior x in [2, 7] at y=1 penetrates wing 1 [4, 6]!
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={2: (8, 1, 0)},
+            raw_child_offsets={"c_ushape": (0, 0, 0)},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        violations = detect_cluster_collisions(formulation, extraction)
+        cchild_violations = [v for v in violations if v.category == "corridor_child"]
+        assert len(cchild_violations) == 1
+        assert cchild_violations[0].item_b == ("c_ushape", 1)  # Specifically sub-box 1 (wing 1)
+
+        # Verify cut injection applies corridor_child_assoc separation
+        cuts_injected = formulation.clearance_builder.inject_clearance_cuts(violations)
+        assert cuts_injected == 1
+        assert (
+            hasattr(formulation.model, "corridor_child_br")
+            or hasattr(formulation.model, "corridor_child_assoc_br")
+        )
