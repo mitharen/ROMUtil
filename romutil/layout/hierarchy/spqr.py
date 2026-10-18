@@ -6,7 +6,13 @@ from typing import Any, Sequence, cast
 
 import spqrtree
 
-from romutil.layout.hierarchy.transforms import TreeTransformationPass
+from romutil.layout.hierarchy.transforms import (
+    TreeTransformationPass,
+    _get_anchor_vnum,
+    _is_one_cut_child,
+    attach_articulation_children,
+    strip_anchor,
+)
 from romutil.layout.ir import (
     ArticulationPointCut,
     CutType,
@@ -186,9 +192,7 @@ class SpqrDecompositionPass(TreeTransformationPass):
 
             child_nodes = [_decompose_blocks(child) for child in node.children]
 
-            anchor = node.metadata.get("anchor_vnum")
-            if anchor is None and isinstance(node.cut_contract, ArticulationPointCut):
-                anchor = node.cut_contract.anchor_vnum
+            anchor = _get_anchor_vnum(node)
 
             block_verts = set(node.rooms)
             if anchor is not None:
@@ -203,21 +207,43 @@ class SpqrDecompositionPass(TreeTransformationPass):
                     edges=edges,
                     node_id_prefix=f"{node.node_id}_spqr",
                 )
+                if anchor is not None:
+                    spqr_root = strip_anchor(spqr_root, anchor)
+
                 merged_meta = dict(spqr_root.metadata)
                 merged_meta.update(node.metadata)
 
-                return SolveTreeNode(
+                spqr_root = SolveTreeNode(
                     node_id=spqr_root.node_id,
                     node_type=spqr_root.node_type,
                     rooms=spqr_root.rooms,
-                    children=tuple(spqr_root.children) + tuple(child_nodes),
+                    children=spqr_root.children,
                     metadata=merged_meta,
                 )
+
+                art_children = [c for c in child_nodes if _is_one_cut_child(c)]
+                other_children = [c for c in child_nodes if not _is_one_cut_child(c)]
+
+                spqr_root = attach_articulation_children(spqr_root, art_children)
+                if other_children:
+                    spqr_root = SolveTreeNode(
+                        node_id=spqr_root.node_id,
+                        node_type=spqr_root.node_type,
+                        rooms=spqr_root.rooms,
+                        children=tuple(spqr_root.children) + tuple(other_children),
+                        metadata=spqr_root.metadata,
+                    )
+
+                return spqr_root
+
+            current_rooms = node.rooms
+            if anchor is not None and anchor in current_rooms:
+                current_rooms = frozenset(current_rooms) - {anchor}
 
             return SolveTreeNode(
                 node_id=node.node_id,
                 node_type=node.node_type,
-                rooms=node.rooms,
+                rooms=current_rooms,
                 children=tuple(child_nodes),
                 metadata=node.metadata,
             )

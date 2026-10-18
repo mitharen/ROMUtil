@@ -147,6 +147,26 @@ def strip_anchor(node: SolveTreeNode, anchor: int) -> SolveTreeNode:
     )
 
 
+def _collect_spqr_branch_rooms(node: SolveTreeNode) -> set[int]:
+    """Collect room IDs across an SPQR component and its non-articulation descendants."""
+    rooms = set(node.rooms)
+    for c in node.children:
+        if not _is_articulation_child(c):
+            rooms.update(_collect_spqr_branch_rooms(c))
+    return rooms
+
+
+def _collect_spqr_articulation_children(node: SolveTreeNode) -> list[SolveTreeNode]:
+    """Collect all articulation child nodes attached to an SPQR node and its non-articulation descendants."""
+    art_children: list[SolveTreeNode] = []
+    for c in node.children:
+        if _is_articulation_child(c):
+            art_children.append(c)
+        else:
+            art_children.extend(_collect_spqr_articulation_children(c))
+    return art_children
+
+
 def attach_articulation_children(
     spqr_node: SolveTreeNode,
     articulation_children: Sequence[SolveTreeNode],
@@ -172,7 +192,9 @@ def attach_articulation_children(
         target_child_id: str | None = None
         if anchor is not None and anchor not in spqr_node.rooms:
             for ch in spqr_node.children:
-                if anchor in ch.rooms or anchor in _collect_subtree_rooms(ch):
+                if _is_articulation_child(ch):
+                    continue
+                if anchor in ch.rooms or anchor in _collect_spqr_branch_rooms(ch):
                     target_child_id = ch.node_id
                     break
         if target_child_id is not None:
@@ -195,65 +217,6 @@ def attach_articulation_children(
         children=tuple(updated_spqr_children + direct_children),
         metadata=spqr_node.metadata,
     )
-
-
-class ArticulationChildAttachmentPass:
-    """Re-attach articulation child blocks to the specific SPQR node containing their anchor
-    and enforce canonical disjoint room ownership by stripping parent anchors."""
-
-    def __init__(self, strip_anchors: bool = True) -> None:
-        self.strip_anchors = strip_anchors
-
-    def transform_node(self, node: SolveTreeNode) -> SolveTreeNode:
-        """Recursively route articulation children and strip parent anchors on a SolveTreeNode."""
-        if node.node_type == TreeNodeType.WORLD_ROOT:
-            transformed_children = tuple(self.transform_node(child) for child in node.children)
-            return SolveTreeNode(
-                node_id=node.node_id if node.node_id else "",
-                node_type=node.node_type,
-                rooms=node.rooms,
-                children=transformed_children,
-                metadata=node.metadata,
-            )
-
-        # Recursively process children first (bottom-up)
-        transformed_children = [self.transform_node(child) for child in node.children]
-
-        # Separate SPQR structural children from articulation children
-        spqr_children: list[SolveTreeNode] = []
-        art_children: list[SolveTreeNode] = []
-        for child in transformed_children:
-            if _is_articulation_child(child):
-                art_children.append(child)
-            else:
-                spqr_children.append(child)
-
-        current_node = SolveTreeNode(
-            node_id=node.node_id,
-            node_type=node.node_type,
-            rooms=node.rooms,
-            children=tuple(spqr_children),
-            metadata=node.metadata,
-        )
-
-        if self.strip_anchors:
-            parent_anchor = _get_anchor_vnum(node)
-            if parent_anchor is not None:
-                current_node = strip_anchor(current_node, parent_anchor)
-
-        if art_children:
-            current_node = attach_articulation_children(current_node, art_children)
-
-        return current_node
-
-    def apply(self, tree: SolveTree) -> SolveTree:
-        """Apply articulation child re-attachment to a SolveTree."""
-        if tree.root.node_type == TreeNodeType.EMPTY:
-            return tree
-
-        new_root = self.transform_node(tree.root)
-        components = new_root.children if new_root.node_type == TreeNodeType.WORLD_ROOT else (new_root,)
-        return SolveTree(root=new_root, components=components, graph=tree.graph)
 
 
 class AnchorStrippingPass:
@@ -294,15 +257,6 @@ class AnchorStrippingPass:
         new_root = self.transform_node(tree.root)
         components = new_root.children if new_root.node_type == TreeNodeType.WORLD_ROOT else (new_root,)
         return SolveTree(root=new_root, components=components, graph=tree.graph)
-
-
-def _collect_spqr_branch_rooms(node: SolveTreeNode) -> set[int]:
-    """Collect room IDs across an SPQR component and its non-articulation descendants."""
-    rooms = set(node.rooms)
-    for c in node.children:
-        if not _is_articulation_child(c):
-            rooms.update(_collect_spqr_branch_rooms(c))
-    return rooms
 
 
 def _is_safe_2cut_allowlist(
@@ -531,7 +485,7 @@ class SplitPairAllowlistFusionPass:
                 poles = (sorted_rooms[0], sorted_rooms[1])
 
             if poles is not None and not self._is_safe_allowlist(current, poles, target_graph):
-                art_children = tuple(c for c in current.children if _is_articulation_child(c))
+                art_children = tuple(_collect_spqr_articulation_children(current))
                 fused_rooms = frozenset(_collect_spqr_branch_rooms(current))
                 return SolveTreeNode(
                     node_id=current.node_id,

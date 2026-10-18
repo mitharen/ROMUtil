@@ -16,7 +16,6 @@ from romutil.layout.hierarchy.spqr import (
 )
 from romutil.layout.hierarchy.transforms import (
     AnchorStrippingPass,
-    ArticulationChildAttachmentPass,
     SplitPairAllowlistFusionPass,
     TransverseSNodeSplitPass,
     TreeTransformationPass,
@@ -27,7 +26,6 @@ from romutil.layout.hierarchy.transforms import (
 
 __all__ = [
     "AnchorStrippingPass",
-    "ArticulationChildAttachmentPass",
     "BlockCutDecompositionPass",
     "BlockCutTreeBuilder",
     "PipelineTreeBuilder",

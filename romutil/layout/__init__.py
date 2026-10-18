@@ -18,7 +18,6 @@ from romutil.layout.geometry import (
 )
 from romutil.layout.hierarchy import (
     AnchorStrippingPass,
-    ArticulationChildAttachmentPass,
     BlockCutDecompositionPass,
     BlockCutTreeBuilder,
     PipelineTreeBuilder,
@@ -70,7 +69,6 @@ production = HierarchicalLayoutSolver.production
 
 __all__ = [
     "AnchorStrippingPass",
-    "ArticulationChildAttachmentPass",
     "ArticulationPointCut",
     "BlockCutDecompositionPass",
     "BlockCutTreeBuilder",

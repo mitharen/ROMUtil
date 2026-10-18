@@ -6,7 +6,6 @@ import pytest
 
 from romutil.layout.hierarchy import (
     AnchorStrippingPass,
-    ArticulationChildAttachmentPass,
     BlockCutDecompositionPass,
     BlockCutTreeBuilder,
     PipelineTreeBuilder,
@@ -77,9 +76,6 @@ class TestTransformationPassProtocol:
         pass_instance = TransverseSNodeSplitPass()
         assert isinstance(pass_instance, TreeTransformationPass)
 
-    def test_articulation_child_attachment_pass_implements_protocol(self) -> None:
-        pass_instance = ArticulationChildAttachmentPass()
-        assert isinstance(pass_instance, TreeTransformationPass)
 
     def test_anchor_stripping_pass_implements_protocol(self) -> None:
         pass_instance = AnchorStrippingPass()
@@ -153,32 +149,49 @@ class TestTreeTransformationPipeline:
         assert log == ["outer_pre", "inner1", "inner2", "outer_post"]
 
 
-class TestArticulationChildAttachmentPass:
-    """Verify ArticulationChildAttachmentPass behavior."""
-
-    def test_empty_tree(self) -> None:
-        pass_instance = ArticulationChildAttachmentPass()
-        empty_root = SolveTreeNode(node_id="empty", node_type=TreeNodeType.EMPTY, rooms=frozenset())
-        tree = SolveTree(root=empty_root, components=())
-        assert pass_instance.apply(tree) is tree
-
-    def test_world_root_traversal(self) -> None:
-        pass_instance = ArticulationChildAttachmentPass()
-        comp1 = SolveTreeNode(node_id="c1", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2}))
-        comp2 = SolveTreeNode(node_id="c2", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({3, 4}))
-        world = SolveTreeNode(
-            node_id="world",
-            node_type=TreeNodeType.WORLD_ROOT,
-            rooms=frozenset(),
-            children=(comp1, comp2),
-        )
-        tree = SolveTree(root=world, components=(comp1, comp2))
-        res = pass_instance.apply(tree)
-        assert res.root.node_type == TreeNodeType.WORLD_ROOT
-        assert len(res.root.children) == 2
+class TestSpqrDirectArticulationAttachment:
+    """Verify direct articulation child attachment and anchor stripping in SPQR decomposition."""
 
     def test_articulation_child_attached_to_spqr_container_internal_branch(self) -> None:
-        # Parent container has rooms {1, 2} (poles) and child S-nodes
+        """1-cut child is directly attached under the SPQR descendant branch owning its anchor."""
+        rooms = {v: _make_room(v) for v in (1, 2, 3, 4, 10, 11)}
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north, cut=False),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, cut=False),
+            LayoutEdge(src=3, dst=4, direction=Direction.south, cut=False),
+            LayoutEdge(src=4, dst=1, direction=Direction.west, cut=False),
+            LayoutEdge(src=3, dst=10, direction=Direction.north, cut=False),
+            LayoutEdge(src=10, dst=11, direction=Direction.east, cut=False),
+        ]
+        graph = LayoutGraph(rooms=rooms, edges=tuple(edges))
+
+        art_child = SolveTreeNode(
+            node_id="art_block",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({10, 11}),
+            children=(),
+            metadata={
+                "cut_type": CutType.ARTICULATION_POINT,
+                "anchor_vnum": 3,
+                "cut_contract": ArticulationPointCut(anchor_vnum=3),
+            },
+        )
+        block_node = SolveTreeNode(
+            node_id="parent_block",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1, 2, 3, 4}),
+            children=(art_child,),
+        )
+        tree = SolveTree(root=block_node, components=(block_node,), graph=graph)
+
+        pass_instance = SpqrDecompositionPass(graph=graph)
+        transformed = pass_instance.apply(tree)
+
+        assert transformed.root.node_type == TreeNodeType.SERIES_LOOP
+        assert any(c.node_id == "art_block" for c in transformed.root.children)
+
+    def test_articulation_child_attached_to_internal_split_pair_branch(self) -> None:
+        """When an SPQR tree produces a split-pair container, child attaching at internal branch attaches to that branch."""
         s_node_1 = SolveTreeNode(
             node_id="s_1",
             node_type=TreeNodeType.SERIES_LOOP,
@@ -193,7 +206,6 @@ class TestArticulationChildAttachmentPass:
             children=(),
             metadata={"cut_type": CutType.SPLIT_PAIR, "poles": (1, 2)},
         )
-        # Articulation child attaching at room 3
         art_child = SolveTreeNode(
             node_id="art_block",
             node_type=TreeNodeType.BLOCK,
@@ -205,25 +217,21 @@ class TestArticulationChildAttachmentPass:
                 "cut_contract": ArticulationPointCut(anchor_vnum=3),
             },
         )
-        # Initially, all are children of the parent container
         parent = SolveTreeNode(
             node_id="container",
             node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
             rooms=frozenset({1, 2}),
-            children=(s_node_1, s_node_2, art_child),
+            children=(s_node_1, s_node_2),
         )
-        tree = SolveTree(root=parent, components=(parent,))
 
-        pass_instance = ArticulationChildAttachmentPass()
-        transformed = pass_instance.apply(tree)
-
-        # art_block should be re-attached under s_1 (which contains room 3)
-        assert len(transformed.root.children) == 2
-        s1_transformed = [c for c in transformed.root.children if c.node_id == "s_1"][0]
+        attached = attach_articulation_children(parent, [art_child])
+        assert len(attached.children) == 2
+        s1_transformed = [c for c in attached.children if c.node_id == "s_1"][0]
         assert len(s1_transformed.children) == 1
         assert s1_transformed.children[0].node_id == "art_block"
 
     def test_articulation_child_attached_to_pole_remains_direct_child(self) -> None:
+        """When anchor is in the split-pair container's rooms (the poles), child remains a direct child of the container."""
         s_node = SolveTreeNode(
             node_id="s_1",
             node_type=TreeNodeType.SERIES_LOOP,
@@ -244,61 +252,154 @@ class TestArticulationChildAttachmentPass:
             node_id="container",
             node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
             rooms=frozenset({1, 2}),
-            children=(s_node, art_child),
-        )
-        tree = SolveTree(root=parent, components=(parent,))
-
-        pass_instance = ArticulationChildAttachmentPass()
-        transformed = pass_instance.apply(tree)
-
-        # Anchor 1 is in parent container rooms, so art_child stays on parent
-        assert len(transformed.root.children) == 2
-        assert any(c.node_id == "art_block" for c in transformed.root.children)
-
-    def test_anchor_stripping_on_spqr_subtree(self) -> None:
-        # A child block decomposed into SPQR retains anchor in its rooms initially
-        s_node = SolveTreeNode(
-            node_id="s_child",
-            node_type=TreeNodeType.SERIES_LOOP,
-            rooms=frozenset({10, 20}),  # contains parent anchor 10
-            children=(),
-        )
-        spqr_block = SolveTreeNode(
-            node_id="spqr_block",
-            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
-            rooms=frozenset({10, 30}),  # contains parent anchor 10
             children=(s_node,),
+        )
+
+        attached = attach_articulation_children(parent, [art_child])
+        assert len(attached.children) == 2
+        assert any(c.node_id == "art_block" for c in attached.children)
+
+    def test_anchor_stripping_on_decomposed_spqr_block(self) -> None:
+        """Parent gateway anchor is stripped from the decomposed SPQR subtree to enforce disjoint room ownership."""
+        rooms = {v: _make_room(v) for v in (10, 1, 2, 3, 4)}
+        edges = [
+            LayoutEdge(src=10, dst=1, direction=Direction.north, cut=False),
+            LayoutEdge(src=1, dst=2, direction=Direction.east, cut=False),
+            LayoutEdge(src=2, dst=3, direction=Direction.south, cut=False),
+            LayoutEdge(src=3, dst=4, direction=Direction.west, cut=False),
+            LayoutEdge(src=4, dst=10, direction=Direction.north, cut=False),
+        ]
+        graph = LayoutGraph(rooms=rooms, edges=tuple(edges))
+
+        block_node = SolveTreeNode(
+            node_id="child_block",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1, 2, 3, 4}),
+            children=(),
             metadata={
                 "cut_type": CutType.ARTICULATION_POINT,
                 "anchor_vnum": 10,
                 "cut_contract": ArticulationPointCut(anchor_vnum=10),
             },
         )
-        tree = SolveTree(root=spqr_block, components=(spqr_block,))
+        tree = SolveTree(root=block_node, components=(block_node,), graph=graph)
 
-        pass_instance = ArticulationChildAttachmentPass(strip_anchors=True)
-        transformed = pass_instance.apply(tree)
-
-        # Parent anchor 10 must be stripped from spqr_block and s_child rooms
+        transformed = SpqrDecompositionPass(graph=graph).apply(tree)
         assert 10 not in transformed.root.rooms
-        assert transformed.root.rooms == frozenset({30})
-        assert 10 not in transformed.root.children[0].rooms
-        assert transformed.root.children[0].rooms == frozenset({20})
+        assert transformed.root.metadata["anchor_vnum"] == 10
+        assert isinstance(transformed.root.cut_contract, ArticulationPointCut)
+        assert transformed.root.cut_contract.anchor_vnum == 10
 
-    def test_strip_anchors_disabled_flag(self) -> None:
-        spqr_block = SolveTreeNode(
-            node_id="spqr_block",
-            node_type=TreeNodeType.RIGID_CLUSTER,
-            rooms=frozenset({10, 20}),
+    def test_split_pair_fusion_preserves_articulation_children_on_candidate_branches(self) -> None:
+        """Candidate branches fused into a RIGID_CLUSTER have their articulation children preserved and re-parented."""
+        from romutil.layout.hierarchy.transforms import _collect_spqr_articulation_children
+
+        art_child_1 = SolveTreeNode(
+            node_id="art_1",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({100}),
             children=(),
-            metadata={"anchor_vnum": 10},
+            metadata={"anchor_vnum": 3, "cut_contract": ArticulationPointCut(anchor_vnum=3)},
         )
-        tree = SolveTree(root=spqr_block, components=(spqr_block,))
+        art_child_2 = SolveTreeNode(
+            node_id="art_2",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({200}),
+            children=(),
+            metadata={"anchor_vnum": 4, "cut_contract": ArticulationPointCut(anchor_vnum=4)},
+        )
+        direct_art_child = SolveTreeNode(
+            node_id="art_direct",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({300}),
+            children=(),
+            metadata={"anchor_vnum": 1, "cut_contract": ArticulationPointCut(anchor_vnum=1)},
+        )
+        branch_1 = SolveTreeNode(
+            node_id="b1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({3}),
+            children=(art_child_1,),
+        )
+        branch_2 = SolveTreeNode(
+            node_id="b2",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({4}),
+            children=(art_child_2,),
+        )
+        container = SolveTreeNode(
+            node_id="sp_container",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(branch_1, branch_2, direct_art_child),
+            metadata={"poles": (1, 2), "cut_contract": SplitPairCut(poles=(1, 2))},
+        )
 
-        pass_instance = ArticulationChildAttachmentPass(strip_anchors=False)
-        transformed = pass_instance.apply(tree)
+        collected = _collect_spqr_articulation_children(container)
+        assert len(collected) == 3
+        assert {c.node_id for c in collected} == {"art_1", "art_2", "art_direct"}
 
-        assert 10 in transformed.root.rooms
+        rooms_map = {v: _make_room(v) for v in (1, 2, 3, 4, 100, 200, 300)}
+        dummy_graph = LayoutGraph(rooms=rooms_map, edges=())
+        tree = SolveTree(root=container, components=(container,), graph=dummy_graph)
+
+        fusion_pass = SplitPairAllowlistFusionPass(graph=dummy_graph)
+        transformed = fusion_pass.apply(tree)
+
+        assert transformed.root.node_type == TreeNodeType.RIGID_CLUSTER
+        assert transformed.root.rooms == frozenset({1, 2, 3, 4})
+        assert len(transformed.root.children) == 3
+        child_ids = {c.node_id for c in transformed.root.children}
+        assert child_ids == {"art_1", "art_2", "art_direct"}
+
+    def test_spqr_decomposition_preserves_other_non_articulation_children(self) -> None:
+        """Non-1-cut child nodes are retained at the SPQR root level."""
+        rooms = {v: _make_room(v) for v in (1, 2, 3, 4)}
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north, cut=False),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, cut=False),
+            LayoutEdge(src=3, dst=4, direction=Direction.south, cut=False),
+            LayoutEdge(src=4, dst=1, direction=Direction.west, cut=False),
+        ]
+        graph = LayoutGraph(rooms=rooms, edges=tuple(edges))
+
+        other_child = SolveTreeNode(
+            node_id="custom_child",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({100}),
+            children=(),
+        )
+        block_node = SolveTreeNode(
+            node_id="block_parent",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1, 2, 3, 4}),
+            children=(other_child,),
+        )
+        tree = SolveTree(root=block_node, components=(block_node,), graph=graph)
+
+        transformed = SpqrDecompositionPass(graph=graph).apply(tree)
+        assert any(c.node_id == "custom_child" for c in transformed.root.children)
+
+    def test_small_block_anchor_stripping_disjoint_ownership(self) -> None:
+        """When a small block (< 4 rooms) contains its gateway anchor, the anchor is stripped."""
+        # 3-room block with anchor 1 included in its rooms
+        small_block = SolveTreeNode(
+            node_id="small_block",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1, 2, 3}),
+            children=(),
+            metadata={
+                "cut_type": CutType.ARTICULATION_POINT,
+                "anchor_vnum": 1,
+                "cut_contract": ArticulationPointCut(anchor_vnum=1),
+            },
+        )
+        tree = SolveTree(root=small_block, components=(small_block,))
+
+        transformed = SpqrDecompositionPass().apply(tree)
+        assert transformed.root.node_type == TreeNodeType.BLOCK
+        assert 1 not in transformed.root.rooms
+        assert transformed.root.rooms == frozenset({2, 3})
 
 
 class TestAnchorStrippingPass:
@@ -623,12 +724,11 @@ class TestSpqrTreeBuilderPipelineIntegration:
     def test_default_pipeline_composition(self) -> None:
         for builder_cls in (PipelineTreeBuilder, SpqrTreeBuilder):
             pipeline = builder_cls.default_pipeline()
-            assert len(pipeline.passes) == 5
+            assert len(pipeline.passes) == 4
             assert isinstance(pipeline.passes[0], BlockCutDecompositionPass)
             assert isinstance(pipeline.passes[1], SpqrDecompositionPass)
             assert isinstance(pipeline.passes[2], SplitPairAllowlistFusionPass)
-            assert isinstance(pipeline.passes[3], ArticulationChildAttachmentPass)
-            assert isinstance(pipeline.passes[4], TransverseSNodeSplitPass)
+            assert isinstance(pipeline.passes[3], TransverseSNodeSplitPass)
 
 
 class TestTransformHelpersAndEdgeCases:
@@ -1790,12 +1890,11 @@ class TestSplitPairAllowlistFusionPass:
         """Default hierarchical pipeline executes decomposition passes then fusion then downstream passes."""
         pipeline = PipelineTreeBuilder.default_pipeline()
         passes = pipeline.passes
-        assert len(passes) == 5
+        assert len(passes) == 4
         assert isinstance(passes[0], BlockCutDecompositionPass)
         assert isinstance(passes[1], SpqrDecompositionPass)
         assert isinstance(passes[2], SplitPairAllowlistFusionPass)
-        assert isinstance(passes[3], ArticulationChildAttachmentPass)
-        assert isinstance(passes[4], TransverseSNodeSplitPass)
+        assert isinstance(passes[3], TransverseSNodeSplitPass)
 
     def test_allowlist_poles_not_len_2_returns_false(self) -> None:
         """Poles tuple with length != 2 fails allowlist contract."""
