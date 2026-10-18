@@ -1376,28 +1376,7 @@ def inventory_cluster(
     )
     aligned_children.update(bridge_res.aligned_children)
 
-    child_strictly_interior: set[int] = set()
-    for child in children:
-        child_strictly_interior.update(
-            get_child_strictly_interior_rooms(child, child_solutions.get(child.node_id))
-        )
-
-    external_ports = {p for p in boundary_ports if p not in child_strictly_interior}
-    all_local_rooms = sorted(set(rooms) | external_ports)
-    direct_edges = _build_internal_room_edges(
-        graph=graph,
-        rooms=all_local_rooms,
-    )
-
-    # Combine active edges in deterministic order
-    active_edges: list[ActiveEdge] = [
-        *split_res.active_edges,
-        *gw_res.active_edges,
-        *bridge_res.active_edges,
-        *direct_edges,
-    ]
-
-    # 5. Keep-out sub-boxes for children
+    # 4. Keep-out sub-boxes for children
     child_sub_boxes: dict[str, tuple[BoundingBox3D, ...]] = {}
     for child in children:
         if child.node_id in child_solutions:
@@ -1417,6 +1396,97 @@ def inventory_cluster(
             )
         else:
             child_sub_boxes[child.node_id] = ()
+
+    # 5. Direct internal and boundary interface edges
+    child_strictly_interior: set[int] = set()
+    for child in children:
+        child_strictly_interior.update(
+            get_child_strictly_interior_rooms(child, child_solutions.get(child.node_id))
+        )
+
+    external_ports = {p for p in boundary_ports if p not in child_strictly_interior}
+    all_local_rooms = sorted(set(rooms) | external_ports)
+    direct_edges = _build_internal_room_edges(
+        graph=graph,
+        rooms=all_local_rooms,
+    )
+
+    # Enforce vertical elevation clearance for boundary interface edges to ensure
+    # child sub-boxes extending in the reverse vertical direction do not penetrate
+    # the parent boundary port's elevation layer.
+    parent_room_set = set(rooms)
+    adjusted_direct_edges: list[ActiveEdge] = []
+    for ae in direct_edges:
+        if isinstance(ae.src, int) and isinstance(ae.dst, int):
+            is_src_port = ae.src in external_ports and ae.dst in parent_room_set
+            is_dst_port = ae.dst in external_ports and ae.src in parent_room_set
+            if is_src_port or is_dst_port:
+                p = ae.src if is_src_port else ae.dst
+                u = ae.dst if is_src_port else ae.src
+                disp = ae.direction if is_src_port else (-ae.direction[0], -ae.direction[1], -ae.direction[2])
+                if disp[0] == 0 and disp[1] == 0 and disp[2] != 0:
+                    min_len = ae.min_length
+                    for child in children:
+                        c_sol = child_solutions.get(child.node_id)
+                        if not c_sol:
+                            continue
+                        anchors = gateway_anchors.get(child.node_id, set())
+                        port_coords = getattr(c_sol, "port_coordinates", {})
+                        if u not in anchors and u not in port_coords:
+                            continue
+                        u_coord = port_coords.get(u)
+                        if u_coord is None:
+                            continue
+                        ref_z = u_coord.z
+                        sbs = child_sub_boxes.get(child.node_id, ())
+                        ux, uy = u_coord.x, u_coord.y
+                        has_column_collision = False
+                        for sb in sbs:
+                            if sb.min_x <= ux <= sb.max_x and sb.min_y <= uy <= sb.max_y:
+                                if disp[2] > 0 and sb.min_z < ref_z:
+                                    has_column_collision = True
+                                    break
+                                elif disp[2] < 0 and sb.max_z > ref_z:
+                                    has_column_collision = True
+                                    break
+                        if has_column_collision:
+                            continue
+
+                        z_vals: list[int] = []
+                        if c_sol.bounding_box is not None:
+                            z_vals.extend([c_sol.bounding_box.min_z, c_sol.bounding_box.max_z])
+                        for sb in sbs:
+                            z_vals.extend([sb.min_z, sb.max_z])
+                        for loc_pt in c_sol.local_coordinates.values():
+                            z_vals.append(loc_pt.z)
+                        if not z_vals:
+                            continue
+                        min_z_rel = min(z_vals) - ref_z
+                        max_z_rel = max(z_vals) - ref_z
+                        if disp[2] > 0 and min_z_rel < 0:
+                            min_len = max(min_len, 1 - min_z_rel)
+                        elif disp[2] < 0 and max_z_rel > 0:
+                            min_len = max(min_len, 1 + max_z_rel)
+                    if min_len != ae.min_length:
+                        ae = ActiveEdge(
+                            edge_id=ae.edge_id,
+                            src=ae.src,
+                            dst=ae.dst,
+                            direction=ae.direction,
+                            min_length=min_len,
+                            associated_rooms=ae.associated_rooms,
+                            associated_children=ae.associated_children,
+                            allow_transverse_slack=ae.allow_transverse_slack,
+                        )
+        adjusted_direct_edges.append(ae)
+
+    # Combine active edges in deterministic order
+    active_edges: list[ActiveEdge] = [
+        *split_res.active_edges,
+        *gw_res.active_edges,
+        *bridge_res.active_edges,
+        *adjusted_direct_edges,
+    ]
 
     return ClusterInventory(
         node=node,
