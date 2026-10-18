@@ -74,32 +74,60 @@ def _get_child_poles_or_anchor(child: SolveTreeNode) -> set[int]:
     if isinstance(child.cut_contract, ArticulationPointCut):
         return {child.cut_contract.anchor_vnum}
     if isinstance(child.cut_contract, BridgeCut):
-        return set(child.cut_contract.bridge_edge)
+        anc = _get_anchor_vnum(child)
+        return {anc} if anc is not None else set(child.cut_contract.bridge_edge)
     if "poles" in child.metadata:
         return set(child.metadata["poles"])
     if "anchor_vnum" in child.metadata:
         return {child.metadata["anchor_vnum"]}
+    if "bridge_edge" in child.metadata:
+        anc = _get_anchor_vnum(child)
+        return {anc} if anc is not None else set(child.metadata["bridge_edge"])
     return set()
 
 
-def _is_articulation_child(node: SolveTreeNode) -> bool:
-    """Return True if node represents an articulation cut child block."""
-    if isinstance(node.cut_contract, ArticulationPointCut):
+def _is_one_cut_child(node: SolveTreeNode) -> bool:
+    """Return True if node represents a 1-cut child block (articulation point or bridge)."""
+    if isinstance(node.cut_contract, (ArticulationPointCut, BridgeCut)):
         return True
-    if "anchor_vnum" in node.metadata:
+    if "anchor_vnum" in node.metadata or "bridge_edge" in node.metadata:
         return True
-    if node.metadata.get("cut_type") in (CutType.ARTICULATION_POINT, "articulation_point"):
+    if node.metadata.get("cut_type") in (
+        CutType.ARTICULATION_POINT,
+        "articulation_point",
+        CutType.BRIDGE,
+        "bridge",
+    ):
         return True
     return False
 
 
+_is_articulation_child = _is_one_cut_child
+
+
 def _get_anchor_vnum(node: SolveTreeNode) -> int | None:
-    """Extract articulation anchor room ID from node metadata or cut contract."""
+    """Extract articulation anchor or bridge parent room ID from node metadata or cut contract."""
     if isinstance(node.cut_contract, ArticulationPointCut):
         return node.cut_contract.anchor_vnum
+    if isinstance(node.cut_contract, BridgeCut):
+        u, v = node.cut_contract.bridge_edge
+        if u not in node.rooms:
+            return u
+        if v not in node.rooms:
+            return v
+        return u
     if "anchor_vnum" in node.metadata:
         val = node.metadata["anchor_vnum"]
         return int(val) if val is not None else None
+    if "bridge_edge" in node.metadata:
+        raw_be = node.metadata["bridge_edge"]
+        if len(raw_be) == 2:
+            u, v = int(raw_be[0]), int(raw_be[1])
+            if u not in node.rooms:
+                return u
+            if v not in node.rooms:
+                return v
+            return u
     return None
 
 
@@ -802,37 +830,132 @@ class TransverseSNodeSplitPass:
             children_a: list[SolveTreeNode] = []
             children_b: list[SolveTreeNode] = []
             for sub_c in child_processed.children:
-                sub_ports = _get_child_poles_or_anchor(sub_c)
-                if sub_ports and sub_ports <= rooms_a:
-                    children_a.append(sub_c)
-                elif sub_ports and sub_ports <= rooms_b:
-                    children_b.append(sub_c)
-                else:
-                    sub_all = _collect_subtree_rooms(sub_c)
-                    if len(sub_all & rooms_a) >= len(sub_all & rooms_b):
+                sub_anc = _get_anchor_vnum(sub_c)
+                if sub_anc is not None:
+                    if sub_anc in rooms_a:
                         children_a.append(sub_c)
-                    else:
+                    elif sub_anc in rooms_b:
                         children_b.append(sub_c)
+                    else:
+                        sub_all = _collect_subtree_rooms(sub_c)
+                        if len(sub_all & rooms_a) >= len(sub_all & rooms_b):
+                            children_a.append(sub_c)
+                        else:
+                            children_b.append(sub_c)
+                else:
+                    sub_ports = _get_child_poles_or_anchor(sub_c)
+                    if sub_ports and sub_ports <= rooms_a:
+                        children_a.append(sub_c)
+                    elif sub_ports and sub_ports <= rooms_b:
+                        children_b.append(sub_c)
+                    else:
+                        sub_all = _collect_subtree_rooms(sub_c)
+                        if len(sub_all & rooms_a) >= len(sub_all & rooms_b):
+                            children_a.append(sub_c)
+                        else:
+                            children_b.append(sub_c)
 
-            meta_a = dict(child_processed.metadata)
-            meta_a["cut_type"] = CutType.ARTICULATION_POINT
-            meta_a["anchor_vnum"] = p0
-            meta_a["cut_contract"] = ArticulationPointCut(anchor_vnum=p0)
-            meta_a.pop("poles", None)
-
-            meta_b = dict(child_processed.metadata)
-            meta_b["cut_type"] = CutType.ARTICULATION_POINT
-            meta_b["anchor_vnum"] = p1
-            meta_b["cut_contract"] = ArticulationPointCut(anchor_vnum=p1)
-            meta_b.pop("poles", None)
+            # Under Disjoint Room Ownership, p0 and p1 are owned by the ancestor node.
+            rooms_a = frozenset(rooms_a - {p0, p1})
+            rooms_b = frozenset(rooms_b - {p0, p1})
 
             subtree_rooms_a = set(rooms_a)
             for c in children_a:
                 subtree_rooms_a.update(_collect_subtree_rooms(c))
+            subtree_rooms_a.discard(p0)
+            subtree_rooms_a.discard(p1)
 
             subtree_rooms_b = set(rooms_b)
             for c in children_b:
                 subtree_rooms_b.update(_collect_subtree_rooms(c))
+            subtree_rooms_b.discard(p0)
+            subtree_rooms_b.discard(p1)
+
+            # Identify unique entrance graph edge between p0 and subtree_rooms_a
+            edges_p0 = [
+                e
+                for e in graph.edges
+                if not e.cut
+                and (
+                    (e.src == p0 and e.dst in subtree_rooms_a)
+                    or (e.dst == p0 and e.src in subtree_rooms_a)
+                )
+            ]
+            u_entries = {e.dst if e.src == p0 else e.src for e in edges_p0}
+            meta_a = dict(child_processed.metadata)
+            u_entry_external: int | None = None
+            if len(u_entries) == 1:
+                u_entry = next(iter(u_entries))
+                edge_p0 = next((e for e in edges_p0 if e.src == p0 and e.dst == u_entry), None)
+                if edge_p0 is not None:
+                    edge_dir_a = int(edge_p0.direction)
+                    edge_weight_a = edge_p0.weight
+                else:
+                    edge_rev = next(e for e in edges_p0 if e.src == u_entry and e.dst == p0)
+                    edge_dir_a = int(Direction(edge_rev.direction).invert())
+                    edge_weight_a = edge_rev.weight
+
+                meta_a["cut_type"] = CutType.BRIDGE
+                meta_a["cut_contract"] = BridgeCut(
+                    bridge_edge=(p0, u_entry),
+                    direction=edge_dir_a,
+                    weight=edge_weight_a,
+                )
+                meta_a["bridge_edge"] = (p0, u_entry)
+                meta_a["direction"] = edge_dir_a
+                meta_a["weight"] = edge_weight_a
+                meta_a.pop("anchor_vnum", None)
+                meta_a.pop("poles", None)
+                if u_entry not in rooms_a:
+                    u_entry_external = u_entry
+            else:
+                meta_a["cut_type"] = CutType.ARTICULATION_POINT
+                meta_a["anchor_vnum"] = p0
+                meta_a["cut_contract"] = ArticulationPointCut(anchor_vnum=p0)
+                meta_a.pop("poles", None)
+
+            # Identify unique entrance graph edge between p1 and subtree_rooms_b
+            edges_p1 = [
+                e
+                for e in graph.edges
+                if not e.cut
+                and (
+                    (e.src == p1 and e.dst in subtree_rooms_b)
+                    or (e.dst == p1 and e.src in subtree_rooms_b)
+                )
+            ]
+            v_entries = {e.dst if e.src == p1 else e.src for e in edges_p1}
+            meta_b = dict(child_processed.metadata)
+            v_entry_external: int | None = None
+            if len(v_entries) == 1:
+                v_entry = next(iter(v_entries))
+                edge_p1 = next((e for e in edges_p1 if e.src == p1 and e.dst == v_entry), None)
+                if edge_p1 is not None:
+                    edge_dir_b = int(edge_p1.direction)
+                    edge_weight_b = edge_p1.weight
+                else:
+                    edge_rev = next(e for e in edges_p1 if e.src == v_entry and e.dst == p1)
+                    edge_dir_b = int(Direction(edge_rev.direction).invert())
+                    edge_weight_b = edge_rev.weight
+
+                meta_b["cut_type"] = CutType.BRIDGE
+                meta_b["cut_contract"] = BridgeCut(
+                    bridge_edge=(p1, v_entry),
+                    direction=edge_dir_b,
+                    weight=edge_weight_b,
+                )
+                meta_b["bridge_edge"] = (p1, v_entry)
+                meta_b["direction"] = edge_dir_b
+                meta_b["weight"] = edge_weight_b
+                meta_b.pop("anchor_vnum", None)
+                meta_b.pop("poles", None)
+                if v_entry not in rooms_b:
+                    v_entry_external = v_entry
+            else:
+                meta_b["cut_type"] = CutType.ARTICULATION_POINT
+                meta_b["anchor_vnum"] = p1
+                meta_b["cut_contract"] = ArticulationPointCut(anchor_vnum=p1)
+                meta_b.pop("poles", None)
 
             descendant_severed = _collect_subtree_severed_edges(child_processed)
 
@@ -873,6 +996,10 @@ class TransverseSNodeSplitPass:
             existing_ports = set(child_processed.metadata.get("boundary_ports", ()))
             severed_ports_a.update(existing_ports & subtree_rooms_a)
             severed_ports_b.update(existing_ports & subtree_rooms_b)
+            if u_entry_external is not None:
+                severed_ports_a.add(u_entry_external)
+            if v_entry_external is not None:
+                severed_ports_b.add(v_entry_external)
 
             ports_a = tuple(sorted(severed_ports_a - rooms_a))
             ports_b = tuple(sorted(severed_ports_b - rooms_b))

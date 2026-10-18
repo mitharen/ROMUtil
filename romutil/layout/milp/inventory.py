@@ -879,7 +879,9 @@ class GatewayCutHandler:
                 u, v = contract.bridge_edge
                 dir_val = contract.direction
                 weight = contract.weight
-                if u in self.room_set and v in c_coords:
+                has_v = v in c_coords or get_child_coordinate(c_sol, v) is not None
+                has_u = u in c_coords or get_child_coordinate(c_sol, u) is not None
+                if u in self.room_set and has_v:
                     try:
                         disp = direction_to_displacement(dir_val)
                         active_edges.append(
@@ -898,7 +900,7 @@ class GatewayCutHandler:
                         continue
                     except ValueError:
                         pass
-                elif v in self.room_set and u in c_coords:
+                elif v in self.room_set and has_u:
                     try:
                         disp = direction_to_displacement(dir_val)
                         active_edges.append(
@@ -921,7 +923,9 @@ class GatewayCutHandler:
             for edge in self.graph.edges:
                 if edge.cut:
                     continue
-                if edge.src in self.room_set and edge.dst in c_coords:
+                if edge.src in self.room_set and (
+                    edge.dst in c_coords or get_child_coordinate(c_sol, edge.dst) is not None
+                ):
                     try:
                         disp = direction_to_displacement(edge.direction)
                         active_edges.append(
@@ -940,7 +944,9 @@ class GatewayCutHandler:
                         break
                     except ValueError:
                         pass
-                elif edge.dst in self.room_set and edge.src in c_coords:
+                elif edge.dst in self.room_set and (
+                    edge.src in c_coords or get_child_coordinate(c_sol, edge.src) is not None
+                ):
                     try:
                         disp = direction_to_displacement(edge.direction)
                         active_edges.append(

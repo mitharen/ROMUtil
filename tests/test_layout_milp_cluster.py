@@ -2238,10 +2238,10 @@ class TestSplitPairBoundaryPortAlignment:
         assert 5204 in layout.coordinates
         assert 5205 in layout.coordinates
         assert 5250 in layout.coordinates
-        assert layout.coordinates[5203] == Coord3D(2, 8, 2)
-        assert layout.coordinates[5204] == Coord3D(2, 9, 2)
-        assert layout.coordinates[5250] == Coord3D(1, 8, 2)
-        assert layout.coordinates[5205] == Coord3D(1, 9, 2)
+        assert layout.coordinates[5203] == Coord3D(3, 7, 2)
+        assert layout.coordinates[5204] == Coord3D(3, 8, 2)
+        assert layout.coordinates[5250] == Coord3D(2, 7, 2)
+        assert layout.coordinates[5205] == Coord3D(2, 8, 2)
 
     def test_midgaard_transverse_gate_corridors_strictly_on_axis(self) -> None:
         """West Gate 3040 -> 3258 and East Gate 3041 -> 3266 in Midgaard solve strictly on-axis with zero transverse shear."""
