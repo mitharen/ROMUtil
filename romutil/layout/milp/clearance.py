@@ -979,9 +979,33 @@ def detect_cluster_collisions(
             if not s_sol or not sb or s_id not in extraction.raw_child_offsets:
                 continue
 
-            exempt_boxes = get_incident_child_sub_box_indices(
-                s_id, s_sol, sb, ae, child_solutions
-            )
+            if s_id in ae.associated_children:
+                exempt_boxes = get_incident_child_sub_box_indices(
+                    s_id, s_sol, sb, ae, child_solutions
+                )
+            else:
+                s_ports = getattr(s_sol, "port_coordinates", {})
+                if any(
+                    r in s_sol.local_coordinates or r in s_ports
+                    for r in ae.associated_rooms
+                ):
+                    continue
+                s_all = set(s_sol.local_coordinates.keys()) | set(s_ports.keys())
+                if any(
+                    s_all
+                    & (
+                        set(child_solutions[c_other].local_coordinates.keys())
+                        | set(
+                            getattr(
+                                child_solutions[c_other], "port_coordinates", {}
+                            ).keys()
+                        )
+                    )
+                    for c_other in ae.associated_children
+                    if c_other in child_solutions
+                ):
+                    continue
+                exempt_boxes = set()
 
             for k in range(len(sb)):
                 if k in exempt_boxes:
