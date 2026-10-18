@@ -534,8 +534,8 @@ class TestSafe2CutAllowlistContract:
         assert tree_node.rooms == frozenset({1, 2, 3, 30, 4, 5, 6, 7})
         assert tree_node.children == ()
 
-    def test_split_pair_fused_descended_from_outer_parent(self) -> None:
-        """When an outer parent cluster exists, an unsafe split pair descends as a combined child node."""
+    def test_split_pair_fused_without_rerooting(self) -> None:
+        """Unsafe split pair with outer parent and conflicting branches fuses into combined rigid cluster."""
         builder = SpqrTreeBuilder()
         simplified = _make_simplified_graph(
             rooms=[100, 101, 102, 103, 1, 2, 3, 4, 20, 21, 22, 23],
@@ -567,16 +567,9 @@ class TestSafe2CutAllowlistContract:
             ],
         )
         tree = builder.build_tree(simplified)
-        # Root must be the outer parent rigid cluster
         assert tree.root.node_type == TreeNodeType.RIGID_CLUSTER
-        assert tree.root.rooms == frozenset({100, 101, 102, 103})
-        # Fused split pair descends as a single combined child node
-        assert len(tree.root.children) == 1
-        child = tree.root.children[0]
-        assert child.node_type == TreeNodeType.RIGID_CLUSTER
-        assert child.metadata.get("cut_type") == CutType.SPLIT_PAIR
-        assert child.rooms == frozenset({1, 2, 3, 4, 20, 21, 22, 23})
-        assert child.children == ()
+        assert tree.root.rooms == frozenset({100, 101, 102, 103, 1, 2, 3, 4, 20, 21, 22, 23})
+        assert tree.root.children == ()
 
 
 class TestTransverseCorridorSNodeSplitting:
@@ -807,3 +800,20 @@ class TestTransverseCorridorSNodeSplitting:
         # Room 5224 belongs to child_5209, room 5215 belongs to child_5214
         assert 5224 in child_5209.rooms
         assert 5215 in child_5214.rooms
+
+    def test_canonical_spqr_root_preserves_natural_root_without_greedy_inversion(self) -> None:
+        """SPQR tree root reflects the canonical triconnected decomposition without greedy size-based rerooting."""
+        # Dipole graph across poles {1, 2} with three independent paths
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north),
+            LayoutEdge(src=1, dst=10, direction=Direction.east),
+            LayoutEdge(src=10, dst=2, direction=Direction.west),
+            LayoutEdge(src=1, dst=20, direction=Direction.west),
+            LayoutEdge(src=20, dst=2, direction=Direction.east),
+        ]
+        node = build_block_spqr_tree(frozenset({1, 2, 10, 20}), edges)
+        assert node.node_type == TreeNodeType.SPLIT_PAIR_CONTAINER
+        assert node.rooms == frozenset({1, 2})
+        assert len(node.children) == 2
+        for child in node.children:
+            assert child.node_type == TreeNodeType.SERIES_LOOP

@@ -955,8 +955,8 @@ class TestTransformHelpersAndEdgeCases:
         assert len(c_a.children) == 1
         assert c_a.children[0].node_id == "bridge_child"
 
-    def test_transverse_s_node_split_no_owning_ancestor_skips(self) -> None:
-        """S-node whose poles are not owned by any ancestor is skipped without severing."""
+    def test_transverse_s_node_split_no_owning_ancestor_adopts_at_block_root(self) -> None:
+        """When no ancestor owns both boundary poles, split branches are adopted at the block root level."""
         graph = _make_graph(
             rooms=[10, 11, 20],
             edges=[
@@ -980,8 +980,8 @@ class TestTransformHelpersAndEdgeCases:
             children=(child,),
         )
         res = TransverseSNodeSplitPass(graph).transform_node(parent)
-        assert len(res.children) == 1
-        assert res.children[0].node_id == "orphan_s"
+        assert len(res.children) == 2
+        assert {c.node_id for c in res.children} == {"orphan_s_a", "orphan_s_b"}
 
     def test_transverse_s_node_split_child_partition_fallback_side_b(self) -> None:
         """Subtree fallback partition assigns nested child to side B when overlapping with rooms_b."""
@@ -1047,8 +1047,8 @@ class TestTransformHelpersAndEdgeCases:
         res = TransverseSNodeSplitPass(graph).transform_node(parent)
         assert len(res.children) == 2
 
-    def test_transverse_s_node_split_world_root_bubble_adoption(self) -> None:
-        """Articulations that bubble past intermediate containers are adopted at world root."""
+    def test_transverse_s_node_split_block_root_bubble_adoption(self) -> None:
+        """Articulations that bubble past intermediate containers are adopted at block root."""
         graph = _make_graph(
             rooms=[1, 2, 10, 11, 20],
             edges=[
@@ -1085,8 +1085,42 @@ class TestTransformHelpersAndEdgeCases:
         )
         tree = SolveTree(root=world_root, components=(container2,), graph=graph)
         res = TransverseSNodeSplitPass(graph).apply(tree)
-        # World root absorbs bubbles that reached the top without owner
-        assert len(res.root.children) >= 2
+        # Block root container adopts the bubbles rather than allowing them to escape to world root
+        assert len(res.root.children) == 1
+        block_root = res.root.children[0]
+        assert len(block_root.children) >= 2
+        child_ids = {c.node_id for c in block_root.children}
+        assert "s_deep_a" in child_ids
+        assert "s_deep_b" in child_ids
+
+    def test_transverse_s_node_split_world_root_direct_adoption(self) -> None:
+        """When an S-node is a direct component of world root, split branches are adopted at world root."""
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 20],
+            edges=[
+                (1, 10, Direction.north),
+                (10, 11, Direction.east),
+                (11, 20, Direction.north),
+                (2, 20, Direction.north),
+            ],
+        )
+        s_child = SolveTreeNode(
+            node_id="s_comp",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        world_root = SolveTreeNode(
+            node_id="world_root",
+            node_type=TreeNodeType.WORLD_ROOT,
+            rooms=frozenset(),
+            children=(s_child,),
+        )
+        tree = SolveTree(root=world_root, components=(s_child,), graph=graph)
+        res = TransverseSNodeSplitPass(graph).apply(tree)
+        assert len(res.root.children) == 2
+        assert {c.node_id for c in res.root.children} == {"s_comp_a", "s_comp_b"}
 
     def test_transverse_s_node_split_cut_edges_and_contract_poles(self) -> None:
         """Cut edges and invalid contract poles are handled gracefully."""
@@ -1178,6 +1212,102 @@ class TestTransformHelpersAndEdgeCases:
         assert node_b.metadata.get("severed_bridge_edges") == ((10, 20), (100, 200))
         assert res.metadata.get("severed_bridge_edges") == ((10, 20), (100, 200))
 
+    def test_p_node_block_root_adopts_split_branches_preserving_elasticity(self) -> None:
+        """When a P-node is the block root, severed S-node branches are adopted directly at the root level."""
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 20, 30],
+            edges=[
+                # Direct edge between poles
+                (1, 2, Direction.north),
+                # Elastic S-node corridor branch across poles {1, 2}
+                (1, 10, Direction.west),
+                (10, 11, Direction.north),
+                (11, 20, Direction.north),
+                (2, 20, Direction.west),
+                # Second series loop branch across poles {1, 2}
+                (1, 30, Direction.east),
+                (30, 2, Direction.north),
+            ],
+        )
+        s_elastic = SolveTreeNode(
+            node_id="s_elastic",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR, "cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        s_other = SolveTreeNode(
+            node_id="s_other",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({30}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR, "cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        p_root = SolveTreeNode(
+            node_id="p_block_root",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset({1, 2}),
+            children=(s_elastic, s_other),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR, "cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+
+        res = TransverseSNodeSplitPass(graph).transform_node(p_root)
+        # P-node block root retains its split-pair identity and adopts the severed sibling clusters
+        assert res.node_type == TreeNodeType.SPLIT_PAIR_CONTAINER
+        assert res.rooms == frozenset({1, 2})
+        assert len(res.children) == 3
+        child_ids = {c.node_id for c in res.children}
+        assert "s_other" in child_ids
+        assert "s_elastic_a" in child_ids
+        assert "s_elastic_b" in child_ids
+        assert res.metadata.get("severed_bridge_edges") == ((10, 11),)
+
+    def test_s_node_block_root_adopts_split_branches_from_inner_container(self) -> None:
+        """When an S-node is the block root, bubbled split branches from child containers are adopted at block root."""
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4, 10, 11, 20],
+            edges=[
+                # Outer cycle: 1 -> 2 -> 3 -> 4 -> 1
+                (1, 2, Direction.north),
+                (2, 3, Direction.east),
+                (3, 4, Direction.south),
+                (4, 1, Direction.west),
+                # Elastic S-node corridor across poles {1, 2}
+                (1, 10, Direction.west),
+                (10, 11, Direction.north),
+                (11, 20, Direction.north),
+                (2, 20, Direction.west),
+            ],
+        )
+        s_elastic = SolveTreeNode(
+            node_id="s_elastic",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR, "cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        inner_container = SolveTreeNode(
+            node_id="inner_container",
+            node_type=TreeNodeType.SPLIT_PAIR_CONTAINER,
+            rooms=frozenset(),
+            children=(s_elastic,),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        s_root = SolveTreeNode(
+            node_id="s_block_root",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 3, 4}),
+            children=(inner_container,),
+        )
+
+        res = TransverseSNodeSplitPass(graph).transform_node(s_root)
+        # S-node block root adopts the severed clusters directly
+        assert res.node_type == TreeNodeType.SERIES_LOOP
+        assert res.rooms == frozenset({1, 2, 3, 4})
+        child_ids = {c.node_id for c in res.children}
+        assert "s_elastic_a" in child_ids
+        assert "s_elastic_b" in child_ids
+        assert res.metadata.get("severed_bridge_edges") == ((10, 11),)
 
 
 class TestSplitPairAllowlistFusionPass:
