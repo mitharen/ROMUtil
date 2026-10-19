@@ -131,21 +131,23 @@ class TestGalleryAssetsGeneration:
     def test_pages_builder_discovery_and_index_generation(self, tmp_path):
         from scripts.build_pages import resolve_candidate_areas, generate_index_html
         candidates = resolve_candidate_areas()
-        assert len(candidates) == 7
+        assert len(candidates) == 9
         candidate_names = {c[1] for c in candidates}
         assert candidate_names == {
             "arachnos",
             "chapel",
             "midgaard",
             "midgaard_metropolitan",
+            "midgaard_sewers",
             "school",
+            "sewer",
             "shire",
             "thalos",
         }
 
         # Verify individual showcase zones
         single_candidates = [c for c in candidates if c[0] == "ROM 2.4 / QuickMUD"]
-        assert len(single_candidates) == 6
+        assert len(single_candidates) == 7
         for cat, name, path, is_dir in single_candidates:
             assert isinstance(path, Path)
             assert path.is_file()
@@ -153,14 +155,25 @@ class TestGalleryAssetsGeneration:
 
         # Verify composite showcase cluster
         comp_candidates = [c for c in candidates if c[0] == "ROM 2.4 / Composite"]
-        assert len(comp_candidates) == 1
-        cat, name, paths, is_dir = comp_candidates[0]
-        assert name == "midgaard_metropolitan"
+        assert len(comp_candidates) == 2
+        comp_by_name = {c[1]: c for c in comp_candidates}
+        assert "midgaard_metropolitan" in comp_by_name
+        assert "midgaard_sewers" in comp_by_name
+
+        cat, name, paths, is_dir = comp_by_name["midgaard_metropolitan"][:4]
         assert isinstance(paths, list)
         assert len(paths) == 5
         assert [p.name for p in paths] == ["midgaard.are", "hood.are", "grave.are", "mobfact.are", "school.are"]
         assert all(p.is_file() for p in paths)
         assert not is_dir
+
+        cat, name, paths, is_dir = comp_by_name["midgaard_sewers"][:4]
+        assert isinstance(paths, list)
+        assert len(paths) == 2
+        assert [p.name for p in paths] == ["midgaard.are", "sewer.are"]
+        assert all(p.is_file() for p in paths)
+        assert not is_dir
+        assert comp_by_name["midgaard_sewers"].solver_timeout == 10
 
         dummy_rendered = [
             ("ROM 2.4 / QuickMUD", "smurf", 1.23),

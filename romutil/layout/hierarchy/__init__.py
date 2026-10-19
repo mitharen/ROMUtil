@@ -13,6 +13,7 @@ from romutil.layout.hierarchy.pipeline import (
 from romutil.layout.hierarchy.spqr import (
     SpqrDecompositionPass,
     build_block_spqr_tree,
+    reroot_spqr_tree,
 )
 from romutil.layout.hierarchy.transforms import (
     AnchorStrippingPass,
@@ -37,5 +38,6 @@ __all__ = [
     "TreeTransformationPipeline",
     "attach_articulation_children",
     "build_block_spqr_tree",
+    "reroot_spqr_tree",
     "strip_anchor",
 ]

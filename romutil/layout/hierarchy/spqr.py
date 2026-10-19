@@ -25,10 +25,85 @@ from romutil.layout.ir import (
 )
 
 
+def reroot_spqr_tree(
+    root: spqrtree.SPQRNode,
+    target: spqrtree.SPQRNode,
+) -> spqrtree.SPQRNode:
+    """Reroot an SPQR tree such that target becomes the root node.
+
+    Inverts child/parent relationships along the path from root to target in
+    the undirected SPQR tree and updates attachment poles accordingly.
+    """
+    if target is root:
+        return root
+
+    path: list[spqrtree.SPQRNode] = []
+    curr: spqrtree.SPQRNode | None = target
+    while curr is not None:
+        path.append(curr)
+        curr = curr.parent
+    path.reverse()
+    if not path or path[0] is not root:
+        raise ValueError("Target node is not reachable from the provided root")
+
+    for i in range(len(path) - 1, 0, -1):
+        child = path[i]
+        parent = path[i - 1]
+        if child in parent.children:
+            parent.children.remove(child)
+        child.children.append(parent)
+        parent.parent = child
+
+        shared = set(parent.skeleton.vertices if parent.skeleton else parent.poles) & set(
+            child.skeleton.vertices if child.skeleton else child.poles
+        )
+        if len(shared) == 2:
+            parent.poles = tuple(sorted(shared))
+        elif child.poles:
+            parent.poles = child.poles
+
+    target.parent = None
+    return target
+
+
+def _find_anchor_spqr_node(
+    root: spqrtree.SPQRNode,
+    anchor: int,
+) -> spqrtree.SPQRNode | None:
+    """Find the optimal SPQR component containing the articulation anchor vertex."""
+    nodes: list[spqrtree.SPQRNode] = []
+
+    def _collect(node: spqrtree.SPQRNode) -> None:
+        nodes.append(node)
+        for c in node.children:
+            _collect(c)
+
+    _collect(root)
+
+    candidates: list[tuple[int, int, int, spqrtree.SPQRNode]] = []
+    for idx, node in enumerate(nodes):
+        verts = set(node.skeleton.vertices if node.skeleton else node.poles)
+        if anchor in verts:
+            real_incident = sum(
+                1
+                for e in (node.skeleton.edges if node.skeleton else ())
+                if not getattr(e, "virtual", False) and (e.u == anchor or e.v == anchor)
+            )
+            is_not_p = 1 if node.type != spqrtree.NodeType.P else 0
+            candidates.append((real_incident, is_not_p, -idx, node))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    return candidates[0][3]
+
+
 def build_block_spqr_tree(
     block_nodes: frozenset[int],
     edges: Sequence[LayoutEdge],
     node_id_prefix: str = "spqr",
+    anchor: int | None = None,
 ) -> SolveTreeNode:
     """Decompose a single biconnected block into its canonical SPQR tree."""
     if not block_nodes:
@@ -151,6 +226,10 @@ def build_block_spqr_tree(
 
     try:
         spqr_tree_root = spqrtree.build_spqr_tree(multigraph)
+        if anchor is not None:
+            anchor_target = _find_anchor_spqr_node(spqr_tree_root, anchor)
+            if anchor_target is not None:
+                spqr_tree_root = reroot_spqr_tree(spqr_tree_root, anchor_target)
         return _convert(spqr_tree_root, parent=None)
     except (ValueError, IndexError, RuntimeError):
         return SolveTreeNode(
@@ -206,6 +285,7 @@ class SpqrDecompositionPass(TreeTransformationPass):
                     block_nodes=frozenset(block_verts),
                     edges=edges,
                     node_id_prefix=f"{node.node_id}_spqr",
+                    anchor=anchor,
                 )
                 if anchor is not None:
                     spqr_root = strip_anchor(spqr_root, anchor)
