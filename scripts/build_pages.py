@@ -24,6 +24,7 @@ SHOWCASE_AREAS = (
     "chapel.are",
     "midgaard.are",
     "school.are",
+    "sewer.are",
     "shire.are",
     "thalos.are",
 )
@@ -34,6 +35,12 @@ COMPOSITE_SHOWCASE_AREAS = (
         "ROM 2.4 / Composite",
         "midgaard_metropolitan",
         ("midgaard.are", "hood.are", "grave.are", "mobfact.are", "school.are"),
+    ),
+    (
+        "ROM 2.4 / Composite",
+        "midgaard_sewers",
+        ("midgaard.are", "sewer.are"),
+        10,
     ),
 )
 

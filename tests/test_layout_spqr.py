@@ -21,6 +21,7 @@ from romutil.layout import (
     TreeBuilder,
     TreeNodeType,
     build_block_spqr_tree,
+    reroot_spqr_tree,
 )
 from romutil.layout.hierarchy.transforms import (
     SplitPairAllowlistFusionPass,
@@ -817,3 +818,76 @@ class TestTransverseCorridorSNodeSplitting:
         assert len(node.children) == 2
         for child in node.children:
             assert child.node_type == TreeNodeType.SERIES_LOOP
+
+    def test_reroot_spqr_tree_identity(self) -> None:
+        """Rerooting at the current root returns the root node unchanged."""
+        import spqrtree
+
+        mg = spqrtree.MultiGraph()
+        for u, v in [(1, 2), (2, 3), (3, 1), (2, 4), (4, 3)]:
+            mg.add_edge(u, v)
+        root = spqrtree.build_spqr_tree(mg)
+        rerooted = reroot_spqr_tree(root, root)
+        assert rerooted is root
+        assert rerooted.parent is None
+
+    def test_reroot_spqr_tree_inverts_parent_child_hierarchy(self) -> None:
+        """Rerooting inverts parent-child relationships and updates attachment poles along the path."""
+        import spqrtree
+
+        mg = spqrtree.MultiGraph()
+        for u, v in [(1, 2), (2, 3), (3, 1), (2, 4), (4, 3)]:
+            mg.add_edge(u, v)
+        root = spqrtree.build_spqr_tree(mg)
+        assert len(root.children) >= 1
+        child = root.children[0]
+
+        rerooted = reroot_spqr_tree(root, child)
+        assert rerooted is child
+        assert rerooted.parent is None
+        assert root in rerooted.children
+        assert root.parent is rerooted
+
+    def test_reroot_spqr_tree_unreachable_node_raises_value_error(self) -> None:
+        """Attempting to reroot to a disconnected node raises ValueError."""
+        import spqrtree
+
+        mg = spqrtree.MultiGraph()
+        for u, v in [(1, 2), (2, 1)]:
+            mg.add_edge(u, v)
+        root = spqrtree.build_spqr_tree(mg)
+        foreign_node = spqrtree.SPQRNode(
+            type=spqrtree.NodeType.S,
+            skeleton=spqrtree.MultiGraph(),
+            poles=(99, 100),
+            parent=None,
+        )
+        with pytest.raises(ValueError, match="not reachable"):
+            reroot_spqr_tree(root, foreign_node)
+
+    def test_anchor_centric_spqr_rooting_places_anchor_at_root(self) -> None:
+        """When an anchor vertex is specified, the SPQR tree reroots at the component containing the anchor."""
+        from romutil.layout import ChainedSimplifier, HallwayCompactor, WarpSeverer
+        from romutil.layout.hierarchy.transforms import strip_anchor
+        from romutil.parser import parse_file
+
+        area = parse_file("tests/fixtures/areas/sewer.are")
+        wg = WorldGraph.from_area_data(area)
+        lg = LayoutGraph.from_world_graph(wg)
+        simp = ChainedSimplifier([HallwayCompactor(), WarpSeverer()]).simplify(lg, LayoutOptions())
+        anchor = 7402
+        b9_rooms = {
+            7402, 7403, 7404, 7406, 7407, 7409, 7411, 7412, 7414, 7417, 7418,
+            7419, 7420, 7422, 7423, 7426, 7431, 7433, 7434, 7436, 7437, 7438,
+            7439, 7440, 7442, 7443, 7444, 7445,
+        }
+        spqr_unanchored = build_block_spqr_tree(frozenset(b9_rooms), simp.graph.edges, anchor=None)
+        assert anchor not in spqr_unanchored.rooms
+
+        spqr_anchored = build_block_spqr_tree(frozenset(b9_rooms), simp.graph.edges, anchor=anchor)
+        assert anchor in spqr_anchored.rooms
+
+        spqr_stripped = strip_anchor(spqr_anchored, anchor)
+        assert anchor not in spqr_stripped.rooms
+        assert 7403 in spqr_stripped.rooms
+        assert 7418 in spqr_stripped.rooms

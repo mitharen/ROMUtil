@@ -28,6 +28,7 @@ from romutil.layout.hierarchy import (
     TreeTransformationPass,
     TreeTransformationPipeline,
     build_block_spqr_tree,
+    reroot_spqr_tree,
 )
 from romutil.layout.ir import (
     ArticulationPointCut,
@@ -92,6 +93,7 @@ __all__ = [
     "PassthroughSimplifier",
     "PipelineTreeBuilder",
     "production",
+    "reroot_spqr_tree",
     "Segment3D",
     "SimplifiedGraph",
     "SolveTree",
