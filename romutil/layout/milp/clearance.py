@@ -19,6 +19,7 @@ from romutil.layout.milp.inventory import (
     direction_to_displacement,
     get_child_coordinate,
 )
+from romutil.layout.hierarchy.spqr import SplitPairCut
 from romutil.types import Coord3D
 
 if TYPE_CHECKING:
@@ -154,14 +155,8 @@ class ClearanceConstraintBuilder:
                 c_sol = child_solutions.get(child.node_id)
                 sb = child_sub_boxes.get(child.node_id, ())
                 if c_sol and sb:
-                    anchors = gateway_anchors.get(child.node_id, frozenset())
-                    c_ports = getattr(c_sol, "port_coordinates", {})
                     for u in rooms:
-                        if (
-                            u not in anchors
-                            and u not in c_sol.local_coordinates
-                            and u not in c_ports
-                        ):
+                        if u not in c_sol.local_coordinates:
                             for k in range(len(sb)):
                                 pair = (u, (child.node_id, k))
                                 room_child_pairs.append(pair)
@@ -179,7 +174,7 @@ class ClearanceConstraintBuilder:
 
     def add_corridor_room_separation(self) -> None:
         """Enforce corridor segment non-penetration against third-party parent rooms."""
-        rooms = self.local_rooms
+        rooms = tuple(sorted(self.formulation.inventory.rooms))
         active_edges = self.formulation.inventory.active_edges
         child_solutions = self.formulation.inventory.child_solutions
         edge_indices = list(range(len(active_edges)))
@@ -222,7 +217,6 @@ class ClearanceConstraintBuilder:
         child_sub_boxes = self.formulation.inventory.child_sub_boxes
         edge_indices = list(range(len(active_edges)))
 
-        b_ports = self.formulation.inventory.boundary_ports
         corridor_child_pairs: list[tuple[int, tuple[str, int]]] = []
         if edge_indices and len(children) > 0:
             for i, ae in enumerate(active_edges):
@@ -236,35 +230,27 @@ class ClearanceConstraintBuilder:
                     sb = child_sub_boxes.get(s_id, ())
                     if not s_sol or not sb:
                         continue
-
-                    s_ports = getattr(s_sol, "port_coordinates", {})
-                    s_child_rooms = set(s_sol.local_coordinates.keys()) | set(s_ports.keys())
-                    if (
-                        (
+                    is_connected_to_child = (
+                        s_id in ae.associated_children
+                        or (isinstance(ae.src, tuple) and ae.src[0] == s_id)
+                        or (isinstance(ae.dst, tuple) and ae.dst[0] == s_id)
+                        or (
                             isinstance(ae.src, int)
-                            and ae.src in b_ports
-                            and (
-                                ae.dst in s_child_rooms
-                                or (isinstance(ae.dst, tuple) and ae.dst[0] == s_id)
-                            )
+                            and ae.src in s_sol.local_coordinates
                         )
                         or (
                             isinstance(ae.dst, int)
-                            and ae.dst in b_ports
-                            and (
-                                ae.src in s_child_rooms
-                                or (isinstance(ae.src, tuple) and ae.src[0] == s_id)
-                            )
+                            and ae.dst in s_sol.local_coordinates
                         )
-                    ):
+                    )
+                    is_pole_edge = (
+                        isinstance(s_child.cut_contract, SplitPairCut)
+                        and {ae.src, ae.dst} == set(s_child.cut_contract.poles)
+                    )
+                    if is_connected_to_child or is_pole_edge:
                         continue
 
-                    exempt_boxes = get_incident_child_sub_box_indices(
-                        s_id, s_sol, sb, ae, child_solutions
-                    )
                     for k in range(len(sb)):
-                        if k in exempt_boxes:
-                            continue
                         pair = (i, (s_id, k))
                         corridor_child_pairs.append(pair)
                         self.separated_pairs.add(("corridor_child", pair[0], pair[1]))
@@ -632,118 +618,6 @@ def _extract_child_sub_box_bounds(
     )
 
 
-def get_incident_child_sub_box_indices(
-    child_id: str,
-    child_solution: NodeSolution,
-    sub_boxes: Sequence[BoundingBox3D],
-    ae: ActiveEdge,
-    child_solutions: Mapping[str, NodeSolution] | None = None,
-) -> set[int]:
-    """Identify sub-box indices of child_id enclosing boundary ports incident to active edge ae.
-
-    For an active edge incident to child_id at one or more boundary ports with relative
-    coordinate (x, y, z) within the child coordinate frame, identify the specific sub-box
-    index b_i of child child_id whose closed bounds enclose or are adjacent (L_inf distance <= 1)
-    to that port coordinate. Exempt only those specific incident sub-boxes from collision
-    detection and Big-M separation against ae, while keeping all other sub-boxes active obstacles.
-
-    Args:
-        child_id: Identifier of the child cluster.
-        child_solution: Solved NodeSolution for child_id.
-        sub_boxes: Sequence of keep-out sub-boxes for child_id.
-        ae: ActiveEdge corridor segment being checked.
-        child_solutions: Optional mapping of child IDs to NodeSolutions for resolving
-            inter-child shared boundary ports.
-
-    Returns:
-        Set of integer indices into sub_boxes that enclose or are adjacent to incident port coordinates.
-    """
-    if not sub_boxes:
-        return set()
-
-    incident_coords: list[Coord3D] = []
-
-    def _collect_vnum(vnum: int) -> None:
-        coord = get_child_coordinate(child_solution, vnum)
-        if coord is not None:
-            incident_coords.append(coord)
-
-    # 1. Inspect active edge endpoints
-    if isinstance(ae.src, tuple):
-        src_cid, src_v = ae.src
-        if src_cid == child_id:
-            _collect_vnum(src_v)
-        elif child_solutions and src_cid in child_solutions:
-            _collect_vnum(src_v)
-    elif isinstance(ae.src, int):
-        _collect_vnum(ae.src)
-
-    if isinstance(ae.dst, tuple):
-        dst_cid, dst_v = ae.dst
-        if dst_cid == child_id:
-            _collect_vnum(dst_v)
-        elif child_solutions and dst_cid in child_solutions:
-            _collect_vnum(dst_v)
-    elif isinstance(ae.dst, int):
-        _collect_vnum(ae.dst)
-
-    # 2. Inspect rooms associated with the edge
-    for r in ae.associated_rooms:
-        _collect_vnum(r)
-
-    if not incident_coords:
-        return set()
-
-    norm_boxes: list[BoundingBox3D] = [
-        raw_b
-        if isinstance(raw_b, BoundingBox3D)
-        else BoundingBox3D.from_coordinates([raw_b[0], raw_b[1]])
-        for raw_b in sub_boxes
-    ]
-
-    exempt: set[int] = set()
-    # Pass 1: Strict enclosure
-    for k, box in enumerate(norm_boxes):
-        for pt in incident_coords:
-            if (
-                box.min_x <= pt.x <= box.max_x
-                and box.min_y <= pt.y <= box.max_y
-                and box.min_z <= pt.z <= box.max_z
-            ):
-                exempt.add(k)
-                break
-
-    # Pass 2: Boundary port carve-out adjacent fallback (L_inf distance <= 1)
-    for pt in incident_coords:
-        pt_covered = any(
-            box.min_x <= pt.x <= box.max_x
-            and box.min_y <= pt.y <= box.max_y
-            and box.min_z <= pt.z <= box.max_z
-            for box in norm_boxes
-        )
-        if not pt_covered:
-            min_dist = float("inf")
-            for box in norm_boxes:
-                dist = max(
-                    max(0, box.min_x - pt.x, pt.x - box.max_x),
-                    max(0, box.min_y - pt.y, pt.y - box.max_y),
-                    max(0, box.min_z - pt.z, pt.z - box.max_z),
-                )
-                if dist < min_dist:
-                    min_dist = dist
-            if min_dist <= 1:
-                for k, box in enumerate(norm_boxes):
-                    dist = max(
-                        max(0, box.min_x - pt.x, pt.x - box.max_x),
-                        max(0, box.min_y - pt.y, pt.y - box.max_y),
-                        max(0, box.min_z - pt.z, pt.z - box.max_z),
-                    )
-                    if dist == min_dist:
-                        exempt.add(k)
-
-    return exempt
-
-
 def detect_cluster_collisions(
     formulation: ClusterFormulation,
     extraction: SolvedClusterExtraction,
@@ -813,10 +687,8 @@ def detect_cluster_collisions(
         sb = child_sub_boxes.get(cid, ())
         if not c_sol or not sb or cid not in extraction.raw_child_offsets:
             continue
-        anchors = gateway_anchors.get(cid, frozenset())
-        c_ports = getattr(c_sol, "port_coordinates", {})
         for u in rooms:
-            if u in anchors or u in c_sol.local_coordinates or u in c_ports:
+            if u in c_sol.local_coordinates:
                 continue
             u_coord = parent_coords.get(u)
             if u_coord is None:
@@ -886,6 +758,7 @@ def detect_cluster_collisions(
                         )
 
     # Category 4: Corridor-Room Collisions
+    parent_rooms = tuple(sorted(inventory.rooms))
     for i, ae in enumerate(active_edges):
         if sum(1 for d in ae.direction if d != 0) != 1:
             continue
@@ -895,7 +768,7 @@ def detect_cluster_collisions(
         except KeyError:
             continue
         seg = Segment3D(Coord3D(*p1), Coord3D(*p2))
-        for w in rooms:
+        for w in parent_rooms:
             if w in ae.associated_rooms:
                 continue
             if any(
@@ -967,38 +840,36 @@ def detect_cluster_collisions(
             if not s_sol or not sb or s_id not in extraction.raw_child_offsets:
                 continue
 
-            s_ports = getattr(s_sol, "port_coordinates", {})
-            s_child_rooms = set(s_sol.local_coordinates.keys()) | set(s_ports.keys())
             if (
-                (
-                    isinstance(ae.src, int)
-                    and ae.src in b_ports
-                    and (
-                        ae.dst in s_child_rooms
-                        or (isinstance(ae.dst, tuple) and ae.dst[0] == s_id)
-                    )
-                )
-                or (
-                    isinstance(ae.dst, int)
-                    and ae.dst in b_ports
-                    and (
-                        ae.src in s_child_rooms
-                        or (isinstance(ae.src, tuple) and ae.src[0] == s_id)
-                    )
-                )
+                isinstance(s_child.cut_contract, SplitPairCut)
+                and {ae.src, ae.dst} == set(s_child.cut_contract.poles)
             ):
                 continue
 
-            exempt_boxes = get_incident_child_sub_box_indices(
-                s_id, s_sol, sb, ae, child_solutions
+            is_connected_to_child = (
+                s_id in ae.associated_children
+                or (isinstance(ae.src, tuple) and ae.src[0] == s_id)
+                or (isinstance(ae.dst, tuple) and ae.dst[0] == s_id)
+                or (isinstance(ae.src, int) and ae.src in s_sol.local_coordinates)
+                or (isinstance(ae.dst, int) and ae.dst in s_sol.local_coordinates)
             )
 
             for k in range(len(sb)):
-                if k in exempt_boxes:
-                    continue
                 box = _extract_child_sub_box_bounds(
                     (s_id, k), extraction, inventory
                 )
+                if is_connected_to_child:
+                    if (
+                        box[0] <= p1[0] <= box[1]
+                        and box[2] <= p1[1] <= box[3]
+                        and box[4] <= p1[2] <= box[5]
+                    ) or (
+                        box[0] <= p2[0] <= box[1]
+                        and box[2] <= p2[1] <= box[3]
+                        and box[4] <= p2[2] <= box[5]
+                    ):
+                        continue
+
                 if (
                     max(c_min_x, box[0]) <= min(c_max_x, box[1])
                     and max(c_min_y, box[2]) <= min(c_max_y, box[3])
@@ -1182,5 +1053,4 @@ __all__ = [
     "_extract_entity_coord",
     "apply_clearance_constraints",
     "detect_cluster_collisions",
-    "get_incident_child_sub_box_indices",
 ]

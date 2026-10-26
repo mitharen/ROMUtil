@@ -7,7 +7,6 @@ from romutil.layout.milp.clearance import (
     ClearanceViolation,
     apply_clearance_constraints,
     detect_cluster_collisions,
-    get_incident_child_sub_box_indices,
 )
 from romutil.layout.milp.cluster import (
     HierarchicalClusterSolver,
@@ -59,7 +58,6 @@ __all__ = [
     "derive_child_sub_boxes",
     "detect_cluster_collisions",
     "formulate_cluster_model",
-    "get_incident_child_sub_box_indices",
     "inventory_cluster",
     "normalize_cluster_solution",
     "render_cluster_solve_svg",
