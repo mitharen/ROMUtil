@@ -38,6 +38,18 @@ class ClearanceViolation:
     description: str = ""
 
 
+VIOLATION_TIER_PRIORITY: Mapping[str, int] = {
+    "parent_room": 0,
+    "child_child": 1,
+    "room_child": 1,
+    "doorway_room": 2,
+    "doorway_child": 2,
+    "corridor_room": 3,
+    "corridor_child": 3,
+    "corridor_crossing": 4,
+}
+
+
 class ClearanceConstraintBuilder:
     """Builder enforcing disjunctive Big-M geometric clearance and separation constraints."""
 
@@ -412,14 +424,21 @@ class ClearanceConstraintBuilder:
                 m_big=self.formulation.m_big,
             )
 
-    def inject_clearance_cuts(self, violations: Sequence[ClearanceViolation]) -> int:
+    def inject_clearance_cuts(
+        self,
+        violations: Sequence[ClearanceViolation],
+        max_cuts_per_pass: int | None = None,
+    ) -> int:
         """Inject disjunctive Big-M separation cuts for detected collision violations.
 
-        Deduplicates violations against previously separated pairs to ensure each
-        pair is separated at most once across solver iterations.
+        Sorts candidate un-separated violations according to priority tier and limits
+        newly injected cuts to at most `max_cuts_per_pass` (defaulting to
+        `formulation.options.max_cuts_per_pass` or 20) per pass to prevent branch-and-bound
+        explosion.
 
         Args:
             violations: Sequence of ClearanceViolation instances detected in the current extraction.
+            max_cuts_per_pass: Optional override for the maximum number of cuts to inject in this pass.
 
         Returns:
             Number of newly injected separation constraints.
@@ -427,35 +446,48 @@ class ClearanceConstraintBuilder:
         if not violations:
             return 0
 
-        new_pairs_by_cat: dict[str, list[tuple[Any, Any]]] = collections.defaultdict(list)
-        new_count = 0
+        if max_cuts_per_pass is not None:
+            budget = max_cuts_per_pass
+        else:
+            opts = getattr(self.formulation, "options", None)
+            budget = getattr(opts, "max_cuts_per_pass", 20) if opts is not None else 20
+
+        if budget <= 0:
+            return 0
+
+        candidates: list[tuple[str, tuple[str, Any, Any], tuple[Any, Any]]] = []
+        seen: set[tuple[str, Any, Any]] = set()
 
         for viol in violations:
             cat = viol.category
             a = viol.item_a
             b = viol.item_b
 
-            if cat == "parent_room":
-                norm_key = ("parent_room", min(a, b), max(a, b))
+            if cat in ("parent_room", "child_child", "corridor_crossing"):
+                norm_key = (cat, min(a, b), max(a, b))
                 pair: tuple[Any, Any] = (min(a, b), max(a, b))
-            elif cat == "child_child":
-                norm_key = ("child_child", min(a, b), max(a, b))
-                pair = (min(a, b), max(a, b))
-            elif cat == "corridor_crossing":
-                norm_key = ("corridor_crossing", min(a, b), max(a, b))
-                pair = (min(a, b), max(a, b))
             else:
                 norm_key = (cat, a, b)
                 pair = (a, b)
 
-            if norm_key in self.separated_pairs:
+            if norm_key in self.separated_pairs or norm_key in seen:
                 continue
+            seen.add(norm_key)
+            candidates.append((cat, norm_key, pair))
+
+        if not candidates:
+            return 0
+
+        # Sort candidate un-separated violations according to priority tier (stable sort)
+        candidates.sort(key=lambda item: VIOLATION_TIER_PRIORITY.get(item[0], 5))
+
+        # Limit newly injected cuts to at most max_cuts_per_pass
+        selected = candidates[:budget]
+
+        new_pairs_by_cat: dict[str, list[tuple[Any, Any]]] = collections.defaultdict(list)
+        for cat, norm_key, pair in selected:
             self.separated_pairs.add(norm_key)
             new_pairs_by_cat[cat].append(pair)
-            new_count += 1
-
-        if not new_count:
-            return 0
 
         for cat, pairs in new_pairs_by_cat.items():
             if cat == "parent_room":
@@ -539,7 +571,7 @@ class ClearanceConstraintBuilder:
                     m_big=self.formulation.m_big,
                 )
 
-        return new_count
+        return len(selected)
 
     def build(self) -> None:
         """Apply all disjunctive Big-M geometric clearance constraints."""
@@ -1145,6 +1177,7 @@ def apply_clearance_constraints(formulation: ClusterFormulation) -> None:
 __all__ = [
     "ClearanceConstraintBuilder",
     "ClearanceViolation",
+    "VIOLATION_TIER_PRIORITY",
     "_extract_child_sub_box_bounds",
     "_extract_entity_coord",
     "apply_clearance_constraints",

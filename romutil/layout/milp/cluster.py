@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Mapping
 
@@ -18,7 +19,33 @@ from romutil.layout.milp.normalization import (
     normalize_single_room_cluster,
 )
 from romutil.layout.milp.solver import SolvedClusterExtraction, solve_and_extract
-from romutil.types import LayoutOptions, LayoutSolverError
+from romutil.types import LayoutOptions, LayoutSolverError, SolverStatus
+
+
+def compute_adaptive_cluster_timeout(
+    node: SolveTreeNode,
+    options: LayoutOptions | None = None,
+) -> int:
+    """Compute adaptive solver timeout limit scaled to cluster entity complexity.
+
+    Scales linearly with the total count of constituent rooms and child clusters
+    beyond a 20-entity baseline to ensure large composite clusters receive sufficient
+    solver budget for integer convergence.
+
+    Args:
+        node: SolveTreeNode representing the cluster to lay out.
+        options: Optional layout configuration parameters containing base timeout.
+
+    Returns:
+        Adaptive timeout duration in seconds.
+    """
+    n_entities = len(node.rooms) + len(node.children)
+    base_timeout = (
+        options.timeout_seconds
+        if options is not None and options.timeout_seconds
+        else 10
+    )
+    return max(base_timeout, int(base_timeout * max(1.0, n_entities / 20.0)))
 
 
 def solve_cluster(
@@ -75,18 +102,24 @@ def solve_cluster(
             is_boundary_port=False,
         )
 
+    t_cluster = compute_adaptive_cluster_timeout(node, options)
+    if options is not None:
+        cluster_options = replace(options, timeout_seconds=t_cluster)
+    else:
+        cluster_options = LayoutOptions(timeout_seconds=t_cluster)
+
     try:
         # Stage 1: Inventory & Interface Classification
         inventory = inventory_cluster(
             node=node,
             child_solutions=child_solutions,
             graph=graph,
-            options=options,
+            options=cluster_options,
             boundary_ports=boundary_ports,
         )
 
         # Stage 2: Basic MILP Formulation
-        formulation = formulate_cluster_model(inventory=inventory, options=options)
+        formulation = formulate_cluster_model(inventory=inventory, options=cluster_options)
 
         # Stage 3: Iterative Cutting-Plane Clearance & Solve
         max_iterations = 15
@@ -95,7 +128,7 @@ def solve_cluster(
             extraction = solve_and_extract(
                 formulation=formulation,
                 solver_name=solver_name,
-                options=options,
+                options=cluster_options,
             )
             violations = detect_cluster_collisions(
                 formulation=formulation,
@@ -103,6 +136,12 @@ def solve_cluster(
             )
             if not violations:
                 break
+
+            if extraction.solver_status == SolverStatus.TIMEOUT:
+                violations = [v for v in violations if v.category != "corridor_crossing"]
+                if not violations:
+                    break
+
             new_cuts = formulation.clearance_builder.inject_clearance_cuts(violations)
             if new_cuts == 0:
                 raise LayoutSolverError(
@@ -177,5 +216,6 @@ class HierarchicalClusterSolver:
 
 __all__ = [
     "HierarchicalClusterSolver",
+    "compute_adaptive_cluster_timeout",
     "solve_cluster",
 ]

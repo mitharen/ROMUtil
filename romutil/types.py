@@ -61,6 +61,7 @@ class LayoutOptions:
     timeout_seconds: int = 60
     component_padding: int = 2
     debug_solve_dir: Path | None = None
+    max_cuts_per_pass: int = 20
 
 
 @dataclass(frozen=True)

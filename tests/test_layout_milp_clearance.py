@@ -22,11 +22,23 @@ from romutil.layout.milp import (
     get_incident_child_sub_box_indices,
     inventory_cluster,
 )
+from romutil.layout.milp.clearance import (
+    ClearanceConstraintBuilder,
+    ClearanceViolation,
+    VIOLATION_TIER_PRIORITY,
+)
 from romutil.layout.milp.inventory import ActiveEdge
 from romutil.layout.milp.solver import SolvedClusterExtraction
 from romutil.models import Direction, Room
 from romutil.parser import parse_file
-from romutil.types import Coord3D, LayoutSolverError, SolverStatus, WorldGraph
+from romutil.types import (
+    Coord3D,
+    LayoutOptions,
+    LayoutSolverError,
+    SolverStatus,
+    WorldGraph,
+)
+from unittest.mock import MagicMock, patch
 
 
 def _make_graph(
@@ -642,3 +654,100 @@ class TestPortScopedSubBoxCorridorClearance:
         )
         violations = detect_cluster_collisions(formulation, extraction)
         assert len([v for v in violations if v.category == "corridor_child"]) == 0
+
+
+class TestClearanceCutPriorityAndLimits:
+    """Unit tests for ClearanceConstraintBuilder cut limits and category priority tiering."""
+
+    def test_violation_tier_priority_mapping(self) -> None:
+        """Category tier priority reflects structural hierarchy from macroscopic to corridor crossings."""
+        assert VIOLATION_TIER_PRIORITY["parent_room"] == 0
+        assert VIOLATION_TIER_PRIORITY["child_child"] == 1
+        assert VIOLATION_TIER_PRIORITY["room_child"] == 1
+        assert VIOLATION_TIER_PRIORITY["doorway_room"] == 2
+        assert VIOLATION_TIER_PRIORITY["doorway_child"] == 2
+        assert VIOLATION_TIER_PRIORITY["corridor_room"] == 3
+        assert VIOLATION_TIER_PRIORITY["corridor_child"] == 3
+        assert VIOLATION_TIER_PRIORITY["corridor_crossing"] == 4
+
+    def test_priority_tiering_injects_highest_priority_violations_first(self) -> None:
+        """inject_clearance_cuts prioritizes higher tiers (0-2) over lower tiers (3-4) within budget."""
+        formulation = MagicMock()
+        formulation.options = LayoutOptions(max_cuts_per_pass=3)
+        builder = ClearanceConstraintBuilder(formulation)
+
+        violations = [
+            ClearanceViolation(category="corridor_crossing", item_a=1, item_b=2),
+            ClearanceViolation(category="corridor_room", item_a=0, item_b=10),
+            ClearanceViolation(category="doorway_room", item_a=(1, (1, 0, 0)), item_b=20),
+            ClearanceViolation(category="room_child", item_a=30, item_b=("c1", 0)),
+            ClearanceViolation(category="parent_room", item_a=100, item_b=101),
+        ]
+
+        with patch("romutil.layout.milp.clearance.add_disjunctive_box_separation") as mock_sep:
+            injected_count = builder.inject_clearance_cuts(violations)
+            assert injected_count == 3
+            # Tier 0 (parent_room), Tier 1 (room_child), and Tier 2 (doorway_room) should be injected
+            assert ("parent_room", 100, 101) in builder.separated_pairs
+            assert ("room_child", 30, ("c1", 0)) in builder.separated_pairs
+            assert ("doorway_room", (1, (1, 0, 0)), 20) in builder.separated_pairs
+            # Lower tier violations (corridor_room, corridor_crossing) should NOT be injected in this pass
+            assert ("corridor_room", 0, 10) not in builder.separated_pairs
+            assert ("corridor_crossing", 1, 2) not in builder.separated_pairs
+            assert mock_sep.call_count == 3
+
+    def test_max_cuts_per_pass_budget_limit_and_sequential_batches(self) -> None:
+        """max_cuts_per_pass truncates lower priority violations and permits subsequent batch injection."""
+        formulation = MagicMock()
+        formulation.options = LayoutOptions(max_cuts_per_pass=2)
+        builder = ClearanceConstraintBuilder(formulation)
+
+        violations = [
+            ClearanceViolation(category="parent_room", item_a=1, item_b=2),
+            ClearanceViolation(category="parent_room", item_a=3, item_b=4),
+            ClearanceViolation(category="parent_room", item_a=5, item_b=6),
+        ]
+
+        with patch("romutil.layout.milp.clearance.add_disjunctive_box_separation"):
+            # Pass 1: budget of 2 cuts from formulation options
+            cuts1 = builder.inject_clearance_cuts(violations)
+            assert cuts1 == 2
+            assert len(builder.separated_pairs) == 2
+            assert ("parent_room", 1, 2) in builder.separated_pairs
+            assert ("parent_room", 3, 4) in builder.separated_pairs
+
+            # Pass 2: remaining unseparated violation injected with explicit override limit
+            cuts2 = builder.inject_clearance_cuts(violations, max_cuts_per_pass=1)
+            assert cuts2 == 1
+            assert len(builder.separated_pairs) == 3
+            assert ("parent_room", 5, 6) in builder.separated_pairs
+
+            # Pass 3: all candidate violations are already separated
+            cuts3 = builder.inject_clearance_cuts(violations)
+            assert cuts3 == 0
+
+    def test_inject_clearance_cuts_empty_and_zero_budget(self) -> None:
+        """inject_clearance_cuts returns zero when violations is empty or budget <= 0."""
+        formulation = MagicMock()
+        builder = ClearanceConstraintBuilder(formulation)
+        assert builder.inject_clearance_cuts([]) == 0
+
+        v = [ClearanceViolation(category="parent_room", item_a=1, item_b=2)]
+        assert builder.inject_clearance_cuts(v, max_cuts_per_pass=0) == 0
+        assert builder.inject_clearance_cuts(v, max_cuts_per_pass=-1) == 0
+        assert len(builder.separated_pairs) == 0
+
+    def test_inject_clearance_cuts_deduplicates_in_same_batch(self) -> None:
+        """Duplicate violations in the same input batch count once against budget."""
+        formulation = MagicMock()
+        builder = ClearanceConstraintBuilder(formulation)
+        violations = [
+            ClearanceViolation(category="parent_room", item_a=1, item_b=2),
+            ClearanceViolation(category="parent_room", item_a=2, item_b=1),
+            ClearanceViolation(category="child_child", item_a=("c1", 0), item_b=("c2", 0)),
+            ClearanceViolation(category="child_child", item_a=("c2", 0), item_b=("c1", 0)),
+        ]
+        with patch("romutil.layout.milp.clearance.add_disjunctive_box_separation"):
+            cuts = builder.inject_clearance_cuts(violations, max_cuts_per_pass=10)
+            assert cuts == 2
+            assert len(builder.separated_pairs) == 2
