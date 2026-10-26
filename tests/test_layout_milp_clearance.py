@@ -19,7 +19,6 @@ from romutil.layout.milp import (
     ClusterFormulation,
     detect_cluster_collisions,
     formulate_cluster_model,
-    get_incident_child_sub_box_indices,
     inventory_cluster,
 )
 from romutil.layout.milp.clearance import (
@@ -341,6 +340,31 @@ class TestAreaClearanceIntegrity:
                 assert coords[r_clan] != coords[r_cleric], f"{r_clan} and {r_cleric} collide"
         assert coords[3258].y != coords[3001].y, "Clan Road penetrates Cleric Inner Sanctum latitude"
 
+    def test_sewer_corridor_avoids_room_7012(self) -> None:
+        """Sewer pipe corridor between rooms 7011 and 7021 does not penetrate room 7012."""
+        from romutil.layout.engine import HierarchicalLayoutSolver
+        from romutil.layout.geometry import Segment3D
+        from romutil.layout.milp.clearance import segment_room_penetration
+
+        sewer_path = Path("tests/fixtures/areas/sewer.are")
+        area = parse_file(sewer_path)
+        graph = WorldGraph.from_area_data(area)
+        solver = HierarchicalLayoutSolver.production()
+        sol = solver.solve(graph)
+
+        c7012 = sol.coordinates[7012]
+        c7011 = sol.coordinates[7011]
+        c7021 = sol.coordinates[7021]
+
+        assert c7012 != c7011
+        assert c7012 != c7021
+
+        corridor_segment = Segment3D(c7011, c7021)
+        assert not segment_room_penetration(corridor_segment, c7012), (
+            f"Room 7012 at {c7012} penetrates corridor between 7011 at {c7011} and 7021 at {c7021}"
+        )
+
+
     def test_thalos_zero_room_collisions(self) -> None:
         """Thalos layout contains zero duplicate room coordinates across all clusters."""
         from romutil.layout.engine import HierarchicalLayoutSolver
@@ -385,129 +409,139 @@ class TestAreaClearanceIntegrity:
             assert coords[v].y > elm_y, f"Room {v} at y={coords[v].y} intersects or is below Elm Street at y={elm_y}"
 
 
-class TestPortScopedSubBoxCorridorClearance:
-    """Unit tests for port-scoped child sub-box corridor clearance exemptions."""
+class TestChildSubBoxCorridorClearance:
+    """Unit tests for child keep-out sub-box corridor clearance and collision isolation."""
 
-    def test_get_incident_child_sub_box_indices_strictly_enclosed(self) -> None:
-        """Active edges incident to specific ports strictly enclose and exempt only that sub-box."""
+    def test_corridor_child_universal_obstacle_in_formulation(self) -> None:
+        """Every child sub-box is formulated as an active obstacle against corridor interiors."""
+        child = SolveTreeNode(node_id="c_branch", node_type="leaf", rooms=frozenset({200}))
+        parent = SolveTreeNode(node_id="p_adapter", node_type="container", rooms=frozenset({100}), children=(child,))
         sol = NodeSolution(
-            node_id="c_l",
-            local_coordinates={
-                10: Coord3D(1, 1, 0),
-                20: Coord3D(6, 1, 0),
-            },
-            port_coordinates={
-                100: Coord3D(1, 1, 0),
-                200: Coord3D(6, 1, 0),
-            },
+            node_id="c_branch",
+            local_coordinates={200: Coord3D(0, 5, 0)},
+            port_coordinates={100: Coord3D(0, 0, 0)},
             sub_boxes=(
-                BoundingBox3D(0, 2, 0, 2, 0, 0),  # Sub-box 0 encloses room 10 / port 100
-                BoundingBox3D(5, 7, 0, 2, 0, 0),  # Sub-box 1 encloses room 20 / port 200
+                BoundingBox3D(0, 1, 4, 6, 0, 0),  # Sub-box 0: Enclosing interior room 200
             ),
         )
 
-        # Edge incident to room 10 on c_l
-        ae1 = ActiveEdge(
-            edge_id="ae_port10",
-            src=("c_l", 10),
-            dst=1,
-            direction=(0, -1, 0),
-            min_length=2,
-            associated_rooms=frozenset({10, 1}),
-            associated_children=frozenset({"c_l"}),
-        )
-        exempt1 = get_incident_child_sub_box_indices("c_l", sol, sol.sub_boxes, ae1)
-        assert exempt1 == {0}
-
-        # Edge incident to port 200 on c_l
-        ae2 = ActiveEdge(
-            edge_id="ae_port200",
-            src=2,
-            dst=("c_l", 200),
-            direction=(1, 0, 0),
-            min_length=2,
-            associated_rooms=frozenset({2, 200}),
-            associated_children=frozenset({"c_l"}),
-        )
-        exempt2 = get_incident_child_sub_box_indices("c_l", sol, sol.sub_boxes, ae2)
-        assert exempt2 == {1}
-
-        # Edge not incident to c_l
-        ae_other = ActiveEdge(
-            edge_id="ae_ext",
-            src=1,
-            dst=2,
-            direction=(1, 0, 0),
-            min_length=2,
-            associated_rooms=frozenset({1, 2}),
+        graph = _make_graph([50, 100, 200], [(50, 100, Direction.north, 1)])
+        inv = inventory_cluster(node=parent, child_solutions={"c_branch": sol}, graph=graph)
+        inv = dataclasses.replace(inv, boundary_ports=frozenset({50}))
+        ae = ActiveEdge(
+            edge_id="int_50_100",
+            src=50,
+            dst=100,
+            direction=(0, 1, 0),
+            min_length=1,
+            associated_rooms=frozenset({50, 100}),
             associated_children=frozenset(),
         )
-        exempt_other = get_incident_child_sub_box_indices("c_l", sol, sol.sub_boxes, ae_other)
-        assert exempt_other == set()
+        inv = dataclasses.replace(inv, active_edges=(ae,))
+        formulation = ClusterFormulation(inventory=inv)
+        formulation.clearance_builder.add_corridor_child_separation()
 
-    def test_get_incident_child_sub_box_indices_carved_out_adjacent_port(self) -> None:
-        """Boundary ports carved out of keep-out sub-boxes fall back to adjacent sub-box."""
+        # Every child sub-box is an active obstacle in the formulation with zero exceptions
+        separated = formulation.clearance_builder.separated_pairs
+        assert ("corridor_child", 0, ("c_branch", 0)) in separated
+
+    def test_interface_corridor_stops_at_perimeter_no_collision(self) -> None:
+        """Legitimate interface corridor connecting to child doorway stops at perimeter without collision."""
+        child = SolveTreeNode(node_id="c_branch", node_type="leaf", rooms=frozenset({200}))
+        parent = SolveTreeNode(node_id="p_adapter", node_type="container", rooms=frozenset({100}), children=(child,))
         sol = NodeSolution(
-            node_id="c_carved",
-            local_coordinates={10: Coord3D(2, 2, 0)},
-            port_coordinates={
-                1: Coord3D(0, 2, 0),  # Chebyshev distance 1 from box 0 ([1, 3] x [1, 3])
-            },
+            node_id="c_branch",
+            local_coordinates={200: Coord3D(0, 5, 0)},
+            port_coordinates={100: Coord3D(0, 0, 0)},
             sub_boxes=(
-                BoundingBox3D(1, 3, 1, 3, 0, 0),  # Sub-box 0 adjacent to port 1
-                BoundingBox3D(8, 10, 1, 3, 0, 0),  # Sub-box 1 distant
+                BoundingBox3D(0, 1, 4, 6, 0, 0),  # Sub-box 0: Strictly interior room 200
             ),
         )
 
+        graph = _make_graph([50, 100, 200], [(50, 100, Direction.north, 5)])
+        inv = inventory_cluster(node=parent, child_solutions={"c_branch": sol}, graph=graph)
+        inv = dataclasses.replace(inv, boundary_ports=frozenset({50}))
         ae = ActiveEdge(
-            edge_id="ae_carved",
-            src=("c_carved", 1),
-            dst=99,
-            direction=(-1, 0, 0),
-            min_length=2,
-            associated_rooms=frozenset({1, 99}),
-            associated_children=frozenset({"c_carved"}),
-        )
-        exempt = get_incident_child_sub_box_indices("c_carved", sol, sol.sub_boxes, ae)
-        assert exempt == {0}
-
-    def test_get_incident_child_sub_box_indices_multi_port(self) -> None:
-        """Active edges touching multiple boundary ports exempt all incident sub-boxes."""
-        sol = NodeSolution(
-            node_id="c_multi",
-            local_coordinates={10: Coord3D(1, 1, 0), 20: Coord3D(6, 1, 0)},
-            sub_boxes=(
-                BoundingBox3D(0, 2, 0, 2, 0, 0),
-                BoundingBox3D(5, 7, 0, 2, 0, 0),
-            ),
-        )
-
-        # Intra-cluster corridor spanning between room 10 and room 20
-        ae = ActiveEdge(
-            edge_id="ae_internal",
-            src=("c_multi", 10),
-            dst=("c_multi", 20),
-            direction=(1, 0, 0),
+            edge_id="int_50_100",
+            src=50,
+            dst=100,
+            direction=(0, 1, 0),
             min_length=5,
-            associated_rooms=frozenset({10, 20}),
-            associated_children=frozenset({"c_multi"}),
+            associated_rooms=frozenset({50, 100}),
+            associated_children=frozenset(),
         )
-        exempt = get_incident_child_sub_box_indices("c_multi", sol, sol.sub_boxes, ae)
-        assert exempt == {0, 1}
+        inv = dataclasses.replace(inv, active_edges=(ae,))
+        formulation = ClusterFormulation(inventory=inv)
+        formulation.clearance_builder.add_corridor_child_separation()
 
-    def test_corridor_child_collision_detects_penetration_of_non_incident_wing(self) -> None:
-        """Corridor entering one sub-box of a child cluster detects collision when penetrating another wing."""
-        # U-shaped child cluster with wing 0 and wing 1 at the same latitude
+        # Placement where parent port 50 is at (0, -5, 0) and doorway 100 is at (0, 0, 0).
+        # Corridor interior spans y in [-4, -1], which stops at perimeter y=0.
+        # Child sub-box 0 spans y in [4, 6], so no collision occurs.
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={100: (0, 0, 0)},
+            raw_child_offsets={"c_branch": (0, 0, 0)},
+            solver_status=SolverStatus.OPTIMAL,
+            raw_port_coords={50: (0, -5, 0)},
+        )
+        violations = detect_cluster_collisions(formulation, extraction)
+        cchild_violations = [v for v in violations if v.category == "corridor_child"]
+        assert len(cchild_violations) == 0
+
+    def test_unrelated_corridor_traversing_child_interior_detected_and_separated(self) -> None:
+        """Unrelated corridor traversing across a child cluster's interior is detected and separated."""
+        child = SolveTreeNode(node_id="c_house", node_type="leaf", rooms=frozenset({200}))
+        parent = SolveTreeNode(node_id="p_root", node_type="container", rooms=frozenset({10, 20}), children=(child,))
+        sol = NodeSolution(
+            node_id="c_house",
+            local_coordinates={200: Coord3D(5, 0, 0)},
+            sub_boxes=(
+                BoundingBox3D(4, 6, -1, 1, 0, 0),  # Sub-box 0: Encloses room 200
+            ),
+        )
+
+        graph = _make_graph([10, 20, 200], [(10, 20, Direction.east, 10)])
+        inv = inventory_cluster(node=parent, child_solutions={"c_house": sol}, graph=graph)
+        ae = ActiveEdge(
+            edge_id="ae_street",
+            src=10,
+            dst=20,
+            direction=(1, 0, 0),
+            min_length=10,
+            associated_rooms=frozenset({10, 20}),
+            associated_children=frozenset(),
+        )
+        inv = dataclasses.replace(inv, active_edges=(ae,))
+        formulation = ClusterFormulation(inventory=inv)
+
+        # Extraction where corridor runs from (0, 0, 0) to (10, 0, 0), plowing through [4, 6]
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={10: (0, 0, 0), 20: (10, 0, 0)},
+            raw_child_offsets={"c_house": (0, 0, 0)},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        violations = detect_cluster_collisions(formulation, extraction)
+        cchild_violations = [v for v in violations if v.category == "corridor_child"]
+        assert len(cchild_violations) == 1
+        assert cchild_violations[0].item_b == ("c_house", 0)
+
+        # Cut injection injects corridor_child separation cut
+        cuts = formulation.clearance_builder.inject_clearance_cuts(violations)
+        assert cuts == 1
+        assert hasattr(formulation.model, "corridor_child_br")
+        assert ("corridor_child", 0, ("c_house", 0)) in formulation.clearance_builder.separated_pairs
+
+    def test_concave_ushape_child_sub_boxes_protect_non_incident_wings(self) -> None:
+        """Concave child sub-boxes strictly detect collision when corridor penetrates non-incident wing."""
         child = SolveTreeNode(node_id="c_ushape", node_type="leaf", rooms=frozenset({10, 20}))
         parent = SolveTreeNode(node_id="p_root", node_type="container", rooms=frozenset({1, 2}), children=(child,))
         sol = NodeSolution(
             node_id="c_ushape",
             local_coordinates={
-                10: Coord3D(1, 1, 0),  # Wing 0 port
+                10: Coord3D(1, 1, 0),  # Wing 0 doorway at (1, 1, 0)
                 20: Coord3D(5, 1, 0),  # Wing 1 interior room
             },
             sub_boxes=(
-                BoundingBox3D(0, 2, 0, 2, 0, 0),  # Sub-box 0: Wing 0 containing port 10
+                BoundingBox3D(0, 1, 0, 2, 0, 0),  # Sub-box 0: Wing 0 up to doorway at x=1
                 BoundingBox3D(4, 6, 0, 2, 0, 0),  # Sub-box 1: Wing 1 containing room 20
             ),
         )
@@ -515,8 +549,8 @@ class TestPortScopedSubBoxCorridorClearance:
         graph = _make_graph([1, 2, 10, 20], [])
         inv = inventory_cluster(node=parent, child_solutions={"c_ushape": sol}, graph=graph)
 
-        # Active edge incident to room 10 in wing 0, running East direction (1, 0, 0)
-        # Slices across x in [2, 7] at latitude y=1, directly penetrating wing 1 ([4, 6])
+        # Active edge incident to room 10 in wing 0, running East direction (1, 0, 0) towards parent room 2
+        # Corridor interior spans x in [2, 7] at latitude y=1, penetrating wing 1 ([4, 6])
         inv = dataclasses.replace(
             inv,
             active_edges=(
@@ -534,8 +568,8 @@ class TestPortScopedSubBoxCorridorClearance:
         formulation = formulate_cluster_model(inventory=inv)
 
         # Extraction where ae_piercing runs from (1, 1, 0) to (8, 1, 0)
-        # Child offset is (0, 0, 0), so wing 1 spans [4, 6] x [0, 2] x [0, 0]
-        # Corridor interior x in [2, 7] at y=1 penetrates wing 1 [4, 6]!
+        # Corridor interior x in [2, 7] does NOT intersect sub-box 0 (x in [0, 1])
+        # but directly penetrates wing 1 [4, 6]!
         extraction = SolvedClusterExtraction(
             raw_parent_coords={2: (8, 1, 0)},
             raw_child_offsets={"c_ushape": (0, 0, 0)},
@@ -545,115 +579,12 @@ class TestPortScopedSubBoxCorridorClearance:
         violations = detect_cluster_collisions(formulation, extraction)
         cchild_violations = [v for v in violations if v.category == "corridor_child"]
         assert len(cchild_violations) == 1
-        assert cchild_violations[0].item_b == ("c_ushape", 1)  # Specifically sub-box 1 (wing 1)
+        assert cchild_violations[0].item_b == ("c_ushape", 1)  # Specifically wing 1
 
-        # Verify cut injection applies corridor_child separation
         cuts_injected = formulation.clearance_builder.inject_clearance_cuts(violations)
         assert cuts_injected == 1
         assert hasattr(formulation.model, "corridor_child_br")
-
-    def test_corridor_child_separation_non_associated_boundary_port(self) -> None:
-        """Active edge touching a boundary port of a non-associated child separates interior from other sub-boxes."""
-        # Child cluster possessing port 100 (at entrance) and interior room 200 in sub-box 1
-        child = SolveTreeNode(node_id="c_gang", node_type="leaf", rooms=frozenset({200}))
-        parent = SolveTreeNode(node_id="p_root", node_type="container", rooms=frozenset({100, 300}), children=(child,))
-        sol = NodeSolution(
-            node_id="c_gang",
-            local_coordinates={200: Coord3D(5, 0, 0)},
-            port_coordinates={100: Coord3D(0, 0, 0)},
-            sub_boxes=(
-                BoundingBox3D(0, 1, 0, 1, 0, 0),  # Sub-box 0: Encloses port 100
-                BoundingBox3D(4, 6, 0, 1, 0, 0),  # Sub-box 1: Encloses room 200
-            ),
-        )
-
-        graph = _make_graph([100, 200, 300], [(100, 300, Direction.east, 10)])
-        inv = inventory_cluster(node=parent, child_solutions={"c_gang": sol}, graph=graph)
-        # Active corridor from 100 to 300 (associated_children is empty, non-associated)
-        ae = ActiveEdge(
-            edge_id="ae_street",
-            src=100,
-            dst=300,
-            direction=(1, 0, 0),
-            min_length=10,
-            associated_rooms=frozenset({100, 300}),
-            associated_children=frozenset(),
-        )
-        inv = dataclasses.replace(inv, active_edges=(ae,))
-        formulation = ClusterFormulation(inventory=inv)
-        formulation.clearance_builder.add_corridor_child_separation()
-
-        # Sub-box 0 (incident to port 100) is exempt; sub-box 1 must be separated
-        separated = formulation.clearance_builder.separated_pairs
-        assert ("corridor_child", 0, ("c_gang", 1)) in separated
-        assert ("corridor_child", 0, ("c_gang", 0)) not in separated
-        assert hasattr(formulation.model, "corridor_child_br")
-
-        # Test collision detection:
-        # Placement where child sub-box 1 (at x in [4, 6]) penetrates corridor interior (x in [1, 9])
-        extraction_colliding = SolvedClusterExtraction(
-            raw_parent_coords={100: (0, 0, 0), 300: (10, 0, 0)},
-            raw_child_offsets={"c_gang": (0, 0, 0)},
-            solver_status=SolverStatus.OPTIMAL,
-        )
-        violations = detect_cluster_collisions(formulation, extraction_colliding)
-        cchild_viols = [v for v in violations if v.category == "corridor_child"]
-        assert len(cchild_viols) == 1
-        assert cchild_viols[0].item_b == ("c_gang", 1)
-
-        # Placement where child is translated clear of corridor (y = 5)
-        extraction_clear = SolvedClusterExtraction(
-            raw_parent_coords={100: (0, 0, 0), 300: (10, 0, 0)},
-            raw_child_offsets={"c_gang": (0, 5, 0)},
-            solver_status=SolverStatus.OPTIMAL,
-        )
-        violations_clear = detect_cluster_collisions(formulation, extraction_clear)
-        assert len([v for v in violations_clear if v.category == "corridor_child"]) == 0
-
-    def test_boundary_interface_edge_exempt_from_child_separation(self) -> None:
-        """Active edge directly connecting external boundary port to child attachment port is exempt."""
-        child = SolveTreeNode(node_id="c_branch", node_type="leaf", rooms=frozenset({200}))
-        parent = SolveTreeNode(node_id="p_adapter", node_type="container", rooms=frozenset({100}), children=(child,))
-        sol = NodeSolution(
-            node_id="c_branch",
-            local_coordinates={200: Coord3D(0, 5, 0)},
-            port_coordinates={100: Coord3D(0, 0, 0)},
-            sub_boxes=(
-                BoundingBox3D(0, 1, 0, 1, 0, 0),  # Sub-box 0: Port
-                BoundingBox3D(0, 1, 4, 6, 0, 0),  # Sub-box 1: Room 200
-            ),
-        )
-
-        graph = _make_graph([50, 100, 200], [(50, 100, Direction.north, 1)])
-        inv = inventory_cluster(node=parent, child_solutions={"c_branch": sol}, graph=graph)
-        # 50 is an external boundary port connecting to child attachment port 100
-        inv = dataclasses.replace(inv, boundary_ports=frozenset({50}))
-        ae = ActiveEdge(
-            edge_id="int_50_100",
-            src=50,
-            dst=100,
-            direction=(0, 1, 0),
-            min_length=1,
-            associated_rooms=frozenset({50, 100}),
-            associated_children=frozenset(),
-        )
-        inv = dataclasses.replace(inv, active_edges=(ae,))
-        formulation = ClusterFormulation(inventory=inv)
-        formulation.clearance_builder.add_corridor_child_separation()
-
-        # Both sub-boxes of c_branch should be exempt because int_50_100 is an external boundary interface edge
-        separated = formulation.clearance_builder.separated_pairs
-        assert len([p for p in separated if p[0] == "corridor_child"]) == 0
-
-        # Collision detection also skips boundary interface edge against child
-        extraction = SolvedClusterExtraction(
-            raw_parent_coords={100: (0, 0, 0)},
-            raw_child_offsets={"c_branch": (0, 0, 0)},
-            solver_status=SolverStatus.OPTIMAL,
-            raw_port_coords={50: (0, -10, 0)},
-        )
-        violations = detect_cluster_collisions(formulation, extraction)
-        assert len([v for v in violations if v.category == "corridor_child"]) == 0
+        assert ("corridor_child", 0, ("c_ushape", 1)) in formulation.clearance_builder.separated_pairs
 
 
 class TestClearanceCutPriorityAndLimits:

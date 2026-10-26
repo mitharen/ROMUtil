@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Mapping, Sequence
 
 from romutil.layout.geometry import BoundingBox3D, decompose_into_orthogonal_sub_boxes
@@ -284,7 +284,9 @@ def derive_child_sub_boxes(
         interior_cells = {
             coord
             for u, coord in child_solution.local_coordinates.items()
-            if u not in boundary_ports and coord not in boundary_port_coords
+            if isinstance(u, int)
+            and u not in boundary_ports
+            and coord not in boundary_port_coords
         }
         if "all_room_coordinates" in child_solution.metadata:
             for u, coord in child_solution.metadata["all_room_coordinates"].items():
@@ -1437,6 +1439,7 @@ def inventory_cluster(
             is_src_port = ae.src in external_ports and ae.dst in parent_room_set
             is_dst_port = ae.dst in external_ports and ae.src in parent_room_set
             if is_src_port or is_dst_port:
+                ae = replace(ae, allow_transverse_slack=True)
                 p = ae.src if is_src_port else ae.dst
                 u = ae.dst if is_src_port else ae.src
                 disp = ae.direction if is_src_port else (-ae.direction[0], -ae.direction[1], -ae.direction[2])

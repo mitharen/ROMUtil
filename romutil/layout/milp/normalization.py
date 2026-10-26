@@ -141,6 +141,17 @@ def normalize_cluster_solution(
                 and ae.src in all_parent_and_port_coords
                 and ae.dst in all_parent_and_port_coords
             ):
+                is_boundary_edge = (
+                    ae.src in norm_port_coords or ae.dst in norm_port_coords
+                )
+                if is_boundary_edge:
+                    from romutil.layout.ir import CutType
+
+                    if node.cut_type == CutType.SPLIT_PAIR:
+                        continue
+                    if ae.min_length <= 1:
+                        continue
+
                 p1 = all_parent_and_port_coords[ae.src]
                 p2 = all_parent_and_port_coords[ae.dst]
                 dist = abs(p2.x - p1.x) + abs(p2.y - p1.y) + abs(p2.z - p1.z)
