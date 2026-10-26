@@ -40,7 +40,6 @@ COMPOSITE_SHOWCASE_AREAS = (
         "ROM 2.4 / Composite",
         "midgaard_sewers",
         ("midgaard.are", "sewer.are"),
-        10,
     ),
 )
 
