@@ -2923,3 +2923,188 @@ class TestInventoryCoordinatesAndAnchorPriority:
         assert form.model.x[100].is_fixed()
         assert form.model.x[100].value == 0
         assert not form.model.x[50].is_fixed()
+
+
+class TestAdaptiveTimeoutAndCuttingPlaneLimits:
+    """Unit tests for adaptive cluster timeout scaling and graceful cutting-plane timeout filtering."""
+
+    def test_adaptive_cluster_timeout_scaling_small_vs_large(self) -> None:
+        """Adaptive cluster timeout scales with entity count beyond the 20-entity threshold."""
+        from romutil.layout.milp.cluster import compute_adaptive_cluster_timeout
+
+        # Small cluster: 5 rooms, 0 children -> baseline 10s
+        small_node = SolveTreeNode(
+            node_id="small",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset(range(5)),
+        )
+        assert compute_adaptive_cluster_timeout(small_node) == 10
+
+        # Exact threshold cluster: 10 rooms, 10 children -> 20 entities -> 10s
+        threshold_node = SolveTreeNode(
+            node_id="thresh",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset(range(10)),
+            children=tuple(
+                SolveTreeNode(
+                    node_id=f"c{i}",
+                    node_type=TreeNodeType.RIGID_CLUSTER,
+                    rooms=frozenset({100 + i}),
+                )
+                for i in range(10)
+            ),
+        )
+        assert compute_adaptive_cluster_timeout(threshold_node) == 10
+
+        # Large cluster: 30 rooms, 20 children = 50 entities -> 10 * (50 / 20) = 25s
+        large_node = SolveTreeNode(
+            node_id="large",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset(range(30)),
+            children=tuple(
+                SolveTreeNode(
+                    node_id=f"c{i}",
+                    node_type=TreeNodeType.RIGID_CLUSTER,
+                    rooms=frozenset({100 + i}),
+                )
+                for i in range(20)
+            ),
+        )
+        assert compute_adaptive_cluster_timeout(large_node) == 25
+
+        # Very large cluster with custom options: 60 rooms, 40 children = 100 entities, base timeout 60s
+        # 60 * (100 / 20) = 300s
+        xl_node = SolveTreeNode(
+            node_id="xl",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset(range(60)),
+            children=tuple(
+                SolveTreeNode(
+                    node_id=f"c{i}",
+                    node_type=TreeNodeType.RIGID_CLUSTER,
+                    rooms=frozenset({100 + i}),
+                )
+                for i in range(40)
+            ),
+        )
+        custom_opts = LayoutOptions(timeout_seconds=60)
+        assert compute_adaptive_cluster_timeout(xl_node, custom_opts) == 300
+
+        # Fallback when options.timeout_seconds is None or zero
+        zero_opts = LayoutOptions(timeout_seconds=0)
+        assert compute_adaptive_cluster_timeout(small_node, zero_opts) == 10
+        assert compute_adaptive_cluster_timeout(large_node, zero_opts) == 25
+
+    def test_cutting_plane_loop_filters_corridor_crossings_on_timeout(self) -> None:
+        """When solver times out, corridor crossings are filtered to focus on macroscopic separation."""
+        from romutil.layout.milp.clearance import ClearanceViolation
+        from romutil.layout.milp.solver import SolvedClusterExtraction
+
+        node = SolveTreeNode(
+            node_id="timed_out_cluster",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3}),
+        )
+        graph = LayoutGraph(
+            rooms={
+                1: Room(vnum=1, name="R1", description="", exits=()),
+                2: Room(vnum=2, name="R2", description="", exits=()),
+                3: Room(vnum=3, name="R3", description="", exits=()),
+            },
+            edges=(),
+        )
+
+        extraction_timeout = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (0, 0, 0), 3: (10, 0, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.TIMEOUT,
+        )
+
+        extraction_final = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (5, 0, 0), 3: (10, 0, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.TIMEOUT,
+        )
+
+        call_count = 0
+
+        def mock_solve(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return extraction_timeout
+            return extraction_final
+
+        def mock_detect(*args, **kwargs):
+            if call_count == 1:
+                return [
+                    ClearanceViolation(category="parent_room", item_a=1, item_b=2),
+                    ClearanceViolation(category="corridor_crossing", item_a=0, item_b=1),
+                ]
+            return [
+                ClearanceViolation(category="corridor_crossing", item_a=0, item_b=1),
+            ]
+
+        with (
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+            patch("romutil.layout.milp.clearance.ClearanceConstraintBuilder.inject_clearance_cuts", return_value=1) as mock_inject,
+        ):
+            sol = solve_cluster(node=node, graph=graph)
+            assert sol is not None
+            assert sol.node_id == "timed_out_cluster"
+            # It should have broken after 2 iterations
+            assert call_count == 2
+            # On pass 1, inject_clearance_cuts must only have received parent_room, NOT corridor_crossing
+            assert mock_inject.call_count == 1
+            injected_violations = mock_inject.call_args[0][0]
+            assert len(injected_violations) == 1
+            assert injected_violations[0].category == "parent_room"
+
+    def test_cutting_plane_loop_retains_corridor_crossings_on_optimal(self) -> None:
+        """When solver status is optimal, corridor crossings are retained and injected."""
+        from romutil.layout.milp.clearance import ClearanceViolation
+        from romutil.layout.milp.solver import SolvedClusterExtraction
+
+        node = SolveTreeNode(
+            node_id="optimal_cluster",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+        )
+        graph = LayoutGraph(
+            rooms={
+                1: Room(vnum=1, name="R1", description="", exits=()),
+                2: Room(vnum=2, name="R2", description="", exits=()),
+            },
+            edges=(),
+        )
+
+        extraction_optimal = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (5, 0, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        call_count = 0
+
+        def mock_solve(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return extraction_optimal
+
+        with (
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions") as mock_detect,
+            patch("romutil.layout.milp.clearance.ClearanceConstraintBuilder.inject_clearance_cuts") as mock_inject,
+        ):
+            mock_detect.side_effect = [
+                [ClearanceViolation(category="corridor_crossing", item_a=0, item_b=1)],
+                [],
+            ]
+            mock_inject.return_value = 1
+
+            sol = solve_cluster(node=node, graph=graph)
+            assert sol is not None
+            assert mock_inject.call_count == 1
+            args, _ = mock_inject.call_args
+            assert any(v.category == "corridor_crossing" for v in args[0])
