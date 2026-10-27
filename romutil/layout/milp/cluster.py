@@ -91,10 +91,11 @@ def solve_cluster_with_cutting_planes(
     if total_cluster_budget is None:
         total_cluster_budget = float(compute_adaptive_cluster_timeout(node, options))
     t_start = time.monotonic()
+    base_timeout = float(options.timeout_seconds) if options is not None and options.timeout_seconds else 15.0
     intermediate_timeout = (
         float(options.intermediate_pass_timeout)
-        if options is not None and getattr(options, "intermediate_pass_timeout", None)
-        else 15.0
+        if options is not None and getattr(options, "intermediate_pass_timeout", None) and options.intermediate_pass_timeout != 15
+        else max(15.0, min(30.0, base_timeout * 0.67))
     )
     ratio_gap = (
         float(options.ratio_gap)
