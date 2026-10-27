@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
-from romutil.layout.ir import LayoutGraph, NodeSolution, SolveTreeNode
+from romutil.layout.ir import LayoutGraph, NodeSolution, SolveTreeNode, TreeNodeType
 from romutil.layout.milp.clearance import detect_cluster_collisions
 from romutil.layout.milp.formulation import formulate_cluster_model
 from romutil.layout.milp.inventory import (
@@ -18,6 +18,7 @@ from romutil.layout.milp.normalization import (
     normalize_cluster_solution,
     normalize_empty_cluster,
     normalize_single_room_cluster,
+    pack_world_root_components,
 )
 from romutil.layout.milp.solver import SolvedClusterExtraction, solve_and_extract
 from romutil.types import LayoutOptions, LayoutSolverError, SolverStatus
@@ -256,6 +257,13 @@ def solve_cluster(
 
     if not rooms and not children:
         return normalize_empty_cluster(node)
+
+    if node.node_type == TreeNodeType.WORLD_ROOT:
+        return pack_world_root_components(
+            node=node,
+            child_solutions=child_solutions,
+            options=options,
+        )
 
     if len(rooms) == 1 and not children and not boundary_ports:
         r = rooms[0]

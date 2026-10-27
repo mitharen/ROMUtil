@@ -3368,3 +3368,18 @@ class TestTwoPhaseCuttingPlaneBudget:
                 debug_solve_dir=tmp_path,
             )
             mock_render.assert_called_once()
+
+    def test_solve_cluster_world_root_dispatches_to_pack_world_root_components(self) -> None:
+        """solve_cluster routes WORLD_ROOT container nodes directly to sequential component packing."""
+        ch = SolveTreeNode(node_id="comp_0", node_type=TreeNodeType.BLOCK, rooms=frozenset({1}))
+        node = SolveTreeNode(
+            node_id="world_root",
+            node_type=TreeNodeType.WORLD_ROOT,
+            rooms=frozenset(),
+            children=(ch,),
+        )
+        sol = NodeSolution(node_id="comp_0", local_coordinates={1: Coord3D(0, 0, 0)})
+        result = solve_cluster(node=node, child_solutions={"comp_0": sol})
+        assert result.node_id == "world_root"
+        assert result.metadata["child_offsets"]["comp_0"] == Coord3D(0, 0, 0)
+        assert result.metadata["status"] == SolverStatus.OPTIMAL

@@ -31,7 +31,10 @@ from romutil.layout.milp.inventory import (
     derive_child_sub_boxes,
     inventory_cluster,
 )
-from romutil.layout.milp.normalization import normalize_cluster_solution
+from romutil.layout.milp.normalization import (
+    normalize_cluster_solution,
+    pack_world_root_components,
+)
 from romutil.layout.milp.solver import (
     SolvedClusterExtraction,
     solve_and_extract,
@@ -60,6 +63,7 @@ __all__ = [
     "formulate_cluster_model",
     "inventory_cluster",
     "normalize_cluster_solution",
+    "pack_world_root_components",
     "render_cluster_solve_svg",
     "render_debug_solve_tree_index",
     "solve_and_extract",
