@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping
+from typing import Any, Mapping
 
 import pyomo.environ as pyo
 from pyomo.opt import SolverStatus as PyomoSolverStatus, TerminationCondition
@@ -26,6 +26,8 @@ def solve_and_extract(
     formulation: ClusterFormulation,
     solver_name: str = "cbc",
     options: LayoutOptions | None = None,
+    max_solutions: int | None = None,
+    solver_options: Mapping[str, Any] | None = None,
 ) -> SolvedClusterExtraction:
     """Invoke the MILP solver and extract raw coordinates and child offsets.
 
@@ -36,6 +38,10 @@ def solve_and_extract(
         formulation: ClusterFormulation containing the configured Pyomo model.
         solver_name: Pyomo MILP solver name (defaults to 'cbc').
         options: Optional layout configuration parameters (e.g. timeout_seconds).
+        max_solutions: Optional limit on the number of integer solutions before early
+            termination (e.g. 1 for intermediate cutting-plane passes).
+        solver_options: Optional mapping of solver-specific configuration options passed
+            directly to the solver.
 
     Returns:
         SolvedClusterExtraction containing raw coordinates and child offsets.
@@ -63,6 +69,14 @@ def solve_and_extract(
         elif solver_name == "glpk":
             solver.options["tmlim"] = options.timeout_seconds
 
+    if max_solutions is not None:
+        if solver_name == "cbc":
+            solver.options["maxSolutions"] = max_solutions
+
+    if solver_options:
+        for opt_key, opt_val in solver_options.items():
+            solver.options[opt_key] = opt_val
+
     results = solver.solve(formulation.model, tee=False)
 
     valid_status = (
@@ -79,6 +93,7 @@ def solve_and_extract(
             in (
                 TerminationCondition.maxTimeLimit,
                 TerminationCondition.intermediateNonInteger,
+                TerminationCondition.other,
             )
             and results.solver.status
             in (

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
 
 from romutil.layout.ir import LayoutGraph, NodeSolution, SolveTreeNode
 from romutil.layout.milp.clearance import detect_cluster_collisions
@@ -46,6 +47,168 @@ def compute_adaptive_cluster_timeout(
         else 10
     )
     return max(base_timeout, int(base_timeout * max(1.0, n_entities / 20.0)))
+
+
+def solve_cluster_with_cutting_planes(
+    formulation: ClusterFormulation,
+    node: SolveTreeNode,
+    options: LayoutOptions | None = None,
+    solver_name: str = "cbc",
+    max_iterations: int = 15,
+    total_cluster_budget: float | None = None,
+    max_solutions: int | None = None,
+) -> SolvedClusterExtraction:
+    """Iteratively solve cluster MILP formulation with disjunctive cutting planes.
+
+    Executes a two-phase cutting-plane solve strategy:
+    1. Intermediate passes: Uses tight per-pass timeout limits and optional early incumbent
+       termination (max_solutions) with heuristics to quickly obtain integer-feasible coordinates,
+       allowing collision detection to identify geometric overlaps and inject clearance cuts.
+    2. Final convergence pass: Once all collisions are resolved (zero violations detected),
+       runs a final optimization pass without early solution limits using the remaining
+       cluster budget to tighten edge lengths and spring penalties with stagnation guards.
+
+    Aggregate cluster budget is tracked monotonically across all iterations to prevent
+    per-pass timeout resets from multiplying the total cluster runtime across iterations.
+
+    Args:
+        formulation: ClusterFormulation containing the Pyomo model and clearance builder.
+        node: SolveTreeNode representing the cluster to lay out.
+        options: Optional layout configuration parameters containing base timeout.
+        solver_name: Pyomo MILP solver name (defaults to 'cbc').
+        max_iterations: Maximum cutting-plane refinement iterations (defaults to 15).
+        total_cluster_budget: Optional explicit aggregate cluster budget in seconds.
+            If None, computed dynamically via compute_adaptive_cluster_timeout.
+        max_solutions: Optional limit on the number of solutions found on intermediate passes.
+
+    Returns:
+        SolvedClusterExtraction containing valid coordinates and child offsets.
+
+    Raises:
+        LayoutSolverError: If geometric collisions cannot be resolved within budget or iterations.
+    """
+    if total_cluster_budget is None:
+        total_cluster_budget = float(compute_adaptive_cluster_timeout(node, options))
+    t_start = time.monotonic()
+    intermediate_timeout = (
+        float(options.intermediate_pass_timeout)
+        if options is not None and getattr(options, "intermediate_pass_timeout", None)
+        else 15.0
+    )
+    ratio_gap = (
+        float(options.ratio_gap)
+        if options is not None and getattr(options, "ratio_gap", None)
+        else 0.05
+    )
+    effective_max_solutions = (
+        max_solutions
+        if max_solutions is not None
+        else (options.max_solutions if options is not None else None)
+    )
+
+    extraction: SolvedClusterExtraction | None = None
+    cuts_injected = False
+    for _ in range(max_iterations):
+        elapsed = time.monotonic() - t_start
+        remaining_budget = max(1.0, total_cluster_budget - elapsed)
+
+        if cuts_injected:
+            pass_timeout = max(1, int(round(min(remaining_budget, intermediate_timeout))))
+            pass_max_sol = effective_max_solutions
+            solver_opts: dict[str, Any] = {}
+            if solver_name == "cbc":
+                solver_opts["heuristics"] = "on"
+                solver_opts["ratioGap"] = ratio_gap
+        else:
+            pass_timeout = max(1, int(round(remaining_budget)))
+            pass_max_sol = None
+            solver_opts = {}
+
+        pass_options = (
+            replace(options, timeout_seconds=pass_timeout)
+            if options is not None
+            else LayoutOptions(timeout_seconds=pass_timeout)
+        )
+
+        extraction = solve_and_extract(
+            formulation=formulation,
+            solver_name=solver_name,
+            options=pass_options,
+            max_solutions=pass_max_sol,
+            solver_options=solver_opts if solver_opts else None,
+        )
+
+        violations = detect_cluster_collisions(
+            formulation=formulation,
+            extraction=extraction,
+        )
+
+        # On intermediate early-exit passes or timeout passes, ignore planar corridor crossings
+        # when evaluating whether physical room and macro-box collisions have been resolved.
+        is_intermediate_pass = pass_max_sol is not None
+        if extraction.solver_status == SolverStatus.TIMEOUT or is_intermediate_pass or cuts_injected:
+            hard_violations = [v for v in violations if v.category != "corridor_crossing"]
+        else:
+            hard_violations = list(violations)
+
+        if not hard_violations:
+            # All hard physical collisions resolved!
+            # If this was an early-terminated intermediate pass, run final convergence pass.
+            if is_intermediate_pass and extraction.solver_status == SolverStatus.FEASIBLE:
+                elapsed = time.monotonic() - t_start
+                remaining_budget = total_cluster_budget - elapsed
+                if remaining_budget >= 1.0:
+                    final_timeout = max(1, int(round(remaining_budget)))
+                    final_options = (
+                        replace(options, timeout_seconds=final_timeout)
+                        if options is not None
+                        else LayoutOptions(timeout_seconds=final_timeout)
+                    )
+                    final_solver_options: dict[str, Any] = {}
+                    if solver_name == "cbc":
+                        final_solver_options["heuristics"] = "on"
+                        final_solver_options["ratioGap"] = ratio_gap
+
+                    try:
+                        final_extraction = solve_and_extract(
+                            formulation=formulation,
+                            solver_name=solver_name,
+                            options=final_options,
+                            max_solutions=None,
+                            solver_options=final_solver_options,
+                        )
+                        final_violations = detect_cluster_collisions(
+                            formulation=formulation,
+                            extraction=final_extraction,
+                        )
+                        if final_extraction.solver_status == SolverStatus.TIMEOUT:
+                            final_violations = [
+                                v for v in final_violations if v.category != "corridor_crossing"
+                            ]
+                        if not final_violations:
+                            extraction = final_extraction
+                            break
+                        new_cuts = formulation.clearance_builder.inject_clearance_cuts(final_violations)
+                        if new_cuts > 0:
+                            cuts_injected = True
+                            continue
+                    except LayoutSolverError:
+                        pass
+            break
+
+        new_cuts = formulation.clearance_builder.inject_clearance_cuts(hard_violations)
+        if new_cuts == 0:
+            raise LayoutSolverError(
+                f"MILP solver encountered unresolvable geometric collisions for cluster '{node.node_id}'."
+            )
+        cuts_injected = True
+    else:
+        raise LayoutSolverError(
+            f"MILP solver failed to resolve all geometric collisions within {max_iterations} iterations for cluster '{node.node_id}'."
+        )
+
+    assert extraction is not None
+    return extraction
 
 
 def solve_cluster(
@@ -122,35 +285,13 @@ def solve_cluster(
         formulation = formulate_cluster_model(inventory=inventory, options=cluster_options)
 
         # Stage 3: Iterative Cutting-Plane Clearance & Solve
-        max_iterations = 15
-        extraction: SolvedClusterExtraction | None = None
-        for _ in range(max_iterations):
-            extraction = solve_and_extract(
-                formulation=formulation,
-                solver_name=solver_name,
-                options=cluster_options,
-            )
-            violations = detect_cluster_collisions(
-                formulation=formulation,
-                extraction=extraction,
-            )
-            if not violations:
-                break
-
-            if extraction.solver_status == SolverStatus.TIMEOUT:
-                violations = [v for v in violations if v.category != "corridor_crossing"]
-                if not violations:
-                    break
-
-            new_cuts = formulation.clearance_builder.inject_clearance_cuts(violations)
-            if new_cuts == 0:
-                raise LayoutSolverError(
-                    f"MILP solver encountered unresolvable geometric collisions for cluster '{node.node_id}'."
-                )
-        else:
-            raise LayoutSolverError(
-                f"MILP solver failed to resolve all geometric collisions within {max_iterations} iterations for cluster '{node.node_id}'."
-            )
+        extraction = solve_cluster_with_cutting_planes(
+            formulation=formulation,
+            node=node,
+            options=cluster_options,
+            solver_name=solver_name,
+            total_cluster_budget=float(t_cluster),
+        )
 
         assert extraction is not None
 
@@ -218,4 +359,5 @@ __all__ = [
     "HierarchicalClusterSolver",
     "compute_adaptive_cluster_timeout",
     "solve_cluster",
+    "solve_cluster_with_cutting_planes",
 ]

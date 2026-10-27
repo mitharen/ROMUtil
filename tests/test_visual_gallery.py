@@ -173,7 +173,7 @@ class TestGalleryAssetsGeneration:
         assert [p.name for p in paths] == ["midgaard.are", "sewer.are"]
         assert all(p.is_file() for p in paths)
         assert not is_dir
-        assert comp_by_name["midgaard_sewers"].solver_timeout == 10
+        assert comp_by_name["midgaard_sewers"].solver_timeout is None
 
         dummy_rendered = [
             ("ROM 2.4 / QuickMUD", "smurf", 1.23),

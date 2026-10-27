@@ -62,6 +62,9 @@ class LayoutOptions:
     component_padding: int = 2
     debug_solve_dir: Path | None = None
     max_cuts_per_pass: int = 20
+    intermediate_pass_timeout: int = 15
+    ratio_gap: float = 0.05
+    max_solutions: int | None = None
 
 
 @dataclass(frozen=True)
