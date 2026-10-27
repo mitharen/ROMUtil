@@ -2497,6 +2497,38 @@ class TestStage5Normalization:
                 assert ext.solver_status == SolverStatus.TIMEOUT
                 assert mock_solver.options.get("tmlim") == 15
 
+    def test_solve_and_extract_max_solutions_and_stagnation_options(self) -> None:
+        """max_solutions sets solver option and Pyomo aborted/other status yields FEASIBLE."""
+        child = SolveTreeNode(node_id="c_ms", node_type="leaf", rooms=frozenset({1}))
+        parent = SolveTreeNode(node_id="p_ms", node_type="container", rooms=frozenset(), children=(child,))
+        inv = inventory_cluster(node=parent, child_solutions={"c_ms": NodeSolution("c_ms", {}, ())}, graph=_make_graph([1], []))
+        formulation = formulate_cluster_model(inventory=inv)
+
+        mock_solver = MagicMock()
+        mock_solver.available.return_value = True
+        mock_solver.options = {}
+        mock_results = MagicMock()
+        mock_results.solver.status = PyomoSolverStatus.aborted
+        mock_results.solver.termination_condition = TerminationCondition.other
+        mock_solver.solve.return_value = mock_results
+
+        opts = LayoutOptions(timeout_seconds=20)
+        with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
+            with patch("pyomo.environ.value", side_effect=[1, 2, 3]):
+                ext = solve_and_extract(
+                    formulation=formulation,
+                    solver_name="cbc",
+                    options=opts,
+                    max_solutions=1,
+                    solver_options={"heuristics": "on", "ratioGap": 0.05},
+                )
+                assert ext.solver_status == SolverStatus.FEASIBLE
+                assert ext.raw_child_offsets["c_ms"] == (1, 2, 3)
+                assert mock_solver.options.get("maxSolutions") == 1
+                assert mock_solver.options.get("heuristics") == "on"
+                assert mock_solver.options.get("ratioGap") == 0.05
+                assert mock_solver.options.get("seconds") == 20
+
 
 class TestTypedChildHandlers:
     """Direct unit tests for typed child interface classifiers and handlers."""
