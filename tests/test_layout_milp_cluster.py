@@ -3152,7 +3152,7 @@ class TestTwoPhaseCuttingPlaneBudget:
             patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
             patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
         ):
-            opts = LayoutOptions(intermediate_pass_timeout=15)
+            opts = LayoutOptions(timeout_seconds=15, intermediate_pass_timeout=15)
             solve_cluster_with_cutting_planes(
                 formulation=mock_formulation,
                 node=node,

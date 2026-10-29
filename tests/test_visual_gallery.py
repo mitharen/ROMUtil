@@ -131,12 +131,13 @@ class TestGalleryAssetsGeneration:
     def test_pages_builder_discovery_and_index_generation(self, tmp_path):
         from scripts.build_pages import resolve_candidate_areas, generate_index_html
         candidates = resolve_candidate_areas()
-        assert len(candidates) == 9
+        assert len(candidates) == 10
         candidate_names = {c[1] for c in candidates}
         assert candidate_names == {
             "arachnos",
             "chapel",
             "midgaard",
+            "midgaard_connected",
             "midgaard_metropolitan",
             "midgaard_sewers",
             "school",
@@ -155,10 +156,11 @@ class TestGalleryAssetsGeneration:
 
         # Verify composite showcase cluster
         comp_candidates = [c for c in candidates if c[0] == "ROM 2.4 / Composite"]
-        assert len(comp_candidates) == 2
+        assert len(comp_candidates) == 3
         comp_by_name = {c[1]: c for c in comp_candidates}
         assert "midgaard_metropolitan" in comp_by_name
         assert "midgaard_sewers" in comp_by_name
+        assert "midgaard_connected" in comp_by_name
 
         cat, name, paths, is_dir = comp_by_name["midgaard_metropolitan"][:4]
         assert isinstance(paths, list)
