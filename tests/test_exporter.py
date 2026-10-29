@@ -65,7 +65,7 @@ class TestExporterUnit:
 
         # 1. Verify Top-Level Structure
         assert isinstance(data, dict)
-        assert set(data.keys()) == {"area", "bounds", "rooms"}
+        assert set(data.keys()) == {"area", "bounds", "rooms", "mobiles"}
 
         # 2. Verify Area Meta
         assert data["area"]["name"] == "Test Area"

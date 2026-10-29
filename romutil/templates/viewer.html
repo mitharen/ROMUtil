@@ -642,6 +642,69 @@
       margin-left: 2px;
     }
 
+    /* Mob Overlay Badges */
+    .mob-badge-group {
+      cursor: pointer;
+      pointer-events: all;
+      transition: transform 0.15s ease;
+    }
+    .mob-badge-group:hover {
+      transform: scale(1.25);
+    }
+    .mob-badge-bg {
+      fill: #dc2626;
+      stroke: #ffffff;
+      stroke-width: 1.5;
+      filter: drop-shadow(0 1px 3px rgba(0,0,0,0.5));
+    }
+    .mob-badge-text {
+      font-size: 8.5px;
+      font-weight: 800;
+      fill: #ffffff;
+      text-anchor: middle;
+      dominant-baseline: central;
+      font-family: inherit;
+      user-select: none;
+      pointer-events: none;
+    }
+
+    /* Mob List & Cards */
+    .mob-item-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 6px 10px;
+      background-color: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .mob-item-card:hover {
+      border-color: var(--accent);
+      background-color: var(--bg-card);
+      transform: translateX(2px);
+    }
+    .mob-item-left {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      overflow: hidden;
+    }
+    .mob-item-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-main);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .mob-item-sub {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
     /* Minimap Radar */
     .minimap-container {
       position: absolute;
@@ -754,6 +817,7 @@
           <option value="all">All Floors (Z)</option>
         </select>
         <button id="btn-color-mode" title="Toggle coloring between Floor Z and Zone Area" style="display: none;">Color: Floor</button>
+        <button id="btn-toggle-mobs" class="btn-active" title="Toggle Mob Overlay">Mobs</button>
         <button id="btn-zoom-in" title="Zoom In">+</button>
         <button id="btn-zoom-out" title="Zoom Out">&minus;</button>
         <button id="btn-reset-view" title="Reset View">Reset</button>
@@ -805,6 +869,51 @@
           <div id="incoming-exits-section" style="margin-top: 12px;">
             <strong style="font-size: 0.8rem; color: var(--text-muted);">INCOMING EXITS / ENTRANCES</strong>
             <div class="exit-badge-list" id="card-room-incoming"></div>
+          </div>
+          <div id="room-mobs-section" style="margin-top: 12px; display: none;">
+            <strong style="font-size: 0.8rem; color: var(--text-muted);">SPAWNING MOBS</strong>
+            <div class="mob-item-list" id="card-room-mobs" style="margin-top: 6px; display: flex; flex-direction: column; gap: 6px;"></div>
+          </div>
+        </div>
+
+        <div class="card" id="card-mob-inspector" style="display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h3 id="mob-insp-name">👾 Mob Details</h3>
+            <button id="btn-close-mob-insp" style="padding: 2px 8px; font-size: 0.75rem;">Back to Room</button>
+          </div>
+          <div class="tooltip-meta" id="mob-insp-meta">-</div>
+          <div id="mob-insp-desc" class="room-desc" style="display: none; margin-top: 6px;"></div>
+
+          <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px; font-size: 0.82rem;">
+            <div>
+              <span style="color: var(--text-muted); font-size: 0.72rem; text-transform: uppercase; font-weight: 600;">Core Attributes:</span>
+              <div id="mob-insp-core" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; margin-top: 4px;"></div>
+            </div>
+
+            <div>
+              <span style="color: var(--text-muted); font-size: 0.72rem; text-transform: uppercase; font-weight: 600;">Combat & Defense:</span>
+              <div id="mob-insp-combat" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; margin-top: 4px;"></div>
+            </div>
+
+            <div id="mob-insp-traits-section">
+              <span style="color: var(--text-muted); font-size: 0.72rem; text-transform: uppercase; font-weight: 600;">Traits & Flags:</span>
+              <div id="mob-insp-traits" style="margin-top: 4px; font-size: 0.78rem; word-break: break-all;"></div>
+            </div>
+
+            <div id="mob-insp-special-section" style="display: none;">
+              <span style="color: var(--text-muted); font-size: 0.72rem; text-transform: uppercase; font-weight: 600;">Special Ability:</span>
+              <div id="mob-insp-special" style="margin-top: 3px; font-weight: 600; color: #a855f7;"></div>
+            </div>
+
+            <div id="mob-insp-shop-section" style="display: none;">
+              <span style="color: var(--text-muted); font-size: 0.72rem; text-transform: uppercase; font-weight: 600;">Shopkeeper Information:</span>
+              <div id="mob-insp-shop" style="margin-top: 4px; background: rgba(15, 23, 42, 0.6); padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border-color); font-size: 0.78rem;"></div>
+            </div>
+
+            <div id="mob-insp-equip-section">
+              <span style="color: var(--text-muted); font-size: 0.72rem; text-transform: uppercase; font-weight: 600;">Reset Equipment & Inventory:</span>
+              <div id="mob-insp-equip" class="exit-badge-list" style="margin-top: 4px; display: flex; flex-direction: column; gap: 4px;"></div>
+            </div>
           </div>
         </div>
 
@@ -897,6 +1006,45 @@ __JSON_DATA__
 
       const roomMap = new Map();
       rooms.forEach(r => roomMap.set(r.vnum, r));
+
+      const mobilesMap = new Map();
+      if (mapData.mobiles) {
+        Object.values(mapData.mobiles).forEach(m => mobilesMap.set(m.vnum, m));
+      }
+
+      const WEAR_NAMES = {
+        0: 'Light', 1: 'Left Finger', 2: 'Right Finger', 3: 'Neck 1', 4: 'Neck 2',
+        5: 'Body', 6: 'Head', 7: 'Legs', 8: 'Feet', 9: 'Hands', 10: 'Arms',
+        11: 'Shield', 12: 'About Body', 13: 'Waist', 14: 'Left Wrist', 15: 'Right Wrist',
+        16: 'Wielded', 17: 'Held', 18: 'Floating', 19: 'Secondary'
+      };
+
+      function escapeHtml(str) {
+        if (!str) return '';
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function getAlignmentBadge(align) {
+        const val = parseInt(align, 10) || 0;
+        if (val >= 700) {
+          return '<span class="badge" style="background:#065f46; color:#a7f3d0; border-color:#059669;" title="Holy (' + val + ')">Holy</span>';
+        }
+        if (val >= 350) {
+          return '<span class="badge" style="background:#064e3b; color:#6ee7b7; border-color:#10b981;" title="Good (' + val + ')">Good</span>';
+        }
+        if (val <= -700) {
+          return '<span class="badge" style="background:#7f1d1d; color:#fca5a5; border-color:#dc2626;" title="Fiendish (' + val + ')">Fiendish</span>';
+        }
+        if (val <= -350) {
+          return '<span class="badge" style="background:#831843; color:#fbcfe8; border-color:#be185d;" title="Evil (' + val + ')">Evil</span>';
+        }
+        return '<span class="badge" style="background:#334155; color:#cbd5e1; border-color:#64748b;" title="Neutral (' + val + ')">Neutral</span>';
+      }
 
       // Floor colors by Z
       const floorColors = [
@@ -1259,6 +1407,7 @@ __JSON_DATA__
       let startY = 0;
       let selectedVnum = null;
       let selectedEdge = null;
+      let showMobs = true;
 
       function updateTransform() {
         canvasRoot.setAttribute('transform', 'translate(' + panX + ',' + panY + ') scale(' + zoom + ')');
@@ -1489,6 +1638,54 @@ __JSON_DATA__
         g.appendChild(rect);
         g.appendChild(label);
 
+        // Mob Badge Overlay
+        if (r.mobs && r.mobs.length > 0) {
+          const mobTotalCount = r.mobs.reduce((acc, m) => acc + (m.count || 1), 0);
+          const mobBadgeGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+          mobBadgeGroup.setAttribute('class', 'mob-badge-group');
+          mobBadgeGroup.setAttribute('data-vnum', r.vnum);
+          if (!showMobs) {
+            mobBadgeGroup.style.display = 'none';
+          }
+          const badgeCx = 11;
+          const badgeCy = -11;
+          const badgeR = mobTotalCount > 9 ? 8.5 : 7;
+
+          const badgeCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          badgeCircle.setAttribute('class', 'mob-badge-bg');
+          badgeCircle.setAttribute('cx', badgeCx);
+          badgeCircle.setAttribute('cy', badgeCy);
+          badgeCircle.setAttribute('r', badgeR);
+
+          const badgeText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          badgeText.setAttribute('class', 'mob-badge-text');
+          badgeText.setAttribute('x', badgeCx);
+          badgeText.setAttribute('y', badgeCy);
+          badgeText.textContent = mobTotalCount > 99 ? '99+' : mobTotalCount;
+
+          mobBadgeGroup.appendChild(badgeCircle);
+          mobBadgeGroup.appendChild(badgeText);
+          g.appendChild(mobBadgeGroup);
+
+          mobBadgeGroup.addEventListener('mouseenter', (e) => {
+            e.stopPropagation();
+            showMobBadgeTooltip(r, e);
+          });
+          mobBadgeGroup.addEventListener('mousemove', (e) => {
+            e.stopPropagation();
+            positionTooltip(e);
+          });
+          mobBadgeGroup.addEventListener('mouseleave', (e) => {
+            e.stopPropagation();
+            hideTooltip();
+          });
+          mobBadgeGroup.addEventListener('click', (e) => {
+            if (wasDragging) return;
+            e.stopPropagation();
+            selectRoom(r.vnum);
+          });
+        }
+
         const targetLayer = elevationLayers.get(r.coords.z);
         if (targetLayer) {
           targetLayer.roomsGroup.appendChild(g);
@@ -1542,6 +1739,24 @@ __JSON_DATA__
           html += '<div style="margin-top:4px; color:#fcd34d;">⚠️ ' + WARNING_TOOLTIP + '</div>';
         }
         document.getElementById('tt-exits').innerHTML = html;
+        tooltip.style.display = 'block';
+        positionTooltip(e);
+      }
+
+      function showMobBadgeTooltip(room, e) {
+        document.getElementById('tt-name').textContent = '👾 Spawning Mobs: [' + room.vnum + '] ' + room.name;
+        const mobCount = (room.mobs || []).reduce((acc, m) => acc + (m.count || 1), 0);
+        document.getElementById('tt-meta').textContent = 'Total Mobs: ' + mobCount + ' | Room VNUM: ' + room.vnum;
+
+        const mobLines = (room.mobs || []).map(m => {
+          const mobData = mobilesMap.get(m.vnum) || (mapData.mobiles ? mapData.mobiles[String(m.vnum)] : null);
+          const name = mobData ? (mobData.short_desc || mobData.name) : 'Mob #' + m.vnum;
+          const lvl = mobData ? ' (Lvl ' + mobData.level + ')' : '';
+          const countStr = (m.count && m.count > 1) ? m.count + 'x ' : '';
+          return '<li style="margin-left: 14px;">' + countStr + '<strong>' + escapeHtml(name) + '</strong>' + lvl + '</li>';
+        });
+
+        document.getElementById('tt-exits').innerHTML = '<div style="margin-top:2px;"><ul>' + mobLines.join('') + '</ul></div>';
         tooltip.style.display = 'block';
         positionTooltip(e);
       }
@@ -1610,6 +1825,8 @@ __JSON_DATA__
         }
 
         // Switch sidebar cards
+        const mobCard = document.getElementById('card-mob-inspector');
+        if (mobCard) mobCard.style.display = 'none';
         const roomCard = document.getElementById('room-detail-card');
         if (roomCard) roomCard.style.display = 'none';
 
@@ -1714,7 +1931,9 @@ __JSON_DATA__
           g.classList.remove('connected-neighbor', 'selected-endpoint');
         });
 
-        // Show room detail card, hide edge inspector card
+        // Show room detail card, hide other inspector cards
+        const mobCard = document.getElementById('card-mob-inspector');
+        if (mobCard) mobCard.style.display = 'none';
         const edgeCard = document.getElementById('card-edge-inspector');
         if (edgeCard) edgeCard.style.display = 'none';
         const roomCard = document.getElementById('room-detail-card');
@@ -1850,6 +2069,55 @@ __JSON_DATA__
           incomingSection.style.display = 'block';
         }
 
+        // Spawning Mobs Section
+        const mobsSection = document.getElementById('room-mobs-section');
+        const mobsElem = document.getElementById('card-room-mobs');
+        if (mobsSection && mobsElem) {
+          mobsElem.innerHTML = '';
+          const roomMobs = room.mobs || [];
+          if (roomMobs.length === 0) {
+            mobsSection.style.display = 'none';
+          } else {
+            mobsSection.style.display = 'block';
+            roomMobs.forEach(m => {
+              const mobData = mobilesMap.get(m.vnum) || (mapData.mobiles ? mapData.mobiles[String(m.vnum)] : null);
+              const card = document.createElement('div');
+              card.className = 'mob-item-card';
+
+              const left = document.createElement('div');
+              left.className = 'mob-item-left';
+
+              const title = document.createElement('div');
+              title.className = 'mob-item-title';
+              const countPrefix = (m.count && m.count > 1) ? m.count + 'x ' : '';
+              const shortDesc = mobData ? (mobData.short_desc || mobData.name) : 'Mob #' + m.vnum;
+              title.textContent = countPrefix + shortDesc;
+
+              const sub = document.createElement('div');
+              sub.className = 'mob-item-sub';
+              const lvl = mobData ? 'Lvl ' + mobData.level : 'Lvl ?';
+              const vnumLabel = 'VNUM ' + m.vnum;
+              sub.textContent = lvl + ' | ' + vnumLabel;
+
+              left.appendChild(title);
+              left.appendChild(sub);
+              card.appendChild(left);
+
+              const right = document.createElement('div');
+              right.style.flexShrink = '0';
+              const align = mobData ? (mobData.alignment ?? 0) : 0;
+              right.innerHTML = getAlignmentBadge(align);
+              card.appendChild(right);
+
+              card.addEventListener('click', () => {
+                showMobDetails(m.vnum);
+              });
+
+              mobsElem.appendChild(card);
+            });
+          }
+        }
+
         // If pathfind mode open, prefill
         const pfDst = document.getElementById('pf-dst');
         const pfStart = document.getElementById('pf-start');
@@ -1859,6 +2127,170 @@ __JSON_DATA__
         }
       }
       window.showRoomDetails = showRoomDetails;
+
+      function showMobDetails(mobVnum) {
+        const mobData = mobilesMap.get(mobVnum) || (mapData.mobiles ? mapData.mobiles[String(mobVnum)] : null);
+        if (!mobData) return;
+
+        const roomCard = document.getElementById('room-detail-card');
+        const edgeCard = document.getElementById('card-edge-inspector');
+        const mobCard = document.getElementById('card-mob-inspector');
+
+        if (roomCard) roomCard.style.display = 'none';
+        if (edgeCard) edgeCard.style.display = 'none';
+        if (mobCard) mobCard.style.display = 'block';
+
+        // Title and meta
+        document.getElementById('mob-insp-name').textContent = '👾 [' + mobData.vnum + '] ' + (mobData.short_desc || mobData.name);
+        document.getElementById('mob-insp-meta').textContent = 'Keyword: ' + (mobData.name || '-') + ' | Race: ' + (mobData.race || 'unknown') + ' | Sex: ' + (mobData.sex || 'unknown');
+
+        // Description
+        const descElem = document.getElementById('mob-insp-desc');
+        if (descElem) {
+          const descText = mobData.long_desc || mobData.desc;
+          if (descText && descText.trim()) {
+            descElem.textContent = descText;
+            descElem.style.display = 'block';
+          } else {
+            descElem.style.display = 'none';
+          }
+        }
+
+        // Core attributes
+        const coreElem = document.getElementById('mob-insp-core');
+        if (coreElem) {
+          coreElem.innerHTML = `
+            <div><span style="color:var(--text-muted)">Level:</span> <strong>${mobData.level}</strong></div>
+            <div><span style="color:var(--text-muted)">Sex:</span> <strong>${escapeHtml(mobData.sex || 'neutral')}</strong></div>
+            <div><span style="color:var(--text-muted)">Race:</span> <strong>${escapeHtml(mobData.race || 'none')}</strong></div>
+            <div><span style="color:var(--text-muted)">Wealth:</span> <strong>${mobData.wealth || 0} gold</strong></div>
+            <div style="grid-column: span 2; display: flex; align-items: center; gap: 6px; margin-top: 2px;">
+              <span style="color:var(--text-muted)">Alignment:</span> ${getAlignmentBadge(mobData.alignment)}
+            </div>
+          `;
+        }
+
+        // Combat stats
+        const combatElem = document.getElementById('mob-insp-combat');
+        if (combatElem) {
+          combatElem.innerHTML = `
+            <div><span style="color:var(--text-muted)">Hit Dice:</span> <strong>${escapeHtml(mobData.hit || '-')}</strong></div>
+            <div><span style="color:var(--text-muted)">Damage:</span> <strong>${escapeHtml(mobData.damage || '-')}</strong> <span style="font-size:0.72rem; color:var(--text-muted);">(${escapeHtml(mobData.dam_type || 'hit')})</span></div>
+            <div><span style="color:var(--text-muted)">AC Pierce:</span> <strong>${mobData.ac_pierce ?? 0}</strong></div>
+            <div><span style="color:var(--text-muted)">AC Bash:</span> <strong>${mobData.ac_bash ?? 0}</strong></div>
+            <div><span style="color:var(--text-muted)">AC Slash:</span> <strong>${mobData.ac_slash ?? 0}</strong></div>
+            <div><span style="color:var(--text-muted)">AC Exotic:</span> <strong>${mobData.ac_exotic ?? 0}</strong></div>
+          `;
+        }
+
+        // Traits & Flags
+        const traitsElem = document.getElementById('mob-insp-traits');
+        const traitsSec = document.getElementById('mob-insp-traits-section');
+        if (traitsElem && traitsSec) {
+          const actStr = Array.isArray(mobData.act_flags) ? mobData.act_flags.join(', ') : String(mobData.act_flags || '');
+          const affStr = Array.isArray(mobData.affected_by) ? mobData.affected_by.join(', ') : String(mobData.affected_by || '');
+          let traitsHtml = '';
+          if (actStr) {
+            traitsHtml += '<div><span style="color:var(--text-muted)">Act Flags:</span> <span style="color:var(--accent);">' + escapeHtml(actStr) + '</span></div>';
+          }
+          if (affStr) {
+            traitsHtml += '<div style="margin-top:2px;"><span style="color:var(--text-muted)">Affected By:</span> <span style="color:#f59e0b;">' + escapeHtml(affStr) + '</span></div>';
+          }
+          if (!traitsHtml) {
+            traitsHtml = '<span style="color:var(--text-muted); font-style:italic;">None</span>';
+          }
+          traitsElem.innerHTML = traitsHtml;
+        }
+
+        // Special Ability
+        const specialSec = document.getElementById('mob-insp-special-section');
+        const specialElem = document.getElementById('mob-insp-special');
+        if (specialSec && specialElem) {
+          if (mobData.special) {
+            specialElem.textContent = '⚡ ' + mobData.special;
+            specialSec.style.display = 'block';
+          } else {
+            specialSec.style.display = 'none';
+          }
+        }
+
+        // Shopkeeper Info
+        const shopSec = document.getElementById('mob-insp-shop-section');
+        const shopElem = document.getElementById('mob-insp-shop');
+        if (shopSec && shopElem) {
+          if (mobData.shop) {
+            const sh = mobData.shop;
+            shopElem.innerHTML = `
+              <div style="display: flex; justify-content: space-between;">
+                <span>Profit Buy: <strong>${sh.profit_buy}%</strong></span>
+                <span>Profit Sell: <strong>${sh.profit_sell}%</strong></span>
+              </div>
+              <div style="margin-top: 3px;">Hours: <strong>${sh.open_hour}:00 - ${sh.close_hour}:00</strong></div>
+              <div style="margin-top: 3px;">Buy Types: <strong>${(sh.buy_types || []).filter(t => t !== 0).join(', ') || 'Any'}</strong></div>
+            `;
+            shopSec.style.display = 'block';
+          } else {
+            shopSec.style.display = 'none';
+          }
+        }
+
+        // Equipment & Inventory
+        const equipElem = document.getElementById('mob-insp-equip');
+        if (equipElem) {
+          equipElem.innerHTML = '';
+          const eqList = mobData.equipment || [];
+          if (eqList.length === 0) {
+            equipElem.innerHTML = '<span style="font-size:0.75rem; color:var(--text-muted); font-style:italic;">No equipment or inventory on reset.</span>';
+          } else {
+            eqList.forEach(item => {
+              const row = document.createElement('div');
+              row.className = 'exit-tag';
+              row.style.cursor = 'default';
+              row.style.display = 'flex';
+              row.style.justifyContent = 'space-between';
+              row.style.width = '100%';
+              row.style.padding = '4px 8px';
+
+              let locLabel = 'Inventory';
+              if (typeof item.wear_loc === 'number' && item.wear_loc >= 0) {
+                locLabel = WEAR_NAMES[item.wear_loc] || ('Slot ' + item.wear_loc);
+              } else if (item.wear_loc && item.wear_loc !== 'inventory') {
+                locLabel = String(item.wear_loc);
+              }
+
+              row.innerHTML = `
+                <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:180px;" title="${escapeHtml(item.short_desc)} [${item.vnum}]">
+                  <strong>${escapeHtml(item.short_desc)}</strong>
+                </span>
+                <span class="badge" style="font-size:0.7rem; padding:1px 6px;">${escapeHtml(locLabel)}</span>
+              `;
+              equipElem.appendChild(row);
+            });
+          }
+        }
+      }
+      window.showMobDetails = showMobDetails;
+
+      const btnCloseMobInsp = document.getElementById('btn-close-mob-insp');
+      if (btnCloseMobInsp) {
+        btnCloseMobInsp.addEventListener('click', () => {
+          const mobCard = document.getElementById('card-mob-inspector');
+          const roomCard = document.getElementById('room-detail-card');
+          if (mobCard) mobCard.style.display = 'none';
+          if (roomCard) roomCard.style.display = 'block';
+        });
+      }
+
+      const btnToggleMobs = document.getElementById('btn-toggle-mobs');
+      if (btnToggleMobs) {
+        btnToggleMobs.addEventListener('click', () => {
+          showMobs = !showMobs;
+          btnToggleMobs.classList.toggle('btn-active', showMobs);
+          document.querySelectorAll('.mob-badge-group').forEach(el => {
+            el.style.display = showMobs ? '' : 'none';
+          });
+        });
+      }
 
       function centerOnRoom(vnum) {
         const room = roomMap.get(vnum);
