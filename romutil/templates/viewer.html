@@ -1683,6 +1683,9 @@ __JSON_DATA__
             if (wasDragging) return;
             e.stopPropagation();
             selectRoom(r.vnum);
+            if (r.mobs && r.mobs.length === 1) {
+              showMobDetails(r.mobs[0].vnum);
+            }
           });
         }
 
@@ -2048,7 +2051,7 @@ __JSON_DATA__
         const incomingSection = document.getElementById('incoming-exits-section');
         if (incomingElem && incomingSection) {
           incomingElem.innerHTML = '';
-          const incoming = incomingOneWays.get(vnum) || [];
+          const incoming = incomingOneWays.get(room.vnum) || [];
           if (incoming.length === 0) {
             incomingElem.innerHTML = '<span style="font-size: 0.75rem; color: var(--text-muted); font-style: italic;">No incoming one-way exits</span>';
           } else {
