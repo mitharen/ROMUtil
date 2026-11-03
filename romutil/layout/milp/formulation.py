@@ -254,15 +254,41 @@ class ClusterFormulation:
                 else:
                     model.edge_z.add(dst_z - src_z == 0)
 
-        # Objective function
-        stretch_expr = (
-            sum(
-                10 * (model.L[i] - inventory.active_edges[i].min_length)
+        self._build_objective()
+
+    def _build_objective(self) -> None:
+        """Formulate multi-objective function with convex piecewise stretch and transverse penalties."""
+        inventory = self.inventory
+        model = self.model
+        edge_indices = list(range(len(inventory.active_edges)))
+
+        # 1. Piecewise-linear convex stretch penalties
+        stretch_expr = 0
+        if edge_indices:
+            model.s_stretch_1 = pyo.Var(edge_indices, domain=pyo.NonNegativeReals, bounds=(0, 2))
+            model.s_stretch_2 = pyo.Var(edge_indices, domain=pyo.NonNegativeReals, bounds=(0, 4))
+            model.s_stretch_3 = pyo.Var(edge_indices, domain=pyo.NonNegativeReals, bounds=(0, None))
+            model.stretch_decompose = pyo.ConstraintList()
+
+            for i in edge_indices:
+                min_len = inventory.active_edges[i].min_length
+                model.stretch_decompose.add(
+                    model.L[i] - min_len
+                    == model.s_stretch_1[i] + model.s_stretch_2[i] + model.s_stretch_3[i]
+                )
+
+            stretch_expr = sum(
+                10.0 * model.s_stretch_1[i]
+                + 30.0 * model.s_stretch_2[i]
+                + 100.0 * model.s_stretch_3[i]
                 for i in edge_indices
             )
-            if edge_indices
-            else 0
-        )
+        else:
+            model.s_stretch_1 = pyo.Var([], domain=pyo.NonNegativeReals)
+            model.s_stretch_2 = pyo.Var([], domain=pyo.NonNegativeReals)
+            model.s_stretch_3 = pyo.Var([], domain=pyo.NonNegativeReals)
+
+        # 2. Transverse shear penalty
         transverse_penalty = (
             sum(
                 self.w_transverse * (model.s_transverse_p[k] + model.s_transverse_m[k])
@@ -271,6 +297,7 @@ class ClusterFormulation:
             if hasattr(model, "s_transverse_p") and len(model.s_transverse_p) > 0
             else 0
         )
+
         model.obj = pyo.Objective(
             expr=stretch_expr + transverse_penalty,
             sense=pyo.minimize,

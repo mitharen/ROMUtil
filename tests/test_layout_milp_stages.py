@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+import pyomo.environ as pyo
 from pyomo.opt import SolverStatus as PyomoSolverStatus, TerminationCondition
 
 from romutil.layout.geometry import BoundingBox3D
@@ -1652,6 +1653,56 @@ class TestStage2Formulation:
 
         factory_formulation = formulate_cluster_model(inventory=inv, w_transverse=5678.0)
         assert factory_formulation.w_transverse == 5678.0
+
+    def test_piecewise_linear_convex_stretch_buckets(self) -> None:
+        """Convex piecewise stretch decomposes edge elongation into three progressive linear buckets."""
+        node = SolveTreeNode(node_id="leaf_stretch", node_type="leaf", rooms=frozenset({1, 2}))
+        graph = _make_graph([1, 2], [(1, 2, Direction.east, 1)])
+        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
+        formulation = ClusterFormulation(inventory=inv)
+        model = formulation.model
+
+        assert hasattr(model, "s_stretch_1")
+        assert hasattr(model, "s_stretch_2")
+        assert hasattr(model, "s_stretch_3")
+        assert hasattr(model, "stretch_decompose")
+
+        # 1. Delta L = 0 (min_length = 1, L = 1): all buckets zero
+        model.L[0].fix(1)
+        solve_and_extract(formulation, options=LayoutOptions())
+        assert pyo.value(model.s_stretch_1[0]) == pytest.approx(0.0)
+        assert pyo.value(model.s_stretch_2[0]) == pytest.approx(0.0)
+        assert pyo.value(model.s_stretch_3[0]) == pytest.approx(0.0)
+
+        # 2. Delta L = 2 (L = 3): mild stretch fills Bucket 1 (capacity 2, weight 10)
+        model.L[0].fix(3)
+        solve_and_extract(formulation, options=LayoutOptions())
+        assert pyo.value(model.s_stretch_1[0]) == pytest.approx(2.0)
+        assert pyo.value(model.s_stretch_2[0]) == pytest.approx(0.0)
+        assert pyo.value(model.s_stretch_3[0]) == pytest.approx(0.0)
+
+        # 3. Delta L = 5 (L = 6): spills over into Bucket 2 (capacity 4, weight 30)
+        model.L[0].fix(6)
+        solve_and_extract(formulation, options=LayoutOptions())
+        assert pyo.value(model.s_stretch_1[0]) == pytest.approx(2.0)
+        assert pyo.value(model.s_stretch_2[0]) == pytest.approx(3.0)
+        assert pyo.value(model.s_stretch_3[0]) == pytest.approx(0.0)
+
+        # 4. Delta L = 8 (L = 9): spills over into Bucket 3 (unbounded, weight 100)
+        model.L[0].fix(9)
+        solve_and_extract(formulation, options=LayoutOptions())
+        assert pyo.value(model.s_stretch_1[0]) == pytest.approx(2.0)
+        assert pyo.value(model.s_stretch_2[0]) == pytest.approx(4.0)
+        assert pyo.value(model.s_stretch_3[0]) == pytest.approx(2.0)
+
+    def test_piecewise_stretch_empty_active_edges(self) -> None:
+        """Formulation with no active edges creates empty indexed stretch variables without error."""
+        node = SolveTreeNode(node_id="leaf_no_edges", node_type="leaf", rooms=frozenset({1}))
+        inv = inventory_cluster(node=node, child_solutions={}, graph=_make_graph([1], []))
+        formulation = ClusterFormulation(inventory=inv)
+        assert len(formulation.model.s_stretch_1) == 0
+        assert len(formulation.model.s_stretch_2) == 0
+        assert len(formulation.model.s_stretch_3) == 0
 
 
 class TestStage3Clearance:
