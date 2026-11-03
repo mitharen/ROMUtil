@@ -242,6 +242,14 @@ class WarpSeverer:
                     pair = (min(edge.src, edge.dst), max(edge.src, edge.dst))
                     undirected_edge_map[pair].append(edge)
 
+            # Count active incoming edges by destination and direction to identify
+            # parallel-convergent exits (e.g. multiple distinct rooms entering the same
+            # pit sink or transit room along the same cardinal direction).
+            incoming_counts: dict[tuple[int, int], int] = collections.defaultdict(int)
+            for e in active_edges:
+                if e.dst in graph.rooms:
+                    incoming_counts[(e.dst, e.direction)] += 1
+
             # Calculate node degree in reciprocal physical street network
             bidir_degree: dict[int, int] = collections.defaultdict(int)
             for pair, edges in undirected_edge_map.items():
@@ -308,7 +316,7 @@ class WarpSeverer:
 
                     def chord_score(
                         pair: tuple[int, int],
-                    ) -> tuple[int, int, int, int, int, tuple[int, int]]:
+                    ) -> tuple[int, int, int, int, int, int, int, tuple[int, int]]:
                         u_node, v_node = pair
                         edges = undirected_edge_map.get(pair, [])
                         has_fwd = any(e.src == u_node and e.dst == v_node for e in edges)
@@ -323,10 +331,23 @@ class WarpSeverer:
                         is_bidirectional = (has_fwd and has_bwd) or is_corridor
                         reciprocity_rank = 1 if is_bidirectional else 0
                         min_weight = min((e.weight for e in edges), default=1)
+                        max_parallel = max(
+                            (incoming_counts[(e.dst, e.direction)] for e in edges), default=1
+                        )
+                        parallel_rank = 0 if max_parallel > 1 else 1
                         b_sum = bidir_degree[u_node] + bidir_degree[v_node]
                         deg_sum = g.degree(u_node) + g.degree(v_node)
                         max_deg = max(g.degree(u_node), g.degree(v_node))
-                        return (reciprocity_rank, min_weight, b_sum, deg_sum, max_deg, pair)
+                        return (
+                            reciprocity_rank,
+                            min_weight,
+                            parallel_rank,
+                            -max_parallel,
+                            b_sum,
+                            deg_sum,
+                            max_deg,
+                            pair,
+                        )
 
                     best_pair = min(candidate_pairs, key=chord_score)
                     edges_to_sever = list(undirected_edge_map[best_pair])
