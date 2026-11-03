@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from romutil.layout import (
@@ -9,6 +11,7 @@ from romutil.layout import (
     CorridorSegment,
     GraphSimplifier,
     HallwayCompactor,
+    HierarchicalLayoutSolver,
     LayoutEdge,
     LayoutGraph,
     SimplifiedGraph,
@@ -17,7 +20,8 @@ from romutil.layout import (
     is_euclidean_satisfiable,
 )
 from romutil.models import Direction, Exit, Room
-from romutil.types import LayoutOptions
+from romutil.parser import parse_file
+from romutil.types import LayoutOptions, WorldGraph
 
 
 def _make_room(vnum: int, exits: list[Exit] | None = None) -> Room:
@@ -426,6 +430,72 @@ class TestWarpSeverer:
         # One from loop 1, one from loop 2
         assert any(nodes.issubset({1, 2, 3}) for nodes in severed_nodes)
         assert any(nodes.issubset({10, 11, 12}) for nodes in severed_nodes)
+
+    def test_sever_prefers_parallel_convergent_exits_over_through_path(self) -> None:
+        """WarpSeverer prioritizes severing parallel-convergent one-way exits entering a common sink."""
+        # Collinear through-path: 1 -> 2 (South), 2 -> 3 (South)
+        # Parallel drop exits: 1 -> 99 (West), 2 -> 99 (West), 3 -> 99 (West)
+        # Non-Euclidean cycles are created: [1, 2, 99], [2, 3, 99].
+        # The parallel entries into 99 must be severed instead of through-path edges (1, 2) or (2, 3).
+        rooms = {
+            1: _make_room(1),
+            2: _make_room(2),
+            3: _make_room(3),
+            99: _make_room(99),
+        }
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=2),
+            LayoutEdge(src=2, dst=3, direction=2),
+            LayoutEdge(src=1, dst=99, direction=3),
+            LayoutEdge(src=2, dst=99, direction=3),
+            LayoutEdge(src=3, dst=99, direction=3),
+        ]
+        lg = LayoutGraph(rooms=rooms, edges=edges)
+
+        severer = WarpSeverer()
+        simplified = severer.simplify(lg)
+
+        active_pairs = {(e.src, e.dst) for e in simplified.graph.edges}
+        assert (1, 2) in active_pairs
+        assert (2, 3) in active_pairs
+
+        severed_pairs = {(e.src, e.dst) for e in simplified.severed_chords}
+        assert (1, 99) in severed_pairs or (2, 99) in severed_pairs or (3, 99) in severed_pairs
+        assert len(simplified.severed_chords) == 2
+
+    def test_sewer_area_parallel_convergent_pit_chords(self) -> None:
+        """Verify parallel drop exits into pit sink 7114 are severed, preserving the eastern ledge."""
+        fixtures_dir = Path(__file__).parent / "fixtures" / "areas"
+        area = parse_file(fixtures_dir / "sewer.are")
+        world_graph = WorldGraph.from_area_data(area)
+        layout_graph = LayoutGraph.from_world_graph(world_graph)
+
+        severer = WarpSeverer()
+        simplified = severer.simplify(layout_graph)
+
+        severed_pairs = {(c.src, c.dst) for c in simplified.severed_chords}
+        assert (7117, 7114) in severed_pairs
+        assert (7118, 7114) in severed_pairs
+        assert (7119, 7114) in severed_pairs
+
+        active_pairs = {(e.src, e.dst) for e in simplified.graph.edges}
+        assert (7116, 7117) in active_pairs
+        assert (7117, 7118) in active_pairs
+        assert (7118, 7119) in active_pairs
+        assert (7119, 7120) in active_pairs
+
+        solver = HierarchicalLayoutSolver.production()
+        layout = solver.solve(world_graph, LayoutOptions(timeout_seconds=30))
+
+        ledge_vnums = [7116, 7117, 7118, 7119, 7120]
+        coords = [layout.coordinates[v] for v in ledge_vnums]
+
+        # Strictly collinear along N-S axis (dx = 0, dz = 0) with unit dy = 1 spacing
+        assert coords[0].x in (12, 15)
+        for i in range(len(coords) - 1):
+            assert coords[i + 1].x == coords[i].x
+            assert coords[i + 1].z == coords[i].z
+            assert coords[i].y - coords[i + 1].y == 1
 
 
 class TestChainedSimplifier:
