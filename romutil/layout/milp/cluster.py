@@ -95,7 +95,7 @@ def solve_cluster_with_cutting_planes(
     intermediate_timeout = (
         float(options.intermediate_pass_timeout)
         if options is not None and getattr(options, "intermediate_pass_timeout", None) and options.intermediate_pass_timeout != 15
-        else max(15.0, min(30.0, base_timeout * 0.67))
+        else max(15.0, min(60.0, base_timeout * 0.67))
     )
     ratio_gap = (
         float(options.ratio_gap)
