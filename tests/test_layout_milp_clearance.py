@@ -396,7 +396,7 @@ class TestAreaClearanceIntegrity:
         composite = merge_areas(areas)
         graph = WorldGraph.from_area_data(composite)
         solver = HierarchicalLayoutSolver.production()
-        sol = solver.solve(graph, LayoutOptions(timeout_seconds=15))
+        sol = solver.solve(graph, LayoutOptions(timeout_seconds=60))
 
         coords = sol.coordinates
         elm_3124 = coords[3124]

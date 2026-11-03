@@ -1225,6 +1225,22 @@ class TestStage1Inventory:
         edge_ids = {e.edge_id for e in active}
         assert edge_ids == {"int_1_2", "int_1_3"}
 
+    def test_build_internal_room_edges_deduplicates_bidirectional_pairs(self) -> None:
+        """Stage 1 inventory deduplicates reciprocal internal room edges into a single ActiveEdge."""
+        room_defs = {v: Room(vnum=v, name="", description="", exits=()) for v in [1, 2]}
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=int(Direction.east), weight=1, cut=False),
+            LayoutEdge(src=2, dst=1, direction=int(Direction.west), weight=1, cut=False),
+        ]
+        graph = LayoutGraph(rooms=room_defs, edges=tuple(edges))
+        active = _build_internal_room_edges(
+            graph=graph,
+            rooms=(1, 2),
+        )
+        assert len(active) == 1
+        assert active[0].edge_id == "int_1_2"
+        assert active[0].associated_rooms == frozenset({1, 2})
+
     def test_inventory_cluster_missing_child_solution_and_empty_sub_boxes(self) -> None:
         """Stage 1 inventory assigns empty sub-boxes tuple when child cluster lacks a solution."""
         child_solved = SolveTreeNode(node_id="c_solved", node_type="leaf", rooms=frozenset({1}))

@@ -1298,23 +1298,30 @@ def _build_internal_room_edges(
     if not rooms:
         return active_edges
 
+    seen_pairs: set[frozenset[int]] = set()
     for e in graph.edges:
         if not e.cut and e.src in room_set and e.dst in room_set and e.src != e.dst:
             try:
                 disp = direction_to_displacement(e.direction)
-                active_edges.append(
-                    ActiveEdge(
-                        edge_id=f"int_{e.src}_{e.dst}",
-                        src=e.src,
-                        dst=e.dst,
-                        direction=disp,
-                        min_length=max(1, e.weight),
-                        associated_rooms=frozenset({e.src, e.dst}),
-                        associated_children=frozenset(),
-                    )
-                )
             except ValueError:
                 continue
+
+            pair = frozenset({e.src, e.dst})
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+
+            active_edges.append(
+                ActiveEdge(
+                    edge_id=f"int_{e.src}_{e.dst}",
+                    src=e.src,
+                    dst=e.dst,
+                    direction=disp,
+                    min_length=max(1, e.weight),
+                    associated_rooms=frozenset({e.src, e.dst}),
+                    associated_children=frozenset(),
+                )
+            )
 
     return active_edges
 
