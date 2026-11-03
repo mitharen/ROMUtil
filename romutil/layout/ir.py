@@ -57,6 +57,7 @@ class BridgeCut:
     bridge_edge: tuple[int, int]
     direction: int
     weight: int = 1
+    anchor_vnum: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.bridge_edge, tuple):
@@ -197,10 +198,12 @@ class SolveTreeNode:
         if raw_cut == CutType.BRIDGE or raw_cut == "bridge" or "bridge_edge" in self.metadata:
             edge = self.metadata.get("bridge_edge")
             if edge is not None and len(edge) == 2:
+                raw_anchor = self.metadata.get("anchor_vnum")
                 return BridgeCut(
                     bridge_edge=(int(edge[0]), int(edge[1])),
                     direction=int(self.metadata.get("direction", 0)),
                     weight=int(self.metadata.get("weight", 1)),
+                    anchor_vnum=int(raw_anchor) if raw_anchor is not None else None,
                 )
         return None
 
@@ -261,7 +264,7 @@ class NodeSolution:
 
     @property
     def bounding_box(self) -> BoundingBox3D | None:
-        """Compute the minimal enclosing 3D bounding box over sub-boxes, local coordinates, or metadata."""
+        """Compute the minimal enclosing 3D bounding box over sub-boxes or constituent coordinates."""
         if self.sub_boxes:
             return BoundingBox3D(
                 min_x=min(b.min_x for b in self.sub_boxes),
@@ -271,8 +274,9 @@ class NodeSolution:
                 min_z=min(b.min_z for b in self.sub_boxes),
                 max_z=max(b.max_z for b in self.sub_boxes),
             )
-        if "bounding_box" in self.metadata and isinstance(self.metadata["bounding_box"], BoundingBox3D):
-            return self.metadata["bounding_box"]
+        all_coords = self.metadata.get("all_room_coordinates")
+        if all_coords:
+            return BoundingBox3D.from_coordinates(all_coords.values())
         if self.local_coordinates:
             return BoundingBox3D.from_coordinates(self.local_coordinates.values())
         return None

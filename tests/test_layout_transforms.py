@@ -2190,6 +2190,30 @@ class TestUnifiedHierarchicalPipeline:
         assert isinstance(child.cut_contract, ArticulationPointCut)
         assert child.cut_contract.anchor_vnum == 3
 
+    def test_block_cut_decomposition_pass_bridge_cut(self) -> None:
+        # Triangle 1-2-3 connected to room 4 via unique bridge edge 3 -> 4
+        rooms = {v: _make_room(v) for v in (1, 2, 3, 4)}
+        edges = [
+            LayoutEdge(src=1, dst=2, direction=Direction.north, cut=False),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, cut=False),
+            LayoutEdge(src=3, dst=1, direction=Direction.south, cut=False),
+            LayoutEdge(src=3, dst=4, direction=Direction.east, cut=False),
+        ]
+        graph = LayoutGraph(rooms=rooms, edges=tuple(edges))
+        seed = SolveTree.seed(graph)
+        result = BlockCutDecompositionPass().apply(seed)
+        assert len(result.components) == 1
+        root = result.root
+        assert root.node_type == TreeNodeType.BLOCK
+        assert len(root.children) == 1
+        child = root.children[0]
+        assert child.metadata.get("cut_type") == CutType.BRIDGE
+        assert child.metadata.get("anchor_vnum") == 3
+        assert isinstance(child.cut_contract, BridgeCut)
+        assert child.cut_contract.bridge_edge == (3, 4)
+        assert child.cut_contract.direction == int(Direction.east)
+        assert child.cut_contract.anchor_vnum == 3
+
     def test_spqr_decomposition_pass_empty(self) -> None:
         graph = LayoutGraph(rooms={}, edges=())
         seed = SolveTree.seed(graph)

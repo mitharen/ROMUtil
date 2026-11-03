@@ -243,9 +243,12 @@ class TestBlockCutTreeOneCuts:
         assert bridge_node.node_type == "block"
         assert bridge_node.rooms == frozenset({4})
         assert bridge_node.metadata == {
-            "cut_type": "articulation_point",
+            "cut_type": CutType.BRIDGE,
             "anchor_vnum": 3,
-            "cut_contract": ArticulationPointCut(anchor_vnum=3),
+            "cut_contract": BridgeCut(bridge_edge=(3, 4), direction=0, weight=1, anchor_vnum=3),
+            "bridge_edge": (3, 4),
+            "direction": 0,
+            "weight": 1,
         }
         assert len(bridge_node.children) == 1
 

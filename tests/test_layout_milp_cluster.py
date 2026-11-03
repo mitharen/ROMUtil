@@ -2513,7 +2513,7 @@ class TestSplitPairBoundaryPortAlignment:
             "sp_child": NodeSolution(
                 "sp_child",
                 {1: Coord3D(0, 0, 0), 2: Coord3D(3, 0, 0), 5: Coord3D(1, 1, 0)},
-                (BoundingBox3D(0, 3, 0, 1, 0, 0),),
+                (BoundingBox3D(1, 1, 1, 1, 0, 0),),
             ),
             "gw_child": NodeSolution(
                 "gw_child",
@@ -2698,7 +2698,7 @@ class TestSplitPairBoundaryPortAlignment:
         child_sol = NodeSolution(
             node_id="s_child",
             local_coordinates={1: Coord3D(0, 0, 0), 4: Coord3D(0, 2, 0), 2: Coord3D(1, 2, 0)},
-            sub_boxes=(BoundingBox3D(0, 1, 0, 2, 0, 0),),
+            sub_boxes=(BoundingBox3D(0, 0, 2, 2, 0, 0),),
         )
         graph = _make_graph(
             rooms=[1, 2, 3, 4],

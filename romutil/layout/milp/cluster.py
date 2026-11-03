@@ -200,6 +200,10 @@ def solve_cluster_with_cutting_planes(
 
         new_cuts = formulation.clearance_builder.inject_clearance_cuts(hard_violations)
         if new_cuts == 0:
+            if extraction.solver_status == SolverStatus.TIMEOUT and remaining_budget > pass_timeout:
+                intermediate_timeout = remaining_budget
+                cuts_injected = True
+                continue
             raise LayoutSolverError(
                 f"MILP solver encountered unresolvable geometric collisions for cluster '{node.node_id}'."
             )
@@ -330,6 +334,7 @@ def solve_cluster(
             child_solutions=child_solutions,
             child_sub_boxes=inventory.child_sub_boxes,
             active_edges=inventory.active_edges,
+            graph=graph,
         )
     except LayoutSolverError:
         raise

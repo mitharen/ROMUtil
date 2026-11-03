@@ -56,6 +56,7 @@ def normalize_cluster_solution(
     child_solutions: Mapping[str, NodeSolution],
     child_sub_boxes: Mapping[str, Sequence[BoundingBox3D]] | None = None,
     active_edges: Sequence[ActiveEdge] | None = None,
+    graph: Any | None = None,
 ) -> NodeSolution:
     """Normalize solved room coordinates and child offsets to origin (0, 0, 0).
 
@@ -72,6 +73,7 @@ def normalize_cluster_solution(
         child_solutions: Mapping of child node IDs to already-solved NodeSolutions.
         child_sub_boxes: Optional mapping of child node IDs to derived keep-out sub-boxes.
         active_edges: Optional active edges of the cluster to identify expanded corridor paths.
+        graph: Optional layout graph containing corridor route metadata.
 
     Returns:
         Immutable NodeSolution containing normalized coordinates, sub-boxes, and metadata.
@@ -124,6 +126,29 @@ def normalize_cluster_solution(
             for u, pt in c_sol.metadata["all_room_coordinates"].items():
                 all_room_coords[u] = Coord3D(pt.x + c_off.x, pt.y + c_off.y, pt.z + c_off.z)
 
+    if graph is not None:
+        from romutil.layout.simplification.hallways import expand_corridor_coordinates
+
+        for e in getattr(graph, "edges", ()):
+            corr = (
+                e.metadata.get("corridor")
+                if hasattr(e, "metadata") and e.metadata
+                else None
+            )
+            if corr and corr.intermediate_vnums:
+                if (
+                    corr.start_vnum in all_room_coords
+                    and corr.end_vnum in all_room_coords
+                ):
+                    exp = expand_corridor_coordinates(
+                        corr,
+                        all_room_coords[corr.start_vnum],
+                        all_room_coords[corr.end_vnum],
+                    )
+                    for vnum, pt in exp.items():
+                        if vnum not in all_room_coords:
+                            all_room_coords[vnum] = pt
+
     from romutil.layout.milp.inventory import get_child_boundary_ports
 
     b_ports = get_child_boundary_ports(node)
@@ -135,31 +160,39 @@ def normalize_cluster_solution(
         all_parent_and_port_coords = dict(norm_parent_coords)
         all_parent_and_port_coords.update(norm_port_coords)
         for ae in active_edges:
-            if (
-                isinstance(ae.src, int)
-                and isinstance(ae.dst, int)
-                and ae.src in all_parent_and_port_coords
-                and ae.dst in all_parent_and_port_coords
+            if ae.edge_id.startswith("sp_"):
+                continue
+            src_vnum = ae.src[1] if isinstance(ae.src, tuple) else ae.src
+            dst_vnum = ae.dst[1] if isinstance(ae.dst, tuple) else ae.dst
+            is_boundary_edge = (
+                src_vnum in norm_port_coords or dst_vnum in norm_port_coords
+            )
+            if is_boundary_edge:
+                continue
+
+            p1 = (
+                all_parent_and_port_coords.get(src_vnum)
+                if isinstance(ae.src, int)
+                else all_room_coords.get(src_vnum)
+            )
+            p2 = (
+                all_parent_and_port_coords.get(dst_vnum)
+                if isinstance(ae.dst, int)
+                else all_room_coords.get(dst_vnum)
+            )
+            if p1 is None or p2 is None:
+                continue
+
+            dx, dy, dz = ae.direction
+            dist = abs(p2.x - p1.x) + abs(p2.y - p1.y) + abs(p2.z - p1.z)
+            if dist > 1 and (
+                p2.x - p1.x == dist * dx
+                and p2.y - p1.y == dist * dy
+                and p2.z - p1.z == dist * dz
             ):
-                is_boundary_edge = (
-                    ae.src in norm_port_coords or ae.dst in norm_port_coords
-                )
-                if is_boundary_edge:
-                    from romutil.layout.ir import CutType
-
-                    if node.cut_type == CutType.SPLIT_PAIR:
-                        continue
-                    if ae.min_length <= 1:
-                        continue
-
-                p1 = all_parent_and_port_coords[ae.src]
-                p2 = all_parent_and_port_coords[ae.dst]
-                dist = abs(p2.x - p1.x) + abs(p2.y - p1.y) + abs(p2.z - p1.z)
-                if dist > 1:
-                    dx, dy, dz = ae.direction
-                    for t in range(1, dist):
-                        corr_pt = Coord3D(p1.x + t * dx, p1.y + t * dy, p1.z + t * dz)
-                        all_room_coords[f"corridor_{ae.src}_{ae.dst}_{t}"] = corr_pt
+                for t in range(1, dist):
+                    corr_pt = Coord3D(p1.x + t * dx, p1.y + t * dy, p1.z + t * dz)
+                    all_room_coords[f"corridor_{src_vnum}_{dst_vnum}_{t}"] = corr_pt
 
     # Collect sub-boxes per child
     sub_boxes_map: dict[str, tuple[BoundingBox3D, ...]] = {}
@@ -180,20 +213,6 @@ def normalize_cluster_solution(
         "all_room_coordinates": all_room_coords,
         "port_coordinates": norm_port_coords,
     }
-    if all_room_coords:
-        metadata["bounding_box"] = BoundingBox3D.from_coordinates(all_room_coords.values())
-    elif all_pts:
-        max_x = max(p[0] for p in all_pts)
-        max_y = max(p[1] for p in all_pts)
-        max_z = max(p[2] for p in all_pts)
-        metadata["bounding_box"] = BoundingBox3D(
-            min_x=0,
-            max_x=max_x - min_x,
-            min_y=0,
-            max_y=max_y - min_y,
-            min_z=0,
-            max_z=max_z - min_z,
-        )
 
     return NodeSolution(
         node_id=node.node_id,
@@ -206,12 +225,8 @@ def normalize_cluster_solution(
 
 def _get_solution_bounding_box(solution: NodeSolution | None) -> BoundingBox3D:
     """Retrieve or compute the 3D bounding box for a child node solution."""
-    if solution is not None:
-        if solution.bounding_box is not None:
-            return solution.bounding_box
-        all_coords = solution.metadata.get("all_room_coordinates")
-        if all_coords:
-            return BoundingBox3D.from_coordinates(all_coords.values())
+    if solution is not None and solution.bounding_box is not None:
+        return solution.bounding_box
     return BoundingBox3D(min_x=0, max_x=0, min_y=0, max_y=0, min_z=0, max_z=0)
 
 
@@ -226,7 +241,7 @@ def pack_world_root_components(
     primary component at origin (0, 0, 0) and sequentially aligns subsequent components
     along the positive X-axis separated by component padding. Bypasses disjunctive MILP
     formulations for unconstrained components, aggregating descendant room coordinates
-    and calculating the composite bounding box directly.
+    directly.
 
     Args:
         node: SolveTreeNode representing the world root container.
@@ -270,18 +285,12 @@ def pack_world_root_components(
                 for u, pt in c_sol.metadata["all_room_coordinates"].items():
                     all_room_coords[u] = Coord3D(pt.x + offset.x, pt.y + offset.y, pt.z + offset.z)
 
-    if all_room_coords:
-        bounding_box = BoundingBox3D.from_coordinates(all_room_coords.values())
-    else:
-        bounding_box = BoundingBox3D(min_x=0, max_x=0, min_y=0, max_y=0, min_z=0, max_z=0)
-
     metadata: dict[str, Any] = {
         "child_offsets": child_offsets,
         "status": SolverStatus.OPTIMAL,
         "child_sub_boxes": sub_boxes_map,
         "all_room_coordinates": all_room_coords,
         "port_coordinates": {},
-        "bounding_box": bounding_box,
     }
 
     return NodeSolution(

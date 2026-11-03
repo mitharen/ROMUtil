@@ -992,6 +992,12 @@ class TransverseSNodeSplitPass:
             existing_ports = set(child_processed.metadata.get("boundary_ports", ()))
             severed_ports_a.update(existing_ports & subtree_rooms_a)
             severed_ports_b.update(existing_ports & subtree_rooms_b)
+            for c in children_a:
+                if "boundary_ports" in c.metadata:
+                    severed_ports_a.update(c.metadata["boundary_ports"])
+            for c in children_b:
+                if "boundary_ports" in c.metadata:
+                    severed_ports_b.update(c.metadata["boundary_ports"])
             if u_entry_external is not None:
                 severed_ports_a.add(u_entry_external)
             if v_entry_external is not None:
@@ -1004,9 +1010,19 @@ class TransverseSNodeSplitPass:
             if ports_b:
                 meta_b["boundary_ports"] = ports_b
 
-            if severed_edges:
-                meta_a["severed_bridge_edges"] = severed_edges
-                meta_b["severed_bridge_edges"] = severed_edges
+            severed_edges_a = set(severed_edges)
+            for c in children_a:
+                if "severed_bridge_edges" in c.metadata:
+                    severed_edges_a.update(c.metadata["severed_bridge_edges"])
+            severed_edges_b = set(severed_edges)
+            for c in children_b:
+                if "severed_bridge_edges" in c.metadata:
+                    severed_edges_b.update(c.metadata["severed_bridge_edges"])
+
+            if severed_edges_a:
+                meta_a["severed_bridge_edges"] = tuple(sorted(severed_edges_a))
+            if severed_edges_b:
+                meta_b["severed_bridge_edges"] = tuple(sorted(severed_edges_b))
 
             node_a = SolveTreeNode(
                 node_id=f"{child_processed.node_id}_a",
@@ -1025,8 +1041,10 @@ class TransverseSNodeSplitPass:
 
             if owning_node is node:
                 final_children.extend([node_a, node_b])
-                if severed_edges:
-                    split_severed.update(severed_edges)
+                if severed_edges_a:
+                    split_severed.update(severed_edges_a)
+                if severed_edges_b:
+                    split_severed.update(severed_edges_b)
             else:
                 still_bubbling.extend([node_a, node_b])
 
