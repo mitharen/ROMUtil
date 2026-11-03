@@ -19,6 +19,7 @@ from romutil.layout.ir import (
     TreeNodeType,
 )
 from romutil.layout.protocols import TreeBuilder
+from romutil.models import Direction
 from romutil.types import LayoutOptions
 
 
@@ -61,7 +62,7 @@ class BlockCutDecompositionPass(TreeTransformationPass):
         comp_nodes: list[SolveTreeNode] = []
         for idx, comp_nodes_set in enumerate(sorted_components):
             comp_subgraph = graph.subgraph(comp_nodes_set).copy()
-            comp_node = self._build_component_tree(comp_subgraph, idx)
+            comp_node = self._build_component_tree(comp_subgraph, idx, target_graph)
             comp_nodes.append(comp_node)
 
         if len(comp_nodes) == 1:
@@ -79,6 +80,7 @@ class BlockCutDecompositionPass(TreeTransformationPass):
         self,
         comp_graph: nx.Graph,
         comp_idx: int,
+        target_graph: LayoutGraph | None = None,
     ) -> SolveTreeNode:
         """Build a solve tree node for a single connected component."""
         raw_blocks = list(nx.biconnected_components(comp_graph))
@@ -126,6 +128,7 @@ class BlockCutDecompositionPass(TreeTransformationPass):
         for u in block_children:
             block_children[u].sort(key=lambda item: (item[1], block_key(blocks[item[0]])))
 
+        effective_graph = target_graph or self._graph
         counter = 0
 
         def build_node(b_idx: int, anchor: int | None) -> SolveTreeNode:
@@ -139,11 +142,71 @@ class BlockCutDecompositionPass(TreeTransformationPass):
             ]
             meta: dict[str, Any] = {}
             if anchor is not None:
-                meta = {
-                    "cut_type": CutType.ARTICULATION_POINT,
-                    "anchor_vnum": anchor,
-                    "cut_contract": ArticulationPointCut(anchor_vnum=anchor),
+                block_child_rooms = frozenset(blocks[b_idx]) - {anchor}
+                candidate_edges = []
+                if effective_graph is not None:
+                    for e in effective_graph.edges:
+                        if e.cut:
+                            continue
+                        if (e.src == anchor and e.dst in block_child_rooms) or (
+                            e.dst == anchor and e.src in block_child_rooms
+                        ):
+                            candidate_edges.append(e)
+
+                connecting_rooms = {
+                    e.dst if e.src == anchor else e.src for e in candidate_edges
                 }
+
+                contract: ArticulationPointCut | BridgeCut
+                cut_type: CutType
+                bridge_edge: tuple[int, int] | None = None
+                edge_dir: int | None = None
+                edge_weight: int | None = None
+
+                if len(connecting_rooms) == 1:
+                    v = next(iter(connecting_rooms))
+                    fwd_edges = [e for e in candidate_edges if e.src == anchor and e.dst == v]
+                    rev_edges = [e for e in candidate_edges if e.src == v and e.dst == anchor]
+
+                    effective_dirs: set[int] = set()
+                    weights: list[int] = []
+                    for e in fwd_edges:
+                        effective_dirs.add(int(e.direction))
+                        weights.append(e.weight)
+                    for e in rev_edges:
+                        try:
+                            effective_dirs.add(int(Direction(e.direction).invert()))
+                            weights.append(e.weight)
+                        except (ValueError, KeyError):
+                            pass
+
+                    if len(effective_dirs) == 1:
+                        edge_dir = next(iter(effective_dirs))
+                        edge_weight = max(weights) if weights else 1
+                        bridge_edge = (anchor, v)
+                        contract = BridgeCut(
+                            bridge_edge=bridge_edge,
+                            direction=edge_dir,
+                            weight=edge_weight,
+                            anchor_vnum=anchor,
+                        )
+                        cut_type = CutType.BRIDGE
+                    else:
+                        contract = ArticulationPointCut(anchor_vnum=anchor)
+                        cut_type = CutType.ARTICULATION_POINT
+                else:
+                    contract = ArticulationPointCut(anchor_vnum=anchor)
+                    cut_type = CutType.ARTICULATION_POINT
+
+                meta = {
+                    "cut_type": cut_type,
+                    "anchor_vnum": anchor,
+                    "cut_contract": contract,
+                }
+                if bridge_edge is not None and edge_dir is not None and edge_weight is not None:
+                    meta["bridge_edge"] = bridge_edge
+                    meta["direction"] = edge_dir
+                    meta["weight"] = edge_weight
 
             node_rooms = frozenset(blocks[b_idx]) - {anchor} if anchor is not None else blocks[b_idx]
 

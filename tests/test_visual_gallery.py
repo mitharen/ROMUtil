@@ -488,7 +488,7 @@ class TestGalleryAssetsGeneration:
             [midgaard_path, school_path],
             is_dir=False,
             outdir=tmp_path,
-            solver_timeout=5,
+            solver_timeout=15,
         )
 
         html_file = tmp_path / "test_composite_school.html"

@@ -377,7 +377,8 @@ class TestWorldRootComponentPacking:
         assert all_rooms[100] == Coord3D(21, 0, 0)
 
         assert sol.metadata["status"] == SolverStatus.OPTIMAL
-        bbox = sol.metadata["bounding_box"]
+        bbox = sol.bounding_box
+        assert bbox is not None
         assert bbox.min_x == 0
         assert bbox.max_x == 21
 
@@ -395,12 +396,12 @@ class TestWorldRootComponentPacking:
         sol_0 = NodeSolution(
             node_id="comp_0",
             local_coordinates={1: Coord3D(0, 0, 0)},
-            metadata={"bounding_box": BoundingBox3D(0, 4, 0, 0, 0, 0)},
+            sub_boxes=(BoundingBox3D(0, 4, 0, 0, 0, 0),),
         )
         sol_1 = NodeSolution(
             node_id="comp_1",
             local_coordinates={2: Coord3D(0, 0, 0)},
-            metadata={"bounding_box": BoundingBox3D(0, 2, 0, 0, 0, 0)},
+            sub_boxes=(BoundingBox3D(0, 2, 0, 0, 0, 0),),
         )
 
         sol = solve_cluster(
@@ -485,10 +486,10 @@ class TestWorldRootComponentPacking:
         assert sol.metadata["child_offsets"]["comp_0"] == Coord3D(0, 0, 0)
         assert sol.metadata["child_offsets"]["comp_1"] == Coord3D(2, 0, 0)
         assert sol.metadata["all_room_coordinates"] == {}
-        assert sol.metadata["bounding_box"] == BoundingBox3D(0, 0, 0, 0, 0, 0)
+        assert sol.bounding_box is None
 
     def test_pack_world_root_all_room_coordinates_fallback(self) -> None:
-        """Derives child bounding box from metadata all_room_coordinates when bounding_box is None."""
+        """Derives child bounding box from metadata all_room_coordinates when sub_boxes is empty."""
         ch0 = SolveTreeNode(node_id="comp_0", node_type=TreeNodeType.BLOCK, rooms=frozenset({1}))
         root = SolveTreeNode(
             node_id="world_root",
@@ -503,14 +504,14 @@ class TestWorldRootComponentPacking:
             metadata={"all_room_coordinates": {1: Coord3D(3, 4, 0)}},
         )
         sol = pack_world_root_components(node=root, child_solutions={"comp_0": sol_0})
-        assert sol.metadata["bounding_box"] == BoundingBox3D(3, 3, 4, 4, 0, 0)
+        assert sol.bounding_box == BoundingBox3D(3, 3, 4, 4, 0, 0)
 
     def test_midgaard_sewers_composite_disconnected_rooms_placement(self) -> None:
         """Verify Midgaard + Sewers composite layout places rooms 3032, 7130, 7301 adjacent without void."""
         from romutil.layout.engine import HierarchicalLayoutSolver
         from romutil.models import merge_areas
         from romutil.parser import parse_file
-        from romutil.types import WorldGraph
+        from romutil.types import LayoutOptions, WorldGraph
 
         midgaard_path = Path("tests/fixtures/areas/midgaard.are")
         sewer_path = Path("tests/fixtures/areas/sewer.are")
@@ -523,7 +524,7 @@ class TestWorldRootComponentPacking:
         world_graph = WorldGraph.from_area_data(composite)
 
         solver = HierarchicalLayoutSolver.production()
-        layout = solver.solve(world_graph)
+        layout = solver.solve(world_graph, LayoutOptions(timeout_seconds=30))
 
         disconnected = [3032, 7130, 7301]
         for r in disconnected:

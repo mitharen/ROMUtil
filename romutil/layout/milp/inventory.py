@@ -296,13 +296,6 @@ def derive_child_sub_boxes(
             return ()
         return decompose_into_orthogonal_sub_boxes(interior_cells)
 
-    # Fallback to coarse bounding box if child was not solved with child_sub_boxes metadata
-    if "child_sub_boxes" not in child_solution.metadata and child.children:
-        bbox = child_solution.bounding_box
-        if bbox is not None:
-            return (bbox,)
-        return ()
-
     # For composite children, derive occupied cells from constituent interior rooms and translated child sub-boxes
     occupied_cells: set[Coord3D] = set()
     if "all_room_coordinates" in child_solution.metadata:
@@ -517,11 +510,6 @@ class SplitPairHandler:
                             equated_children.add(
                                 frozenset({split_children[idx1].node_id, split_children[idx2].node_id})
                             )
-
-        for _p_anchor, c_list in room_anchored_children.items():
-            for idx1 in range(len(c_list)):
-                for idx2 in range(idx1 + 1, len(c_list)):
-                    equated_children.add(frozenset({c_list[idx1], c_list[idx2]}))
 
         return (
             child_alignments,
@@ -841,9 +829,14 @@ class GatewayCutHandler:
             if isinstance(contract, ArticulationPointCut):
                 ports.add(contract.anchor_vnum)
             elif (
-                child.cut_type == CutType.ARTICULATION_POINT
-                or child.metadata.get("cut_type") in (CutType.ARTICULATION_POINT, "articulation_point")
-                or "anchor_vnum" in child.metadata
+                contract is None
+                and child.cut_type != CutType.BRIDGE
+                and (
+                    child.cut_type == CutType.ARTICULATION_POINT
+                    or child.metadata.get("cut_type")
+                    in (CutType.ARTICULATION_POINT, "articulation_point")
+                    or "anchor_vnum" in child.metadata
+                )
             ):
                 raw_a = child.metadata.get("anchor_vnum")
                 if raw_a is not None:
@@ -867,11 +860,6 @@ class GatewayCutHandler:
                         )
                         gateway_anchors[child.node_id].add(a)
                         new_aligned.add(child.node_id)
-                        for other_cid in room_anchored_children.get(a, []):
-                            if other_cid != child.node_id:
-                                equated.add(frozenset({other_cid, child.node_id}))
-                        if child.node_id not in room_anchored_children.setdefault(a, []):
-                            room_anchored_children[a].append(child.node_id)
 
         return active_edges, gateway_anchors, new_aligned, equated
 
@@ -1057,6 +1045,16 @@ class InterChildBridgeHandler:
         current_aligned = set(aligned_children)
         seen_bridges: set[frozenset[tuple[str, int]]] = set()
 
+        # Collect designated severed corridor bridge edges from node and child metadata
+        severed_bridge_edges: set[frozenset[int]] = set()
+        if "severed_bridge_edges" in self.node.metadata:
+            for edge in self.node.metadata["severed_bridge_edges"]:
+                severed_bridge_edges.add(frozenset(edge))
+        for child in self.children:
+            if "severed_bridge_edges" in child.metadata:
+                for edge in child.metadata["severed_bridge_edges"]:
+                    severed_bridge_edges.add(frozenset(edge))
+
         # Build map of available interface coordinates for each child (excluding parent rooms)
         parent_rooms = set(self.node.rooms)
         child_coords: dict[str, dict[int, Coord3D]] = {}
@@ -1072,10 +1070,15 @@ class InterChildBridgeHandler:
                 coords.update(c_sol.metadata["port_coordinates"])
             coords.update(c_sol.local_coordinates)
             if "all_room_coordinates" in c_sol.metadata:
+                all_rc = c_sol.metadata["all_room_coordinates"]
                 b_ports = get_child_boundary_ports(child)
                 for p in b_ports:
-                    if p in c_sol.metadata["all_room_coordinates"]:
-                        coords[p] = c_sol.metadata["all_room_coordinates"][p]
+                    if p in all_rc:
+                        coords[p] = all_rc[p]
+                for edge in severed_bridge_edges:
+                    for endpoint in edge:
+                        if endpoint in all_rc:
+                            coords[endpoint] = all_rc[endpoint]
             child_coords[cid] = {r: pt for r, pt in coords.items() if r not in parent_rooms}
 
         # 1. 1-cut BridgeCut contracts between sibling children
@@ -1137,28 +1140,20 @@ class InterChildBridgeHandler:
                             except ValueError:
                                 pass
 
-        # Collect designated severed corridor bridge edges from node and child metadata
-        severed_bridge_edges: set[frozenset[int]] = set()
-        if "severed_bridge_edges" in self.node.metadata:
-            for edge in self.node.metadata["severed_bridge_edges"]:
-                severed_bridge_edges.add(frozenset(edge))
-        for child in self.children:
-            if "severed_bridge_edges" in child.metadata:
-                for edge in child.metadata["severed_bridge_edges"]:
-                    severed_bridge_edges.add(frozenset(edge))
-
         room_to_children: dict[int, list[str]] = {}
         for cid, coords in child_coords.items():
             for r in coords:
                 room_to_children.setdefault(r, []).append(cid)
 
         # 2. Designated severed corridor bridges from TransverseSNodeSplitPass
+        seen_severed_pairs: set[frozenset[int]] = set()
         if severed_bridge_edges:
             for edge in self.graph.edges:
                 if edge.cut:
                     continue
                 u, v = edge.src, edge.dst
-                if frozenset({u, v}) not in severed_bridge_edges:
+                edge_pair = frozenset({u, v})
+                if edge_pair not in severed_bridge_edges or edge_pair in seen_severed_pairs:
                     continue
                 if u in parent_rooms or v in parent_rooms:
                     continue
@@ -1179,6 +1174,7 @@ class InterChildBridgeHandler:
                         if bridge_key in seen_bridges:
                             continue
                         seen_bridges.add(bridge_key)
+                        seen_severed_pairs.add(edge_pair)
 
                         active_edges.append(
                             ActiveEdge(

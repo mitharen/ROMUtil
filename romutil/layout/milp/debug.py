@@ -95,19 +95,7 @@ def _get_child_bounding_box(
     c_sol = inventory.child_solutions.get(child_id)
     if not c_sol:
         return None
-    if c_sol.bounding_box is not None:
-        return c_sol.bounding_box
-    if c_sol.local_coordinates:
-        coords = list(c_sol.local_coordinates.values())
-        return BoundingBox3D(
-            min_x=min(c.x for c in coords),
-            max_x=max(c.x for c in coords),
-            min_y=min(c.y for c in coords),
-            max_y=max(c.y for c in coords),
-            min_z=min(c.z for c in coords),
-            max_z=max(c.z for c in coords),
-        )
-    return None
+    return c_sol.bounding_box
 
 
 def render_cluster_solve_svg(

@@ -104,15 +104,12 @@ class ClearanceConstraintBuilder:
         child_solutions = self.formulation.inventory.child_solutions
         child_sub_boxes = self.formulation.inventory.child_sub_boxes
 
-        equated = self.formulation.inventory.equated_children
         child_pairs: list[tuple[tuple[str, int], tuple[str, int]]] = []
         for i in range(len(children)):
             for j in range(i + 1, len(children)):
                 c1 = children[i]
                 c2 = children[j]
                 if c1.node_id == c2.node_id:
-                    continue
-                if frozenset({c1.node_id, c2.node_id}) in equated:
                     continue
                 sol1 = child_solutions.get(c1.node_id)
                 sol2 = child_solutions.get(c2.node_id)
@@ -230,25 +227,6 @@ class ClearanceConstraintBuilder:
                     sb = child_sub_boxes.get(s_id, ())
                     if not s_sol or not sb:
                         continue
-                    is_connected_to_child = (
-                        s_id in ae.associated_children
-                        or (isinstance(ae.src, tuple) and ae.src[0] == s_id)
-                        or (isinstance(ae.dst, tuple) and ae.dst[0] == s_id)
-                        or (
-                            isinstance(ae.src, int)
-                            and ae.src in s_sol.local_coordinates
-                        )
-                        or (
-                            isinstance(ae.dst, int)
-                            and ae.dst in s_sol.local_coordinates
-                        )
-                    )
-                    is_pole_edge = (
-                        isinstance(s_child.cut_contract, SplitPairCut)
-                        and {ae.src, ae.dst} == set(s_child.cut_contract.poles)
-                    )
-                    if is_connected_to_child or is_pole_edge:
-                        continue
 
                     for k in range(len(sb)):
                         pair = (i, (s_id, k))
@@ -342,6 +320,15 @@ class ClearanceConstraintBuilder:
 
         for ch in node.children:
             _collect_subtree(ch)
+
+        for e in getattr(graph, "edges", ()):
+            corr = (
+                e.metadata.get("corridor")
+                if hasattr(e, "metadata") and e.metadata
+                else None
+            )
+            if corr and (corr.start_vnum in sub_rooms and corr.end_vnum in sub_rooms):
+                sub_rooms.update(corr.intermediate_vnums)
 
         active_dirs: dict[int, set[tuple[int, int, int]]] = collections.defaultdict(set)
         for ae in self.formulation.inventory.active_edges:
@@ -705,21 +692,18 @@ def detect_cluster_collisions(
                             item_a=u,
                             item_b=(cid, k),
                             description=(
-                                f"Room {u} at {u_coord} penetrates child '{cid}' sub-box {k} "
+                                f"Room {u} at {u_coord} overlaps child '{cid}' sub-box {k} "
                                 f"bounds ({min_x}..{max_x}, {min_y}..{max_y}, {min_z}..{max_z})."
                             ),
                         )
                     )
 
     # Category 3: Child-Child Collisions
-    equated = inventory.equated_children
     for i in range(len(children)):
         for j in range(i + 1, len(children)):
             c1 = children[i]
             c2 = children[j]
             if c1.node_id == c2.node_id:
-                continue
-            if frozenset({c1.node_id, c2.node_id}) in equated:
                 continue
             sol1 = child_solutions.get(c1.node_id)
             sol2 = child_solutions.get(c2.node_id)
@@ -788,7 +772,7 @@ def detect_cluster_collisions(
                         item_a=i,
                         item_b=w,
                         description=(
-                            f"Corridor '{ae.edge_id}' interior penetrates parent room {w} at {w_coord}."
+                            f"Corridor '{ae.edge_id}' interior overlaps parent room {w} at {w_coord}."
                         ),
                     )
                 )
@@ -840,36 +824,10 @@ def detect_cluster_collisions(
             if not s_sol or not sb or s_id not in extraction.raw_child_offsets:
                 continue
 
-            if (
-                isinstance(s_child.cut_contract, SplitPairCut)
-                and {ae.src, ae.dst} == set(s_child.cut_contract.poles)
-            ):
-                continue
-
-            is_connected_to_child = (
-                s_id in ae.associated_children
-                or (isinstance(ae.src, tuple) and ae.src[0] == s_id)
-                or (isinstance(ae.dst, tuple) and ae.dst[0] == s_id)
-                or (isinstance(ae.src, int) and ae.src in s_sol.local_coordinates)
-                or (isinstance(ae.dst, int) and ae.dst in s_sol.local_coordinates)
-            )
-
             for k in range(len(sb)):
                 box = _extract_child_sub_box_bounds(
                     (s_id, k), extraction, inventory
                 )
-                if is_connected_to_child:
-                    if (
-                        box[0] <= p1[0] <= box[1]
-                        and box[2] <= p1[1] <= box[3]
-                        and box[4] <= p1[2] <= box[5]
-                    ) or (
-                        box[0] <= p2[0] <= box[1]
-                        and box[2] <= p2[1] <= box[3]
-                        and box[4] <= p2[2] <= box[5]
-                    ):
-                        continue
-
                 if (
                     max(c_min_x, box[0]) <= min(c_max_x, box[1])
                     and max(c_min_y, box[2]) <= min(c_max_y, box[3])
@@ -954,6 +912,15 @@ def detect_cluster_collisions(
 
         for ch in node.children:
             _collect_subtree(ch)
+
+        for e in getattr(graph, "edges", ()):
+            corr = (
+                e.metadata.get("corridor")
+                if hasattr(e, "metadata") and e.metadata
+                else None
+            )
+            if corr and (corr.start_vnum in sub_rooms and corr.end_vnum in sub_rooms):
+                sub_rooms.update(corr.intermediate_vnums)
 
         active_dirs: dict[int, set[tuple[int, int, int]]] = collections.defaultdict(set)
         for ae in active_edges:

@@ -33,10 +33,15 @@ class TestSewerAreaIntegration:
         assert layout.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
         assert len(layout.coordinates) == 177
 
-        # Verify high spatial separation (at least 170 distinct locations for 177 rooms)
+        # Verify 100% distinct room coordinates across all 177 rooms in sewer.are
         coords_list = list(layout.coordinates.values())
         unique_coords = set(coords_list)
-        assert len(unique_coords) >= 170
+        assert len(unique_coords) == 177
+
+        # Verify specific collision-prone cut blocks resolve cleanly without overlaps
+        assert layout.coordinates[7219] != layout.coordinates[7231]
+        assert layout.coordinates[7217] != layout.coordinates[7230]
+        assert layout.coordinates[7218] != layout.coordinates[7229]
 
         # Verify coordinate normalization to the non-negative quadrant
         for c in coords_list:

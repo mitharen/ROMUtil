@@ -169,12 +169,11 @@ def test_get_child_bounding_box():
     inventory = _create_simple_cluster_inventory()
     assert _get_child_bounding_box("missing", inventory) is None
 
-    # Child with explicit bounding_box
+    # Child with sub_boxes
     sol_bbox = NodeSolution(
         node_id="c_box",
         local_coordinates={},
-        sub_boxes=(),
-        metadata={"bounding_box": BoundingBox3D(0, 2, 0, 3, 0, 0)},
+        sub_boxes=(BoundingBox3D(0, 2, 0, 3, 0, 0),),
     )
     inv_bbox = _create_simple_cluster_inventory(child_solutions={"c_box": sol_bbox})
     bbox1 = _get_child_bounding_box("c_box", inv_bbox)
@@ -398,8 +397,7 @@ def test_render_cluster_solve_svg_3d_elevations(tmp_path: Path):
     child_sol = NodeSolution(
         node_id="child_tower",
         local_coordinates={301: Coord3D(0, 0, 0)},
-        sub_boxes=(),
-        metadata={"bounding_box": BoundingBox3D(0, 1, 0, 1, 0, 2)},
+        sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 2),),
     )
 
     inventory = _create_simple_cluster_inventory(

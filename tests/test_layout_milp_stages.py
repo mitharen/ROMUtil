@@ -309,7 +309,7 @@ class TestStage1Inventory:
         assert sum(b.volume() for b in boxes) == 3
 
     def test_derive_child_sub_boxes_composite(self) -> None:
-        """Composite child computes enclosing bounding box over interior cells."""
+        """Composite child computes orthogonal keep-out sub-boxes over interior cells."""
         grandchild = SolveTreeNode(node_id="gc", node_type="leaf", rooms=frozenset({10}))
         child = SolveTreeNode(
             node_id="comp",
@@ -322,7 +322,7 @@ class TestStage1Inventory:
             local_coordinates={1: Coord3D(0, 0, 0)},
             metadata={
                 "child_offsets": {"gc": Coord3D(5, 0, 0)},
-                "bounding_box": BoundingBox3D(0, 5, 0, 0, 0, 0),
+                "all_room_coordinates": {1: Coord3D(0, 0, 0), 10: Coord3D(5, 0, 0)},
             },
         )
         boxes = derive_child_sub_boxes(
@@ -330,9 +330,9 @@ class TestStage1Inventory:
             child_solution=child_sol,
             boundary_ports=frozenset(),
         )
-        assert len(boxes) == 1
+        assert len(boxes) == 2
         assert boxes[0].min_x == 0
-        assert boxes[0].max_x == 5
+        assert boxes[1].max_x == 5
 
     def test_derive_child_sub_boxes_composite_recursive_cavity_carving(self) -> None:
         """Composite child aggregates constituent rooms and child sub-boxes, preserving concavities."""
@@ -669,13 +669,6 @@ class TestStage1Inventory:
         sol_comp_no_bbox = NodeSolution(node_id="comp_no_boxes", local_coordinates={})
         assert derive_child_sub_boxes(comp_child, sol_comp_no_bbox) == ()
 
-        sol_comp_with_bbox = NodeSolution(
-            node_id="comp_no_boxes",
-            local_coordinates={},
-            metadata={"bounding_box": BoundingBox3D(0, 2, 0, 1, 0, 0)},
-        )
-        assert derive_child_sub_boxes(comp_child, sol_comp_with_bbox) == (BoundingBox3D(0, 2, 0, 1, 0, 0),)
-
         block_child = SolveTreeNode(
             node_id="block_child",
             node_type=TreeNodeType.BLOCK,
@@ -688,13 +681,6 @@ class TestStage1Inventory:
             metadata={"child_sub_boxes": {}},
         )
         assert derive_child_sub_boxes(block_child, sol_block_no_bbox) == ()
-
-        sol_block_with_bbox = NodeSolution(
-            node_id="block_child",
-            local_coordinates={},
-            metadata={"child_sub_boxes": {}, "bounding_box": BoundingBox3D(0, 1, 0, 0, 0, 0)},
-        )
-        assert derive_child_sub_boxes(block_child, sol_block_with_bbox) == (BoundingBox3D(0, 1, 0, 0, 0, 0),)
 
         gc1 = SolveTreeNode(node_id="gc1", node_type="leaf", rooms=frozenset({10}))
         gc2 = SolveTreeNode(node_id="gc2", node_type="leaf", rooms=frozenset({20}))
@@ -723,15 +709,6 @@ class TestStage1Inventory:
             rooms=frozenset({1}),
             children=(gc1,),
         )
-        sol_empty_cells_with_bbox = NodeSolution(
-            node_id="comp_empty",
-            local_coordinates={},
-            metadata={"child_sub_boxes": {}, "bounding_box": BoundingBox3D(0, 1, 0, 0, 0, 0)},
-        )
-        assert derive_child_sub_boxes(
-            comp_empty_cells, sol_empty_cells_with_bbox, boundary_ports=frozenset({1})
-        ) == (BoundingBox3D(0, 1, 0, 0, 0, 0),)
-
         sol_empty_cells_no_bbox = NodeSolution(
             node_id="comp_empty",
             local_coordinates={},
@@ -1147,7 +1124,7 @@ class TestStage1Inventory:
         assert len(art_edges) >= 1
 
         res = handler.process(aligned_children=None, room_anchored_children=None)
-        assert frozenset({"c_art1", "c_art2"}) in res.equated_children
+        assert frozenset({"c_art1", "c_art2"}) not in res.equated_children
         edge_ids = {e.edge_id for e in res.active_edges}
         assert "gw_c_graph_rev_60_1" in edge_ids
 
@@ -2698,7 +2675,7 @@ class TestTypedChildHandlers:
         handler = GatewayCutHandler(node=parent, child_solutions=sols, graph=graph)
         res = handler.process()
 
-        assert frozenset({"c_art1", "c_art2"}) in res.equated_children
+        assert frozenset({"c_art1", "c_art2"}) not in res.equated_children
         gw_edge_ids = {e.edge_id for e in res.active_edges}
         assert "art_port_c_art1_1" in gw_edge_ids
         assert "art_port_c_art2_1" in gw_edge_ids
