@@ -50,6 +50,27 @@ def compute_adaptive_cluster_timeout(
     return max(base_timeout, int(base_timeout * max(1.0, n_entities / 20.0)))
 
 
+def _has_populated_warmstart_coordinates(formulation: ClusterFormulation) -> bool:
+    """Verify that model coordinate and edge length variables have populated values."""
+    model = getattr(formulation, "model", None)
+    if model is None:
+        return False
+    var_names = ("x", "y", "z", "cx", "cy", "cz", "L")
+    for name in var_names:
+        if not hasattr(model, name):
+            continue
+        var_component = getattr(model, name)
+        if not hasattr(var_component, "values") or not callable(var_component.values):
+            continue
+        try:
+            for var_data in var_component.values():
+                if getattr(var_data, "value", None) is None:
+                    return False
+        except (TypeError, AttributeError):
+            continue
+    return True
+
+
 def solve_cluster_with_cutting_planes(
     formulation: ClusterFormulation,
     node: SolveTreeNode,
@@ -65,9 +86,10 @@ def solve_cluster_with_cutting_planes(
     1. Intermediate passes: Uses tight per-pass timeout limits and optional early incumbent
        termination (max_solutions) with heuristics to quickly obtain integer-feasible coordinates,
        allowing collision detection to identify geometric overlaps and inject clearance cuts.
+       Warm-starts from previous pass coordinates to accelerate branch-and-bound.
     2. Final convergence pass: Once all collisions are resolved (zero violations detected),
-       runs a final optimization pass without early solution limits using the remaining
-       cluster budget to tighten edge lengths and spring penalties with stagnation guards.
+       runs a final optimization pass warm-started from the feasible incumbent without early
+       solution limits using the remaining cluster budget to tighten edge lengths and spring penalties.
 
     Aggregate cluster budget is tracked monotonically across all iterations to prevent
     per-pass timeout resets from multiplying the total cluster runtime across iterations.
@@ -121,10 +143,12 @@ def solve_cluster_with_cutting_planes(
             if solver_name == "cbc":
                 solver_opts["heuristics"] = "on"
                 solver_opts["ratioGap"] = ratio_gap
+            use_warmstart = _has_populated_warmstart_coordinates(formulation)
         else:
             pass_timeout = max(1, int(round(remaining_budget)))
             pass_max_sol = None
             solver_opts = {}
+            use_warmstart = False
 
         pass_options = (
             replace(options, timeout_seconds=pass_timeout)
@@ -138,6 +162,7 @@ def solve_cluster_with_cutting_planes(
             options=pass_options,
             max_solutions=pass_max_sol,
             solver_options=solver_opts if solver_opts else None,
+            warmstart=use_warmstart,
         )
 
         violations = detect_cluster_collisions(
@@ -171,6 +196,7 @@ def solve_cluster_with_cutting_planes(
                         final_solver_options["heuristics"] = "on"
                         final_solver_options["ratioGap"] = ratio_gap
 
+                    final_warmstart = _has_populated_warmstart_coordinates(formulation)
                     try:
                         final_extraction = solve_and_extract(
                             formulation=formulation,
@@ -178,6 +204,7 @@ def solve_cluster_with_cutting_planes(
                             options=final_options,
                             max_solutions=None,
                             solver_options=final_solver_options,
+                            warmstart=final_warmstart,
                         )
                         final_violations = detect_cluster_collisions(
                             formulation=formulation,
@@ -200,7 +227,7 @@ def solve_cluster_with_cutting_planes(
 
         new_cuts = formulation.clearance_builder.inject_clearance_cuts(hard_violations)
         if new_cuts == 0:
-            if extraction.solver_status == SolverStatus.TIMEOUT and remaining_budget > pass_timeout:
+            if remaining_budget > pass_timeout:
                 intermediate_timeout = remaining_budget
                 cuts_injected = True
                 continue

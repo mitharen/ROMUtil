@@ -3218,16 +3218,142 @@ class TestTwoPhaseCuttingPlaneBudget:
             )
             assert ext.solver_status == SolverStatus.OPTIMAL
             assert len(solve_calls) == 3
-            # Call 0: initial pass, max_solutions is None
+            # Call 0: initial pass, max_solutions is None, warmstart is False
             assert solve_calls[0].get("max_solutions") is None
-            # Call 1: intermediate pass with cuts injected, max_solutions is 1
+            assert solve_calls[0].get("warmstart") is False
+            # Call 1: intermediate pass with cuts injected, max_solutions is 1, warmstart is True
             assert solve_calls[1].get("max_solutions") == 1
             assert solve_calls[1].get("solver_options", {}).get("heuristics") == "on"
             assert solve_calls[1].get("solver_options", {}).get("ratioGap") == 0.08
-            # Call 2: final convergence pass, max_solutions is None
+            assert solve_calls[1].get("warmstart") is True
+            # Call 2: final convergence pass, max_solutions is None, warmstart is True
             assert solve_calls[2].get("max_solutions") is None
             assert solve_calls[2].get("solver_options", {}).get("heuristics") == "on"
             assert solve_calls[2].get("solver_options", {}).get("ratioGap") == 0.08
+            assert solve_calls[2].get("warmstart") is True
+
+    def test_cutting_plane_warmstart_fallback_when_coordinates_unpopulated(self) -> None:
+        """When intermediate pass variables have unpopulated (None) values, warmstart falls back to False."""
+        from romutil.layout.milp.clearance import ClearanceViolation
+        from romutil.layout.milp.cluster import _has_populated_warmstart_coordinates, solve_cluster_with_cutting_planes
+        from romutil.layout.milp.solver import SolvedClusterExtraction
+
+        node = SolveTreeNode(node_id="fallback_node", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2}))
+        mock_formulation = MagicMock()
+        mock_formulation.clearance_builder.inject_clearance_cuts.return_value = 1
+
+        # Simulate unpopulated variable on model
+        unpopulated_var = MagicMock()
+        unpopulated_var.values.return_value = [MagicMock(value=None)]
+        mock_formulation.model.x = unpopulated_var
+
+        assert _has_populated_warmstart_coordinates(mock_formulation) is False
+
+        solve_calls: list[dict[str, Any]] = []
+
+        def mock_solve(*args, **kwargs):
+            solve_calls.append(kwargs)
+            return SolvedClusterExtraction(
+                raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0)},
+                raw_child_offsets={},
+                solver_status=SolverStatus.OPTIMAL,
+            )
+
+        detect_count = 0
+
+        def mock_detect(*args, **kwargs):
+            nonlocal detect_count
+            detect_count += 1
+            if detect_count == 1:
+                return [ClearanceViolation(category="parent_room", item_a=1, item_b=2)]
+            return []
+
+        with (
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            solve_cluster_with_cutting_planes(
+                formulation=mock_formulation,
+                node=node,
+                options=LayoutOptions(),
+            )
+            assert len(solve_calls) == 2
+            # Pass 0: initial pass, warmstart is False
+            assert solve_calls[0].get("warmstart") is False
+            # Pass 1: cuts injected, but variables unpopulated -> warmstart falls back to False
+            assert solve_calls[1].get("warmstart") is False
+
+    def test_cutting_plane_intermediate_timeout_capped_sensibly(self) -> None:
+        """Default intermediate timeout scales with base_timeout but is capped at 60 seconds."""
+        from romutil.layout.milp.clearance import ClearanceViolation
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+        from romutil.layout.milp.solver import SolvedClusterExtraction
+
+        node = SolveTreeNode(node_id="timeout_node", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2}))
+        mock_formulation = MagicMock()
+        mock_formulation.clearance_builder.inject_clearance_cuts.return_value = 1
+
+        pass_timeouts: list[int] = []
+
+        def mock_solve(*args, **kwargs):
+            opts = kwargs.get("options")
+            if opts:
+                pass_timeouts.append(opts.timeout_seconds)
+            return SolvedClusterExtraction(
+                raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0)},
+                raw_child_offsets={},
+                solver_status=SolverStatus.OPTIMAL,
+            )
+
+        detect_count = 0
+
+        def mock_detect(*args, **kwargs):
+            nonlocal detect_count
+            detect_count += 1
+            if detect_count == 1:
+                return [ClearanceViolation(category="parent_room", item_a=1, item_b=2)]
+            return []
+
+        # With a large base timeout of 120s and default intermediate_pass_timeout (15s):
+        # max(15.0, min(60.0, 120 * 0.67)) = 60s
+        opts = LayoutOptions(timeout_seconds=120)
+        with (
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            solve_cluster_with_cutting_planes(
+                formulation=mock_formulation,
+                node=node,
+                options=opts,
+                total_cluster_budget=200.0,
+            )
+            assert len(pass_timeouts) == 2
+            assert pass_timeouts[0] == 200
+            assert pass_timeouts[1] == 60
+
+    def test_has_populated_warmstart_coordinates_branches(self) -> None:
+        """Verify _has_populated_warmstart_coordinates across edge cases and branches."""
+        from romutil.layout.milp.cluster import _has_populated_warmstart_coordinates
+
+        # Branch 1: formulation with no model or None model
+        assert _has_populated_warmstart_coordinates(MagicMock(model=None)) is False
+
+        # Branch 2: formulation with model lacking certain var names
+        mock_form_missing = MagicMock()
+        del mock_form_missing.model.cx
+        assert _has_populated_warmstart_coordinates(mock_form_missing) is True
+
+        # Branch 3: var_component without callable values()
+        mock_form_non_callable = MagicMock()
+        mock_form_non_callable.model.x = "non_callable_var"
+        assert _has_populated_warmstart_coordinates(mock_form_non_callable) is True
+
+        # Branch 4: iteration raising TypeError/AttributeError
+        mock_form_exc = MagicMock()
+        mock_var = MagicMock()
+        mock_var.values.side_effect = TypeError("Uniterable")
+        mock_form_exc.model.x = mock_var
+        assert _has_populated_warmstart_coordinates(mock_form_exc) is True
 
     def test_cutting_plane_loop_unresolvable_collisions_raises_error(self) -> None:
         """When clearance builder cannot inject any more cuts, LayoutSolverError is raised."""
