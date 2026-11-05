@@ -22,12 +22,43 @@ class SolvedClusterExtraction:
     raw_port_coords: Mapping[int, tuple[int, int, int]] = field(default_factory=dict)
 
 
+def _is_valid_solver_status(results: Any) -> bool:
+    """Check if Pyomo solver results represent an optimal, feasible, or bounded timeout state."""
+    if results is None or not hasattr(results, "solver"):
+        return False
+    return bool(
+        (
+            results.solver.status == PyomoSolverStatus.ok
+            and results.solver.termination_condition
+            in (
+                TerminationCondition.optimal,
+                TerminationCondition.feasible,
+            )
+        )
+        or (
+            results.solver.termination_condition
+            in (
+                TerminationCondition.maxTimeLimit,
+                TerminationCondition.intermediateNonInteger,
+                TerminationCondition.other,
+            )
+            and results.solver.status
+            in (
+                PyomoSolverStatus.ok,
+                PyomoSolverStatus.aborted,
+                PyomoSolverStatus.warning,
+            )
+        )
+    )
+
+
 def solve_and_extract(
     formulation: ClusterFormulation,
     solver_name: str = "cbc",
     options: LayoutOptions | None = None,
     max_solutions: int | None = None,
     solver_options: Mapping[str, Any] | None = None,
+    warmstart: bool = False,
 ) -> SolvedClusterExtraction:
     """Invoke the MILP solver and extract raw coordinates and child offsets.
 
@@ -42,6 +73,9 @@ def solve_and_extract(
             termination (e.g. 1 for intermediate cutting-plane passes).
         solver_options: Optional mapping of solver-specific configuration options passed
             directly to the solver.
+        warmstart: Whether to use warm-start initialization with current variable values.
+            Only solvers that support warm-starting (e.g. CBC) will utilize this option;
+            solvers without native warm-start support fall back to standard solve.
 
     Returns:
         SolvedClusterExtraction containing raw coordinates and child offsets.
@@ -77,33 +111,27 @@ def solve_and_extract(
         for opt_key, opt_val in solver_options.items():
             solver.options[opt_key] = opt_val
 
-    results = solver.solve(formulation.model, tee=False)
-
-    valid_status = (
-        (
-            results.solver.status == PyomoSolverStatus.ok
-            and results.solver.termination_condition
-            in (
-                TerminationCondition.optimal,
-                TerminationCondition.feasible,
-            )
-        )
+    supports_warmstart = (
+        solver_name == "cbc"
         or (
-            results.solver.termination_condition
-            in (
-                TerminationCondition.maxTimeLimit,
-                TerminationCondition.intermediateNonInteger,
-                TerminationCondition.other,
-            )
-            and results.solver.status
-            in (
-                PyomoSolverStatus.ok,
-                PyomoSolverStatus.aborted,
-                PyomoSolverStatus.warning,
-            )
+            hasattr(solver, "warm_start_capable")
+            and callable(solver.warm_start_capable)
+            and solver.warm_start_capable()
         )
     )
-    if not valid_status:
+
+    results = None
+    if warmstart and supports_warmstart:
+        try:
+            results = solver.solve(formulation.model, warmstart=True, tee=False)
+            if not _is_valid_solver_status(results):
+                results = solver.solve(formulation.model, tee=False)
+        except Exception:
+            results = solver.solve(formulation.model, tee=False)
+    else:
+        results = solver.solve(formulation.model, tee=False)
+
+    if not _is_valid_solver_status(results):
         raise LayoutSolverError(
             f"MILP solver returned non-optimal status: {results.solver.status}, "
             f"termination condition: {results.solver.termination_condition} for cluster '{node.node_id}'."
@@ -147,9 +175,20 @@ def solve_and_extract(
     solver_status = SolverStatus.FEASIBLE
     if results.solver.termination_condition == TerminationCondition.optimal:
         solver_status = SolverStatus.OPTIMAL
-    elif results.solver.termination_condition in (
-        TerminationCondition.maxTimeLimit,
-        TerminationCondition.intermediateNonInteger,
+    elif (
+        results.solver.termination_condition
+        in (
+            TerminationCondition.maxTimeLimit,
+            TerminationCondition.intermediateNonInteger,
+        )
+        or (
+            results.solver.status in (PyomoSolverStatus.aborted, PyomoSolverStatus.warning)
+            and max_solutions is None
+        )
+        or (
+            results.solver.termination_condition == TerminationCondition.other
+            and max_solutions is None
+        )
     ):
         solver_status = SolverStatus.TIMEOUT
 
