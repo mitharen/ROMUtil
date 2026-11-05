@@ -9,8 +9,10 @@ from romutil.layout.milp.clearance import (
     detect_cluster_collisions,
 )
 from romutil.layout.milp.cluster import (
+    ClusterSolvePhase,
     HierarchicalClusterSolver,
     solve_cluster,
+    solve_cluster_with_cutting_planes,
 )
 from romutil.layout.milp.constraints import add_disjunctive_box_separation
 from romutil.layout.milp.debug import (
@@ -48,6 +50,7 @@ __all__ = [
     "ClearanceViolation",
     "ClusterFormulation",
     "ClusterInventory",
+    "ClusterSolvePhase",
     "GatewayCutHandler",
     "HierarchicalClusterSolver",
     "HierarchicalTreeSolver",
@@ -68,4 +71,5 @@ __all__ = [
     "render_debug_solve_tree_index",
     "solve_and_extract",
     "solve_cluster",
+    "solve_cluster_with_cutting_planes",
 ]
