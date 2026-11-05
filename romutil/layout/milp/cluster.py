@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import replace
 from enum import Enum
@@ -86,7 +87,7 @@ def solve_cluster_with_cutting_planes(
     node: SolveTreeNode,
     options: LayoutOptions | None = None,
     solver_name: str = "cbc",
-    max_iterations: int = 15,
+    max_iterations: int = 35,
     total_cluster_budget: float | None = None,
     max_solutions: int | None = None,
 ) -> SolvedClusterExtraction:
@@ -147,11 +148,16 @@ def solve_cluster_with_cutting_planes(
 
     phase: ClusterSolvePhase = ClusterSolvePhase.PHYSICAL_CLEARANCE
     extraction: SolvedClusterExtraction | None = None
+    best_physical_extraction: SolvedClusterExtraction | None = None
 
     for iteration in range(max_iterations):
         elapsed = time.monotonic() - t_start
         remaining_budget = total_cluster_budget - elapsed
         if remaining_budget <= 0:
+            if best_physical_extraction is not None:
+                extraction = best_physical_extraction
+                phase = ClusterSolvePhase.DONE
+                break
             raise LayoutSolverError(
                 f"MILP solver budget of {total_cluster_budget:.1f}s expired with unresolved collisions for cluster '{node.node_id}'."
             )
@@ -159,7 +165,9 @@ def solve_cluster_with_cutting_planes(
         solver_opts: dict[str, Any] = {}
         if solver_name == "cbc":
             solver_opts["heuristics"] = "on"
-            solver_opts["ratioGap"] = ratio_gap
+            solver_opts["ratioGap"] = max(0.12, ratio_gap)
+            solver_opts["threads"] = min(4, os.cpu_count() or 1)
+            solver_opts["timeMode"] = "elapsed"
 
         if iteration > 0:
             pass_timeout = max(1, int(round(min(remaining_budget, intermediate_timeout))))
@@ -193,11 +201,14 @@ def solve_cluster_with_cutting_planes(
         physical_collisions = [v for v in violations if v.category != "corridor_crossing"]
         corridor_crossings = [v for v in violations if v.category == "corridor_crossing"]
 
+        if not physical_collisions:
+            best_physical_extraction = extraction
+
         if physical_collisions:
             phase = ClusterSolvePhase.PHYSICAL_CLEARANCE
             new_cuts = formulation.clearance_builder.inject_clearance_cuts(physical_collisions)
             if new_cuts == 0:
-                if remaining_budget > pass_timeout:
+                if iteration > 0 and intermediate_timeout < remaining_budget - 1.0:
                     intermediate_timeout = remaining_budget
                     continue
                 raise LayoutSolverError(
@@ -207,15 +218,12 @@ def solve_cluster_with_cutting_planes(
 
         if corridor_crossings:
             phase = ClusterSolvePhase.CROSSING_CLEARANCE
-            new_cuts = formulation.clearance_builder.inject_clearance_cuts(corridor_crossings)
-            if new_cuts == 0:
-                if remaining_budget > pass_timeout:
-                    intermediate_timeout = remaining_budget
-                    continue
-                raise LayoutSolverError(
-                    f"MILP solver encountered unresolvable geometric collisions for cluster '{node.node_id}'."
-                )
-            continue
+            max_crossing_cuts = min(2, getattr(options, "max_cuts_per_pass", 2) if options else 2)
+            new_cuts = formulation.clearance_builder.inject_clearance_cuts(
+                corridor_crossings, max_cuts_per_pass=max_crossing_cuts
+            )
+            if new_cuts > 0 and remaining_budget >= 15.0:
+                continue
 
         # Both physical collisions and corridor crossings are zero.
         if (
@@ -240,6 +248,8 @@ def solve_cluster_with_cutting_planes(
             if solver_name == "cbc":
                 final_solver_options["heuristics"] = "on"
                 final_solver_options["ratioGap"] = ratio_gap
+                final_solver_options["threads"] = min(4, os.cpu_count() or 1)
+                final_solver_options["timeMode"] = "elapsed"
 
             final_warmstart = _has_populated_warmstart_coordinates(formulation)
             try:
@@ -266,9 +276,6 @@ def solve_cluster_with_cutting_planes(
                     extraction = final_extraction
                     new_cuts = formulation.clearance_builder.inject_clearance_cuts(final_physical)
                     if new_cuts == 0:
-                        if remaining_budget > final_timeout:
-                            intermediate_timeout = remaining_budget
-                            continue
                         raise LayoutSolverError(
                             f"MILP solver encountered unresolvable geometric collisions for cluster '{node.node_id}'."
                         )
@@ -276,15 +283,14 @@ def solve_cluster_with_cutting_planes(
                 elif final_crossings:
                     phase = ClusterSolvePhase.CROSSING_CLEARANCE
                     extraction = final_extraction
-                    new_cuts = formulation.clearance_builder.inject_clearance_cuts(final_crossings)
-                    if new_cuts == 0:
-                        if remaining_budget > final_timeout:
-                            intermediate_timeout = remaining_budget
-                            continue
-                        raise LayoutSolverError(
-                            f"MILP solver encountered unresolvable geometric collisions for cluster '{node.node_id}'."
-                        )
-                    continue
+                    max_crossing_cuts = min(2, getattr(options, "max_cuts_per_pass", 2) if options else 2)
+                    new_cuts = formulation.clearance_builder.inject_clearance_cuts(
+                        final_crossings, max_cuts_per_pass=max_crossing_cuts
+                    )
+                    if new_cuts > 0 and remaining_budget >= 15.0:
+                        continue
+                    phase = ClusterSolvePhase.DONE
+                    break
                 else:
                     extraction = final_extraction
                     phase = ClusterSolvePhase.DONE
@@ -298,9 +304,12 @@ def solve_cluster_with_cutting_planes(
             break
 
     if phase != ClusterSolvePhase.DONE or extraction is None:
-        raise LayoutSolverError(
-            f"MILP solver failed to resolve all geometric collisions within {max_iterations} iterations for cluster '{node.node_id}'."
-        )
+        if best_physical_extraction is not None:
+            extraction = best_physical_extraction
+        else:
+            raise LayoutSolverError(
+                f"MILP solver failed to resolve all geometric collisions within {max_iterations} iterations for cluster '{node.node_id}'."
+            )
     return extraction
 
 

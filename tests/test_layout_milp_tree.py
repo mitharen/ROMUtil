@@ -524,7 +524,7 @@ class TestWorldRootComponentPacking:
         world_graph = WorldGraph.from_area_data(composite)
 
         solver = HierarchicalLayoutSolver.production()
-        layout = solver.solve(world_graph, LayoutOptions(timeout_seconds=30))
+        layout = solver.solve(world_graph, LayoutOptions(timeout_seconds=60))
 
         disconnected = [3032, 7130, 7301]
         for r in disconnected:

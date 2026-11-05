@@ -41,7 +41,7 @@ COMPOSITE_SHOWCASE_AREAS = (
         "ROM 2.4 / Composite",
         "midgaard_metropolitan",
         ("midgaard.are", "hood.are", "grave.are", "mobfact.are", "school.are"),
-        45,
+        60,
     ),
     (
         "ROM 2.4 / Composite",
