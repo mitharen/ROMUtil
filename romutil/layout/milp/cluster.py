@@ -165,7 +165,9 @@ def solve_cluster_with_cutting_planes(
         solver_opts: dict[str, Any] = {}
         if solver_name == "cbc":
             solver_opts["heuristics"] = "on"
-            solver_opts["ratioGap"] = max(0.12, ratio_gap)
+            solver_opts["ratioGap"] = (
+                0.12 if (options is None or options.ratio_gap == 0.05) else ratio_gap
+            )
             solver_opts["threads"] = min(4, os.cpu_count() or 1)
             solver_opts["timeMode"] = "elapsed"
 
