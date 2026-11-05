@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 from dataclasses import dataclass
+import logging
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from romutil.layout.geometry import (
@@ -19,8 +20,11 @@ from romutil.layout.milp.inventory import (
     direction_to_displacement,
     get_child_coordinate,
 )
+from romutil.layout.milp.spatial_dag import PositionalConstraintDAG
 from romutil.layout.hierarchy.spqr import SplitPairCut
 from romutil.types import Coord3D
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from romutil.layout.ir import NodeSolution, SolveTreeNode
@@ -57,6 +61,8 @@ class ClearanceConstraintBuilder:
     def __init__(self, formulation: ClusterFormulation) -> None:
         self.formulation = formulation
         self.separated_pairs: set[tuple[str, Any, Any]] = set()
+        self.spatial_dag = PositionalConstraintDAG.from_formulation(formulation)
+        self.unsatisfiable_collisions: list[ClearanceViolation] = []
 
     def get_doorway_box(
         self, d_key: tuple[int, tuple[int, int, int]]
@@ -409,6 +415,11 @@ class ClearanceConstraintBuilder:
         `formulation.options.max_cuts_per_pass` or 20) per pass to prevent branch-and-bound
         explosion.
 
+        Filters candidate separation directions through the positional constraint DAG to
+        prune contradicted half-spaces. If all separation directions for a candidate collision
+        are contradicted by active edges or topological alignments, the collision is classified
+        as an unresolvable geometric deadlock (UNSATISFIABLE_COLLISION) and impossible cuts are omitted.
+
         Args:
             violations: Sequence of ClearanceViolation instances detected in the current extraction.
             max_cuts_per_pass: Optional override for the maximum number of cuts to inject in this pass.
@@ -428,7 +439,7 @@ class ClearanceConstraintBuilder:
         if budget <= 0:
             return 0
 
-        candidates: list[tuple[str, tuple[str, Any, Any], tuple[Any, Any]]] = []
+        candidates: list[tuple[str, tuple[str, Any, Any], tuple[Any, Any], ClearanceViolation]] = []
         seen: set[tuple[str, Any, Any]] = set()
 
         for viol in violations:
@@ -446,7 +457,7 @@ class ClearanceConstraintBuilder:
             if norm_key in self.separated_pairs or norm_key in seen:
                 continue
             seen.add(norm_key)
-            candidates.append((cat, norm_key, pair))
+            candidates.append((cat, norm_key, pair, viol))
 
         if not candidates:
             return 0
@@ -454,15 +465,58 @@ class ClearanceConstraintBuilder:
         # Sort candidate un-separated violations according to priority tier (stable sort)
         candidates.sort(key=lambda item: VIOLATION_TIER_PRIORITY.get(item[0], 5))
 
+        # Filter candidate separation directions with the PositionalConstraintDAG
+        inventory = getattr(self.formulation, "inventory", None)
+        resolvable: list[
+            tuple[str, tuple[str, Any, Any], tuple[Any, Any], list[str]]
+        ] = []
+        for cat, norm_key, pair, viol in candidates:
+            item_a, item_b = pair
+            valid_dirs, pruned_reasons = self.spatial_dag.filter_candidate_directions(
+                item_a, item_b, cat, inventory
+            )
+            if not valid_dirs:
+                # All separation directions contradicted: mark as unresolvable geometric deadlock
+                self.unsatisfiable_collisions.append(viol)
+                self.separated_pairs.add(norm_key)
+                logger.warning(
+                    "Detected unresolvable geometric deadlock (UNSATISFIABLE_COLLISION) between %s and %s in category '%s'. "
+                    "All 6 separation directions contradicted by positional constraint DAG: %s",
+                    item_a,
+                    item_b,
+                    cat,
+                    pruned_reasons,
+                )
+                continue
+
+            if pruned_reasons:
+                logger.debug(
+                    "Pruned %d contradicted separation directions for (%s, %s) in category '%s': %s",
+                    len(pruned_reasons),
+                    item_a,
+                    item_b,
+                    cat,
+                    pruned_reasons,
+                )
+
+            resolvable.append((cat, norm_key, pair, valid_dirs))
+
+        if not resolvable:
+            return 0
+
         # Limit newly injected cuts to at most max_cuts_per_pass
-        selected = candidates[:budget]
+        selected = resolvable[:budget]
 
         new_pairs_by_cat: dict[str, list[tuple[Any, Any]]] = collections.defaultdict(list)
-        for cat, norm_key, pair in selected:
+        allowed_dirs_by_cat: dict[str, dict[tuple[Any, Any], list[str]]] = collections.defaultdict(dict)
+
+        for cat, norm_key, pair, valid_dirs in selected:
             self.separated_pairs.add(norm_key)
             new_pairs_by_cat[cat].append(pair)
+            allowed_dirs_by_cat[cat][pair] = valid_dirs
 
         for cat, pairs in new_pairs_by_cat.items():
+            allowed = allowed_dirs_by_cat[cat]
             if cat == "parent_room":
                 add_disjunctive_box_separation(
                     model=self.formulation.model,
@@ -471,6 +525,7 @@ class ClearanceConstraintBuilder:
                     get_box_b=self.formulation.get_room_box,
                     prefix="parent_room",
                     m_big=self.formulation.m_big,
+                    allowed_directions=allowed,
                 )
             elif cat == "room_child":
                 add_disjunctive_box_separation(
@@ -480,6 +535,7 @@ class ClearanceConstraintBuilder:
                     get_box_b=self.formulation.get_child_sub_box,
                     prefix="room_child",
                     m_big=self.formulation.m_big,
+                    allowed_directions=allowed,
                 )
             elif cat == "child_child":
                 add_disjunctive_box_separation(
@@ -489,6 +545,7 @@ class ClearanceConstraintBuilder:
                     get_box_b=self.formulation.get_child_sub_box,
                     prefix="child_child",
                     m_big=self.formulation.m_big,
+                    allowed_directions=allowed,
                 )
             elif cat == "corridor_room":
                 add_disjunctive_box_separation(
@@ -500,6 +557,7 @@ class ClearanceConstraintBuilder:
                     get_box_b=self.formulation.get_room_box,
                     prefix="corridor_room",
                     m_big=self.formulation.m_big,
+                    allowed_directions=allowed,
                 )
             elif cat == "corridor_child":
                 add_disjunctive_box_separation(
@@ -511,6 +569,7 @@ class ClearanceConstraintBuilder:
                     get_box_b=self.formulation.get_child_sub_box,
                     prefix="corridor_child",
                     m_big=self.formulation.m_big,
+                    allowed_directions=allowed,
                 )
             elif cat == "corridor_crossing":
                 add_disjunctive_box_separation(
@@ -524,6 +583,7 @@ class ClearanceConstraintBuilder:
                     ),
                     prefix="corridor_crossing",
                     m_big=self.formulation.m_big,
+                    allowed_directions=allowed,
                 )
             elif cat == "doorway_child":
                 add_disjunctive_box_separation(
@@ -533,6 +593,7 @@ class ClearanceConstraintBuilder:
                     get_box_b=self.formulation.get_child_sub_box,
                     prefix="doorway_child",
                     m_big=self.formulation.m_big,
+                    allowed_directions=allowed,
                 )
             elif cat == "doorway_room":
                 add_disjunctive_box_separation(
@@ -542,6 +603,7 @@ class ClearanceConstraintBuilder:
                     get_box_b=self.formulation.get_room_box,
                     prefix="doorway_room",
                     m_big=self.formulation.m_big,
+                    allowed_directions=allowed,
                 )
 
         return len(selected)

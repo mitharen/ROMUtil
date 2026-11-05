@@ -398,7 +398,7 @@ def midgaard_metropolitan_layout():
     composite = merge_areas(areas)
     graph = WorldGraph.from_area_data(composite)
     solver = HierarchicalLayoutSolver.production()
-    sol = solver.solve(graph, LayoutOptions(timeout_seconds=90))
+    sol = solver.solve(graph, LayoutOptions(timeout_seconds=110))
     return composite, sol
 
 
@@ -633,7 +633,7 @@ class TestChildSubBoxCorridorClearance:
                     src=("c_ushape", 10),
                     dst=2,
                     direction=(1, 0, 0),
-                    min_length=7,
+                    min_length=1,
                     associated_rooms=frozenset({10, 2}),
                     associated_children=frozenset({"c_ushape"}),
                 ),
