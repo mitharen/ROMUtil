@@ -2995,8 +2995,8 @@ class TestAdaptiveTimeoutAndCuttingPlaneLimits:
         assert compute_adaptive_cluster_timeout(small_node, zero_opts) == 10
         assert compute_adaptive_cluster_timeout(large_node, zero_opts) == 25
 
-    def test_cutting_plane_loop_filters_corridor_crossings_on_timeout(self) -> None:
-        """When solver times out, corridor crossings are filtered to focus on macroscopic separation."""
+    def test_cutting_plane_loop_defers_corridor_crossings_during_physical_clearance(self) -> None:
+        """During physical clearance phase, corridor crossings are deferred until physical collisions clear."""
         from romutil.layout.milp.clearance import ClearanceViolation
         from romutil.layout.milp.solver import SolvedClusterExtraction
 
@@ -3023,7 +3023,7 @@ class TestAdaptiveTimeoutAndCuttingPlaneLimits:
         extraction_final = SolvedClusterExtraction(
             raw_parent_coords={1: (0, 0, 0), 2: (5, 0, 0), 3: (10, 0, 0)},
             raw_child_offsets={},
-            solver_status=SolverStatus.TIMEOUT,
+            solver_status=SolverStatus.OPTIMAL,
         )
 
         call_count = 0
@@ -3037,13 +3037,18 @@ class TestAdaptiveTimeoutAndCuttingPlaneLimits:
 
         def mock_detect(*args, **kwargs):
             if call_count == 1:
+                # Pass 0: both physical and crossing violations present
                 return [
                     ClearanceViolation(category="parent_room", item_a=1, item_b=2),
                     ClearanceViolation(category="corridor_crossing", item_a=0, item_b=1),
                 ]
-            return [
-                ClearanceViolation(category="corridor_crossing", item_a=0, item_b=1),
-            ]
+            if call_count == 2:
+                # Pass 1: physical collisions resolved, crossing remains
+                return [
+                    ClearanceViolation(category="corridor_crossing", item_a=0, item_b=1),
+                ]
+            # Pass 2 and convergence: all clear
+            return []
 
         with (
             patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
@@ -3053,16 +3058,19 @@ class TestAdaptiveTimeoutAndCuttingPlaneLimits:
             sol = solve_cluster(node=node, graph=graph)
             assert sol is not None
             assert sol.node_id == "timed_out_cluster"
-            # It should have broken after 2 iterations
-            assert call_count == 2
-            # On pass 1, inject_clearance_cuts must only have received parent_room, NOT corridor_crossing
-            assert mock_inject.call_count == 1
-            injected_violations = mock_inject.call_args[0][0]
-            assert len(injected_violations) == 1
-            assert injected_violations[0].category == "parent_room"
+            # In pass 1 (physical clearance), cuts strictly injected for parent_room
+            # In pass 2 (crossing clearance), cuts injected for corridor_crossing
+            assert mock_inject.call_count == 2
+            first_injected = mock_inject.call_args_list[0][0][0]
+            assert len(first_injected) == 1
+            assert first_injected[0].category == "parent_room"
+
+            second_injected = mock_inject.call_args_list[1][0][0]
+            assert len(second_injected) == 1
+            assert second_injected[0].category == "corridor_crossing"
 
     def test_cutting_plane_loop_retains_corridor_crossings_on_optimal(self) -> None:
-        """When solver status is optimal, corridor crossings are retained and injected."""
+        """When physical collisions are clear, corridor crossings are injected during crossing clearance."""
         from romutil.layout.milp.clearance import ClearanceViolation
         from romutil.layout.milp.solver import SolvedClusterExtraction
 
@@ -3099,6 +3107,7 @@ class TestAdaptiveTimeoutAndCuttingPlaneLimits:
         ):
             mock_detect.side_effect = [
                 [ClearanceViolation(category="corridor_crossing", item_a=0, item_b=1)],
+                [],
                 [],
             ]
             mock_inject.return_value = 1
@@ -3160,13 +3169,15 @@ class TestTwoPhaseCuttingPlaneBudget:
                 total_cluster_budget=50.0,
             )
 
-            assert len(pass_timeouts) == 3
+            assert len(pass_timeouts) == 4
             # Pass 0: initial pass, budget is 50 - 0 = 50s
             assert pass_timeouts[0] == 50
             # Pass 1: intermediate pass with 10s elapsed, remaining 40s -> min(40, 15) = 15s
             assert pass_timeouts[1] == 15
             # Pass 2: intermediate pass with 20s elapsed, remaining 30s -> min(30, 15) = 15s
             assert pass_timeouts[2] == 15
+            # Pass 3: final convergence pass with 30s elapsed, remaining budget 20s
+            assert pass_timeouts[3] == 20
 
     def test_intermediate_early_incumbent_triggers_final_convergence_pass(self) -> None:
         """When intermediate pass uses max_solutions=1, final pass runs without max_solutions and with heuristics."""
@@ -3277,11 +3288,13 @@ class TestTwoPhaseCuttingPlaneBudget:
                 node=node,
                 options=LayoutOptions(),
             )
-            assert len(solve_calls) == 2
+            assert len(solve_calls) == 3
             # Pass 0: initial pass, warmstart is False
             assert solve_calls[0].get("warmstart") is False
             # Pass 1: cuts injected, but variables unpopulated -> warmstart falls back to False
             assert solve_calls[1].get("warmstart") is False
+            # Pass 2: final convergence pass, variables unpopulated -> warmstart falls back to False
+            assert solve_calls[2].get("warmstart") is False
 
     def test_cutting_plane_intermediate_timeout_capped_sensibly(self) -> None:
         """Default intermediate timeout scales with base_timeout but is capped at 60 seconds."""
@@ -3327,9 +3340,10 @@ class TestTwoPhaseCuttingPlaneBudget:
                 options=opts,
                 total_cluster_budget=200.0,
             )
-            assert len(pass_timeouts) == 2
+            assert len(pass_timeouts) == 3
             assert pass_timeouts[0] == 200
             assert pass_timeouts[1] == 60
+            assert pass_timeouts[2] == 200
 
     def test_has_populated_warmstart_coordinates_branches(self) -> None:
         """Verify _has_populated_warmstart_coordinates across edge cases and branches."""
@@ -3509,3 +3523,167 @@ class TestTwoPhaseCuttingPlaneBudget:
         assert result.node_id == "world_root"
         assert result.metadata["child_offsets"]["comp_0"] == Coord3D(0, 0, 0)
         assert result.metadata["status"] == SolverStatus.OPTIMAL
+
+
+class TestClusterClearanceStateMachine:
+    """Comprehensive tests for the ClusterSolvePhase cutting-plane state machine."""
+
+    def test_state_machine_self_healing_fallback(self) -> None:
+        """Verify self-healing fallback: crossing clearance falls back to physical clearance when cuts cause room overlap."""
+        from romutil.layout.milp.clearance import ClearanceViolation
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+        from romutil.layout.milp.solver import SolvedClusterExtraction
+
+        node = SolveTreeNode(node_id="fallback_test", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2, 3}))
+        mock_formulation = MagicMock()
+        mock_formulation.clearance_builder.inject_clearance_cuts.return_value = 1
+
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0), 3: (2, 0, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        detect_calls = 0
+
+        def mock_detect(*args, **kwargs):
+            nonlocal detect_calls
+            detect_calls += 1
+            if detect_calls == 1:
+                return [ClearanceViolation(category="corridor_crossing", item_a=1, item_b=2)]
+            if detect_calls == 2:
+                return [ClearanceViolation(category="parent_room", item_a=1, item_b=3)]
+            return []
+
+        with (
+            patch("romutil.layout.milp.cluster.solve_and_extract", return_value=extraction),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            ext = solve_cluster_with_cutting_planes(
+                formulation=mock_formulation,
+                node=node,
+                options=LayoutOptions(),
+            )
+            assert ext.solver_status == SolverStatus.OPTIMAL
+            assert mock_formulation.clearance_builder.inject_clearance_cuts.call_count == 2
+            call1 = mock_formulation.clearance_builder.inject_clearance_cuts.call_args_list[0][0][0]
+            assert call1[0].category == "corridor_crossing"
+            call2 = mock_formulation.clearance_builder.inject_clearance_cuts.call_args_list[1][0][0]
+            assert call2[0].category == "parent_room"
+
+    def test_state_machine_convergence_physical_fallback(self) -> None:
+        """When physical violations reappear during convergence pass, falls back to PHYSICAL_CLEARANCE."""
+        from romutil.layout.milp.clearance import ClearanceViolation
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+        from romutil.layout.milp.solver import SolvedClusterExtraction
+
+        node = SolveTreeNode(node_id="conv_fallback_test", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2}))
+        mock_formulation = MagicMock()
+        mock_formulation.clearance_builder.inject_clearance_cuts.return_value = 1
+
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        detect_calls = 0
+
+        def mock_detect(*args, **kwargs):
+            nonlocal detect_calls
+            detect_calls += 1
+            if detect_calls == 1:
+                return [ClearanceViolation(category="parent_room", item_a=1, item_b=2)]
+            if detect_calls == 2:
+                return []
+            if detect_calls == 3:
+                return [ClearanceViolation(category="parent_room", item_a=1, item_b=2)]
+            return []
+
+        with (
+            patch("romutil.layout.milp.cluster.solve_and_extract", return_value=extraction),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            ext = solve_cluster_with_cutting_planes(
+                formulation=mock_formulation,
+                node=node,
+                options=LayoutOptions(),
+            )
+            assert ext.solver_status == SolverStatus.OPTIMAL
+            assert mock_formulation.clearance_builder.inject_clearance_cuts.call_count == 2
+
+    def test_state_machine_convergence_crossing_fallback(self) -> None:
+        """When corridor crossing violations reappear during convergence pass, falls back to CROSSING_CLEARANCE."""
+        from romutil.layout.milp.clearance import ClearanceViolation
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+        from romutil.layout.milp.solver import SolvedClusterExtraction
+
+        node = SolveTreeNode(node_id="conv_cross_test", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2}))
+        mock_formulation = MagicMock()
+        mock_formulation.clearance_builder.inject_clearance_cuts.return_value = 1
+
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        detect_calls = 0
+
+        def mock_detect(*args, **kwargs):
+            nonlocal detect_calls
+            detect_calls += 1
+            if detect_calls == 1:
+                return [ClearanceViolation(category="parent_room", item_a=1, item_b=2)]
+            if detect_calls == 2:
+                return []
+            if detect_calls == 3:
+                return [ClearanceViolation(category="corridor_crossing", item_a=0, item_b=1)]
+            return []
+
+        with (
+            patch("romutil.layout.milp.cluster.solve_and_extract", return_value=extraction),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            ext = solve_cluster_with_cutting_planes(
+                formulation=mock_formulation,
+                node=node,
+                options=LayoutOptions(),
+            )
+            assert ext.solver_status == SolverStatus.OPTIMAL
+            assert mock_formulation.clearance_builder.inject_clearance_cuts.call_count == 2
+            second_cut = mock_formulation.clearance_builder.inject_clearance_cuts.call_args_list[1][0][0]
+            assert second_cut[0].category == "corridor_crossing"
+
+    def test_state_machine_budget_expired_raises_error(self) -> None:
+        """When solver budget expires with unresolved violations, LayoutSolverError is raised."""
+        from romutil.layout.milp.clearance import ClearanceViolation
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+        from romutil.layout.milp.solver import SolvedClusterExtraction
+
+        node = SolveTreeNode(node_id="budget_expire_node", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2}))
+        mock_formulation = MagicMock()
+        mock_formulation.clearance_builder.inject_clearance_cuts.return_value = 1
+
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        fake_time = [100.0, 100.0, 125.0]
+
+        with (
+            patch("time.monotonic", side_effect=fake_time),
+            patch("romutil.layout.milp.cluster.solve_and_extract", return_value=extraction),
+            patch(
+                "romutil.layout.milp.cluster.detect_cluster_collisions",
+                return_value=[ClearanceViolation(category="parent_room", item_a=1, item_b=2)],
+            ),
+        ):
+            with pytest.raises(LayoutSolverError, match="expired with unresolved collisions"):
+                solve_cluster_with_cutting_planes(
+                    formulation=mock_formulation,
+                    node=node,
+                    total_cluster_budget=20.0,
+                )

@@ -39,6 +39,8 @@ from romutil.types import (
 )
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def _make_graph(
     rooms: list[int],
@@ -384,20 +386,30 @@ class TestAreaClearanceIntegrity:
         }
         assert duplicate_coords == {}, f"Found overlapping rooms in Thalos: {duplicate_coords}"
 
-    def test_midgaard_metropolitan_gangland_corridor_clearance(self) -> None:
+
+@pytest.fixture(scope="module")
+def midgaard_metropolitan_layout():
+    """Module-scoped fixture computing Midgaard Metropolitan composite layout once."""
+    from romutil.layout.engine import HierarchicalLayoutSolver
+    from romutil.parser import merge_areas
+
+    files = ["midgaard.are", "hood.are", "grave.are", "mobfact.are", "school.are"]
+    areas = [parse_file(Path("tests/fixtures/areas") / f) for f in files]
+    composite = merge_areas(areas)
+    graph = WorldGraph.from_area_data(composite)
+    solver = HierarchicalLayoutSolver.production()
+    sol = solver.solve(graph, LayoutOptions(timeout_seconds=90))
+    return composite, sol
+
+
+class TestAreaClearanceIntegrity:
+    """Integration clearance tests for authentic ROM 2.4 area files."""
+
+    def test_midgaard_metropolitan_gangland_corridor_clearance(
+        self, midgaard_metropolitan_layout
+    ) -> None:
         """Midgaard Metropolitan elm street corridor does not intersect Gangland solomon street rooms."""
-        from romutil.layout.engine import HierarchicalLayoutSolver
-        from romutil.types import LayoutOptions
-
-        from romutil.parser import merge_areas
-
-        files = ["midgaard.are", "hood.are", "grave.are", "mobfact.are", "school.are"]
-        areas = [parse_file(Path("tests/fixtures/areas") / f) for f in files]
-        composite = merge_areas(areas)
-        graph = WorldGraph.from_area_data(composite)
-        solver = HierarchicalLayoutSolver.production()
-        sol = solver.solve(graph, LayoutOptions(timeout_seconds=60))
-
+        composite, sol = midgaard_metropolitan_layout
         coords = sol.coordinates
         elm_3124 = coords[3124]
         concourse_3273 = coords[3273]
@@ -407,6 +419,68 @@ class TestAreaClearanceIntegrity:
         gangland_solomon_rooms = [2166, 2167, 2168, 2169, 2170]
         for v in gangland_solomon_rooms:
             assert coords[v].y > elm_y, f"Room {v} at y={coords[v].y} intersects or is below Elm Street at y={elm_y}"
+
+    def test_midgaard_metropolitan_zero_collisions_and_zero_corridor_crossings(
+        self, midgaard_metropolitan_layout
+    ) -> None:
+        """Midgaard Metropolitan solves with 0 physical room collisions and 0 planar corridor crossings."""
+        from romutil.layout.geometry import Segment3D, segments_intersect_3d
+
+        composite, sol = midgaard_metropolitan_layout
+        coords = sol.coordinates
+
+        # 1. Zero physical collisions: no duplicate room coordinates
+        counts = Counter(coords.values())
+        duplicates = {
+            pos: [r for r, c in coords.items() if c == pos]
+            for pos, count in counts.items()
+            if count > 1
+        }
+        assert duplicates == {}, f"Found overlapping rooms in Midgaard Metropolitan: {duplicates}"
+
+        # 2. Zero corridor crossings: no non-incident exit segments cross in 3D
+        # Exclude non-planar cross-area graduation teleport link (e.g. Mud School 3760 -> Midgaard Temple 3001)
+        segments: list[tuple[tuple[int, int], Segment3D]] = []
+        seen_edges: set[frozenset[int]] = set()
+        for room in composite.rooms:
+            r_vnum = room.vnum
+            if r_vnum not in coords:
+                continue
+            p1 = coords[r_vnum]
+            for exit_def in room.exits:
+                to_vnum = exit_def.dst_vnum
+                if to_vnum not in coords:
+                    continue
+                if (r_vnum, to_vnum) in {(3760, 3001), (3001, 3760)}:
+                    continue
+                edge_key = frozenset({r_vnum, to_vnum})
+                if edge_key in seen_edges:
+                    continue
+                seen_edges.add(edge_key)
+                p2 = coords[to_vnum]
+                segments.append(((r_vnum, to_vnum), Segment3D(p1, p2)))
+
+        crossings: list[tuple[tuple[int, int], tuple[int, int]]] = []
+        for i in range(len(segments)):
+            e1, seg1 = segments[i]
+            for j in range(i + 1, len(segments)):
+                e2, seg2 = segments[j]
+                if e1[0] in e2 or e1[1] in e2:
+                    continue
+                if segments_intersect_3d(seg1, seg2):
+                    crossings.append((e1, e2))
+
+        assert crossings == [], f"Found corridor crossings in Midgaard Metropolitan: {crossings}"
+
+        # 3. Specifically verify Temple entrance (3014 -> 3005) does not cross any other corridor
+        temple_entrance_seg = Segment3D(coords[3014], coords[3005])
+        temple_crossings = []
+        for e, seg in segments:
+            if 3014 in e or 3005 in e:
+                continue
+            if segments_intersect_3d(temple_entrance_seg, seg):
+                temple_crossings.append(e)
+        assert temple_crossings == [], f"Temple entrance (3014->3005) crosses corridors: {temple_crossings}"
 
 
 class TestChildSubBoxCorridorClearance:

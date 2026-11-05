@@ -97,6 +97,9 @@ def solve_and_extract(
             raise
         raise LayoutSolverError(f"Failed to initialize MILP solver '{solver_name}': {exc}") from exc
 
+    if solver_name == "cbc":
+        solver.options["timeMode"] = "elapsed"
+
     if options and options.timeout_seconds:
         if solver_name == "cbc":
             solver.options["seconds"] = options.timeout_seconds

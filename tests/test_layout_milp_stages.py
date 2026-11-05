@@ -2162,10 +2162,14 @@ class TestStage3DelayedCutsAndCollisionDetector:
         with patch(
             "romutil.layout.milp.cluster.detect_cluster_collisions",
             return_value=[mock_violation],
+        ), patch.object(
+            ClearanceConstraintBuilder, "inject_clearance_cuts", return_value=1
         ):
-            with patch.object(ClearanceConstraintBuilder, "inject_clearance_cuts", return_value=1):
-                with pytest.raises(LayoutSolverError, match="failed to resolve all geometric collisions within 15 iterations"):
-                    solve_cluster(node, {}, graph)
+            with pytest.raises(
+                LayoutSolverError,
+                match=r"failed to resolve all geometric collisions within \d+ iterations",
+            ):
+                solve_cluster(node, {}, graph)
 
     def test_solve_cluster_unresolvable_cuts_error(self) -> None:
         """Iterative solver raises LayoutSolverError when collisions exist but 0 cuts can be added."""
