@@ -101,7 +101,7 @@ ROMUtil/
 │   │   │   ├── block_cut.py     # BlockCutDecompositionPass & BlockCutTreeBuilder (connected & biconnected components)
 │   │   │   ├── pipeline.py      # PipelineTreeBuilder (unified hierarchical transformation pipeline)
 │   │   │   ├── spqr.py          # SpqrDecompositionPass & build_block_spqr_tree (triconnected SPQR decomposition)
-│   │   │   └── transforms.py    # TreeTransformationPass pipeline (allowlist fusion, articulation, S-node split)
+│   │   │   └── transforms.py    # TreeTransformationPass pipeline (articulation attachment, S-node transverse split)
 │   │   ├── ir.py                # Intermediate representations (LayoutGraph, SolveTree, NodeSolution)
 │   │   ├── milp/                # Stage 4 mathematical optimization solvers
 │   │   │   ├── clearance.py     # Stage 3: Disjunctive Big-M clearance & non-penetration constraints
@@ -222,15 +222,14 @@ Simplifies graph complexity while preserving topological invariants, outputting 
 #### Stage 3: Hierarchical Tree Decomposition (`TreeBuilder`)
 Decomposes the simplified topology into a hierarchical `SolveTree` of localized subproblems via a sequential pipeline of transformation passes:
 - **`SolveTree.seed`**: Initializes an initial seed tree rooted at a single block node containing all rooms in the layout graph.
-- **`PipelineTreeBuilder` (`pipeline.py`)**: Executes the canonical 4-pass transformation pipeline:
+- **`PipelineTreeBuilder` (`pipeline.py`)**: Executes the canonical 3-pass transformation pipeline:
   1. **`BlockCutDecompositionPass` (`block_cut.py`)**: Partitions disconnected components (0-cuts) into independent weakly connected components under `world_root` and decomposes biconnected blocks via articulation points (1-cuts) into a block-cut tree. Articulation rooms act as shared gateway anchor points between adjacent blocks.
   2. **`SpqrDecompositionPass` (`spqr.py`)**: Refines biconnected blocks with $\ge 4$ rooms by identifying 2-cut separation pairs (split pairs), categorizing nodes into:
      - `rigid_cluster` ($R$-nodes): Triconnected components solved via leaf MILP formulation.
      - `series_loop` ($S$-nodes): Cycles or series chains solved sequentially.
      - `split_pair_container` ($P$-nodes): Parallel paths between common split pairs.
      Strips the block's own anchor room for canonical disjoint room ownership and directly attaches 1-cut child blocks to the specific descendant SPQR node that owns their gateway anchor.
-  3. **`SplitPairAllowlistFusionPass` (`transforms.py`)**: Evaluates candidate branches of split-pair containers against the Safe 2-Cut Allowlist contract (branch elasticity, single port per pole, disjoint half-spaces); fuses unsafe containers into unified rigid clusters while preserving and re-parenting attached articulation children onto the fused cluster.
-  4. **`TransverseSNodeSplitPass` (`transforms.py`)**: Identifies series loop ($S$-node) children across boundary poles $\{p_0, p_1\}$ with parallel entrance corridors and transverse internal span discrepancies; decomposes them into sibling clusters configured with elastic `BridgeCut` contracts (falling back to `ArticulationPointCut` if entrance edges are ambiguous) and bubbles the split clusters up past intermediate empty split-pair containers to their owning ancestor $R$-node or $S$-node, or adopts them directly at the block root level if no higher ancestor owns both boundary poles, collapsing single-child containers to preserve disjoint room ownership. $S$-nodes whose boundary poles are directly connected by an edge matching the child's transverse span preserve tight Euclidean cycles and remain intact.
+  3. **`TransverseSNodeSplitPass` (`transforms.py`)**: Identifies series loop ($S$-node) children across boundary poles $\{p_0, p_1\}$ with parallel entrance corridors and transverse internal span discrepancies; decomposes them into sibling clusters configured with elastic `BridgeCut` contracts (falling back to `ArticulationPointCut` if entrance edges are ambiguous) and bubbles the split clusters up past intermediate empty split-pair containers to their owning ancestor $R$-node or $S$-node, or adopts them directly at the block root level if no higher ancestor owns both boundary poles, collapsing single-child containers to preserve disjoint room ownership. $S$-nodes whose boundary poles are directly connected by an edge matching the child's transverse span preserve tight Euclidean cycles and remain intact.
 - **Tree Builders**:
   - `PipelineTreeBuilder`: The canonical `TreeBuilder` implementing this transformation pipeline.
   - `BlockCutTreeBuilder`: Facade executing `SolveTree.seed` through `BlockCutDecompositionPass`.

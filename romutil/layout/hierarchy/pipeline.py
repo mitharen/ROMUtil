@@ -7,7 +7,6 @@ from typing import Any
 from romutil.layout.hierarchy.block_cut import BlockCutDecompositionPass
 from romutil.layout.hierarchy.spqr import SpqrDecompositionPass
 from romutil.layout.hierarchy.transforms import (
-    SplitPairAllowlistFusionPass,
     TransverseSNodeSplitPass,
     TreeTransformationPass,
     TreeTransformationPipeline,
@@ -38,7 +37,6 @@ class PipelineTreeBuilder(TreeBuilder):
             self._pipeline = TreeTransformationPipeline([
                 first_pass,
                 SpqrDecompositionPass(),
-                SplitPairAllowlistFusionPass(),
                 TransverseSNodeSplitPass(),
             ])
         else:
@@ -55,7 +53,6 @@ class PipelineTreeBuilder(TreeBuilder):
         return TreeTransformationPipeline([
             BlockCutDecompositionPass(graph=graph),
             SpqrDecompositionPass(graph=graph),
-            SplitPairAllowlistFusionPass(graph=graph),
             TransverseSNodeSplitPass(graph=graph),
         ])
 
