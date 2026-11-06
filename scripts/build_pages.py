@@ -33,20 +33,17 @@ SHOWCASE_AREAS = (
 COMPOSITE_SHOWCASE_AREAS = (
     (
         "ROM 2.4 / Composite",
-        "midgaard_connected",
-        ("midgaard.are", "hood.are", "grave.are", "mobfact.are", "school.are", "sewer.are"),
-        45,
-    ),
-    (
-        "ROM 2.4 / Composite",
-        "midgaard_metropolitan",
-        ("midgaard.are", "hood.are", "grave.are", "mobfact.are", "school.are"),
-        60,
-    ),
-    (
-        "ROM 2.4 / Composite",
-        "midgaard_sewers",
-        ("midgaard.are", "sewer.are"),
+        "midgaard_region",
+        (
+            "midgaard.are",
+            "hood.are",
+            "grave.are",
+            "mobfact.are",
+            "school.are",
+            "midennir.are",
+            "haon.are",
+        ),
+        240,
     ),
 )
 

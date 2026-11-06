@@ -131,15 +131,13 @@ class TestGalleryAssetsGeneration:
     def test_pages_builder_discovery_and_index_generation(self, tmp_path):
         from scripts.build_pages import resolve_candidate_areas, generate_index_html
         candidates = resolve_candidate_areas()
-        assert len(candidates) == 10
+        assert len(candidates) == 8
         candidate_names = {c[1] for c in candidates}
         assert candidate_names == {
             "arachnos",
             "chapel",
             "midgaard",
-            "midgaard_connected",
-            "midgaard_metropolitan",
-            "midgaard_sewers",
+            "midgaard_region",
             "school",
             "sewer",
             "shire",
@@ -156,30 +154,29 @@ class TestGalleryAssetsGeneration:
 
         # Verify composite showcase cluster
         comp_candidates = [c for c in candidates if c[0] == "ROM 2.4 / Composite"]
-        assert len(comp_candidates) == 3
+        assert len(comp_candidates) == 1
         comp_by_name = {c[1]: c for c in comp_candidates}
-        assert "midgaard_metropolitan" in comp_by_name
-        assert "midgaard_sewers" in comp_by_name
-        assert "midgaard_connected" in comp_by_name
+        assert "midgaard_region" in comp_by_name
 
-        cat, name, paths, is_dir = comp_by_name["midgaard_metropolitan"][:4]
+        cat, name, paths, is_dir = comp_by_name["midgaard_region"][:4]
         assert isinstance(paths, list)
-        assert len(paths) == 5
-        assert [p.name for p in paths] == ["midgaard.are", "hood.are", "grave.are", "mobfact.are", "school.are"]
+        assert len(paths) == 7
+        assert [p.name for p in paths] == [
+            "midgaard.are",
+            "hood.are",
+            "grave.are",
+            "mobfact.are",
+            "school.are",
+            "midennir.are",
+            "haon.are",
+        ]
         assert all(p.is_file() for p in paths)
         assert not is_dir
-
-        cat, name, paths, is_dir = comp_by_name["midgaard_sewers"][:4]
-        assert isinstance(paths, list)
-        assert len(paths) == 2
-        assert [p.name for p in paths] == ["midgaard.are", "sewer.are"]
-        assert all(p.is_file() for p in paths)
-        assert not is_dir
-        assert comp_by_name["midgaard_sewers"].solver_timeout is None
+        assert comp_by_name["midgaard_region"].solver_timeout == 240
 
         dummy_rendered = [
             ("ROM 2.4 / QuickMUD", "smurf", 1.23),
-            ("ROM 2.4 / Composite", "midgaard_metropolitan", 45.67),
+            ("ROM 2.4 / Composite", "midgaard_region", 45.67),
         ]
 
         # Case 1: Asset files do not exist -> verify 'N/A' fallback is emitted
@@ -192,18 +189,18 @@ class TestGalleryAssetsGeneration:
         assert "ROM 2.4 / QuickMUD" in content_missing
         assert "ROM 2.4 / Composite" in content_missing
         assert "smurf" in content_missing
-        assert "midgaard_metropolitan" in content_missing
+        assert "midgaard_region" in content_missing
         assert "<td><code>1.23s</code></td>" in content_missing
         assert "<td><code>45.67s</code></td>" in content_missing
         assert "N/A" in content_missing
         assert '<a href="smurf.html">' not in content_missing
-        assert '<a href="midgaard_metropolitan.html">' not in content_missing
+        assert '<a href="midgaard_region.html">' not in content_missing
 
         # Case 2: Asset files exist -> verify valid <a href= links, solve times, and 'N/A' is absent
         (tmp_path / "smurf.html").write_text("<!DOCTYPE html><html><body>viewer</body></html>", encoding="utf-8")
         (tmp_path / "smurf0.svg").write_text("<svg></svg>", encoding="utf-8")
-        (tmp_path / "midgaard_metropolitan.html").write_text("<!DOCTYPE html><html><body>viewer</body></html>", encoding="utf-8")
-        (tmp_path / "midgaard_metropolitan0.svg").write_text("<svg></svg>", encoding="utf-8")
+        (tmp_path / "midgaard_region.html").write_text("<!DOCTYPE html><html><body>viewer</body></html>", encoding="utf-8")
+        (tmp_path / "midgaard_region0.svg").write_text("<svg></svg>", encoding="utf-8")
         generate_index_html(dummy_rendered, tmp_path)
         content_present = index_file.read_text(encoding="utf-8")
         assert "<th>Solve Time</th>" in content_present
@@ -211,8 +208,8 @@ class TestGalleryAssetsGeneration:
         assert "<td><code>45.67s</code></td>" in content_present
         assert '<a href="smurf.html">Interactive Viewer</a>' in content_present
         assert '<a href="smurf0.svg">SVG Map</a>' in content_present
-        assert '<a href="midgaard_metropolitan.html">Interactive Viewer</a>' in content_present
-        assert '<a href="midgaard_metropolitan0.svg">SVG Map</a>' in content_present
+        assert '<a href="midgaard_region.html">Interactive Viewer</a>' in content_present
+        assert '<a href="midgaard_region0.svg">SVG Map</a>' in content_present
         assert "N/A" not in content_present
 
         # Case 2b: Fallback to <name>.svg when <name>0.svg is not present
@@ -456,23 +453,41 @@ class TestGalleryAssetsGeneration:
 
 
     def test_composite_showcase_cluster_metadata(self):
-        """Assert school.are is part of the constituent filenames for midgaard_metropolitan."""
+        """Assert constituent filenames for midgaard_region."""
         from scripts.build_pages import COMPOSITE_SHOWCASE_AREAS, resolve_candidate_areas
 
-        cluster_entry = next((item for item in COMPOSITE_SHOWCASE_AREAS if item[1] == "midgaard_metropolitan"), None)
+        cluster_entry = next((item for item in COMPOSITE_SHOWCASE_AREAS if item[1] == "midgaard_region"), None)
         assert cluster_entry is not None
         cat, name, filenames = cluster_entry[:3]
         assert "school.are" in filenames
-        assert filenames == ("midgaard.are", "hood.are", "grave.are", "mobfact.are", "school.are")
+        assert "haon.are" in filenames
+        assert "midennir.are" in filenames
+        assert filenames == (
+            "midgaard.are",
+            "hood.are",
+            "grave.are",
+            "mobfact.are",
+            "school.are",
+            "midennir.are",
+            "haon.are",
+        )
 
         candidates = resolve_candidate_areas()
-        comp_candidate = next((c for c in candidates if c[1] == "midgaard_metropolitan"), None)
+        comp_candidate = next((c for c in candidates if c[1] == "midgaard_region"), None)
         assert comp_candidate is not None
         source_paths = comp_candidate.source_path
         assert isinstance(source_paths, list)
         source_filenames = [p.name for p in source_paths]
         assert "school.are" in source_filenames
-        assert source_filenames == ["midgaard.are", "hood.are", "grave.are", "mobfact.are", "school.are"]
+        assert source_filenames == [
+            "midgaard.are",
+            "hood.are",
+            "grave.are",
+            "mobfact.are",
+            "school.are",
+            "midennir.are",
+            "haon.are",
+        ]
 
     def test_render_composite_area_generates_artifacts_and_resolves_cross_exits(self, tmp_path):
         """Verify rendering composite area generates artifacts and resolves cross-area exit 3700<->3001 as internal exit."""
