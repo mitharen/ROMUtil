@@ -10,6 +10,7 @@ from romutil.layout.geometry import BoundingBox3D
 from romutil.layout.milp.clearance import ClearanceConstraintBuilder
 from romutil.layout.milp.inventory import (
     ActiveEdge,
+    BoundaryExit,
     ClusterInventory,
     EndpointRef,
     get_child_coordinate,
@@ -377,6 +378,42 @@ class ClusterFormulation:
         else:  # dz < 0
             return (x1, x1, y1, y1, z2, z1)
 
+    def get_boundary_exit_interior_box(self, be: BoundaryExit) -> tuple[Any, Any, Any, Any, Any, Any]:
+        """Return 3D bounding box for a boundary exit's interior segment (excluding the boundary port)."""
+        xu, yu, zu = self.get_point(be.port)
+        dx, dy, dz = be.direction
+        length = be.length
+        if dx > 0:
+            return (xu + 1, xu + length, yu, yu, zu, zu)
+        elif dx < 0:
+            return (xu - length, xu - 1, yu, yu, zu, zu)
+        elif dy > 0:
+            return (xu, xu, yu + 1, yu + length, zu, zu)
+        elif dy < 0:
+            return (xu, xu, yu - length, yu - 1, zu, zu)
+        elif dz > 0:
+            return (xu, xu, yu, yu, zu + 1, zu + length)
+        else:  # dz < 0
+            return (xu, xu, yu, yu, zu - length, zu - 1)
+
+    def get_boundary_exit_full_box(self, be: BoundaryExit) -> tuple[Any, Any, Any, Any, Any, Any]:
+        """Return 3D bounding box for an entire boundary exit corridor segment (including the boundary port)."""
+        xu, yu, zu = self.get_point(be.port)
+        dx, dy, dz = be.direction
+        length = be.length
+        if dx > 0:
+            return (xu, xu + length, yu, yu, zu, zu)
+        elif dx < 0:
+            return (xu - length, xu, yu, yu, zu, zu)
+        elif dy > 0:
+            return (xu, xu, yu, yu + length, zu, zu)
+        elif dy < 0:
+            return (xu, xu, yu - length, yu, zu, zu)
+        elif dz > 0:
+            return (xu, xu, yu, yu, zu, zu + length)
+        else:  # dz < 0
+            return (xu, xu, yu, yu, zu - length, zu)
+
     def apply_clearances(self) -> None:
         """Enforce disjunctive Big-M geometric clearance and non-overlap constraints."""
         self.clearance_builder.build()
@@ -396,10 +433,6 @@ class ClusterFormulation:
     def apply_room_child_separation(self) -> None:
         """Enforce parent room vs. child sub-box clearance."""
         self.clearance_builder.add_room_child_separation()
-
-    def apply_doorway_clearance(self) -> None:
-        """Enforce external doorway clearance for boundary ports against child sub-boxes and parent rooms."""
-        self.clearance_builder.add_doorway_clearance()
 
     def apply_corridor_room_separation(self) -> None:
         """Enforce corridor segment non-penetration against third-party parent rooms."""

@@ -16,6 +16,7 @@ from romutil.layout.geometry import (
 from romutil.layout.milp.constraints import add_disjunctive_box_separation
 from romutil.layout.milp.inventory import (
     ActiveEdge,
+    BoundaryExit,
     EndpointRef,
     direction_to_displacement,
     get_child_coordinate,
@@ -47,11 +48,9 @@ VIOLATION_TIER_PRIORITY: Mapping[str, int] = {
     "parent_room": 0,
     "child_child": 1,
     "room_child": 1,
-    "doorway_room": 2,
-    "doorway_child": 2,
-    "corridor_room": 3,
-    "corridor_child": 3,
-    "corridor_crossing": 4,
+    "corridor_room": 2,
+    "corridor_child": 2,
+    "corridor_crossing": 3,
 }
 
 
@@ -63,15 +62,6 @@ class ClearanceConstraintBuilder:
         self.separated_pairs: set[tuple[str, Any, Any]] = set()
         self.spatial_dag = PositionalConstraintDAG.from_formulation(formulation)
         self.unsatisfiable_collisions: list[ClearanceViolation] = []
-
-    def get_doorway_box(
-        self, d_key: tuple[int, tuple[int, int, int]]
-    ) -> tuple[Any, Any, Any, Any, Any, Any]:
-        """Return 3D bounding box for an external boundary doorway vector."""
-        u, disp = d_key
-        x, y, z = self.formulation.get_point(u)
-        dx, dy, dz = disp
-        return (x + dx, x + dx, y + dy, y + dy, z + dz, z + dz)
 
     @property
     def local_rooms(self) -> tuple[int, ...]:
@@ -175,57 +165,109 @@ class ClearanceConstraintBuilder:
                 m_big=self.formulation.m_big,
             )
 
+    def get_corridor_interior_box(self, item: Any) -> tuple[Any, Any, Any, Any, Any, Any]:
+        """Return 3D bounding box for active edge or boundary exit interior segment."""
+        if isinstance(item, int):
+            return self.formulation.get_corridor_interior_box(
+                self.formulation.inventory.active_edges[item]
+            )
+        elif isinstance(item, (tuple, list)) and len(item) == 2 and item[0] == "bexit":
+            return self.formulation.get_boundary_exit_interior_box(
+                self.formulation.inventory.boundary_exits[item[1]]
+            )
+        raise ValueError(f"Unknown corridor item reference: {item}")
+
+    def get_corridor_full_box(self, item: Any) -> tuple[Any, Any, Any, Any, Any, Any]:
+        """Return 3D bounding box for active edge or boundary exit entire segment."""
+        if isinstance(item, int):
+            return self.formulation.get_corridor_full_box(
+                self.formulation.inventory.active_edges[item]
+            )
+        elif isinstance(item, (tuple, list)) and len(item) == 2 and item[0] == "bexit":
+            return self.formulation.get_boundary_exit_full_box(
+                self.formulation.inventory.boundary_exits[item[1]]
+            )
+        raise ValueError(f"Unknown corridor item reference: {item}")
+
     def add_corridor_room_separation(self) -> None:
         """Enforce corridor segment non-penetration against third-party parent rooms."""
         rooms = tuple(sorted(self.formulation.inventory.rooms))
         active_edges = self.formulation.inventory.active_edges
+        boundary_exits = getattr(self.formulation.inventory, "boundary_exits", ())
         child_solutions = self.formulation.inventory.child_solutions
         edge_indices = list(range(len(active_edges)))
 
-        corridor_room_pairs: list[tuple[int, int]] = []
-        if rooms and edge_indices:
-            for i, ae in enumerate(active_edges):
-                if sum(1 for d in ae.direction if d != 0) != 1:
+        corridor_room_pairs: list[tuple[Any, int]] = []
+        if rooms:
+            if edge_indices:
+                for i, ae in enumerate(active_edges):
+                    if sum(1 for d in ae.direction if d != 0) != 1:
+                        continue
+                    for w in rooms:
+                        if w in ae.associated_rooms:
+                            continue
+                        if any(
+                            w in child_solutions[cid].local_coordinates
+                            or w in getattr(child_solutions[cid], "port_coordinates", {})
+                            for cid in ae.associated_children
+                            if cid in child_solutions
+                        ):
+                            continue
+                        pair = (i, w)
+                        corridor_room_pairs.append(pair)
+                        self.separated_pairs.add(("corridor_room", pair[0], pair[1]))
+
+            for j, be in enumerate(boundary_exits):
+                if sum(1 for d in be.direction if d != 0) != 1:
                     continue
                 for w in rooms:
-                    if w in ae.associated_rooms:
+                    if w == be.port:
                         continue
-                    if any(
-                        w in child_solutions[cid].local_coordinates
-                        or w in getattr(child_solutions[cid], "port_coordinates", {})
-                        for cid in ae.associated_children
-                        if cid in child_solutions
-                    ):
-                        continue
-                    pair = (i, w)
+                    pair = (("bexit", j), w)
                     corridor_room_pairs.append(pair)
                     self.separated_pairs.add(("corridor_room", pair[0], pair[1]))
 
-        add_disjunctive_box_separation(
-            model=self.formulation.model,
-            pairs=corridor_room_pairs,
-            get_box_a=lambda i: self.formulation.get_corridor_interior_box(
-                active_edges[i]
-            ),
-            get_box_b=self.formulation.get_room_box,
-            prefix="corridor_room",
-            m_big=self.formulation.m_big,
-        )
+        if corridor_room_pairs:
+            add_disjunctive_box_separation(
+                model=self.formulation.model,
+                pairs=corridor_room_pairs,
+                get_box_a=self.get_corridor_interior_box,
+                get_box_b=self.formulation.get_room_box,
+                prefix="corridor_room",
+                m_big=self.formulation.m_big,
+            )
 
     def add_corridor_child_separation(self) -> None:
         """Enforce corridor segment non-penetration against sibling child sub-boxes."""
         active_edges = self.formulation.inventory.active_edges
+        boundary_exits = getattr(self.formulation.inventory, "boundary_exits", ())
         children = self.formulation.inventory.children
         child_solutions = self.formulation.inventory.child_solutions
         child_sub_boxes = self.formulation.inventory.child_sub_boxes
         edge_indices = list(range(len(active_edges)))
 
-        corridor_child_pairs: list[tuple[int, tuple[str, int]]] = []
-        if edge_indices and len(children) > 0:
-            for i, ae in enumerate(active_edges):
-                if ae.edge_id.startswith("sp_"):
-                    continue
-                if sum(1 for d in ae.direction if d != 0) != 1:
+        corridor_child_pairs: list[tuple[Any, tuple[str, int]]] = []
+        if len(children) > 0:
+            if edge_indices:
+                for i, ae in enumerate(active_edges):
+                    if ae.edge_id.startswith("sp_"):
+                        continue
+                    if sum(1 for d in ae.direction if d != 0) != 1:
+                        continue
+                    for s_child in children:
+                        s_id = s_child.node_id
+                        s_sol = child_solutions.get(s_id)
+                        sb = child_sub_boxes.get(s_id, ())
+                        if not s_sol or not sb:
+                            continue
+
+                        for k in range(len(sb)):
+                            pair = (i, (s_id, k))
+                            corridor_child_pairs.append(pair)
+                            self.separated_pairs.add(("corridor_child", pair[0], pair[1]))
+
+            for j, be in enumerate(boundary_exits):
+                if sum(1 for d in be.direction if d != 0) != 1:
                     continue
                 for s_child in children:
                     s_id = s_child.node_id
@@ -233,9 +275,11 @@ class ClearanceConstraintBuilder:
                     sb = child_sub_boxes.get(s_id, ())
                     if not s_sol or not sb:
                         continue
+                    if be.port in s_sol.local_coordinates or be.port in getattr(s_sol, "port_coordinates", {}):
+                        continue
 
                     for k in range(len(sb)):
-                        pair = (i, (s_id, k))
+                        pair = (("bexit", j), (s_id, k))
                         corridor_child_pairs.append(pair)
                         self.separated_pairs.add(("corridor_child", pair[0], pair[1]))
 
@@ -243,9 +287,7 @@ class ClearanceConstraintBuilder:
             add_disjunctive_box_separation(
                 model=self.formulation.model,
                 pairs=corridor_child_pairs,
-                get_box_a=lambda i: self.formulation.get_corridor_interior_box(
-                    active_edges[i]
-                ),
+                get_box_a=self.get_corridor_interior_box,
                 get_box_b=self.formulation.get_child_sub_box,
                 prefix="corridor_child",
                 m_big=self.formulation.m_big,
@@ -254,8 +296,9 @@ class ClearanceConstraintBuilder:
     def add_corridor_crossing_separation(self) -> None:
         """Enforce corridor crossing separation between non-incident orthogonal corridor segments."""
         active_edges = self.formulation.inventory.active_edges
+        boundary_exits = getattr(self.formulation.inventory, "boundary_exits", ())
 
-        crossing_pairs: list[tuple[int, int]] = []
+        crossing_pairs: list[tuple[Any, Any]] = []
         for i1 in range(len(active_edges)):
             ae1 = active_edges[i1]
             if ae1.edge_id.startswith("sp_"):
@@ -287,119 +330,66 @@ class ClearanceConstraintBuilder:
                     pair = (i1, i2)
                     crossing_pairs.append(pair)
                     self.separated_pairs.add(
-                        ("corridor_crossing", min(pair[0], pair[1]), max(pair[0], pair[1]))
+                        ("corridor_crossing", pair[0], pair[1])
                     )
 
-        add_disjunctive_box_separation(
-            model=self.formulation.model,
-            pairs=crossing_pairs,
-            get_box_a=lambda i: self.formulation.get_corridor_full_box(
-                active_edges[i]
-            ),
-            get_box_b=lambda i: self.formulation.get_corridor_full_box(
-                active_edges[i]
-            ),
-            prefix="corridor_crossing",
-            m_big=self.formulation.m_big,
-        )
+            for j in range(len(boundary_exits)):
+                be = boundary_exits[j]
+                if sum(1 for d in be.direction if d != 0) != 1:
+                    continue
+                act_be = (
+                    "x"
+                    if be.direction[0] != 0
+                    else ("y" if be.direction[1] != 0 else "z")
+                )
+                if act1 == act_be:
+                    continue
+                incident = (
+                    be.port in ae1.associated_rooms
+                    or be.port in (ae1.src, ae1.dst)
+                )
+                if not incident:
+                    pair = (i1, ("bexit", j))
+                    crossing_pairs.append(pair)
+                    self.separated_pairs.add(
+                        ("corridor_crossing", pair[0], pair[1])
+                    )
 
-    def add_doorway_clearance(self) -> None:
-        """Enforce external doorway clearance for boundary ports against child sub-boxes and rooms."""
-        node = getattr(self.formulation.inventory, "node", None)
-        rooms = self.formulation.inventory.rooms
-        children = self.formulation.inventory.children
-        child_solutions = self.formulation.inventory.child_solutions
-        child_sub_boxes = self.formulation.inventory.child_sub_boxes
-        graph = self.formulation.inventory.graph
-        b_ports = self.formulation.inventory.boundary_ports
-        gateway_anchors = getattr(self.formulation.inventory, "gateway_anchors", {})
-
-        if not (node and b_ports and graph):
-            return
-
-        sub_rooms: set[int] = set(node.rooms)
-
-        def _collect_subtree(n: SolveTreeNode) -> None:
-            sub_rooms.update(n.rooms)
-            for ch in n.children:
-                _collect_subtree(ch)
-
-        for ch in node.children:
-            _collect_subtree(ch)
-
-        for e in getattr(graph, "edges", ()):
-            corr = (
-                e.metadata.get("corridor")
-                if hasattr(e, "metadata") and e.metadata
-                else None
-            )
-            if corr and (corr.start_vnum in sub_rooms and corr.end_vnum in sub_rooms):
-                sub_rooms.update(corr.intermediate_vnums)
-
-        active_dirs: dict[int, set[tuple[int, int, int]]] = collections.defaultdict(set)
-        for ae in self.formulation.inventory.active_edges:
-            if isinstance(ae.src, int):
-                active_dirs[ae.src].add(ae.direction)
-            if isinstance(ae.dst, int):
-                rev = (-ae.direction[0], -ae.direction[1], -ae.direction[2])
-                active_dirs[ae.dst].add(rev)
-
-        all_parent_rooms = set(self.local_rooms)
-        doorway_child_pairs: list[
-            tuple[tuple[int, tuple[int, int, int]], tuple[str, int]]
-        ] = []
-        doorway_room_pairs: list[
-            tuple[tuple[int, tuple[int, int, int]], int]
-        ] = []
-
-        for u in b_ports:
-            if u not in all_parent_rooms or u not in graph.rooms:
+        for j1 in range(len(boundary_exits)):
+            be1 = boundary_exits[j1]
+            if sum(1 for d in be1.direction if d != 0) != 1:
                 continue
-            for ex in graph.rooms[u].exits:
-                if ex.dst_vnum not in sub_rooms:
-                    try:
-                        disp = direction_to_displacement(ex.direction)
-                    except ValueError:
-                        continue
-                    if disp in active_dirs[u]:
-                        continue
-                    d_key = (u, disp)
-                    for child in children:
-                        c_sol = child_solutions.get(child.node_id)
-                        sb = child_sub_boxes.get(child.node_id, ())
-                        if c_sol and sb:
-                            for k in range(len(sb)):
-                                pair = (d_key, (child.node_id, k))
-                                doorway_child_pairs.append(pair)
-                                self.separated_pairs.add(
-                                    ("doorway_child", pair[0], pair[1])
-                                )
-
-                    for w in all_parent_rooms:
-                        if w != u:
-                            pair_r = (d_key, w)
-                            doorway_room_pairs.append(pair_r)
-                            self.separated_pairs.add(
-                                ("doorway_room", pair_r[0], pair_r[1])
-                            )
-
-        if doorway_child_pairs:
-            add_disjunctive_box_separation(
-                model=self.formulation.model,
-                pairs=doorway_child_pairs,
-                get_box_a=self.get_doorway_box,
-                get_box_b=self.formulation.get_child_sub_box,
-                prefix="doorway_child",
-                m_big=self.formulation.m_big,
+            act1 = (
+                "x"
+                if be1.direction[0] != 0
+                else ("y" if be1.direction[1] != 0 else "z")
             )
+            for j2 in range(j1 + 1, len(boundary_exits)):
+                be2 = boundary_exits[j2]
+                if sum(1 for d in be2.direction if d != 0) != 1:
+                    continue
+                act2 = (
+                    "x"
+                    if be2.direction[0] != 0
+                    else ("y" if be2.direction[1] != 0 else "z")
+                )
+                if act1 == act2:
+                    continue
+                if be1.port == be2.port:
+                    continue
+                pair = (("bexit", j1), ("bexit", j2))
+                crossing_pairs.append(pair)
+                self.separated_pairs.add(
+                    ("corridor_crossing", pair[0], pair[1])
+                )
 
-        if doorway_room_pairs:
+        if crossing_pairs:
             add_disjunctive_box_separation(
                 model=self.formulation.model,
-                pairs=doorway_room_pairs,
-                get_box_a=self.get_doorway_box,
-                get_box_b=self.formulation.get_room_box,
-                prefix="doorway_room",
+                pairs=crossing_pairs,
+                get_box_a=self.get_corridor_full_box,
+                get_box_b=self.get_corridor_full_box,
+                prefix="corridor_crossing",
                 m_big=self.formulation.m_big,
             )
 
@@ -448,8 +438,11 @@ class ClearanceConstraintBuilder:
             b = viol.item_b
 
             if cat in ("parent_room", "child_child", "corridor_crossing"):
-                norm_key = (cat, min(a, b), max(a, b))
-                pair: tuple[Any, Any] = (min(a, b), max(a, b))
+                key_a = (0, a) if isinstance(a, int) else (1, a) if isinstance(a, tuple) else (2, str(a))
+                key_b = (0, b) if isinstance(b, int) else (1, b) if isinstance(b, tuple) else (2, str(b))
+                first, second = (a, b) if key_a <= key_b else (b, a)
+                norm_key = (cat, first, second)
+                pair = (first, second)
             else:
                 norm_key = (cat, a, b)
                 pair = (a, b)
@@ -551,9 +544,7 @@ class ClearanceConstraintBuilder:
                 add_disjunctive_box_separation(
                     model=self.formulation.model,
                     pairs=pairs,
-                    get_box_a=lambda i: self.formulation.get_corridor_interior_box(
-                        self.formulation.inventory.active_edges[i]
-                    ),
+                    get_box_a=self.get_corridor_interior_box,
                     get_box_b=self.formulation.get_room_box,
                     prefix="corridor_room",
                     m_big=self.formulation.m_big,
@@ -563,9 +554,7 @@ class ClearanceConstraintBuilder:
                 add_disjunctive_box_separation(
                     model=self.formulation.model,
                     pairs=pairs,
-                    get_box_a=lambda i: self.formulation.get_corridor_interior_box(
-                        self.formulation.inventory.active_edges[i]
-                    ),
+                    get_box_a=self.get_corridor_interior_box,
                     get_box_b=self.formulation.get_child_sub_box,
                     prefix="corridor_child",
                     m_big=self.formulation.m_big,
@@ -575,33 +564,9 @@ class ClearanceConstraintBuilder:
                 add_disjunctive_box_separation(
                     model=self.formulation.model,
                     pairs=pairs,
-                    get_box_a=lambda i: self.formulation.get_corridor_full_box(
-                        self.formulation.inventory.active_edges[i]
-                    ),
-                    get_box_b=lambda i: self.formulation.get_corridor_full_box(
-                        self.formulation.inventory.active_edges[i]
-                    ),
+                    get_box_a=self.get_corridor_full_box,
+                    get_box_b=self.get_corridor_full_box,
                     prefix="corridor_crossing",
-                    m_big=self.formulation.m_big,
-                    allowed_directions=allowed,
-                )
-            elif cat == "doorway_child":
-                add_disjunctive_box_separation(
-                    model=self.formulation.model,
-                    pairs=pairs,
-                    get_box_a=self.get_doorway_box,
-                    get_box_b=self.formulation.get_child_sub_box,
-                    prefix="doorway_child",
-                    m_big=self.formulation.m_big,
-                    allowed_directions=allowed,
-                )
-            elif cat == "doorway_room":
-                add_disjunctive_box_separation(
-                    model=self.formulation.model,
-                    pairs=pairs,
-                    get_box_a=self.get_doorway_box,
-                    get_box_b=self.formulation.get_room_box,
-                    prefix="doorway_room",
                     m_big=self.formulation.m_big,
                     allowed_directions=allowed,
                 )
@@ -613,7 +578,6 @@ class ClearanceConstraintBuilder:
         self.add_parent_room_separation()
         self.add_child_child_separation()
         self.add_room_child_separation()
-        self.add_doorway_clearance()
         self.add_corridor_room_separation()
         self.add_corridor_child_separation()
         self.add_corridor_crossing_separation()
@@ -681,7 +645,6 @@ def detect_cluster_collisions(
       4. Corridor–Room: Corridor interior points penetrating a third-party parent room.
       5. Corridor–Child: Corridor interior segment penetrating a sibling child keep-out sub-box.
       6. Corridor–Corridor: Non-incident orthogonal corridor segments crossing in 3D.
-      7. Doorway: Boundary doorway vector obstructed by non-incident child sub-box or room.
 
     Args:
         formulation: ClusterFormulation containing inventory, graph, and model metadata.
@@ -704,6 +667,7 @@ def detect_cluster_collisions(
     child_sub_boxes = inventory.child_sub_boxes
     gateway_anchors = inventory.gateway_anchors
     active_edges = inventory.active_edges
+    boundary_exits = getattr(inventory, "boundary_exits", ())
     b_ports = inventory.boundary_ports
 
     # Category 1: Room-Room Collisions
@@ -839,6 +803,42 @@ def detect_cluster_collisions(
                     )
                 )
 
+    for j, be in enumerate(boundary_exits):
+        if sum(1 for d in be.direction if d != 0) != 1:
+            continue
+        try:
+            p1 = _extract_entity_coord(be.port, extraction, inventory)
+        except KeyError:
+            continue
+        dx, dy, dz = be.direction
+        length = be.length
+        p2 = (p1[0] + dx * length, p1[1] + dy * length, p1[2] + dz * length)
+        b_min_x, b_max_x = min(p1[0] + dx, p2[0]), max(p1[0] + dx, p2[0])
+        b_min_y, b_max_y = min(p1[1] + dy, p2[1]), max(p1[1] + dy, p2[1])
+        b_min_z, b_max_z = min(p1[2] + dz, p2[2]), max(p1[2] + dz, p2[2])
+
+        for w in parent_rooms:
+            if w == be.port:
+                continue
+            w_coord = parent_coords.get(w)
+            if w_coord is None:
+                continue
+            if (
+                b_min_x <= w_coord[0] <= b_max_x
+                and b_min_y <= w_coord[1] <= b_max_y
+                and b_min_z <= w_coord[2] <= b_max_z
+            ):
+                violations.append(
+                    ClearanceViolation(
+                        category="corridor_room",
+                        item_a=("bexit", j),
+                        item_b=w,
+                        description=(
+                            f"Boundary exit '{be.edge_id}' interior overlaps parent room {w} at {w_coord}."
+                        ),
+                    )
+                )
+
     # Category 5: Corridor-Child Collisions
     for i, ae in enumerate(active_edges):
         if ae.edge_id.startswith("sp_"):
@@ -906,6 +906,49 @@ def detect_cluster_collisions(
                         )
                     )
 
+    for j, be in enumerate(boundary_exits):
+        if sum(1 for d in be.direction if d != 0) != 1:
+            continue
+        try:
+            p1 = _extract_entity_coord(be.port, extraction, inventory)
+        except KeyError:
+            continue
+        dx, dy, dz = be.direction
+        length = be.length
+        p2 = (p1[0] + dx * length, p1[1] + dy * length, p1[2] + dz * length)
+        c_min_x, c_max_x = min(p1[0] + dx, p2[0]), max(p1[0] + dx, p2[0])
+        c_min_y, c_max_y = min(p1[1] + dy, p2[1]), max(p1[1] + dy, p2[1])
+        c_min_z, c_max_z = min(p1[2] + dz, p2[2]), max(p1[2] + dz, p2[2])
+
+        for s_child in children:
+            s_id = s_child.node_id
+            s_sol = child_solutions.get(s_id)
+            sb = child_sub_boxes.get(s_id, ())
+            if not s_sol or not sb or s_id not in extraction.raw_child_offsets:
+                continue
+            if be.port in s_sol.local_coordinates or be.port in getattr(s_sol, "port_coordinates", {}):
+                continue
+
+            for k in range(len(sb)):
+                box = _extract_child_sub_box_bounds(
+                    (s_id, k), extraction, inventory
+                )
+                if (
+                    max(c_min_x, box[0]) <= min(c_max_x, box[1])
+                    and max(c_min_y, box[2]) <= min(c_max_y, box[3])
+                    and max(c_min_z, box[4]) <= min(c_max_z, box[5])
+                ):
+                    violations.append(
+                        ClearanceViolation(
+                            category="corridor_child",
+                            item_a=("bexit", j),
+                            item_b=(s_id, k),
+                            description=(
+                                f"Boundary exit '{be.edge_id}' interior intersects sibling child '{s_id}' sub-box {k}."
+                            ),
+                        )
+                    )
+
     # Category 6: Corridor-Corridor Collisions
     for i1 in range(len(active_edges)):
         ae1 = active_edges[i1]
@@ -959,106 +1002,99 @@ def detect_cluster_collisions(
                     )
                 )
 
-    # Category 7: Doorway Clearance
-    node = getattr(inventory, "node", None)
-    b_ports = inventory.boundary_ports
-    graph = inventory.graph
-
-    if node and b_ports and graph:
-        sub_rooms: set[int] = set(node.rooms)
-
-        def _collect_subtree(n: SolveTreeNode) -> None:
-            sub_rooms.update(n.rooms)
-            for ch in n.children:
-                _collect_subtree(ch)
-
-        for ch in node.children:
-            _collect_subtree(ch)
-
-        for e in getattr(graph, "edges", ()):
-            corr = (
-                e.metadata.get("corridor")
-                if hasattr(e, "metadata") and e.metadata
-                else None
+        for j in range(len(boundary_exits)):
+            be = boundary_exits[j]
+            if sum(1 for d in be.direction if d != 0) != 1:
+                continue
+            act_be = (
+                "x"
+                if be.direction[0] != 0
+                else ("y" if be.direction[1] != 0 else "z")
             )
-            if corr and (corr.start_vnum in sub_rooms and corr.end_vnum in sub_rooms):
-                sub_rooms.update(corr.intermediate_vnums)
-
-        active_dirs: dict[int, set[tuple[int, int, int]]] = collections.defaultdict(set)
-        for ae in active_edges:
-            if isinstance(ae.src, int):
-                active_dirs[ae.src].add(ae.direction)
-            if isinstance(ae.dst, int):
-                rev = (-ae.direction[0], -ae.direction[1], -ae.direction[2])
-                active_dirs[ae.dst].add(rev)
-
-        all_parent_rooms = set(rooms)
-        for u in b_ports:
-            if u not in all_parent_rooms or u not in graph.rooms:
+            if act1 == act_be:
                 continue
-            u_pt = parent_coords.get(u)
-            if u_pt is None:
+            incident = (
+                be.port in ae1.associated_rooms
+                or be.port in (ae1.src, ae1.dst)
+            )
+            if incident:
                 continue
-            for ex in graph.rooms[u].exits:
-                if ex.dst_vnum not in sub_rooms:
-                    try:
-                        disp = direction_to_displacement(ex.direction)
-                    except ValueError:
-                        continue
-                    if disp in active_dirs[u]:
-                        continue
-                    d_key = (u, disp)
-                    door_pt = (u_pt[0] + disp[0], u_pt[1] + disp[1], u_pt[2] + disp[2])
+            try:
+                p_be_1 = _extract_entity_coord(be.port, extraction, inventory)
+            except KeyError:
+                continue
+            p_be_2 = (
+                p_be_1[0] + be.direction[0] * be.length,
+                p_be_1[1] + be.direction[1] * be.length,
+                p_be_1[2] + be.direction[2] * be.length,
+            )
+            seg_be = Segment3D(Coord3D(*p_be_1), Coord3D(*p_be_2))
+            if segments_intersect_3d(seg1, seg_be):
+                violations.append(
+                    ClearanceViolation(
+                        category="corridor_crossing",
+                        item_a=i1,
+                        item_b=("bexit", j),
+                        description=(
+                            f"Corridor '{ae1.edge_id}' and boundary exit '{be.edge_id}' cross in 3D."
+                        ),
+                    )
+                )
 
-                    # Check against child sub-boxes
-                    for child in children:
-                        cid = child.node_id
-                        c_sol = child_solutions.get(cid)
-                        sb = child_sub_boxes.get(cid, ())
-                        if (
-                            not c_sol
-                            or not sb
-                            or cid not in extraction.raw_child_offsets
-                        ):
-                            continue
-                        for k in range(len(sb)):
-                            box = _extract_child_sub_box_bounds(
-                                (cid, k), extraction, inventory
-                            )
-                            if (
-                                box[0] <= door_pt[0] <= box[1]
-                                and box[2] <= door_pt[1] <= box[3]
-                                and box[4] <= door_pt[2] <= box[5]
-                            ):
-                                violations.append(
-                                    ClearanceViolation(
-                                        category="doorway_child",
-                                        item_a=d_key,
-                                        item_b=(cid, k),
-                                        description=(
-                                            f"Doorway from port {u} in direction {disp} at {door_pt} "
-                                            f"obstructed by child '{cid}' sub-box {k}."
-                                        ),
-                                    )
-                                )
+    for j1 in range(len(boundary_exits)):
+        be1 = boundary_exits[j1]
+        if sum(1 for d in be1.direction if d != 0) != 1:
+            continue
+        act1 = (
+            "x"
+            if be1.direction[0] != 0
+            else ("y" if be1.direction[1] != 0 else "z")
+        )
+        try:
+            p1_a = _extract_entity_coord(be1.port, extraction, inventory)
+        except KeyError:
+            continue
+        p1_b = (
+            p1_a[0] + be1.direction[0] * be1.length,
+            p1_a[1] + be1.direction[1] * be1.length,
+            p1_a[2] + be1.direction[2] * be1.length,
+        )
+        seg1 = Segment3D(Coord3D(*p1_a), Coord3D(*p1_b))
 
-                    # Check against third-party parent rooms
-                    for w in rooms:
-                        if w == u:
-                            continue
-                        w_pt = parent_coords.get(w)
-                        if w_pt == door_pt:
-                            violations.append(
-                                ClearanceViolation(
-                                    category="doorway_room",
-                                    item_a=d_key,
-                                    item_b=w,
-                                    description=(
-                                        f"Doorway from port {u} in direction {disp} at {door_pt} "
-                                        f"obstructed by parent room {w}."
-                                    ),
-                                )
-                            )
+        for j2 in range(j1 + 1, len(boundary_exits)):
+            be2 = boundary_exits[j2]
+            if sum(1 for d in be2.direction if d != 0) != 1:
+                continue
+            act2 = (
+                "x"
+                if be2.direction[0] != 0
+                else ("y" if be2.direction[1] != 0 else "z")
+            )
+            if act1 == act2:
+                continue
+            if be1.port == be2.port:
+                continue
+            try:
+                p2_a = _extract_entity_coord(be2.port, extraction, inventory)
+            except KeyError:
+                continue
+            p2_b = (
+                p2_a[0] + be2.direction[0] * be2.length,
+                p2_a[1] + be2.direction[1] * be2.length,
+                p2_a[2] + be2.direction[2] * be2.length,
+            )
+            seg2 = Segment3D(Coord3D(*p2_a), Coord3D(*p2_b))
+            if segments_intersect_3d(seg1, seg2):
+                violations.append(
+                    ClearanceViolation(
+                        category="corridor_crossing",
+                        item_a=("bexit", j1),
+                        item_b=("bexit", j2),
+                        description=(
+                            f"Boundary exits '{be1.edge_id}' and '{be2.edge_id}' cross in 3D."
+                        ),
+                    )
+                )
 
     return violations
 

@@ -180,14 +180,6 @@ class TestSpatialBoundResolution:
         assert full_bounds[0] == SpatialBoundExpr(10, 0, 20, 0)
         assert full_bounds[1] == SpatialBoundExpr(10, 0, 10, 0)
 
-    def test_get_entity_spatial_bounds_doorway(self) -> None:
-        """Doorway vectors resolve to anchor room with displacement offset."""
-        bounds = get_entity_spatial_bounds((10, (1, 0, 0)), "doorway_room", None, is_item_a=True)
-        assert bounds is not None
-        assert bounds[0] == SpatialBoundExpr(10, 1, 10, 1)
-        assert bounds[1] == SpatialBoundExpr(10, 0, 10, 0)
-        assert bounds[2] == SpatialBoundExpr(10, 0, 10, 0)
-
 
 class TestCandidateDirectionFiltering:
     """Tests for pre-injection filtering of candidate separation directions against the DAG."""
