@@ -759,3 +759,69 @@ class TestClearanceCutPriorityAndLimits:
             cuts = builder.inject_clearance_cuts(violations, max_cuts_per_pass=10)
             assert cuts == 2
             assert len(builder.separated_pairs) == 2
+
+    def test_get_corridor_boxes_typed_entities(self) -> None:
+        """get_corridor_interior_box and get_corridor_full_box resolve CorridorClearanceBox and BoundaryExitClearanceBox."""
+        from romutil.layout.milp.clearance import (
+            BoundaryExitClearanceBox,
+            CorridorClearanceBox,
+        )
+
+        formulation = MagicMock()
+        formulation.inventory.active_edges = ["edge0", "edge1"]
+        formulation.inventory.boundary_exits = ["exit0", "exit1"]
+        formulation.get_corridor_interior_box.return_value = (0, 0, 0, 1, 1, 1)
+        formulation.get_corridor_full_box.return_value = (0, 0, 0, 2, 2, 2)
+        formulation.get_boundary_exit_interior_box.return_value = (3, 3, 3, 4, 4, 4)
+        formulation.get_boundary_exit_full_box.return_value = (3, 3, 3, 5, 5, 5)
+
+        builder = ClearanceConstraintBuilder(formulation)
+
+        c_box = CorridorClearanceBox(edge_index=1, edge_id="e1")
+        b_box = BoundaryExitClearanceBox(exit_index=0, edge_id="be0")
+
+        assert builder.get_corridor_interior_box(c_box) == (0, 0, 0, 1, 1, 1)
+        formulation.get_corridor_interior_box.assert_called_with("edge1")
+
+        assert builder.get_corridor_full_box(c_box) == (0, 0, 0, 2, 2, 2)
+        formulation.get_corridor_full_box.assert_called_with("edge1")
+
+        assert builder.get_corridor_interior_box(b_box) == (3, 3, 3, 4, 4, 4)
+        formulation.get_boundary_exit_interior_box.assert_called_with("exit0")
+
+        assert builder.get_corridor_full_box(b_box) == (3, 3, 3, 5, 5, 5)
+        formulation.get_boundary_exit_full_box.assert_called_with("exit0")
+
+    def test_inject_clearance_cuts_typed_entities(self) -> None:
+        """inject_clearance_cuts sorts and injects violations using typed clearance box objects."""
+        from romutil.layout.milp.clearance import (
+            BoundaryExitClearanceBox,
+            ChildSubClearanceBox,
+            CorridorClearanceBox,
+            RoomClearanceBox,
+        )
+
+        formulation = MagicMock()
+        builder = ClearanceConstraintBuilder(formulation)
+        violations = [
+            ClearanceViolation(
+                category="room_child",
+                item_a=RoomClearanceBox(10),
+                item_b=ChildSubClearanceBox("child_1", 0),
+            ),
+            ClearanceViolation(
+                category="corridor_room",
+                item_a=CorridorClearanceBox(0, "e0"),
+                item_b=RoomClearanceBox(20),
+            ),
+            ClearanceViolation(
+                category="corridor_crossing",
+                item_a=BoundaryExitClearanceBox(0, "b0"),
+                item_b=CorridorClearanceBox(1, "e1"),
+            ),
+        ]
+        with patch("romutil.layout.milp.clearance.add_disjunctive_box_separation") as mock_sep:
+            cuts = builder.inject_clearance_cuts(violations, max_cuts_per_pass=10)
+            assert cuts == 3
+            assert len(builder.separated_pairs) == 3
+            assert mock_sep.call_count == 3

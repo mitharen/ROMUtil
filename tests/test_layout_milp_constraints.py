@@ -46,7 +46,7 @@ class TestAddDisjunctiveBoxSeparation:
         for suffix in ("br", "bl", "ba", "bb", "bu", "bd"):
             assert hasattr(model, f"test_box_{suffix}")
             var = getattr(model, f"test_box_{suffix}")
-            assert ("box_a", "box_b") in var
+            assert 0 in var
 
         for suffix in ("sum", "r", "l", "a", "b", "u", "d"):
             assert hasattr(model, f"test_box_sep_{suffix}")
@@ -69,7 +69,7 @@ class TestAddDisjunctiveBoxSeparation:
 
         for var_name in ("b_r", "b_l", "b_a", "b_b", "b_u", "b_d"):
             assert hasattr(model, var_name)
-            assert (1, 2) in getattr(model, var_name)
+            assert 0 in getattr(model, var_name)
 
         for clist_name in ("sep_sum", "sep_r", "sep_l", "sep_a", "sep_b", "sep_u", "sep_d"):
             assert hasattr(model, clist_name)
@@ -200,13 +200,13 @@ class TestAddDisjunctiveBoxSeparation:
             m_big=100,
         )
 
-        for p in pairs:
-            assert p in model.multi_br
-            assert p in model.multi_bl
-            assert p in model.multi_ba
-            assert p in model.multi_bb
-            assert p in model.multi_bu
-            assert p in model.multi_bd
+        for idx in range(len(pairs)):
+            assert idx in model.multi_br
+            assert idx in model.multi_bl
+            assert idx in model.multi_ba
+            assert idx in model.multi_bb
+            assert idx in model.multi_bu
+            assert idx in model.multi_bd
 
         assert len(model.multi_sep_sum) == 3
         assert len(model.multi_sep_r) == 3
@@ -215,3 +215,36 @@ class TestAddDisjunctiveBoxSeparation:
         assert len(model.multi_sep_b) == 3
         assert len(model.multi_sep_u) == 3
         assert len(model.multi_sep_d) == 3
+
+    def test_heterogeneous_pair_shapes_indexed_by_integer(self) -> None:
+        """Pairs with heterogeneous tuple dimensions and typed entities succeed without Set dimension errors."""
+        from romutil.layout.milp.clearance import (
+            BoundaryExitClearanceBox,
+            ChildSubClearanceBox,
+            CorridorClearanceBox,
+            RoomClearanceBox,
+        )
+
+        model = pyo.ConcreteModel()
+        # Pair 0: 3-tuple flattened (int, (str, int)) vs 4-tuple (("bexit", 0), ("child", 1))
+        # Pair 1: Typed clearance entity dataclasses
+        pairs = [
+            (10, ("child_a", 0)),
+            (("bexit", 0), ("comp_0_block_11", 8)),
+            (RoomClearanceBox(10), ChildSubClearanceBox("child_a", 0)),
+            (CorridorClearanceBox(0), BoundaryExitClearanceBox(1)),
+        ]
+
+        add_disjunctive_box_separation(
+            model=model,
+            pairs=pairs,
+            get_box_a=lambda _: (0, 0, 0, 0, 0, 0),
+            get_box_b=lambda _: (2, 2, 2, 2, 2, 2),
+            prefix="hetero",
+            m_big=100,
+        )
+
+        for idx in range(len(pairs)):
+            assert idx in model.hetero_br
+            assert idx in model.hetero_bl
+        assert len(model.hetero_sep_sum) == len(pairs)

@@ -56,12 +56,15 @@ def add_disjunctive_box_separation(
             idx += 1
         target_prefix = f"{clean_prefix}_{idx}"
 
-    var_r = pyo.Var(pair_list, domain=pyo.Binary)
-    var_l = pyo.Var(pair_list, domain=pyo.Binary)
-    var_a = pyo.Var(pair_list, domain=pyo.Binary)
-    var_b = pyo.Var(pair_list, domain=pyo.Binary)
-    var_u = pyo.Var(pair_list, domain=pyo.Binary)
-    var_d = pyo.Var(pair_list, domain=pyo.Binary)
+    num_pairs = len(pair_list)
+    pair_indices = range(num_pairs)
+
+    var_r = pyo.Var(pair_indices, domain=pyo.Binary)
+    var_l = pyo.Var(pair_indices, domain=pyo.Binary)
+    var_a = pyo.Var(pair_indices, domain=pyo.Binary)
+    var_b = pyo.Var(pair_indices, domain=pyo.Binary)
+    var_u = pyo.Var(pair_indices, domain=pyo.Binary)
+    var_d = pyo.Var(pair_indices, domain=pyo.Binary)
 
     sep_sum = pyo.ConstraintList()
     sep_r = pyo.ConstraintList()
@@ -104,16 +107,16 @@ def add_disjunctive_box_separation(
         setattr(model, "sep_d", sep_d)
 
     all_six_dirs = {"r", "l", "a", "b", "u", "d"}
-    for item_a, item_b in pair_list:
+    for idx, (item_a, item_b) in enumerate(pair_list):
         min_xa, max_xa, min_ya, max_ya, min_za, max_za = get_box_a(item_a)
         min_xb, max_xb, min_yb, max_yb, min_zb, max_zb = get_box_b(item_b)
 
-        br = var_r[item_a, item_b]
-        bl = var_l[item_a, item_b]
-        ba = var_a[item_a, item_b]
-        bb = var_b[item_a, item_b]
-        bu = var_u[item_a, item_b]
-        bd = var_d[item_a, item_b]
+        br = var_r[idx]
+        bl = var_l[idx]
+        ba = var_a[idx]
+        bb = var_b[idx]
+        bu = var_u[idx]
+        bd = var_d[idx]
 
         pair_dirs = (
             set(allowed_directions[(item_a, item_b)])

@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 from romutil.layout.milp.clearance import (
+    BoundaryExitClearanceBox,
+    ChildSubClearanceBox,
     ClearanceConstraintBuilder,
+    ClearanceEntity,
     ClearanceViolation,
+    CorridorClearanceBox,
+    RoomClearanceBox,
     apply_clearance_constraints,
     detect_cluster_collisions,
 )
@@ -46,16 +51,21 @@ from romutil.types import LayoutSolverError
 
 __all__ = [
     "ActiveEdge",
+    "BoundaryExitClearanceBox",
+    "ChildSubClearanceBox",
     "ClearanceConstraintBuilder",
+    "ClearanceEntity",
     "ClearanceViolation",
     "ClusterFormulation",
     "ClusterInventory",
     "ClusterSolvePhase",
+    "CorridorClearanceBox",
     "GatewayCutHandler",
     "HierarchicalClusterSolver",
     "HierarchicalTreeSolver",
     "InterChildBridgeHandler",
     "LayoutSolverError",
+    "RoomClearanceBox",
     "SolvedClusterExtraction",
     "SplitPairHandler",
     "add_disjunctive_box_separation",

@@ -319,14 +319,18 @@ class ClusterFormulation:
             self.model.cz[cid] + loc.z,
         )
 
-    def get_room_box(self, u: int) -> tuple[Any, Any, Any, Any, Any, Any]:
+    def get_room_box(self, u: int | Any) -> tuple[Any, Any, Any, Any, Any, Any]:
         """Return 3D bounding box (min_x, max_x, min_y, max_y, min_z, max_z) for a parent room."""
-        px, py, pz = self.get_point(u)
+        vnum = u.vnum if hasattr(u, "vnum") else u
+        px, py, pz = self.get_point(vnum)
         return (px, px, py, py, pz, pz)
 
-    def get_child_sub_box(self, key: tuple[str, int]) -> tuple[Any, Any, Any, Any, Any, Any]:
+    def get_child_sub_box(self, key: tuple[str, int] | Any) -> tuple[Any, Any, Any, Any, Any, Any]:
         """Return 3D bounding box for a child sub-box indexed by (child_id, index)."""
-        cid, k = key
+        if hasattr(key, "child_id") and hasattr(key, "box_index"):
+            cid, k = key.child_id, key.box_index
+        else:
+            cid, k = key
         raw_sb = self.inventory.child_sub_boxes[cid][k]
         sb = (
             raw_sb

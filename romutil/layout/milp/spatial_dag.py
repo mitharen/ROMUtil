@@ -233,29 +233,35 @@ def get_entity_spatial_bounds(
         3-tuple of SpatialBoundExpr for X, Y, Z axes, or None if the item cannot be resolved.
     """
     if category == "parent_room":
-        if not isinstance(item, int):
+        vnum = item.vnum if hasattr(item, "vnum") else item
+        if not isinstance(vnum, int):
             return None
         return (
-            SpatialBoundExpr(min_node=item, min_const=0, max_node=item, max_const=0),
-            SpatialBoundExpr(min_node=item, min_const=0, max_node=item, max_const=0),
-            SpatialBoundExpr(min_node=item, min_const=0, max_node=item, max_const=0),
+            SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
+            SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
+            SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
         )
 
     if category == "child_child":
+        if hasattr(item, "child_id") and hasattr(item, "box_index"):
+            return _get_child_sub_box_bounds(item.child_id, item.box_index, inventory)
         if not (isinstance(item, (tuple, list)) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], int)):
             return None
         return _get_child_sub_box_bounds(item[0], item[1], inventory)
 
     if category == "room_child":
         if is_item_a:
-            if not isinstance(item, int):
+            vnum = item.vnum if hasattr(item, "vnum") else item
+            if not isinstance(vnum, int):
                 return None
             return (
-                SpatialBoundExpr(min_node=item, min_const=0, max_node=item, max_const=0),
-                SpatialBoundExpr(min_node=item, min_const=0, max_node=item, max_const=0),
-                SpatialBoundExpr(min_node=item, min_const=0, max_node=item, max_const=0),
+                SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
+                SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
+                SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
             )
         else:
+            if hasattr(item, "child_id") and hasattr(item, "box_index"):
+                return _get_child_sub_box_bounds(item.child_id, item.box_index, inventory)
             if not (isinstance(item, (tuple, list)) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], int)):
                 return None
             return _get_child_sub_box_bounds(item[0], item[1], inventory)
@@ -264,7 +270,19 @@ def get_entity_spatial_bounds(
         if is_item_a:
             if inventory is None:
                 return None
-            if isinstance(item, int):
+            if hasattr(item, "edge_index"):
+                idx = item.edge_index
+                active_edges = getattr(inventory, "active_edges", ())
+                if idx < 0 or idx >= len(active_edges):
+                    return None
+                return _get_corridor_bounds(active_edges[idx], inventory, full=False)
+            elif hasattr(item, "exit_index"):
+                idx = item.exit_index
+                boundary_exits = getattr(inventory, "boundary_exits", ())
+                if idx < 0 or idx >= len(boundary_exits):
+                    return None
+                return _get_boundary_exit_bounds(boundary_exits[idx], inventory, full=False)
+            elif isinstance(item, int):
                 active_edges = getattr(inventory, "active_edges", ())
                 if item < 0 or item >= len(active_edges):
                     return None
@@ -277,14 +295,17 @@ def get_entity_spatial_bounds(
             return None
         else:
             if category == "corridor_room":
-                if not isinstance(item, int):
+                vnum = item.vnum if hasattr(item, "vnum") else item
+                if not isinstance(vnum, int):
                     return None
                 return (
-                    SpatialBoundExpr(min_node=item, min_const=0, max_node=item, max_const=0),
-                    SpatialBoundExpr(min_node=item, min_const=0, max_node=item, max_const=0),
-                    SpatialBoundExpr(min_node=item, min_const=0, max_node=item, max_const=0),
+                    SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
+                    SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
+                    SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
                 )
             else:
+                if hasattr(item, "child_id") and hasattr(item, "box_index"):
+                    return _get_child_sub_box_bounds(item.child_id, item.box_index, inventory)
                 if not (isinstance(item, (tuple, list)) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], int)):
                     return None
                 return _get_child_sub_box_bounds(item[0], item[1], inventory)
@@ -292,7 +313,19 @@ def get_entity_spatial_bounds(
     if category == "corridor_crossing":
         if inventory is None:
             return None
-        if isinstance(item, int):
+        if hasattr(item, "edge_index"):
+            idx = item.edge_index
+            active_edges = getattr(inventory, "active_edges", ())
+            if idx < 0 or idx >= len(active_edges):
+                return None
+            return _get_corridor_bounds(active_edges[idx], inventory, full=True)
+        elif hasattr(item, "exit_index"):
+            idx = item.exit_index
+            boundary_exits = getattr(inventory, "boundary_exits", ())
+            if idx < 0 or idx >= len(boundary_exits):
+                return None
+            return _get_boundary_exit_bounds(boundary_exits[idx], inventory, full=True)
+        elif isinstance(item, int):
             active_edges = getattr(inventory, "active_edges", ())
             if item < 0 or item >= len(active_edges):
                 return None

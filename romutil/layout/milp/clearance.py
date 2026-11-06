@@ -35,6 +35,47 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class RoomClearanceBox:
+    """Clearance box representing a local parent room or boundary port."""
+
+    vnum: int
+
+
+@dataclass(frozen=True)
+class ChildSubClearanceBox:
+    """Clearance box representing a child cluster keep-out sub-box."""
+
+    child_id: str
+    box_index: int
+
+
+@dataclass(frozen=True)
+class CorridorClearanceBox:
+    """Clearance box representing an active corridor edge segment."""
+
+    edge_index: int
+    edge_id: str = ""
+    kind: str = "internal"
+
+
+@dataclass(frozen=True)
+class BoundaryExitClearanceBox:
+    """Clearance box representing an external boundary exit corridor segment."""
+
+    exit_index: int
+    edge_id: str = ""
+    kind: str = "bexit"
+
+
+ClearanceEntity = (
+    RoomClearanceBox
+    | ChildSubClearanceBox
+    | CorridorClearanceBox
+    | BoundaryExitClearanceBox
+)
+
+
+@dataclass(frozen=True)
 class ClearanceViolation:
     """Detected geometric collision or clearance violation between cluster layout entities."""
 
@@ -167,7 +208,15 @@ class ClearanceConstraintBuilder:
 
     def get_corridor_interior_box(self, item: Any) -> tuple[Any, Any, Any, Any, Any, Any]:
         """Return 3D bounding box for active edge or boundary exit interior segment."""
-        if isinstance(item, int):
+        if isinstance(item, CorridorClearanceBox):
+            return self.formulation.get_corridor_interior_box(
+                self.formulation.inventory.active_edges[item.edge_index]
+            )
+        elif isinstance(item, BoundaryExitClearanceBox):
+            return self.formulation.get_boundary_exit_interior_box(
+                self.formulation.inventory.boundary_exits[item.exit_index]
+            )
+        elif isinstance(item, int):
             return self.formulation.get_corridor_interior_box(
                 self.formulation.inventory.active_edges[item]
             )
@@ -179,7 +228,15 @@ class ClearanceConstraintBuilder:
 
     def get_corridor_full_box(self, item: Any) -> tuple[Any, Any, Any, Any, Any, Any]:
         """Return 3D bounding box for active edge or boundary exit entire segment."""
-        if isinstance(item, int):
+        if isinstance(item, CorridorClearanceBox):
+            return self.formulation.get_corridor_full_box(
+                self.formulation.inventory.active_edges[item.edge_index]
+            )
+        elif isinstance(item, BoundaryExitClearanceBox):
+            return self.formulation.get_boundary_exit_full_box(
+                self.formulation.inventory.boundary_exits[item.exit_index]
+            )
+        elif isinstance(item, int):
             return self.formulation.get_corridor_full_box(
                 self.formulation.inventory.active_edges[item]
             )
@@ -438,9 +495,22 @@ class ClearanceConstraintBuilder:
             b = viol.item_b
 
             if cat in ("parent_room", "child_child", "corridor_crossing"):
-                key_a = (0, a) if isinstance(a, int) else (1, a) if isinstance(a, tuple) else (2, str(a))
-                key_b = (0, b) if isinstance(b, int) else (1, b) if isinstance(b, tuple) else (2, str(b))
-                first, second = (a, b) if key_a <= key_b else (b, a)
+                def _item_sort_key(it: Any) -> tuple[int, Any]:
+                    if isinstance(it, int):
+                        return (0, it)
+                    elif isinstance(it, RoomClearanceBox):
+                        return (0, it.vnum)
+                    elif isinstance(it, ChildSubClearanceBox):
+                        return (1, (it.child_id, it.box_index))
+                    elif isinstance(it, CorridorClearanceBox):
+                        return (2, (0, it.edge_index))
+                    elif isinstance(it, BoundaryExitClearanceBox):
+                        return (2, (1, it.exit_index))
+                    elif isinstance(it, tuple):
+                        return (3, it)
+                    return (4, str(it))
+
+                first, second = (a, b) if _item_sort_key(a) <= _item_sort_key(b) else (b, a)
                 norm_key = (cat, first, second)
                 pair = (first, second)
             else:
@@ -608,12 +678,15 @@ def _extract_entity_coord(
 
 
 def _extract_child_sub_box_bounds(
-    key: tuple[str, int],
+    key: tuple[str, int] | ChildSubClearanceBox,
     extraction: SolvedClusterExtraction,
     inventory: ClusterInventory,
 ) -> tuple[int, int, int, int, int, int]:
     """Retrieve absolute bounding box (min_x, max_x, min_y, max_y, min_z, max_z) for a child sub-box."""
-    cid, k = key
+    if isinstance(key, ChildSubClearanceBox):
+        cid, k = key.child_id, key.box_index
+    else:
+        cid, k = key
     cx, cy, cz = extraction.raw_child_offsets[cid]
     raw_sb = inventory.child_sub_boxes[cid][k]
     sb = (
@@ -1111,8 +1184,13 @@ def apply_clearance_constraints(formulation: ClusterFormulation) -> None:
 
 
 __all__ = [
+    "BoundaryExitClearanceBox",
+    "ChildSubClearanceBox",
     "ClearanceConstraintBuilder",
+    "ClearanceEntity",
     "ClearanceViolation",
+    "CorridorClearanceBox",
+    "RoomClearanceBox",
     "VIOLATION_TIER_PRIORITY",
     "_extract_child_sub_box_bounds",
     "_extract_entity_coord",
