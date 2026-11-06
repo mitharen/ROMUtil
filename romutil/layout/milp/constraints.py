@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import pyomo.environ as pyo
 
@@ -14,6 +14,7 @@ def add_disjunctive_box_separation(
     get_box_b: Callable[[Any], tuple[Any, Any, Any, Any, Any, Any]],
     prefix: str,
     m_big: int,
+    allowed_directions: Mapping[tuple[Any, Any], Sequence[str]] | None = None,
 ) -> None:
     """Enforce pairwise 3D axis-aligned disjunctive separation between bounding boxes.
 
@@ -39,6 +40,9 @@ def add_disjunctive_box_separation(
         get_box_b: Callable mapping item_b to (min_x, max_x, min_y, max_y, min_z, max_z).
         prefix: Naming prefix for the decision variables and constraint lists on the model.
         m_big: Big-M relaxation constant, typically twice the coordinate bounding domain.
+        allowed_directions: Optional mapping from pair to sequence of permitted direction codes
+            ('r', 'l', 'a', 'b', 'u', 'd'). Directions not permitted are fixed to 0 and their
+            Big-M constraints omitted to prevent integer infeasibility and reduce solver search space.
     """
     if not pairs:
         return
@@ -99,6 +103,7 @@ def add_disjunctive_box_separation(
         setattr(model, "sep_u", sep_u)
         setattr(model, "sep_d", sep_d)
 
+    all_six_dirs = {"r", "l", "a", "b", "u", "d"}
     for item_a, item_b in pair_list:
         min_xa, max_xa, min_ya, max_ya, min_za, max_za = get_box_a(item_a)
         min_xb, max_xb, min_yb, max_yb, min_zb, max_zb = get_box_b(item_b)
@@ -110,10 +115,48 @@ def add_disjunctive_box_separation(
         bu = var_u[item_a, item_b]
         bd = var_d[item_a, item_b]
 
-        sep_sum.add(br + bl + ba + bb + bu + bd >= 1)
-        sep_r.add(min_xa - max_xb >= 1 - 2 * m_big * (1 - br))
-        sep_l.add(min_xb - max_xa >= 1 - 2 * m_big * (1 - bl))
-        sep_a.add(min_ya - max_yb >= 1 - 2 * m_big * (1 - ba))
-        sep_b.add(min_yb - max_ya >= 1 - 2 * m_big * (1 - bb))
-        sep_u.add(min_za - max_zb >= 1 - 2 * m_big * (1 - bu))
-        sep_d.add(min_zb - max_za >= 1 - 2 * m_big * (1 - bd))
+        pair_dirs = (
+            set(allowed_directions[(item_a, item_b)])
+            if allowed_directions and (item_a, item_b) in allowed_directions
+            else all_six_dirs
+        )
+
+        if "r" not in pair_dirs:
+            br.fix(0)
+        if "l" not in pair_dirs:
+            bl.fix(0)
+        if "a" not in pair_dirs:
+            ba.fix(0)
+        if "b" not in pair_dirs:
+            bb.fix(0)
+        if "u" not in pair_dirs:
+            bu.fix(0)
+        if "d" not in pair_dirs:
+            bd.fix(0)
+
+        active_vars = [
+            v for d_code, v in [
+                ("r", br),
+                ("l", bl),
+                ("a", ba),
+                ("b", bb),
+                ("u", bu),
+                ("d", bd),
+            ]
+            if d_code in pair_dirs
+        ]
+        if active_vars:
+            sep_sum.add(sum(active_vars) >= 1)
+
+        if "r" in pair_dirs:
+            sep_r.add(min_xa - max_xb >= 1 - 2 * m_big * (1 - br))
+        if "l" in pair_dirs:
+            sep_l.add(min_xb - max_xa >= 1 - 2 * m_big * (1 - bl))
+        if "a" in pair_dirs:
+            sep_a.add(min_ya - max_yb >= 1 - 2 * m_big * (1 - ba))
+        if "b" in pair_dirs:
+            sep_b.add(min_yb - max_ya >= 1 - 2 * m_big * (1 - bb))
+        if "u" in pair_dirs:
+            sep_u.add(min_za - max_zb >= 1 - 2 * m_big * (1 - bu))
+        if "d" in pair_dirs:
+            sep_d.add(min_zb - max_za >= 1 - 2 * m_big * (1 - bd))
