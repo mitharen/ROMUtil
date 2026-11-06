@@ -2881,6 +2881,96 @@ class TestSafe2CutAllowlistEndToEnd:
                 elif e.direction == Direction.west:
                     assert dx < 0 and dy == 0 and dz == 0
 
+    def test_case_4_parallel_loops_sharing_halfspace_zero_collisions_zero_tears(self) -> None:
+        """Parallel loops sharing the same half-space solve with zero room collisions and zero corridor tears."""
+        rooms_data = {
+            1: {Direction.north: 2, Direction.east: 3, Direction.south: 4},
+            2: {Direction.south: 1, Direction.east: 30, Direction.north: 7},
+            3: {Direction.west: 1, Direction.north: 30},
+            30: {Direction.south: 3, Direction.west: 2},
+            4: {Direction.north: 1, Direction.east: 5},
+            5: {Direction.west: 4, Direction.north: 6},
+            6: {Direction.south: 5, Direction.west: 7},
+            7: {Direction.east: 6, Direction.south: 2},
+        }
+        rooms = {
+            vnum: Room(
+                vnum=vnum,
+                name=f"Room {vnum}",
+                description="",
+                exits=tuple(Exit(direction=d, dst_vnum=dst) for d, dst in exits.items()),
+            )
+            for vnum, exits in rooms_data.items()
+        }
+        all_exits = tuple(e for r in rooms.values() for e in r.exits)
+        world_graph = WorldGraph(rooms=rooms, exits=all_exits)
+
+        solver = HierarchicalLayoutSolver.production()
+        layout = solver.solve(world_graph)
+
+        assert layout.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
+        assert len(set(layout.coordinates.values())) == len(layout.coordinates) == len(rooms)
+
+        for r in rooms.values():
+            c_src = layout.coordinates[r.vnum]
+            for e in r.exits:
+                c_dst = layout.coordinates[e.dst_vnum]
+                dx = c_dst.x - c_src.x
+                dy = c_dst.y - c_src.y
+                dz = c_dst.z - c_src.z
+                if e.direction == Direction.north:
+                    assert dx == 0 and dy > 0 and dz == 0
+                elif e.direction == Direction.south:
+                    assert dx == 0 and dy < 0 and dz == 0
+                elif e.direction == Direction.east:
+                    assert dx > 0 and dy == 0 and dz == 0
+                elif e.direction == Direction.west:
+                    assert dx < 0 and dy == 0 and dz == 0
+
+    def test_case_5_nested_diamond_branches_zero_collisions_zero_tears(self) -> None:
+        """Nested diamond branches across split pair solve with zero room collisions and zero corridor tears."""
+        rooms_data = {
+            1: {Direction.north: 2, Direction.east: 10, Direction.west: 20},
+            2: {Direction.south: 1, Direction.east: 11, Direction.west: 21},
+            10: {Direction.west: 1, Direction.north: 11},
+            11: {Direction.south: 10, Direction.west: 2},
+            20: {Direction.east: 1, Direction.north: 21},
+            21: {Direction.south: 20, Direction.east: 2},
+        }
+        rooms = {
+            vnum: Room(
+                vnum=vnum,
+                name=f"Room {vnum}",
+                description="",
+                exits=tuple(Exit(direction=d, dst_vnum=dst) for d, dst in exits.items()),
+            )
+            for vnum, exits in rooms_data.items()
+        }
+        all_exits = tuple(e for r in rooms.values() for e in r.exits)
+        world_graph = WorldGraph(rooms=rooms, exits=all_exits)
+
+        solver = HierarchicalLayoutSolver.production()
+        layout = solver.solve(world_graph)
+
+        assert layout.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
+        assert len(set(layout.coordinates.values())) == len(layout.coordinates) == len(rooms)
+
+        for r in rooms.values():
+            c_src = layout.coordinates[r.vnum]
+            for e in r.exits:
+                c_dst = layout.coordinates[e.dst_vnum]
+                dx = c_dst.x - c_src.x
+                dy = c_dst.y - c_src.y
+                dz = c_dst.z - c_src.z
+                if e.direction == Direction.north:
+                    assert dx == 0 and dy > 0 and dz == 0
+                elif e.direction == Direction.south:
+                    assert dx == 0 and dy < 0 and dz == 0
+                elif e.direction == Direction.east:
+                    assert dx > 0 and dy == 0 and dz == 0
+                elif e.direction == Direction.west:
+                    assert dx < 0 and dy == 0 and dz == 0
+
 
 class TestInventoryCoordinatesAndAnchorPriority:
     """Unit tests for get_all_child_coordinates, formulation anchor priority, and port coincidence."""
