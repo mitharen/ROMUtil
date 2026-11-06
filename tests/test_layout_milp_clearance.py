@@ -482,6 +482,11 @@ class TestAreaClearanceIntegrity:
                 temple_crossings.append(e)
         assert temple_crossings == [], f"Temple entrance (3014->3005) crosses corridors: {temple_crossings}"
 
+        # 4. Specifically verify Clan Road routes strictly north of Temple Square
+        assert coords[3315].y > coords[3005].y, (
+            f"Clan Road at y={coords[3315].y} must route strictly north of Temple Square at y={coords[3005].y}"
+        )
+
 
 class TestChildSubBoxCorridorClearance:
     """Unit tests for child keep-out sub-box corridor clearance and collision isolation."""
@@ -669,14 +674,12 @@ class TestClearanceCutPriorityAndLimits:
         assert VIOLATION_TIER_PRIORITY["parent_room"] == 0
         assert VIOLATION_TIER_PRIORITY["child_child"] == 1
         assert VIOLATION_TIER_PRIORITY["room_child"] == 1
-        assert VIOLATION_TIER_PRIORITY["doorway_room"] == 2
-        assert VIOLATION_TIER_PRIORITY["doorway_child"] == 2
-        assert VIOLATION_TIER_PRIORITY["corridor_room"] == 3
-        assert VIOLATION_TIER_PRIORITY["corridor_child"] == 3
-        assert VIOLATION_TIER_PRIORITY["corridor_crossing"] == 4
+        assert VIOLATION_TIER_PRIORITY["corridor_room"] == 2
+        assert VIOLATION_TIER_PRIORITY["corridor_child"] == 2
+        assert VIOLATION_TIER_PRIORITY["corridor_crossing"] == 3
 
     def test_priority_tiering_injects_highest_priority_violations_first(self) -> None:
-        """inject_clearance_cuts prioritizes higher tiers (0-2) over lower tiers (3-4) within budget."""
+        """inject_clearance_cuts prioritizes higher tiers (0-1) over lower tiers (2-3) within budget."""
         formulation = MagicMock()
         formulation.options = LayoutOptions(max_cuts_per_pass=3)
         builder = ClearanceConstraintBuilder(formulation)
@@ -684,7 +687,7 @@ class TestClearanceCutPriorityAndLimits:
         violations = [
             ClearanceViolation(category="corridor_crossing", item_a=1, item_b=2),
             ClearanceViolation(category="corridor_room", item_a=0, item_b=10),
-            ClearanceViolation(category="doorway_room", item_a=(1, (1, 0, 0)), item_b=20),
+            ClearanceViolation(category="child_child", item_a=("c1", 0), item_b=("c2", 0)),
             ClearanceViolation(category="room_child", item_a=30, item_b=("c1", 0)),
             ClearanceViolation(category="parent_room", item_a=100, item_b=101),
         ]
@@ -692,10 +695,10 @@ class TestClearanceCutPriorityAndLimits:
         with patch("romutil.layout.milp.clearance.add_disjunctive_box_separation") as mock_sep:
             injected_count = builder.inject_clearance_cuts(violations)
             assert injected_count == 3
-            # Tier 0 (parent_room), Tier 1 (room_child), and Tier 2 (doorway_room) should be injected
+            # Tier 0 (parent_room), Tier 1 (child_child, room_child) should be injected
             assert ("parent_room", 100, 101) in builder.separated_pairs
+            assert ("child_child", ("c1", 0), ("c2", 0)) in builder.separated_pairs
             assert ("room_child", 30, ("c1", 0)) in builder.separated_pairs
-            assert ("doorway_room", (1, (1, 0, 0)), 20) in builder.separated_pairs
             # Lower tier violations (corridor_room, corridor_crossing) should NOT be injected in this pass
             assert ("corridor_room", 0, 10) not in builder.separated_pairs
             assert ("corridor_crossing", 1, 2) not in builder.separated_pairs

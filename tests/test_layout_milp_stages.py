@@ -283,12 +283,11 @@ class TestStage1Inventory:
             graph=graph,
         )
 
-        assert any(e.edge_id == "art_port_c_art_2" and e.src == 2 and e.dst == ("c_art", 2) for e in inv.active_edges)
+        assert any(e.edge_id == "gw_c_art_2_20" and e.src == 2 and e.dst == ("c_art", 20) for e in inv.active_edges)
         gw_edges = [e for e in inv.active_edges if e.edge_id.startswith("gw_")]
-        assert len(gw_edges) == 1
-        assert gw_edges[0].src == 1
-        assert gw_edges[0].dst == ("c_brg", 30)
-        assert gw_edges[0].min_length == 2
+        assert len(gw_edges) == 2
+        assert any(e.src == 1 and e.dst == ("c_brg", 30) and e.min_length == 2 for e in gw_edges)
+        assert any(e.src == 2 and e.dst == ("c_art", 20) and e.min_length == 1 for e in gw_edges)
 
     def test_derive_child_sub_boxes_leaf(self) -> None:
         """Leaf child decomposes non-convex interior cells into orthogonal sub-boxes."""
@@ -1839,28 +1838,6 @@ class TestStage3Clearance:
         assert hasattr(formulation.model, "corridor_child_br")  # Corridor vs sibling child
         assert hasattr(formulation.model, "corridor_crossing_br")   # Corridor crossing
 
-    def test_apply_clearances_doorway_child_clearance(self) -> None:
-        """External doorway clearance constraints separate boundary port exits from child sub-boxes."""
-        import dataclasses
-        child = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({10}))
-        parent = SolveTreeNode(node_id="p_door", node_type="container", rooms=frozenset({1}), children=(child,))
-        sol = NodeSolution(
-            node_id="c1",
-            local_coordinates={10: Coord3D(0, 0, 0)},
-            sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 0),),
-        )
-        base_graph = _make_graph([1, 10, 99], [(1, 99, Direction.east, 1)])
-        room_defs = dict(base_graph.rooms)
-        room_defs[1] = Room(vnum=1, name="Room 1", description="", exits=(Exit(direction=Direction.east, dst_vnum=99),))
-        graph = LayoutGraph(rooms=room_defs, edges=base_graph.edges)
-        inv = inventory_cluster(node=parent, child_solutions={"c1": sol}, graph=graph)
-        inv = dataclasses.replace(inv, boundary_ports=frozenset({1}))
-        formulation = ClusterFormulation(inventory=inv)
-
-        formulation.apply_doorway_clearance()
-        assert hasattr(formulation.model, "doorway_child_br")
-        assert hasattr(formulation.model, "doorway_child_sep_sum")
-
     def test_clearance_constraint_builder_direct(self) -> None:
         """ClearanceConstraintBuilder can be instantiated and executed directly."""
         node = SolveTreeNode(node_id="p_builder", node_type="block", rooms=frozenset({1, 2}))
@@ -1882,44 +1859,11 @@ class TestStage3Clearance:
         formulation.apply_parent_room_separation()
         formulation.apply_child_child_separation()
         formulation.apply_room_child_separation()
-        formulation.apply_doorway_clearance()
         formulation.apply_corridor_room_separation()
         formulation.apply_corridor_child_separation()
         formulation.apply_corridor_crossing_separation()
 
         assert hasattr(formulation.model, "parent_room_sep_sum")
-
-    def test_add_doorway_clearance_filtering_and_room_obstructions(self) -> None:
-        """add_doorway_clearance processes active directions, skips internal exits, and creates room separation."""
-        child = SolveTreeNode(node_id="c_d", node_type="leaf", rooms=frozenset({10}))
-        parent = SolveTreeNode(node_id="p_d", node_type="container", rooms=frozenset({1, 2}), children=(child,))
-        sol = NodeSolution("c_d", {10: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 0),))
-        base_graph = _make_graph([1, 2, 10, 99], [])
-        room_defs = dict(base_graph.rooms)
-        room_defs[1] = Room(
-            vnum=1,
-            name="R1",
-            description="",
-            exits=(
-                Exit(direction=Direction.east, dst_vnum=2),  # dst in sub_rooms -> skipped
-                Exit(direction=999, dst_vnum=99),  # invalid direction -> ValueError skipped
-                Exit(direction=Direction.north, dst_vnum=99),  # in active_dirs -> skipped
-                Exit(direction=Direction.south, dst_vnum=99),  # valid external doorway
-            ),
-        )
-        graph = LayoutGraph(rooms=room_defs, edges=base_graph.edges)
-
-        import dataclasses
-        inv = inventory_cluster(node=parent, child_solutions={"c_d": sol}, graph=graph)
-        inv = dataclasses.replace(
-            inv,
-            boundary_ports=frozenset({1}),
-            active_edges=(ActiveEdge("e_act", 1, 2, (0, 1, 0), 2, frozenset({1, 2}), frozenset()),),
-        )
-        formulation = ClusterFormulation(inventory=inv)
-        formulation.apply_doorway_clearance()
-        assert hasattr(formulation.model, "doorway_child_br")
-        assert hasattr(formulation.model, "doorway_room_br")
 
     def test_add_corridor_filtering_branches(self) -> None:
         """add_corridor_room_separation and add_corridor_child_separation handle skipped branches."""
@@ -2104,41 +2048,6 @@ class TestStage3DelayedCutsAndCollisionDetector:
         cuts_added = formulation.clearance_builder.inject_clearance_cuts(violations)
         assert cuts_added >= 1
         assert hasattr(formulation.model, "corridor_crossing_br")
-
-    def test_detect_and_inject_doorway_clearance(self) -> None:
-        """Boundary port doorway vector collisions with child sub-boxes and rooms are detected and separated."""
-        child = SolveTreeNode(node_id="c_door", node_type="leaf", rooms=frozenset({10}))
-        parent = SolveTreeNode(node_id="p_door", node_type="container", rooms=frozenset({1, 2}), children=(child,))
-        sol = NodeSolution("c_door", {10: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
-        base_graph = _make_graph([1, 2, 10, 99], [(1, 99, Direction.east, 1)])
-        room_defs = dict(base_graph.rooms)
-        room_defs[1] = Room(vnum=1, name="R1", description="", exits=(Exit(direction=Direction.east, dst_vnum=99),))
-        graph = LayoutGraph(rooms=room_defs, edges=base_graph.edges)
-
-        import dataclasses
-        inv = inventory_cluster(node=parent, child_solutions={"c_door": sol}, graph=graph)
-        inv = dataclasses.replace(inv, boundary_ports=frozenset({1}))
-        formulation = formulate_cluster_model(inventory=inv)
-
-        # Port 1 at (0, 0, 0), exit east -> doorway point (1, 0, 0).
-        # Child at (1, 0, 0) -> doorway_child collision.
-        # Room 2 at (1, 0, 0) -> doorway_room collision.
-        extraction = SolvedClusterExtraction(
-            raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0)},
-            raw_child_offsets={"c_door": (1, 0, 0)},
-            solver_status=SolverStatus.OPTIMAL,
-            raw_port_coords={1: (0, 0, 0)},
-        )
-
-        violations = detect_cluster_collisions(formulation, extraction)
-        categories = {v.category for v in violations}
-        assert "doorway_child" in categories
-        assert "doorway_room" in categories
-
-        cuts_added = formulation.clearance_builder.inject_clearance_cuts(violations)
-        assert cuts_added >= 2
-        assert hasattr(formulation.model, "doorway_child_br")
-        assert hasattr(formulation.model, "doorway_room_br")
 
     def test_solve_cluster_iterative_clean_single_iteration(self) -> None:
         """A simple non-colliding cluster solves in a single iteration without any Big-M binary cuts."""
@@ -2732,8 +2641,8 @@ class TestTypedChildHandlers:
 
         assert frozenset({"c_art1", "c_art2"}) not in res.equated_children
         gw_edge_ids = {e.edge_id for e in res.active_edges}
-        assert "art_port_c_art1_1" in gw_edge_ids
-        assert "art_port_c_art2_1" in gw_edge_ids
+        assert "gw_c_art1_1_11" in gw_edge_ids
+        assert "gw_c_art2_1_12" in gw_edge_ids
         assert "gw_c_brg_fwd_2_21" in gw_edge_ids
         assert "gw_c_brg_rev_31_3" in gw_edge_ids
         assert "gw_c_door_4_41" in gw_edge_ids
@@ -2902,7 +2811,7 @@ class TestTypedChildHandlers:
         assert edge.allow_transverse_slack is True
         assert edge.min_length == 3
 
-        # Spurious edges between already-aligned children not declared as severed corridors are suppressed
+        # Uncut graph exits between already-aligned children are discovered as active edges
         parent_no_severed = SolveTreeNode(
             node_id="p_none",
             node_type="container",
@@ -2914,7 +2823,11 @@ class TestTypedChildHandlers:
         )
         handler_no_severed = InterChildBridgeHandler(node=parent_no_severed, child_solutions=sols, graph=graph)
         res_no_severed = handler_no_severed.process(aligned_children={"c1", "c2"}, equated_children=set())
-        assert len(res_no_severed.active_edges) == 0
+        assert len(res_no_severed.active_edges) == 1
+        edge_no_sev = res_no_severed.active_edges[0]
+        assert edge_no_sev.src == ("c1", 100)
+        assert edge_no_sev.dst == ("c2", 200)
+        assert edge_no_sev.allow_transverse_slack is True
 
     def test_split_pair_handler_active_edge_sp_port_and_span(self) -> None:
         """Split pairs with poles in parent room set emit zero-length port weld and rigid span active edges."""

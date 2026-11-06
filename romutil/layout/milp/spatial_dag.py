@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 from romutil.layout.geometry import BoundingBox3D
 from romutil.layout.milp.inventory import (
     ActiveEdge,
+    BoundaryExit,
     EndpointRef,
     get_child_coordinate,
 )
@@ -175,6 +176,44 @@ def _get_corridor_bounds(
     return bounds_x, bounds_y, bounds_z
 
 
+def _get_boundary_exit_bounds(
+    be: BoundaryExit,
+    inventory: ClusterInventory | None,
+    full: bool = False,
+) -> EntitySpatialBounds:
+    """Compute 1D affine coordinate bound expressions for a boundary exit segment."""
+    port_node = be.port
+    dx, dy, dz = be.direction
+    length = be.length
+    margin = 0 if full else 1
+
+    if dx > 0:
+        min_cx, max_cx = margin, length
+    elif dx < 0:
+        min_cx, max_cx = -length, -margin
+    else:
+        min_cx, max_cx = 0, 0
+    bounds_x = SpatialBoundExpr(min_node=port_node, min_const=min_cx, max_node=port_node, max_const=max_cx)
+
+    if dy > 0:
+        min_cy, max_cy = margin, length
+    elif dy < 0:
+        min_cy, max_cy = -length, -margin
+    else:
+        min_cy, max_cy = 0, 0
+    bounds_y = SpatialBoundExpr(min_node=port_node, min_const=min_cy, max_node=port_node, max_const=max_cy)
+
+    if dz > 0:
+        min_cz, max_cz = margin, length
+    elif dz < 0:
+        min_cz, max_cz = -length, -margin
+    else:
+        min_cz, max_cz = 0, 0
+    bounds_z = SpatialBoundExpr(min_node=port_node, min_const=min_cz, max_node=port_node, max_const=max_cz)
+
+    return bounds_x, bounds_y, bounds_z
+
+
 def get_entity_spatial_bounds(
     item: Any,
     category: str,
@@ -185,7 +224,7 @@ def get_entity_spatial_bounds(
     """Retrieve 3D affine bounding box expressions for an item in a collision violation category.
 
     Args:
-        item: Layout entity reference (room ID, sub-box key, corridor edge index, doorway tuple).
+        item: Layout entity reference (room ID, sub-box key, corridor edge index).
         category: Clearance violation category name.
         inventory: ClusterInventory for resolving child sub-boxes, active edges, and solutions.
         is_item_a: True if item corresponds to item_a in the violation pair; False for item_b.
@@ -221,39 +260,21 @@ def get_entity_spatial_bounds(
                 return None
             return _get_child_sub_box_bounds(item[0], item[1], inventory)
 
-    if category in ("doorway_room", "doorway_child"):
-        if is_item_a:
-            if not (isinstance(item, (tuple, list)) and len(item) == 2 and isinstance(item[0], int) and isinstance(item[1], (tuple, list)) and len(item[1]) == 3):
-                return None
-            u, disp = item
-            dx, dy, dz = int(disp[0]), int(disp[1]), int(disp[2])
-            return (
-                SpatialBoundExpr(min_node=u, min_const=dx, max_node=u, max_const=dx),
-                SpatialBoundExpr(min_node=u, min_const=dy, max_node=u, max_const=dy),
-                SpatialBoundExpr(min_node=u, min_const=dz, max_node=u, max_const=dz),
-            )
-        else:
-            if category == "doorway_room":
-                if not isinstance(item, int):
-                    return None
-                return (
-                    SpatialBoundExpr(min_node=item, min_const=0, max_node=item, max_const=0),
-                    SpatialBoundExpr(min_node=item, min_const=0, max_node=item, max_const=0),
-                    SpatialBoundExpr(min_node=item, min_const=0, max_node=item, max_const=0),
-                )
-            else:
-                if not (isinstance(item, (tuple, list)) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], int)):
-                    return None
-                return _get_child_sub_box_bounds(item[0], item[1], inventory)
-
     if category in ("corridor_room", "corridor_child"):
         if is_item_a:
-            if not isinstance(item, int) or inventory is None:
+            if inventory is None:
                 return None
-            active_edges = getattr(inventory, "active_edges", ())
-            if item < 0 or item >= len(active_edges):
-                return None
-            return _get_corridor_bounds(active_edges[item], inventory, full=False)
+            if isinstance(item, int):
+                active_edges = getattr(inventory, "active_edges", ())
+                if item < 0 or item >= len(active_edges):
+                    return None
+                return _get_corridor_bounds(active_edges[item], inventory, full=False)
+            elif isinstance(item, (tuple, list)) and len(item) == 2 and item[0] == "bexit":
+                boundary_exits = getattr(inventory, "boundary_exits", ())
+                if item[1] < 0 or item[1] >= len(boundary_exits):
+                    return None
+                return _get_boundary_exit_bounds(boundary_exits[item[1]], inventory, full=False)
+            return None
         else:
             if category == "corridor_room":
                 if not isinstance(item, int):
@@ -269,12 +290,19 @@ def get_entity_spatial_bounds(
                 return _get_child_sub_box_bounds(item[0], item[1], inventory)
 
     if category == "corridor_crossing":
-        if not isinstance(item, int) or inventory is None:
+        if inventory is None:
             return None
-        active_edges = getattr(inventory, "active_edges", ())
-        if item < 0 or item >= len(active_edges):
-            return None
-        return _get_corridor_bounds(active_edges[item], inventory, full=True)
+        if isinstance(item, int):
+            active_edges = getattr(inventory, "active_edges", ())
+            if item < 0 or item >= len(active_edges):
+                return None
+            return _get_corridor_bounds(active_edges[item], inventory, full=True)
+        elif isinstance(item, (tuple, list)) and len(item) == 2 and item[0] == "bexit":
+            boundary_exits = getattr(inventory, "boundary_exits", ())
+            if item[1] < 0 or item[1] >= len(boundary_exits):
+                return None
+            return _get_boundary_exit_bounds(boundary_exits[item[1]], inventory, full=True)
+        return None
 
     return None
 
