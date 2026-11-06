@@ -3216,7 +3216,12 @@ class TestTwoPhaseCuttingPlaneBudget:
             # Pass 1 (intermediate) and Pass 2 (final convergence): no collisions
             return []
 
-        opts = LayoutOptions(max_solutions=1, intermediate_pass_timeout=10, ratio_gap=0.08)
+        opts = LayoutOptions(
+            max_solutions=1,
+            intermediate_pass_timeout=10,
+            ratio_gap=0.08,
+            warmstart=True,
+        )
         with (
             patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
             patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
@@ -3286,7 +3291,7 @@ class TestTwoPhaseCuttingPlaneBudget:
             solve_cluster_with_cutting_planes(
                 formulation=mock_formulation,
                 node=node,
-                options=LayoutOptions(),
+                options=LayoutOptions(warmstart=True),
             )
             assert len(solve_calls) == 3
             # Pass 0: initial pass, warmstart is False
@@ -3368,6 +3373,151 @@ class TestTwoPhaseCuttingPlaneBudget:
         mock_var.values.side_effect = TypeError("Uniterable")
         mock_form_exc.model.x = mock_var
         assert _has_populated_warmstart_coordinates(mock_form_exc) is True
+
+    def test_cutting_plane_warmstart_defaults_to_false_when_options_default(self) -> None:
+        """When options.warmstart is False (the default), warmstart remains False on all passes."""
+        from romutil.layout.milp.clearance import ClearanceViolation
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+        from romutil.layout.milp.solver import SolvedClusterExtraction
+
+        node = SolveTreeNode(node_id="no_warmstart_node", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2}))
+        mock_formulation = MagicMock()
+        mock_formulation.clearance_builder.inject_clearance_cuts.return_value = 1
+
+        populated_var = MagicMock()
+        populated_var.values.return_value = [MagicMock(value=1.0)]
+        mock_formulation.model.x = populated_var
+        mock_formulation.model.y = populated_var
+        mock_formulation.model.z = populated_var
+        mock_formulation.model.cx = populated_var
+        mock_formulation.model.cy = populated_var
+        mock_formulation.model.cz = populated_var
+        mock_formulation.model.L = populated_var
+
+        solve_calls: list[dict[str, Any]] = []
+
+        def mock_solve(*args, **kwargs):
+            solve_calls.append(kwargs)
+            return SolvedClusterExtraction(
+                raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0)},
+                raw_child_offsets={},
+                solver_status=SolverStatus.OPTIMAL,
+            )
+
+        detect_count = 0
+
+        def mock_detect(*args, **kwargs):
+            nonlocal detect_count
+            detect_count += 1
+            if detect_count == 1:
+                return [ClearanceViolation(category="parent_room", item_a=1, item_b=2)]
+            return []
+
+        with (
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            solve_cluster_with_cutting_planes(
+                formulation=mock_formulation,
+                node=node,
+                options=LayoutOptions(),
+                total_cluster_budget=50.0,
+            )
+            assert len(solve_calls) == 3
+            assert solve_calls[0].get("warmstart") is False
+            assert solve_calls[1].get("warmstart") is False
+            assert solve_calls[2].get("warmstart") is False
+
+    def test_crossing_clearance_respects_max_cuts_per_pass(self) -> None:
+        """Corridor crossing clearance uses options.max_cuts_per_pass rather than a hardcoded clamp."""
+        from romutil.layout.milp.clearance import ClearanceViolation
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+        from romutil.layout.milp.solver import SolvedClusterExtraction
+
+        node = SolveTreeNode(node_id="crossing_node", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2}))
+        mock_formulation = MagicMock()
+        mock_formulation.clearance_builder.inject_clearance_cuts.return_value = 1
+
+        solve_count = 0
+
+        def mock_solve(*args, **kwargs):
+            nonlocal solve_count
+            solve_count += 1
+            return SolvedClusterExtraction(
+                raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0)},
+                raw_child_offsets={},
+                solver_status=SolverStatus.OPTIMAL,
+            )
+
+        detect_count = 0
+
+        def mock_detect(*args, **kwargs):
+            nonlocal detect_count
+            detect_count += 1
+            if detect_count == 1:
+                # Pass 0: corridor crossing detected
+                return [ClearanceViolation(category="corridor_crossing", item_a=(1, 2), item_b=(3, 4))]
+            return []
+
+        opts = LayoutOptions(max_cuts_per_pass=15, timeout_seconds=30)
+        with (
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            solve_cluster_with_cutting_planes(
+                formulation=mock_formulation,
+                node=node,
+                options=opts,
+                total_cluster_budget=50.0,
+            )
+
+            mock_formulation.clearance_builder.inject_clearance_cuts.assert_called_once()
+            _, kwargs = mock_formulation.clearance_builder.inject_clearance_cuts.call_args
+            assert kwargs.get("max_cuts_per_pass") == 15
+
+    def test_intermediate_pass_ratio_gap_respects_options_directly(self) -> None:
+        """Intermediate pass ratioGap directly reflects options.ratio_gap without 0.12 override."""
+        from romutil.layout.milp.clearance import ClearanceViolation
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+        from romutil.layout.milp.solver import SolvedClusterExtraction
+
+        node = SolveTreeNode(node_id="rgap_node", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2}))
+        mock_formulation = MagicMock()
+        mock_formulation.clearance_builder.inject_clearance_cuts.return_value = 1
+
+        solve_calls: list[dict[str, Any]] = []
+
+        def mock_solve(*args, **kwargs):
+            solve_calls.append(kwargs)
+            return SolvedClusterExtraction(
+                raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0)},
+                raw_child_offsets={},
+                solver_status=SolverStatus.OPTIMAL,
+            )
+
+        detect_count = 0
+
+        def mock_detect(*args, **kwargs):
+            nonlocal detect_count
+            detect_count += 1
+            if detect_count == 1:
+                return [ClearanceViolation(category="parent_room", item_a=1, item_b=2)]
+            return []
+
+        # When ratio_gap is default 0.05, intermediate pass uses 0.05 (not 0.12)
+        with (
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            solve_cluster_with_cutting_planes(
+                formulation=mock_formulation,
+                node=node,
+                options=LayoutOptions(ratio_gap=0.05),
+                total_cluster_budget=50.0,
+            )
+            assert len(solve_calls) == 3
+            assert solve_calls[1].get("solver_options", {}).get("ratioGap") == 0.05
+
 
     def test_cutting_plane_loop_unresolvable_collisions_raises_error(self) -> None:
         """When clearance builder cannot inject any more cuts, LayoutSolverError is raised."""

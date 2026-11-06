@@ -304,6 +304,38 @@ class TestSolveAndExtract:
             with pytest.raises(LayoutSolverError, match="Failed to initialize MILP solver"):
                 solve_and_extract(formulation=formulation, solver_name="cbc")
 
+    def test_solve_and_extract_multithreading_crash_retries_single_threaded(self) -> None:
+        """When multi-threaded CBC solver invocation crashes with an exception, it falls back to threads=1."""
+        node = SolveTreeNode(node_id="n", node_type="leaf", rooms=frozenset({1}))
+        graph = _make_graph([1], [])
+        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
+        formulation = formulate_cluster_model(inventory=inv)
+
+        mock_solver = MagicMock()
+        mock_solver.available.return_value = True
+        mock_solver.options = {"threads": 4}
+
+        mock_results = MagicMock()
+        mock_results.solver.status = PyomoSolverStatus.ok
+        mock_results.solver.termination_condition = TerminationCondition.optimal
+
+        # First call with threads=4 raises ApplicationError, second call with threads=1 succeeds
+        mock_solver.solve.side_effect = [
+            RuntimeError("ClpSimplexDual assertion failure"),
+            mock_results,
+        ]
+
+        with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
+            with patch("pyomo.environ.value", return_value=0):
+                ext = solve_and_extract(
+                    formulation=formulation,
+                    solver_name="cbc",
+                    solver_options={"threads": 4},
+                )
+                assert ext.solver_status == SolverStatus.OPTIMAL
+                assert mock_solver.solve.call_count == 2
+                assert mock_solver.options["threads"] == 1
+
 
 class TestStatusValidation:
     """Unit tests for _is_valid_solver_status helper."""
