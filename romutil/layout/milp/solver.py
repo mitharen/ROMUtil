@@ -123,16 +123,27 @@ def solve_and_extract(
         )
     )
 
+    def _execute_solve(use_warmstart: bool = False) -> Any:
+        try:
+            if use_warmstart and supports_warmstart:
+                return solver.solve(formulation.model, warmstart=True, tee=False)
+            return solver.solve(formulation.model, tee=False)
+        except Exception:
+            if solver_name == "cbc" and solver.options.get("threads", 1) > 1:
+                solver.options["threads"] = 1
+                return solver.solve(formulation.model, tee=False)
+            raise
+
     results = None
     if warmstart and supports_warmstart:
         try:
-            results = solver.solve(formulation.model, warmstart=True, tee=False)
+            results = _execute_solve(use_warmstart=True)
             if not _is_valid_solver_status(results):
-                results = solver.solve(formulation.model, tee=False)
+                results = _execute_solve(use_warmstart=False)
         except Exception:
-            results = solver.solve(formulation.model, tee=False)
+            results = _execute_solve(use_warmstart=False)
     else:
-        results = solver.solve(formulation.model, tee=False)
+        results = _execute_solve(use_warmstart=False)
 
     if not _is_valid_solver_status(results):
         raise LayoutSolverError(

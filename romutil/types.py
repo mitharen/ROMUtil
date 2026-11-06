@@ -75,6 +75,7 @@ class LayoutOptions:
     intermediate_pass_timeout: int = 15
     ratio_gap: float = 0.05
     max_solutions: int | None = None
+    warmstart: bool = False
 
 
 @dataclass(frozen=True)
