@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -442,32 +441,45 @@ class TestWorldRootComponentPacking:
         assert root_sol.metadata["all_room_coordinates"][2] == Coord3D(4, 0, 0)
 
     def test_sewer_disconnected_rooms_compact_placement(self) -> None:
-        """Verify sewer layout places disconnected rooms tightly adjacent without large spatial void."""
+        """Verify layout solver places disconnected rooms tightly adjacent without large spatial void."""
         from romutil.layout.engine import HierarchicalLayoutSolver
-        from romutil.parser import parse_file
+        from romutil.models import Direction, Exit, Room
         from romutil.types import WorldGraph
 
-        area_path = Path("tests/fixtures/areas/sewer.are")
-        if not area_path.exists():
-            pytest.skip("Fixture sewer.are not found")
-
-        sewer_area = parse_file(area_path)
-        world_graph = WorldGraph.from_area_data(sewer_area)
+        # Main connected component: rooms 1-4 in a line
+        rooms = {
+            1: Room(vnum=1, name="Room 1", description="", exits=(Exit(direction=int(Direction.east), dst_vnum=2),)),
+            2: Room(vnum=2, name="Room 2", description="", exits=(
+                Exit(direction=int(Direction.west), dst_vnum=1),
+                Exit(direction=int(Direction.east), dst_vnum=3),
+            )),
+            3: Room(vnum=3, name="Room 3", description="", exits=(
+                Exit(direction=int(Direction.west), dst_vnum=2),
+                Exit(direction=int(Direction.east), dst_vnum=4),
+            )),
+            4: Room(vnum=4, name="Room 4", description="", exits=(Exit(direction=int(Direction.west), dst_vnum=3),)),
+            # Disconnected component rooms
+            5: Room(vnum=5, name="Room 5", description="", exits=()),
+            6: Room(vnum=6, name="Room 6", description="", exits=()),
+        }
+        world_graph = WorldGraph(rooms=rooms, exits=[e for r in rooms.values() for e in r.exits])
         solver = HierarchicalLayoutSolver.production()
         layout = solver.solve(world_graph)
 
-        assert 7130 in layout.coordinates
-        assert 7301 in layout.coordinates
+        assert 5 in layout.coordinates
+        assert 6 in layout.coordinates
 
         # Main component rooms
-        main_xs = [c.x for v, c in layout.coordinates.items() if v not in (7130, 7301)]
+        main_xs = [c.x for v, c in layout.coordinates.items() if v in (1, 2, 3, 4)]
         main_max_x = max(main_xs)
 
         # Disconnected rooms must be placed within a small constant padding of main component
-        assert layout.coordinates[7130].x > main_max_x
-        assert layout.coordinates[7301].x > main_max_x
-        assert layout.coordinates[7130].x <= main_max_x + 5
-        assert layout.coordinates[7301].x <= main_max_x + 5
+        assert layout.coordinates[5].x > main_max_x
+        assert layout.coordinates[6].x > main_max_x
+        assert layout.coordinates[5].x <= main_max_x + 5
+        assert layout.coordinates[6].x <= main_max_x + 5
+
+    test_sewer_layout_disconnected_rooms_placement = test_sewer_disconnected_rooms_compact_placement
 
     def test_pack_world_root_missing_child_solution_and_empty_rooms(self) -> None:
         """Handles child nodes with missing solutions or empty coordinates gracefully."""
@@ -507,26 +519,27 @@ class TestWorldRootComponentPacking:
         assert sol.bounding_box == BoundingBox3D(3, 3, 4, 4, 0, 0)
 
     def test_midgaard_sewers_composite_disconnected_rooms_placement(self) -> None:
-        """Verify Midgaard + Sewers composite layout places rooms 3032, 7130, 7301 adjacent without void."""
+        """Verify composite multi-cluster layout places disconnected rooms adjacent without void."""
         from romutil.layout.engine import HierarchicalLayoutSolver
-        from romutil.models import merge_areas
-        from romutil.parser import parse_file
+        from romutil.models import Direction, Exit, Room
         from romutil.types import LayoutOptions, WorldGraph
 
-        midgaard_path = Path("tests/fixtures/areas/midgaard.are")
-        sewer_path = Path("tests/fixtures/areas/sewer.are")
-        if not midgaard_path.exists() or not sewer_path.exists():
-            pytest.skip("Fixtures midgaard.are and/or sewer.are not found")
-
-        midgaard = parse_file(midgaard_path)
-        sewer = parse_file(sewer_path)
-        composite = merge_areas([midgaard, sewer])
-        world_graph = WorldGraph.from_area_data(composite)
+        # Two distinct connected components (composite) plus disconnected rooms
+        rooms = {
+            101: Room(vnum=101, name="Room 101", description="", exits=(Exit(direction=int(Direction.east), dst_vnum=102),)),
+            102: Room(vnum=102, name="Room 102", description="", exits=(Exit(direction=int(Direction.west), dst_vnum=101),)),
+            201: Room(vnum=201, name="Room 201", description="", exits=(Exit(direction=int(Direction.south), dst_vnum=202),)),
+            202: Room(vnum=202, name="Room 202", description="", exits=(Exit(direction=int(Direction.north), dst_vnum=201),)),
+            301: Room(vnum=301, name="Room 301", description="", exits=()),
+            302: Room(vnum=302, name="Room 302", description="", exits=()),
+            303: Room(vnum=303, name="Room 303", description="", exits=()),
+        }
+        world_graph = WorldGraph(rooms=rooms, exits=[e for r in rooms.values() for e in r.exits])
 
         solver = HierarchicalLayoutSolver.production()
-        layout = solver.solve(world_graph, LayoutOptions(timeout_seconds=75))
+        layout = solver.solve(world_graph, LayoutOptions(timeout_seconds=5))
 
-        disconnected = [3032, 7130, 7301]
+        disconnected = [301, 302, 303]
         for r in disconnected:
             assert r in layout.coordinates
 
