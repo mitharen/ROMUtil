@@ -1781,3 +1781,251 @@ class TestOrthogonalBridgePromotionPass:
                 if segments_intersect_3d(s1, s2):
                     crossings.append(((u1, v1), (u2, v2)))
         assert not crossings
+
+    def test_child_does_not_bubble_out_of_multi_room_cluster(self) -> None:
+        """Bridge cut children do not bubble out of multi-room components."""
+        child = SolveTreeNode(
+            node_id="child",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({20}),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(10, 20),
+                    direction=int(Direction.east),
+                    weight=1,
+                    anchor_vnum=10,
+                )
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="parent_multi",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({10, 11}),
+            children=(child,),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(1, 10),
+                    direction=int(Direction.north),
+                    weight=1,
+                    anchor_vnum=1,
+                )
+            },
+        )
+        root = SolveTreeNode(
+            node_id="root",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1}),
+            children=(parent,),
+        )
+        tree = SolveTree(root=root, components=(root,))
+        transformed = OrthogonalBridgePromotionPass().apply(tree)
+
+        # Child must remain inside parent_multi rather than bubbling into root
+        new_parent = transformed.root.children[0]
+        assert len(new_parent.children) == 1
+        assert new_parent.children[0].node_id == "child"
+        assert len(transformed.root.children) == 1
+
+    def test_child_does_not_bubble_through_branching_junction(self) -> None:
+        """Intermediate nodes with multiple children block child bubbling."""
+        orth_child = SolveTreeNode(
+            node_id="orth_child",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({4}),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(3, 4),
+                    direction=int(Direction.north),
+                    weight=1,
+                    anchor_vnum=3,
+                )
+            },
+        )
+        rung2 = SolveTreeNode(
+            node_id="rung_2",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3}),
+            children=(orth_child,),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(2, 3),
+                    direction=int(Direction.east),
+                    weight=1,
+                    anchor_vnum=2,
+                )
+            },
+        )
+        other_branch = SolveTreeNode(
+            node_id="other_branch",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({5}),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(2, 5),
+                    direction=int(Direction.east),
+                    weight=1,
+                    anchor_vnum=2,
+                )
+            },
+        )
+        junction_rung1 = SolveTreeNode(
+            node_id="junction_rung_1",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({2}),
+            children=(rung2, other_branch),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(1, 2),
+                    direction=int(Direction.east),
+                    weight=1,
+                    anchor_vnum=1,
+                )
+            },
+        )
+        root = SolveTreeNode(
+            node_id="root",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1}),
+            children=(junction_rung1,),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(0, 1),
+                    direction=int(Direction.north),
+                    weight=1,
+                    anchor_vnum=0,
+                )
+            },
+        )
+        tree = SolveTree(root=root, components=(root,))
+        transformed = OrthogonalBridgePromotionPass().apply(tree)
+
+        # orth_child bubbles out of rung_2 into junction_rung_1, but cannot bubble
+        # through junction_rung_1 because junction_rung_1 is a branching hub.
+        new_junction = transformed.root.children[0]
+        assert new_junction.node_id == "junction_rung_1"
+        assert len(transformed.root.children) == 1
+        junction_child_ids = {c.node_id for c in new_junction.children}
+        assert "orth_child" in junction_child_ids
+
+    def test_multi_room_child_does_not_bubble(self) -> None:
+        """A child cluster containing multiple rooms is never promoted across bridge cuts."""
+        child_multi = SolveTreeNode(
+            node_id="child_multi",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3, 4}),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(2, 3),
+                    direction=int(Direction.north),
+                    weight=1,
+                    anchor_vnum=2,
+                )
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({2}),
+            children=(child_multi,),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(1, 2),
+                    direction=int(Direction.east),
+                    weight=1,
+                    anchor_vnum=1,
+                )
+            },
+        )
+        root = SolveTreeNode(
+            node_id="root",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1}),
+            children=(parent,),
+        )
+        tree = SolveTree(root=root, components=(root,))
+        transformed = OrthogonalBridgePromotionPass().apply(tree)
+
+        new_parent = transformed.root.children[0]
+        assert len(new_parent.children) == 1
+        assert new_parent.children[0].node_id == "child_multi"
+        assert len(transformed.root.children) == 1
+
+    def test_bubbling_stops_at_non_collinear_intermediate_rung(self) -> None:
+        """Bubbling along a hallway spine stops when an intermediate rung turns non-collinearly."""
+        gc = SolveTreeNode(
+            node_id="orth_child",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({4}),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(3, 4),
+                    direction=int(Direction.north),
+                    weight=1,
+                    anchor_vnum=3,
+                )
+            },
+        )
+        spine2 = SolveTreeNode(
+            node_id="spine_2",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3}),
+            children=(gc,),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(2, 3),
+                    direction=int(Direction.east),
+                    weight=1,
+                    anchor_vnum=2,
+                )
+            },
+        )
+        # spine1 arrives from the south (non-collinear with spine2 which arrives from the east)
+        spine1 = SolveTreeNode(
+            node_id="spine_1",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({2}),
+            children=(spine2,),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(1, 2),
+                    direction=int(Direction.south),
+                    weight=1,
+                    anchor_vnum=1,
+                )
+            },
+        )
+        root = SolveTreeNode(
+            node_id="root",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1}),
+            children=(spine1,),
+        )
+        tree = SolveTree(root=root, components=(root,))
+        transformed = OrthogonalBridgePromotionPass().apply(tree)
+
+        # orth_child bubbles out of spine_2 to spine_1, but stops at spine_1
+        # because spine_1 incoming direction (South) is not collinear with spine_2 (East).
+        new_spine_1 = transformed.root.children[0]
+        assert new_spine_1.node_id == "spine_1"
+        assert len(transformed.root.children) == 1
+        spine1_children = {c.node_id for c in new_spine_1.children}
+        assert spine1_children == {"spine_2", "orth_child"}
+
+    def test_midennir_solves_optimally_with_zero_collisions(self) -> None:
+        """midennir.are solves to OPTIMAL status with 0 duplicate coordinates."""
+        from romutil.layout.engine import HierarchicalLayoutSolver
+        from romutil.parser import parse_file
+        from romutil.types import LayoutOptions, SolverStatus, WorldGraph
+
+        area = parse_file("tests/fixtures/areas/midennir.are")
+        wg = WorldGraph.from_area_data(area)
+        solver = HierarchicalLayoutSolver.production()
+        res = solver.solve(wg, LayoutOptions(timeout_seconds=15))
+
+        assert res.diagnostics.status == SolverStatus.OPTIMAL
+
+        by_coord: dict[object, list[int]] = {}
+        for v, coord in res.coordinates.items():
+            by_coord.setdefault(coord, []).append(v)
+        duplicates = {c: vs for c, vs in by_coord.items() if len(vs) > 1}
+        assert not duplicates
