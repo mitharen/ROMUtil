@@ -327,10 +327,10 @@ class ClusterFormulation:
 
     def get_child_sub_box(self, key: tuple[str, int] | Any) -> tuple[Any, Any, Any, Any, Any, Any]:
         """Return 3D bounding box for a child sub-box indexed by (child_id, index)."""
-        if hasattr(key, "child_id") and hasattr(key, "box_index"):
-            cid, k = key.child_id, key.box_index
-        else:
+        if isinstance(key, tuple):
             cid, k = key
+        else:
+            cid, k = key.child_id, key.box_index
         raw_sb = self.inventory.child_sub_boxes[cid][k]
         sb = (
             raw_sb
