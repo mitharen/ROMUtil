@@ -131,13 +131,14 @@ class TestGalleryAssetsGeneration:
     def test_pages_builder_discovery_and_index_generation(self, tmp_path):
         from scripts.build_pages import resolve_candidate_areas, generate_index_html
         candidates = resolve_candidate_areas()
-        assert len(candidates) == 8
+        assert len(candidates) == 9
         candidate_names = {c[1] for c in candidates}
         assert candidate_names == {
             "arachnos",
             "chapel",
             "midgaard",
             "midgaard_region",
+            "moria",
             "school",
             "sewer",
             "shire",
@@ -146,7 +147,7 @@ class TestGalleryAssetsGeneration:
 
         # Verify individual showcase zones
         single_candidates = [c for c in candidates if c[0] == "ROM 2.4 / QuickMUD"]
-        assert len(single_candidates) == 7
+        assert len(single_candidates) == 8
         for cat, name, path, is_dir in single_candidates:
             assert isinstance(path, Path)
             assert path.is_file()

@@ -836,6 +836,120 @@ class TransverseSNodeSplitPass:
         return SolveTree(root=new_root, components=components, graph=tree.graph)
 
 
+class OrthogonalBridgePromotionPass:
+    """Promote orthogonal 1-cut bridge children upward past collinear ancestors.
+
+    For each 1-cut bridge node in the SolveTree, inspects its incoming gateway
+    direction vector d_in and its child bridge exits d_exit. Any child bridge cut
+    departing in an orthogonal direction (d_in . d_exit = 0) bubbles recursively
+    upward past collinear ancestors (d_anc . d_exit = 0) until reaching an ancestor
+    whose incoming edge is non-orthogonal (d_anc . d_exit != 0) or reaching the
+    biconnected block root, becoming a sibling child of that owning ancestor node.
+    """
+
+    def __init__(self, graph: LayoutGraph | None = None) -> None:
+        self._graph = graph
+
+    @staticmethod
+    def _bridge_direction(node: SolveTreeNode) -> tuple[int, int, int] | None:
+        contract = node.cut_contract
+        if not isinstance(contract, BridgeCut):
+            return None
+        try:
+            return direction_to_displacement(contract.direction)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _dot(d1: tuple[int, int, int], d2: tuple[int, int, int]) -> int:
+        return d1[0] * d2[0] + d1[1] * d2[1] + d1[2] * d2[2]
+
+    def _transform_node(
+        self,
+        node: SolveTreeNode,
+        has_parent_block: bool,
+        anc_dirs: list[tuple[int, int, int]],
+    ) -> tuple[SolveTreeNode, list[SolveTreeNode]]:
+        d_in = self._bridge_direction(node)
+        is_block = node.node_type != TreeNodeType.WORLD_ROOT
+        child_anc_dirs = anc_dirs + ([d_in] if d_in is not None else [])
+        kept_children: list[SolveTreeNode] = []
+        bubbling_out: list[SolveTreeNode] = []
+
+        for child in node.children:
+            c_trans, c_bubbled = self._transform_node(child, is_block, child_anc_dirs)
+            stopped_here: list[SolveTreeNode] = []
+            for b in c_bubbled:
+                b_dir = self._bridge_direction(b)
+                if (
+                    b_dir is not None
+                    and d_in is not None
+                    and d_in[2] == 0
+                    and b_dir[2] == 0
+                    and self._dot(d_in, b_dir) == 0
+                    and has_parent_block
+                ):
+                    bubbling_out.append(b)
+                else:
+                    stopped_here.append(b)
+
+            c_dir = self._bridge_direction(c_trans)
+            is_collinear_with_parent = bool(
+                anc_dirs
+                and d_in is not None
+                and d_in[2] == 0
+                and anc_dirs[-1][2] == 0
+                and self._dot(anc_dirs[-1], d_in) != 0
+            )
+            if (
+                d_in is not None
+                and c_dir is not None
+                and d_in[2] == 0
+                and c_dir[2] == 0
+                and self._dot(d_in, c_dir) == 0
+                and has_parent_block
+            ):
+                if not stopped_here:
+                    bubbling_out.append(c_trans)
+                elif is_collinear_with_parent:
+                    c_with_stopped = SolveTreeNode(
+                        node_id=c_trans.node_id,
+                        node_type=c_trans.node_type,
+                        rooms=c_trans.rooms,
+                        children=tuple(list(c_trans.children) + stopped_here),
+                        metadata=c_trans.metadata,
+                    )
+                    bubbling_out.append(c_with_stopped)
+                else:
+                    kept_children.append(c_trans)
+                    kept_children.extend(stopped_here)
+            else:
+                kept_children.append(c_trans)
+                kept_children.extend(stopped_here)
+
+        new_node = SolveTreeNode(
+            node_id=node.node_id,
+            node_type=node.node_type,
+            rooms=node.rooms,
+            children=tuple(kept_children),
+            metadata=node.metadata,
+        )
+        return new_node, bubbling_out
+
+    def apply(self, tree: SolveTree) -> SolveTree:
+        """Apply orthogonal bridge promotion to a SolveTree."""
+        if tree.root.node_type == TreeNodeType.EMPTY:
+            return tree
+
+        new_root, _ = self._transform_node(tree.root, False, [])
+        components = (
+            new_root.children
+            if new_root.node_type == TreeNodeType.WORLD_ROOT
+            else (new_root,)
+        )
+        return SolveTree(root=new_root, components=components, graph=tree.graph)
+
+
 def __getattr__(name: str) -> Any:
     if name == "BlockCutDecompositionPass":
         from romutil.layout.hierarchy.block_cut import BlockCutDecompositionPass

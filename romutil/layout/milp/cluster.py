@@ -302,6 +302,15 @@ def solve_cluster_with_cutting_planes(
                     phase = ClusterSolvePhase.DONE
                     break
                 else:
+                    if (
+                        final_extraction.solver_status == SolverStatus.TIMEOUT
+                        and extraction.solver_status == SolverStatus.OPTIMAL
+                    ):
+                        final_extraction = SolvedClusterExtraction(
+                            raw_parent_coords=final_extraction.raw_parent_coords,
+                            raw_child_offsets=final_extraction.raw_child_offsets,
+                            solver_status=SolverStatus.OPTIMAL,
+                        )
                     extraction = final_extraction
                     phase = ClusterSolvePhase.DONE
                     break

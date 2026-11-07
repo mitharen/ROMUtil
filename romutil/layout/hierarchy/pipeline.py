@@ -7,6 +7,7 @@ from typing import Any
 from romutil.layout.hierarchy.block_cut import BlockCutDecompositionPass
 from romutil.layout.hierarchy.spqr import SpqrDecompositionPass
 from romutil.layout.hierarchy.transforms import (
+    OrthogonalBridgePromotionPass,
     TransverseSNodeSplitPass,
     TreeTransformationPass,
     TreeTransformationPipeline,
@@ -38,6 +39,7 @@ class PipelineTreeBuilder(TreeBuilder):
                 first_pass,
                 SpqrDecompositionPass(),
                 TransverseSNodeSplitPass(),
+                OrthogonalBridgePromotionPass(),
             ])
         else:
             self._pipeline = self.default_pipeline()
@@ -54,6 +56,7 @@ class PipelineTreeBuilder(TreeBuilder):
             BlockCutDecompositionPass(graph=graph),
             SpqrDecompositionPass(graph=graph),
             TransverseSNodeSplitPass(graph=graph),
+            OrthogonalBridgePromotionPass(graph=graph),
         ])
 
     def build_tree(

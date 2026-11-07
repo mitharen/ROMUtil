@@ -8,6 +8,7 @@ from romutil.layout.hierarchy import (
     AnchorStrippingPass,
     BlockCutDecompositionPass,
     BlockCutTreeBuilder,
+    OrthogonalBridgePromotionPass,
     PipelineTreeBuilder,
     SpqrDecompositionPass,
     SpqrTreeBuilder,
@@ -657,10 +658,11 @@ class TestSpqrTreeBuilderPipelineIntegration:
     def test_default_pipeline_composition(self) -> None:
         for builder_cls in (PipelineTreeBuilder, SpqrTreeBuilder):
             pipeline = builder_cls.default_pipeline()
-            assert len(pipeline.passes) == 3
+            assert len(pipeline.passes) == 4
             assert isinstance(pipeline.passes[0], BlockCutDecompositionPass)
             assert isinstance(pipeline.passes[1], SpqrDecompositionPass)
             assert isinstance(pipeline.passes[2], TransverseSNodeSplitPass)
+            assert isinstance(pipeline.passes[3], OrthogonalBridgePromotionPass)
 
 
 class TestTransformHelpersAndEdgeCases:
@@ -1349,10 +1351,11 @@ class TestUnifiedHierarchicalPipeline:
         """Default hierarchical pipeline executes decomposition passes then downstream passes."""
         pipeline = PipelineTreeBuilder.default_pipeline()
         passes = pipeline.passes
-        assert len(passes) == 3
+        assert len(passes) == 4
         assert isinstance(passes[0], BlockCutDecompositionPass)
         assert isinstance(passes[1], SpqrDecompositionPass)
         assert isinstance(passes[2], TransverseSNodeSplitPass)
+        assert isinstance(passes[3], OrthogonalBridgePromotionPass)
 
     def test_solve_tree_seed_empty(self) -> None:
         graph = LayoutGraph(rooms={}, edges=())
@@ -1616,3 +1619,165 @@ class TestUnifiedHierarchicalPipeline:
         assert _collect_subtree_rooms(legacy_tree.root) == expected_rooms
         assert legacy_tree.root.node_type == tree.root.node_type
         assert len(legacy_tree.components) == len(tree.components)
+
+
+class TestOrthogonalBridgePromotionPass:
+    """Verify orthogonal 1-cut bridge promotion across single and multi-hop collinear spines."""
+
+    def test_orthogonal_bridge_promotion_pass_implements_protocol(self) -> None:
+        pass_instance = OrthogonalBridgePromotionPass()
+        assert isinstance(pass_instance, TreeTransformationPass)
+
+    def test_empty_tree_returned_unchanged(self) -> None:
+        empty = SolveTree(
+            root=SolveTreeNode(
+                node_id="empty",
+                node_type=TreeNodeType.EMPTY,
+                rooms=frozenset(),
+            ),
+            components=(),
+        )
+        assert OrthogonalBridgePromotionPass().apply(empty) is empty
+
+    def test_invalid_bridge_direction_ignored(self) -> None:
+        child = SolveTreeNode(
+            node_id="c",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3}),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(2, 3), direction=99, weight=1, anchor_vnum=2
+                )
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="p",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({2}),
+            children=(child,),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(1, 2), direction=int(Direction.north), weight=1, anchor_vnum=1
+                )
+            },
+        )
+        root = SolveTreeNode(
+            node_id="r",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1}),
+            children=(parent,),
+        )
+        tree = SolveTree(root=root, components=(root,))
+        res = OrthogonalBridgePromotionPass().apply(tree)
+        assert len(res.root.children) == 1
+        assert res.root.children[0].children[0].node_id == "c"
+
+    def test_multi_hop_collinear_spine_promotion(self) -> None:
+        """Child bridge orthogonal to a 2-hop collinear spine bubbles to the owning ancestor."""
+        gc = SolveTreeNode(
+            node_id="orth_child",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({4}),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(3, 4),
+                    direction=int(Direction.north),
+                    weight=1,
+                    anchor_vnum=3,
+                )
+            },
+        )
+        spine2 = SolveTreeNode(
+            node_id="spine_2",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3}),
+            children=(gc,),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(2, 3),
+                    direction=int(Direction.east),
+                    weight=1,
+                    anchor_vnum=2,
+                )
+            },
+        )
+        spine1 = SolveTreeNode(
+            node_id="spine_1",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({2}),
+            children=(spine2,),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(1, 2),
+                    direction=int(Direction.east),
+                    weight=1,
+                    anchor_vnum=1,
+                )
+            },
+        )
+        root_block = SolveTreeNode(
+            node_id="root_block",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1}),
+            children=(spine1,),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(0, 1),
+                    direction=int(Direction.north),
+                    weight=1,
+                    anchor_vnum=0,
+                )
+            },
+        )
+        world_root = SolveTreeNode(
+            node_id="world_root",
+            node_type=TreeNodeType.WORLD_ROOT,
+            rooms=frozenset(),
+            children=(root_block,),
+        )
+        tree = SolveTree(root=world_root, components=(root_block,))
+        transformed = OrthogonalBridgePromotionPass().apply(tree)
+
+        new_root_block = transformed.root.children[0]
+        child_ids = [c.node_id for c in new_root_block.children]
+        assert child_ids == ["spine_1", "orth_child"]
+
+    def test_moria_solves_optimally_with_zero_collisions_and_crossings(self) -> None:
+        """moria.are solves to OPTIMAL status with 0 duplicate coordinates and 0 crossings."""
+        from romutil.layout.engine import HierarchicalLayoutSolver
+        from romutil.layout.geometry import Segment3D, segments_intersect_3d
+        from romutil.parser import parse_file
+        from romutil.types import LayoutOptions, SolverStatus, WorldGraph
+
+        area = parse_file("tests/fixtures/areas/moria.are")
+        wg = WorldGraph.from_area_data(area)
+        solver = HierarchicalLayoutSolver.production()
+        res = solver.solve(wg, LayoutOptions(timeout_seconds=10))
+
+        assert res.diagnostics.status == SolverStatus.OPTIMAL
+
+        by_coord: dict[object, list[int]] = {}
+        for v, coord in res.coordinates.items():
+            by_coord.setdefault(coord, []).append(v)
+        duplicates = {c: vs for c, vs in by_coord.items() if len(vs) > 1}
+        assert not duplicates
+
+        simp = solver.simplifier.simplify(
+            LayoutGraph.from_world_graph(wg), LayoutOptions(timeout_seconds=10)
+        )
+        segs: list[tuple[int, int, Segment3D]] = []
+        for e in simp.graph.edges:
+            if e.cut or e.src not in res.coordinates or e.dst not in res.coordinates:
+                continue
+            segs.append((e.src, e.dst, Segment3D(res.coordinates[e.src], res.coordinates[e.dst])))
+
+        crossings = []
+        for i in range(len(segs)):
+            u1, v1, s1 = segs[i]
+            for j in range(i + 1, len(segs)):
+                u2, v2, s2 = segs[j]
+                if len({u1, v1, u2, v2}) < 4:
+                    continue
+                if segments_intersect_3d(s1, s2):
+                    crossings.append(((u1, v1), (u2, v2)))
+        assert not crossings

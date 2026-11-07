@@ -45,7 +45,7 @@ def normalize_single_room_cluster(
         node_id=node.node_id,
         local_coordinates={room: Coord3D(0, 0, 0)},
         sub_boxes=(),
-        metadata={"child_offsets": {}},
+        metadata={"child_offsets": {}, "status": SolverStatus.OPTIMAL},
     )
 
 

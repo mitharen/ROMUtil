@@ -1168,7 +1168,17 @@ class InterChildBridgeHandler:
             if not c_sol:
                 continue
             coords: Mapping[int, Coord3D] = get_all_child_coordinates(c_sol)
-            child_coords[cid] = {r: pt for r, pt in coords.items() if r not in parent_rooms}
+            ext_anchors: set[int] = set()
+            contract = child.cut_contract
+            if isinstance(contract, (ArticulationPointCut, BridgeCut)):
+                anc = getattr(contract, "anchor_vnum", None)
+                if anc is not None and anc not in c_sol.local_coordinates:
+                    ext_anchors.add(int(anc))
+            child_coords[cid] = {
+                r: pt
+                for r, pt in coords.items()
+                if r not in parent_rooms and r not in ext_anchors
+            }
 
         # 1. 1-cut BridgeCut contracts between sibling children
         for child in self.children:
@@ -1207,7 +1217,7 @@ class InterChildBridgeHandler:
                                         min_length=max(1, contract.weight),
                                         associated_rooms=frozenset(),
                                         associated_children=frozenset({other.node_id, child.node_id}),
-                                        allow_transverse_slack=True,
+                                        allow_transverse_slack=False,
                                     )
                                 )
                             except ValueError:
@@ -1228,7 +1238,7 @@ class InterChildBridgeHandler:
                                         min_length=max(1, contract.weight),
                                         associated_rooms=frozenset(),
                                         associated_children=frozenset({child.node_id, other.node_id}),
-                                        allow_transverse_slack=True,
+                                        allow_transverse_slack=False,
                                     )
                                 )
                             except ValueError:
@@ -1568,6 +1578,36 @@ def inventory_cluster(
     boundary_exits: list[BoundaryExit] = []
     seen_bexit_dirs: set[tuple[int, tuple[int, int, int]]] = set()
     if graph:
+        for e in getattr(graph, "edges", ()):
+            if getattr(e, "cut", False):
+                continue
+            if e.src in all_local_rooms and e.dst not in sub_rooms:
+                u, dst_vnum = e.src, e.dst
+                try:
+                    disp = direction_to_displacement(e.direction)
+                except ValueError:
+                    continue
+            elif e.dst in all_local_rooms and e.src not in sub_rooms:
+                u, dst_vnum = e.dst, e.src
+                try:
+                    rev_d = direction_to_displacement(e.direction)
+                except ValueError:
+                    continue
+                disp = (-rev_d[0], -rev_d[1], -rev_d[2])
+            else:
+                continue
+            if disp in active_dirs[u] or (u, disp) in seen_bexit_dirs:
+                continue
+            seen_bexit_dirs.add((u, disp))
+            boundary_exits.append(
+                BoundaryExit(
+                    port=u,
+                    direction=disp,
+                    length=max(1, getattr(e, "weight", 1)),
+                    target_vnum=dst_vnum,
+                )
+            )
+
         for u in all_local_rooms:
             if u not in graph.rooms:
                 continue

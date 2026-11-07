@@ -17,6 +17,7 @@ from romutil.layout.hierarchy.spqr import (
 )
 from romutil.layout.hierarchy.transforms import (
     AnchorStrippingPass,
+    OrthogonalBridgePromotionPass,
     TransverseSNodeSplitPass,
     TreeTransformationPass,
     TreeTransformationPipeline,
@@ -28,6 +29,7 @@ __all__ = [
     "AnchorStrippingPass",
     "BlockCutDecompositionPass",
     "BlockCutTreeBuilder",
+    "OrthogonalBridgePromotionPass",
     "PipelineTreeBuilder",
     "SpqrDecompositionPass",
     "SpqrTreeBuilder",
