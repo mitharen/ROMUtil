@@ -10,6 +10,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CI_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 PAGES_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "pages.yml"
+PRE_COMMIT_CONFIG_PATH = REPO_ROOT / ".pre-commit-config.yaml"
 
 
 def load_workflow_data(path: Path = CI_WORKFLOW_PATH) -> dict[str, Any]:
@@ -549,3 +550,78 @@ class TestPagesWorkflowNegative:
         ]
         violations = validate_pages_workflow_data(data)
         assert any("Missing 'actions/deploy-pages' step" in v for v in violations)
+
+
+def validate_pre_commit_config_data(data: dict[str, Any]) -> list[str]:
+    """Validate that .pre-commit-config.yaml defines a local mypy hook targeting romutil."""
+    errors: list[str] = []
+    repos = data.get("repos", [])
+    if not isinstance(repos, list) or not repos:
+        errors.append("Missing 'repos' list in pre-commit configuration")
+        return errors
+
+    mypy_hooks: list[dict[str, Any]] = []
+    for repo in repos:
+        if isinstance(repo, dict):
+            for hook in repo.get("hooks", []):
+                if isinstance(hook, dict) and hook.get("id") == "mypy":
+                    mypy_hooks.append(hook)
+
+    if not mypy_hooks:
+        errors.append("Missing 'mypy' hook in .pre-commit-config.yaml")
+        return errors
+
+    hook = mypy_hooks[0]
+    entry = str(hook.get("entry", ""))
+    if "uv run mypy romutil" not in entry:
+        errors.append(f"mypy hook entry must run 'uv run mypy romutil', got: {entry!r}")
+    if hook.get("language") != "system":
+        errors.append(f"mypy hook language must be 'system', got: {hook.get('language')!r}")
+    if hook.get("pass_filenames") is not False:
+        errors.append("mypy hook must set 'pass_filenames: false'")
+    if "python" not in hook.get("types", []):
+        errors.append("mypy hook must target 'types: [python]'")
+
+    return errors
+
+
+class TestPreCommitConfig:
+    """Positive and negative tests for .pre-commit-config.yaml static analysis enforcement."""
+
+    def test_pre_commit_config_defines_mypy_hook(self):
+        data = load_workflow_data(PRE_COMMIT_CONFIG_PATH)
+        violations = validate_pre_commit_config_data(data)
+        assert violations == [], f"Pre-commit config has validation violations: {violations}"
+
+    def test_missing_mypy_hook_rejected(self):
+        data = copy.deepcopy(load_workflow_data(PRE_COMMIT_CONFIG_PATH))
+        data["repos"] = [
+            repo for repo in data.get("repos", [])
+            if repo.get("repo") != "local"
+        ]
+        violations = validate_pre_commit_config_data(data)
+        assert any("Missing 'mypy' hook" in v for v in violations)
+
+    def test_misconfigured_mypy_hook_rejected(self):
+        data = {
+            "repos": [
+                {
+                    "repo": "local",
+                    "hooks": [
+                        {
+                            "id": "mypy",
+                            "name": "mypy",
+                            "entry": "mypy",
+                            "language": "python",
+                            "types": ["text"],
+                            "pass_filenames": True,
+                        }
+                    ],
+                }
+            ]
+        }
+        violations = validate_pre_commit_config_data(data)
+        assert any("uv run mypy romutil" in v for v in violations)
+        assert any("language must be 'system'" in v for v in violations)
+        assert any("pass_filenames: false" in v for v in violations)
+        assert any("types: [python]" in v for v in violations)

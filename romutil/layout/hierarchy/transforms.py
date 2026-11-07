@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import collections
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, Sequence, runtime_checkable
 
 from romutil.layout.ir import (
     ArticulationPointCut,
@@ -558,8 +558,9 @@ class TransverseSNodeSplitPass:
                         if nxt not in comp_a:
                             q_a.append(nxt)
 
-            rooms_a = frozenset(comp_a & child_processed.rooms)
-            rooms_b = frozenset(child_processed.rooms - rooms_a)
+            child_rooms = frozenset(child_processed.rooms)
+            rooms_a = frozenset(comp_a & child_rooms)
+            rooms_b = frozenset(child_rooms - rooms_a)
 
             if not rooms_a or not rooms_b or p0 not in comp_a or p1 in comp_a:
                 final_children.append(child_processed)

@@ -1167,7 +1167,7 @@ class InterChildBridgeHandler:
             c_sol = self.child_solutions.get(cid)
             if not c_sol:
                 continue
-            coords: dict[int, Coord3D] = get_all_child_coordinates(c_sol)
+            coords: Mapping[int, Coord3D] = get_all_child_coordinates(c_sol)
             child_coords[cid] = {r: pt for r, pt in coords.items() if r not in parent_rooms}
 
         # 1. 1-cut BridgeCut contracts between sibling children

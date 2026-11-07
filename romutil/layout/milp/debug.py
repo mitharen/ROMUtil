@@ -50,9 +50,9 @@ def _resolve_endpoint_coord(
 
     cid, vnum = endpoint
     cx, cy, cz = extraction.raw_child_offsets.get(cid, (0, 0, 0))
-    c_sol = inventory.child_solutions.get(cid)
-    if c_sol and vnum in c_sol.local_coordinates:
-        loc = c_sol.local_coordinates[vnum]
+    child_sol = inventory.child_solutions.get(cid)
+    if child_sol and vnum in child_sol.local_coordinates:
+        loc = child_sol.local_coordinates[vnum]
         return (cx + loc.x, cy + loc.y, cz + loc.z)
     return (cx, cy, cz)
 
@@ -732,13 +732,13 @@ def render_cluster_solve_svg(
         if vnum not in extraction.raw_parent_coords:
             continue
         rx, ry, rz = extraction.raw_parent_coords[vnum]
-        cx, cy = to_canvas(rx, ry, rz)
+        r_cx, r_cy = to_canvas(rx, ry, rz)
 
         is_port = vnum in inventory.boundary_ports
         room_subgroup = dwg.g(id=f"room-{vnum}")
 
         r_box = dwg.rect(
-            insert=(cx - 24, cy - 24),
+            insert=(r_cx - 24, r_cy - 24),
             size=(48, 48),
             rx=7,
             ry=7,
@@ -759,7 +759,7 @@ def render_cluster_solve_svg(
         room_subgroup.add(
             dwg.text(
                 f"({rx},{ry},{rz})",
-                insert=(cx, cy - 27),
+                insert=(r_cx, r_cy - 27),
                 font_size="9px",
                 font_family="system-ui, sans-serif",
                 fill="#64748b",
@@ -771,7 +771,7 @@ def render_cluster_solve_svg(
         room_subgroup.add(
             dwg.text(
                 str(vnum),
-                insert=(cx, cy + 4 if not room_name else cy),
+                insert=(r_cx, r_cy + 4 if not room_name else r_cy),
                 font_size="13px",
                 font_weight="bold",
                 font_family="system-ui, sans-serif",
@@ -786,7 +786,7 @@ def render_cluster_solve_svg(
             room_subgroup.add(
                 dwg.text(
                     trunc_name,
-                    insert=(cx, cy + 15),
+                    insert=(r_cx, r_cy + 15),
                     font_size="8px",
                     font_family="system-ui, sans-serif",
                     fill="#475569",
@@ -797,7 +797,7 @@ def render_cluster_solve_svg(
         # Port tag badge
         if is_port:
             port_tag = dwg.rect(
-                insert=(cx + 8, cy - 23),
+                insert=(r_cx + 8, r_cy - 23),
                 size=(15, 9),
                 rx=2,
                 ry=2,
@@ -807,7 +807,7 @@ def render_cluster_solve_svg(
             room_subgroup.add(
                 dwg.text(
                     "P",
-                    insert=(cx + 15.5, cy - 16),
+                    insert=(r_cx + 15.5, r_cy - 16),
                     font_size="7px",
                     font_weight="bold",
                     font_family="system-ui, sans-serif",

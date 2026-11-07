@@ -58,7 +58,8 @@ def reroot_spqr_tree(
             child.skeleton.vertices if child.skeleton else child.poles
         )
         if len(shared) == 2:
-            parent.poles = tuple(sorted(shared))
+            s0, s1 = sorted(cast(int, v) for v in shared)
+            parent.poles = (s0, s1)
         elif child.poles:
             parent.poles = child.poles
 
@@ -84,9 +85,10 @@ def _find_anchor_spqr_node(
     for idx, node in enumerate(nodes):
         verts = set(node.skeleton.vertices if node.skeleton else node.poles)
         if anchor in verts:
+            skeleton_edges: Sequence[Any] = tuple(node.skeleton.edges) if node.skeleton else ()
             real_incident = sum(
                 1
-                for e in (node.skeleton.edges if node.skeleton else ())
+                for e in skeleton_edges
                 if not getattr(e, "virtual", False) and (e.u == anchor or e.v == anchor)
             )
             is_not_p = 1 if node.type != spqrtree.NodeType.P else 0
@@ -194,6 +196,7 @@ def build_block_spqr_tree(
             )
 
         converted_children = tuple(_convert(c, parent=spqr_node) for c in sorted_children)
+        source: Any
         if spqr_node.type == spqrtree.NodeType.R:
             node_type = TreeNodeType.RIGID_CLUSTER
             source = spqr_node.skeleton.vertices

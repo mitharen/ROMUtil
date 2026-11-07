@@ -106,7 +106,7 @@ def build_area_json(
 
     for reset in getattr(graph, "resets", ()):
         cmd = str(getattr(reset, "command", "")).upper()
-        args = getattr(reset, "args", ())
+        args: tuple[Any, ...] = tuple(getattr(reset, "args", ()))
         if not cmd or cmd == "*":
             continue
 

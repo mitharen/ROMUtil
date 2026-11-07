@@ -270,7 +270,7 @@ class ClearanceConstraintBuilder:
                             if cid in child_solutions
                         ):
                             continue
-                        pair = (i, w)
+                        pair: tuple[int | tuple[str, int], int] = (i, w)
                         corridor_room_pairs.append(pair)
                         self.separated_pairs.add(("corridor_room", pair[0], pair[1]))
 
@@ -319,7 +319,7 @@ class ClearanceConstraintBuilder:
                             continue
 
                         for k in range(len(sb)):
-                            pair = (i, (s_id, k))
+                            pair: tuple[int | tuple[str, int], tuple[str, int]] = (i, (s_id, k))
                             corridor_child_pairs.append(pair)
                             self.separated_pairs.add(("corridor_child", pair[0], pair[1]))
 
@@ -384,7 +384,7 @@ class ClearanceConstraintBuilder:
                     ae1.associated_rooms & ae2.associated_rooms
                 ) or bool({ae1.src, ae1.dst} & {ae2.src, ae2.dst})
                 if not incident:
-                    pair = (i1, i2)
+                    pair: tuple[int | tuple[str, int], int | tuple[str, int]] = (i1, i2)
                     crossing_pairs.append(pair)
                     self.separated_pairs.add(
                         ("corridor_crossing", pair[0], pair[1])
