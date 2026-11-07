@@ -876,24 +876,59 @@ class OrthogonalBridgePromotionPass:
         kept_children: list[SolveTreeNode] = []
         bubbling_out: list[SolveTreeNode] = []
 
+        # Structural invariants on intermediate nodes:
+        # 1. Isolated bridge blocks only: node must contain exactly 1 room and be a 1-cut bridge cut.
+        # 2. No branching junctions: intermediate rungs along bubbling path must have at most 1 child.
+        node_is_single_room_bridge = (
+            len(node.rooms) == 1
+            and isinstance(node.cut_contract, BridgeCut)
+        )
+        node_is_linear_rung = len(node.children) <= 1
+
         for child in node.children:
             c_trans, c_bubbled = self._transform_node(child, is_block, child_anc_dirs)
             stopped_here: list[SolveTreeNode] = []
+
             for b in c_bubbled:
                 b_dir = self._bridge_direction(b)
-                if (
-                    b_dir is not None
-                    and d_in is not None
+                spine_dir = self._bridge_direction(c_trans)
+
+                # Collinear spine check: intermediate rung incoming direction d_in
+                # must be collinear with the hallway spine direction (d_in || spine_dir).
+                is_collinear_spine = (
+                    d_in is not None
+                    and spine_dir is not None
                     and d_in[2] == 0
+                    and spine_dir[2] == 0
+                    and self._dot(d_in, spine_dir) != 0
+                )
+
+                # Intermediate nodes along the bubbling path must be linear hallway rungs
+                # (len(node.children) <= 1) and isolated single-room bridge blocks (len(node.rooms) == 1).
+                # Propagation stops when the intermediate ancestor is no longer collinear with the spine.
+                can_bubble_through = (
+                    has_parent_block
+                    and node_is_single_room_bridge
+                    and node_is_linear_rung
+                    and b_dir is not None
+                    and d_in is not None
                     and b_dir[2] == 0
+                    and d_in[2] == 0
                     and self._dot(d_in, b_dir) == 0
-                    and has_parent_block
-                ):
+                    and is_collinear_spine
+                )
+                if can_bubble_through:
                     bubbling_out.append(b)
                 else:
                     stopped_here.append(b)
 
             c_dir = self._bridge_direction(c_trans)
+            c_contract = c_trans.cut_contract
+            c_is_single_room_bridge = (
+                len(c_trans.rooms) == 1
+                and isinstance(c_contract, BridgeCut)
+            )
+
             is_collinear_with_parent = bool(
                 anc_dirs
                 and d_in is not None
@@ -901,14 +936,26 @@ class OrthogonalBridgePromotionPass:
                 and anc_dirs[-1][2] == 0
                 and self._dot(anc_dirs[-1], d_in) != 0
             )
-            if (
-                d_in is not None
+
+            # Direct promotion of child bridge cut:
+            # - Must be isolated single-room 1-cut bridge blocks for both child and node
+            # - Anchor room of child must be directly in node.rooms
+            # - Departing in an orthogonal planar direction (d_in . c_dir == 0)
+            can_bubble_direct = (
+                has_parent_block
+                and node_is_single_room_bridge
+                and c_is_single_room_bridge
+                and isinstance(c_contract, BridgeCut)
+                and c_contract.anchor_vnum is not None
+                and c_contract.anchor_vnum in node.rooms
+                and d_in is not None
                 and c_dir is not None
                 and d_in[2] == 0
                 and c_dir[2] == 0
                 and self._dot(d_in, c_dir) == 0
-                and has_parent_block
-            ):
+            )
+
+            if can_bubble_direct:
                 if not stopped_here:
                     bubbling_out.append(c_trans)
                 elif is_collinear_with_parent:
