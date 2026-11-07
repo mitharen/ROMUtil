@@ -114,7 +114,7 @@ class TestParentClusterMILP:
 
         assert sol.local_coordinates == {10: Coord3D(0, 0, 0)}
         assert sol.bounding_box == BoundingBox3D(0, 0, 0, 0, 0, 0)
-        assert sol.metadata == {"child_offsets": {}}
+        assert sol.metadata == {"child_offsets": {}, "status": SolverStatus.OPTIMAL}
 
     def test_1cut_gateway_articulation_alignment(self) -> None:
         """1-Cut gateway: parent square with child triangle attached at articulation point.

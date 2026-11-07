@@ -23,6 +23,7 @@ SHOWCASE_AREAS = (
     "arachnos.are",
     "chapel.are",
     "midgaard.are",
+    "moria.are",
     "school.are",
     "sewer.are",
     "shire.are",
