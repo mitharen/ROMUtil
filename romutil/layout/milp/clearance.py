@@ -313,8 +313,6 @@ class ClearanceConstraintBuilder:
                         continue
                     for s_child in children:
                         s_id = s_child.node_id
-                        if s_id in ae.associated_children:
-                            continue
                         s_sol = child_solutions.get(s_id)
                         sb = child_sub_boxes.get(s_id, ())
                         if not s_sol or not sb:
@@ -956,8 +954,6 @@ def detect_cluster_collisions(
 
         for s_child in children:
             s_id = s_child.node_id
-            if s_id in ae.associated_children:
-                continue
             s_sol = child_solutions.get(s_id)
             sb = child_sub_boxes.get(s_id, ())
             if not s_sol or not sb or s_id not in extraction.raw_child_offsets:
