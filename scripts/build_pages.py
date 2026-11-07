@@ -43,8 +43,11 @@ COMPOSITE_SHOWCASE_AREAS = (
             "school.are",
             "midennir.are",
             "haon.are",
+            "sewer.are",
+            "moria.are",
+            "shire.are",
         ),
-        240,
+        600,
     ),
 )
 

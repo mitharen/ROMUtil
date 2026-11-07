@@ -161,7 +161,7 @@ class TestGalleryAssetsGeneration:
 
         cat, name, paths, is_dir = comp_by_name["midgaard_region"][:4]
         assert isinstance(paths, list)
-        assert len(paths) == 7
+        assert len(paths) == 10
         assert [p.name for p in paths] == [
             "midgaard.are",
             "hood.are",
@@ -170,10 +170,13 @@ class TestGalleryAssetsGeneration:
             "school.are",
             "midennir.are",
             "haon.are",
+            "sewer.are",
+            "moria.are",
+            "shire.are",
         ]
         assert all(p.is_file() for p in paths)
         assert not is_dir
-        assert comp_by_name["midgaard_region"].solver_timeout == 240
+        assert comp_by_name["midgaard_region"].solver_timeout == 600
 
         dummy_rendered = [
             ("ROM 2.4 / QuickMUD", "smurf", 1.23),
@@ -463,6 +466,9 @@ class TestGalleryAssetsGeneration:
         assert "school.are" in filenames
         assert "haon.are" in filenames
         assert "midennir.are" in filenames
+        assert "sewer.are" in filenames
+        assert "moria.are" in filenames
+        assert "shire.are" in filenames
         assert filenames == (
             "midgaard.are",
             "hood.are",
@@ -471,6 +477,9 @@ class TestGalleryAssetsGeneration:
             "school.are",
             "midennir.are",
             "haon.are",
+            "sewer.are",
+            "moria.are",
+            "shire.are",
         )
 
         candidates = resolve_candidate_areas()
@@ -488,6 +497,9 @@ class TestGalleryAssetsGeneration:
             "school.are",
             "midennir.are",
             "haon.are",
+            "sewer.are",
+            "moria.are",
+            "shire.are",
         ]
 
     def test_render_composite_area_generates_artifacts_and_resolves_cross_exits(self, tmp_path):
