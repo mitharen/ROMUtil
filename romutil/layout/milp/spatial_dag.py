@@ -542,46 +542,6 @@ class PositionalConstraintDAG:
 
         return valid_dirs, pruned_reasons
 
-    def commit_direction(
-        self,
-        item_a: Any,
-        item_b: Any,
-        category: str,
-        inventory: ClusterInventory | None,
-        direction: str,
-    ) -> bool:
-        """Commit a chosen or fixed separation direction into the DAG.
-
-        Args:
-            item_a: First entity reference.
-            item_b: Second entity reference.
-            category: Collision category.
-            inventory: ClusterInventory.
-            direction: Direction code ('r', 'l', 'a', 'b', 'u', 'd').
-
-        Returns:
-            True if the directional cut was successfully integrated into the DAG; False if contradicted.
-        """
-        if direction not in DIRECTION_AXIS_MAP:
-            return False
-
-        bounds_a = get_entity_spatial_bounds(item_a, category, inventory, is_item_a=True)
-        bounds_b = get_entity_spatial_bounds(item_b, category, inventory, is_item_a=False)
-        if bounds_a is None or bounds_b is None:
-            return True
-
-        axis, sense_a_gt_b = DIRECTION_AXIS_MAP[direction]
-        if sense_a_gt_b:
-            src_node = bounds_b[axis].max_node
-            dst_node = bounds_a[axis].min_node
-            d = 1 + bounds_b[axis].max_const - bounds_a[axis].min_const
-        else:
-            src_node = bounds_a[axis].max_node
-            dst_node = bounds_b[axis].min_node
-            d = 1 + bounds_a[axis].max_const - bounds_b[axis].min_const
-
-        return self.add_edge(axis, src_node, dst_node, d)
-
     @classmethod
     def from_formulation(cls, formulation: ClusterFormulation) -> PositionalConstraintDAG:
         """Instantiate and seed a PositionalConstraintDAG from a ClusterFormulation instance.
