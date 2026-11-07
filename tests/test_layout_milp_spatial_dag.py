@@ -451,8 +451,8 @@ class TestClearanceConstraintBuilderDAGIntegration:
         assert len(model.test_sep_d) == 0
         assert len(model.test_sep_sum) == 1
 
-    def test_ushape_concave_corridor_deadlock_pruned(self) -> None:
-        """A piercing corridor with min_length preventing separation from a concave wing is detected as deadlock."""
+    def test_pinned_child_corridor_deadlock_pruned(self) -> None:
+        """A corridor penetrating a child that is rigidly pinned by positional constraints is detected as deadlock."""
         import dataclasses
         from romutil.types import Coord3D, SolverStatus
         from romutil.layout.milp.clearance import detect_cluster_collisions
@@ -461,45 +461,46 @@ class TestClearanceConstraintBuilderDAGIntegration:
         from romutil.layout.milp.solver import SolvedClusterExtraction
         from tests.test_layout_milp_clearance import _make_graph
 
-        child = SolveTreeNode(node_id="c_ushape", node_type="leaf", rooms=frozenset({10, 20}))
+        child = SolveTreeNode(node_id="c_pinned", node_type="leaf", rooms=frozenset({10}))
         parent = SolveTreeNode(node_id="p_root", node_type="container", rooms=frozenset({1, 2}), children=(child,))
         sol = NodeSolution(
-            node_id="c_ushape",
-            local_coordinates={
-                10: Coord3D(1, 1, 0),
-                20: Coord3D(5, 1, 0),
-            },
-            sub_boxes=(
-                BoundingBox3D(0, 1, 0, 2, 0, 0),
-                BoundingBox3D(4, 6, 0, 2, 0, 0),
-            ),
+            node_id="c_pinned",
+            local_coordinates={10: Coord3D(0, 0, 0)},
+            sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 0),),
         )
-        graph = _make_graph([1, 2, 10, 20], [])
-        inv = inventory_cluster(node=parent, child_solutions={"c_ushape": sol}, graph=graph)
+        graph = _make_graph([1, 2, 10], [])
+        inv = inventory_cluster(node=parent, child_solutions={"c_pinned": sol}, graph=graph)
         inv = dataclasses.replace(
             inv,
             active_edges=(
                 ActiveEdge(
-                    edge_id="ae_piercing",
-                    src=("c_ushape", 10),
+                    edge_id="ae_corridor",
+                    src=1,
                     dst=2,
                     direction=(1, 0, 0),
                     min_length=7,
-                    associated_rooms=frozenset({10, 2}),
-                    associated_children=frozenset({"c_ushape"}),
+                    associated_rooms=frozenset({1, 2}),
+                    associated_children=frozenset(),
                 ),
             ),
         )
         formulation = formulate_cluster_model(inventory=inv)
+        # Rigidly pin c_pinned to parent room 1 on all 3 axes at offset (4, 0, 0)
+        # Corridor runs from 1 to 2 along X, so (4, 0, 0) is directly in the corridor path
+        formulation.clearance_builder.spatial_dag.add_equality(AXIS_X, 1, "c_pinned", 4)
+        formulation.clearance_builder.spatial_dag.add_equality(AXIS_Y, 1, "c_pinned", 0)
+        formulation.clearance_builder.spatial_dag.add_equality(AXIS_Z, 1, "c_pinned", 0)
+
         extraction = SolvedClusterExtraction(
-            raw_parent_coords={2: (8, 1, 0)},
-            raw_child_offsets={"c_ushape": (0, 0, 0)},
+            raw_parent_coords={1: (0, 0, 0), 2: (8, 0, 0)},
+            raw_child_offsets={"c_pinned": (4, 0, 0)},
             solver_status=SolverStatus.OPTIMAL,
         )
         violations = detect_cluster_collisions(formulation, extraction)
-        assert len(violations) == 1
+        cchild_violations = [v for v in violations if v.category == "corridor_child"]
+        assert len(cchild_violations) == 1
 
-        cuts_injected = formulation.clearance_builder.inject_clearance_cuts(violations)
+        cuts_injected = formulation.clearance_builder.inject_clearance_cuts(cchild_violations)
         assert cuts_injected == 0
         assert len(formulation.clearance_builder.unsatisfiable_collisions) == 1
-        assert formulation.clearance_builder.unsatisfiable_collisions[0] == violations[0]
+        assert formulation.clearance_builder.unsatisfiable_collisions[0] == cchild_violations[0]
