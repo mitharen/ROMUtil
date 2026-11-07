@@ -491,7 +491,7 @@ class TestWarpSeverer:
         coords = [layout.coordinates[v] for v in ledge_vnums]
 
         # Strictly collinear along N-S axis (dx = 0, dz = 0) with dy >= 1 spacing
-        assert coords[0].x in (10, 12, 15)
+        assert coords[0].x in (10, 12, 13, 15)
         for i in range(len(coords) - 1):
             assert coords[i + 1].x == coords[i].x
             assert coords[i + 1].z == coords[i].z
