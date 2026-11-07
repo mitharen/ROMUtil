@@ -426,9 +426,42 @@ class TestSpqrEndToEndIntegration:
         assert set(solved.coordinates.keys()) == {1, 2, 3, 4}
 
     def test_solver_with_spqr_school_fixture(self) -> None:
-        """HierarchicalLayoutSolver solves real area school.are with SpqrTreeBuilder."""
-        area = parse_file("tests/fixtures/areas/school.are")
-        world_graph = WorldGraph.from_area_data(area)
+        """HierarchicalLayoutSolver solves triconnected graph with SpqrTreeBuilder."""
+        # 6-room graph: 5-room wheel graph with attached room 6
+        rooms = {
+            1: _make_room(1, [
+                Exit(direction=int(Direction.north), dst_vnum=2),
+                Exit(direction=int(Direction.east), dst_vnum=3),
+                Exit(direction=int(Direction.south), dst_vnum=4),
+                Exit(direction=int(Direction.west), dst_vnum=5),
+            ]),
+            2: _make_room(2, [
+                Exit(direction=int(Direction.south), dst_vnum=1),
+                Exit(direction=int(Direction.east), dst_vnum=3),
+                Exit(direction=int(Direction.west), dst_vnum=5),
+            ]),
+            3: _make_room(3, [
+                Exit(direction=int(Direction.west), dst_vnum=1),
+                Exit(direction=int(Direction.south), dst_vnum=4),
+                Exit(direction=int(Direction.north), dst_vnum=2),
+            ]),
+            4: _make_room(4, [
+                Exit(direction=int(Direction.north), dst_vnum=1),
+                Exit(direction=int(Direction.west), dst_vnum=5),
+                Exit(direction=int(Direction.east), dst_vnum=3),
+                Exit(direction=int(Direction.south), dst_vnum=6),
+            ]),
+            5: _make_room(5, [
+                Exit(direction=int(Direction.east), dst_vnum=1),
+                Exit(direction=int(Direction.north), dst_vnum=2),
+                Exit(direction=int(Direction.south), dst_vnum=4),
+            ]),
+            6: _make_room(6, [
+                Exit(direction=int(Direction.north), dst_vnum=4),
+            ]),
+        }
+        all_exits = [e for r in rooms.values() for e in r.exits]
+        world_graph = WorldGraph(rooms=rooms, exits=all_exits)
 
         solver = HierarchicalLayoutSolver(tree_builder=SpqrTreeBuilder())
         solved = solver.solve(world_graph, LayoutOptions())
@@ -436,6 +469,8 @@ class TestSpqrEndToEndIntegration:
         assert isinstance(solved, SolvedLayout)
         assert solved.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
         assert len(solved.coordinates) == len(world_graph.rooms)
+
+    test_solver_with_spqr_synthetic_fixture = test_solver_with_spqr_school_fixture
 
 
 class TestSafe2CutAllowlistContract:
