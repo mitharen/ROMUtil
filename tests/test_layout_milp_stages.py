@@ -26,7 +26,6 @@ from romutil.layout.milp import (
     ClearanceViolation,
     ClusterFormulation,
     ClusterInventory,
-    apply_clearance_constraints,
     calculate_dynamic_bounds,
     detect_cluster_collisions,
     formulate_cluster_model,
@@ -1714,7 +1713,7 @@ class TestStage3Clearance:
         inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
         formulation = formulate_cluster_model(inventory=inv)
 
-        apply_clearance_constraints(formulation=formulation)
+        formulation.apply_clearances()
         model = formulation.model
 
         # Parent-room separation variables and constraints
@@ -1733,16 +1732,6 @@ class TestStage3Clearance:
         formulation.apply_clearances()
         assert hasattr(formulation.model, "parent_room_sep_sum")
 
-    def test_formulation_apply_clearance_constraints_alias(self) -> None:
-        """Calling formulation.apply_clearance_constraints() delegates cleanly to apply_clearances."""
-        node = SolveTreeNode(node_id="p_alias", node_type="block", rooms=frozenset({1, 2}))
-        graph = _make_graph([1, 2], [(1, 2, Direction.east, 1)])
-        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
-        formulation = ClusterFormulation(inventory=inv)
-
-        formulation.apply_clearance_constraints()
-        assert hasattr(formulation.model, "parent_room_sep_sum")
-
     def test_apply_clearance_constraints_child_and_corridors(self) -> None:
         """Child sub-box and corridor clearance constraints are created."""
         c1 = SolveTreeNode(node_id="c1", node_type="leaf", rooms=frozenset({10}))
@@ -1756,7 +1745,7 @@ class TestStage3Clearance:
         inv = inventory_cluster(node=parent, child_solutions={"c1": sol1}, graph=graph)
         formulation = formulate_cluster_model(inventory=inv)
 
-        apply_clearance_constraints(formulation=formulation)
+        formulation.apply_clearances()
         model = formulation.model
 
         assert hasattr(model, "room_child_br")  # Room vs child separation
@@ -1849,19 +1838,20 @@ class TestStage3Clearance:
         builder.build()
         assert hasattr(formulation.model, "parent_room_sep_sum")
 
-    def test_individual_clearance_methods_on_formulation(self) -> None:
-        """Individual clearance separation methods on ClusterFormulation execute without error."""
+    def test_individual_clearance_builder_methods(self) -> None:
+        """Individual clearance separation methods on ClearanceConstraintBuilder execute without error."""
         node = SolveTreeNode(node_id="p_indiv", node_type="block", rooms=frozenset({1, 2}))
         graph = _make_graph([1, 2], [(1, 2, Direction.east, 1)])
         inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
         formulation = ClusterFormulation(inventory=inv)
 
-        formulation.apply_parent_room_separation()
-        formulation.apply_child_child_separation()
-        formulation.apply_room_child_separation()
-        formulation.apply_corridor_room_separation()
-        formulation.apply_corridor_child_separation()
-        formulation.apply_corridor_crossing_separation()
+        builder = formulation.clearance_builder
+        builder.add_parent_room_separation()
+        builder.add_child_child_separation()
+        builder.add_room_child_separation()
+        builder.add_corridor_room_separation()
+        builder.add_corridor_child_separation()
+        builder.add_corridor_crossing_separation()
 
         assert hasattr(formulation.model, "parent_room_sep_sum")
 
@@ -1883,9 +1873,10 @@ class TestStage3Clearance:
             ),
         )
         formulation = ClusterFormulation(inventory=inv)
-        formulation.apply_corridor_room_separation()
-        formulation.apply_corridor_child_separation()
-        formulation.apply_corridor_crossing_separation()
+        builder = formulation.clearance_builder
+        builder.add_corridor_room_separation()
+        builder.add_corridor_child_separation()
+        builder.add_corridor_crossing_separation()
 
 
 class TestStage3DelayedCutsAndCollisionDetector:

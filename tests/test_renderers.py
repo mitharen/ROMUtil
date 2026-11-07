@@ -16,7 +16,6 @@ from romutil.renderers import (
     HTMLRenderer,
     JSONRenderer,
     SVGRenderer,
-    _DynamicPalette,
     build_area_json,
     export_html,
     export_json,
@@ -97,6 +96,9 @@ class TestBaseRendererProtocol:
         assert isinstance(svg, BaseRenderer)
         assert isinstance(json_r, BaseRenderer)
         assert isinstance(html_r, BaseRenderer)
+        assert isinstance(svg, romutil.interfaces.BaseRenderer)
+        assert isinstance(json_r, romutil.interfaces.BaseRenderer)
+        assert isinstance(html_r, romutil.interfaces.BaseRenderer)
 
     def test_non_conforming_object(self):
         class NotARenderer:
@@ -104,6 +106,7 @@ class TestBaseRendererProtocol:
                 pass
 
         assert not isinstance(NotARenderer(), BaseRenderer)
+        assert not isinstance(object(), BaseRenderer)
 
 
 class TestRendererRegistry:
@@ -248,6 +251,14 @@ class TestRenderMapDispatcher:
         with pytest.raises(ValueError, match="Unsupported renderer format"):
             render_map(graph, layout, out, fmt="unsupported")
 
+    def test_render_map_type_errors(self, sample_rdb, tmp_path):
+        graph, layout = sample_rdb
+        with pytest.raises(TypeError, match="Expected SolvedLayout"):
+            render_map(graph, "invalid_layout", tmp_path / "out.svg")  # type: ignore
+
+        with pytest.raises(TypeError, match="output_path must be specified"):
+            render_map(graph, layout, None)  # type: ignore
+
 
 class TestSVGRenderer:
     """Test SVGRenderer specific functionality and options."""
@@ -330,6 +341,75 @@ class TestSVGRenderer:
         z0 = tmp_path / "empty_split_z0.svg"
         assert z0.exists()
 
+    def test_svg_directional_stubs_all_compass_bearings(self, tmp_path):
+        """Test directional projection stubs for all 10 Diku directions."""
+        directions = [
+            (Direction.north, 0),
+            (Direction.east, 1),
+            (Direction.south, 2),
+            (Direction.west, 3),
+            (Direction.up, 4),
+            (Direction.down, 5),
+            (Direction.northeast, 6),
+            (Direction.northwest, 7),
+            (Direction.southeast, 8),
+            (Direction.southwest, 9),
+        ]
+        exits = tuple(Exit(direction=dir_enum, dst_vnum=9000 + i) for i, (dir_enum, _) in enumerate(directions))
+        r = Room(vnum=10, name="Hub Room", description="Exits in all directions", exits=exits)
+
+        graph = WorldGraph(rooms={10: r}, exits=exits)
+        layout = SolvedLayout(
+            coordinates={10: Coord3D(x=5, y=5, z=0)},
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.01),
+        )
+
+        out = tmp_path / "compass.svg"
+        renderer = SVGRenderer()
+        renderer.render(graph, layout, out)
+        assert out.exists()
+        content = out.read_text(encoding="utf-8")
+        assert "<svg" in content
+
+        # Directly test proj_exit stub branches
+        svg_inst = SVGRenderer(graph=graph, layout=layout)
+        for ex in exits:
+            proj = svg_inst.proj_exit(ex, src_vnum=10)
+            assert proj is not None
+            start, end = proj
+            assert start != end
+
+    def test_svg_proj_room_input_types(self):
+        coord = Coord3D(x=3, y=4, z=1)
+        r = Room(vnum=10, name="Test", description="")
+        layout = SolvedLayout(
+            coordinates={10: coord},
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
+        )
+        renderer = SVGRenderer(layout=layout)
+        renderer.z_max = 2.0
+        renderer.y_max = 10.0
+
+        p1 = renderer.proj_room(coord)
+        p2 = renderer.proj_room(10)
+        p3 = renderer.proj_room(r)
+        assert p1 is not None and p2 is not None and p3 is not None
+        assert p1 == p2 == p3
+
+        # Missing vnum returns None
+        assert renderer.proj_room(999) is None
+        assert renderer.proj_room("invalid") is None
+
+    def test_svg_render_type_errors(self, sample_rdb, tmp_path):
+        graph, layout = sample_rdb
+        renderer = SVGRenderer()
+
+        with pytest.raises(TypeError, match="Expected SolvedLayout"):
+            renderer.render(graph, "invalid", tmp_path / "out.svg")  # type: ignore
+
+        with pytest.raises(TypeError, match="output_path must be specified"):
+            renderer.render(graph, layout, None)  # type: ignore
+
 
 class TestJSONAndHTMLRenderers:
     """Test JSONRenderer and HTMLRenderer options and behavior."""
@@ -355,6 +435,74 @@ class TestJSONAndHTMLRenderers:
         content = out.read_text(encoding="utf-8")
         assert "Custom Title" in content
         assert "Sample Area" in content
+
+    def test_json_render_type_errors(self, sample_rdb, tmp_path):
+        graph, layout = sample_rdb
+        renderer = JSONRenderer()
+
+        with pytest.raises(TypeError, match="Expected SolvedLayout"):
+            renderer.render(graph, "invalid_layout", tmp_path / "out.json")  # type: ignore
+
+        with pytest.raises(TypeError, match="output_path must be specified"):
+            renderer.render(graph, layout, None)  # type: ignore
+
+    def test_html_render_type_errors(self, sample_rdb, tmp_path):
+        graph, layout = sample_rdb
+        renderer = HTMLRenderer()
+
+        with pytest.raises(TypeError, match="Expected SolvedLayout"):
+            renderer.render(graph, "invalid", tmp_path / "out.html")  # type: ignore
+
+        with pytest.raises(TypeError, match="output_path must be specified"):
+            renderer.render(graph, layout, None)  # type: ignore
+
+    def test_build_area_json_pure_without_legacy_fields(self):
+        r_pure = Room(vnum=42, name="Pure Room", description="No legacy fields")
+        assert not hasattr(r_pure, "x")
+        assert not hasattr(r_pure, "y")
+        assert not hasattr(r_pure, "z")
+        assert not hasattr(r_pure, "dummy")
+
+        graph = WorldGraph(rooms={42: r_pure}, exits=(), header=None)
+        layout = SolvedLayout(
+            coordinates={42: Coord3D(x=5, y=10, z=2)},
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.01),
+        )
+
+        data = build_area_json(graph, layout)
+        assert len(data["rooms"]) == 1
+        assert data["rooms"][0]["vnum"] == 42
+        assert data["rooms"][0]["coords"] == {"x": 5, "y": 10, "z": 2}
+
+    def test_json_and_svg_exits_with_target_vnum_and_custom_attributes(self, tmp_path):
+        class MockExit:
+            def __init__(self):
+                self.direction = 99  # Unknown direction
+                self.dst = 2
+                self.target_vnum = 20
+                self.distance = 5
+                self.one_way = True
+
+        r1 = Room(vnum=1, name="R1", description="", exits=(MockExit(),))  # type: ignore
+        graph = WorldGraph(rooms={1: r1}, exits=())
+        layout = SolvedLayout(
+            coordinates={1: Coord3D(x=0, y=0, z=0)},
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
+        )
+
+        json_out = tmp_path / "custom_exits.json"
+        JSONRenderer().render(graph, layout, json_out)
+        data = json.loads(json_out.read_text(encoding="utf-8"))
+        ex0 = data["rooms"][0]["exits"][0]
+        assert ex0["direction"] == "99"
+        assert ex0["dst"] == 20
+        assert ex0["distance"] == 5
+        assert ex0["one_way"] is True
+
+        # Test render_map with format string
+        map_out = tmp_path / "map_pos_fmt.json"
+        render_map(graph, layout, map_out, fmt="json")
+        assert map_out.exists()
 
 
 class TestTemplateAssetLoading:

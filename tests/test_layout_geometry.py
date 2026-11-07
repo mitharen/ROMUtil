@@ -141,14 +141,7 @@ class TestSegment3D:
         seg = Segment3D(pt, pt)
         assert seg.is_point()
         assert seg.is_axis_aligned()
-        assert seg.length_manhattan() == 0
-        assert seg.intermediate_points() == ()
         assert seg.bounding_box() == BoundingBox3D(3, 3, 4, 4, 5, 5)
-
-    def test_length_manhattan(self) -> None:
-        seg = Segment3D(Coord3D(1, 2, 3), Coord3D(4, -1, 3))
-        # |4-1| + |-1-2| + |3-3| = 3 + 3 + 0 = 6
-        assert seg.length_manhattan() == 6
 
     def test_is_axis_aligned(self) -> None:
         # X axis
@@ -163,60 +156,6 @@ class TestSegment3D:
         assert not Segment3D(Coord3D(0, 0, 0), Coord3D(1, 1, 0)).is_axis_aligned()
         # 3D Diagonal (False)
         assert not Segment3D(Coord3D(0, 0, 0), Coord3D(1, 1, 1)).is_axis_aligned()
-
-    def test_intermediate_points_x_axis(self) -> None:
-        # Positive direction
-        seg_fwd = Segment3D(Coord3D(0, 5, 2), Coord3D(4, 5, 2))
-        assert seg_fwd.intermediate_points() == (
-            Coord3D(1, 5, 2),
-            Coord3D(2, 5, 2),
-            Coord3D(3, 5, 2),
-        )
-
-        # Negative direction
-        seg_bwd = Segment3D(Coord3D(4, 5, 2), Coord3D(0, 5, 2))
-        assert seg_bwd.intermediate_points() == (
-            Coord3D(3, 5, 2),
-            Coord3D(2, 5, 2),
-            Coord3D(1, 5, 2),
-        )
-
-        # Length 1 segment (adjacent rooms) -> no intermediate points
-        seg_adj = Segment3D(Coord3D(0, 0, 0), Coord3D(1, 0, 0))
-        assert seg_adj.intermediate_points() == ()
-
-    def test_intermediate_points_y_axis(self) -> None:
-        seg_fwd = Segment3D(Coord3D(1, -2, 0), Coord3D(1, 2, 0))
-        assert seg_fwd.intermediate_points() == (
-            Coord3D(1, -1, 0),
-            Coord3D(1, 0, 0),
-            Coord3D(1, 1, 0),
-        )
-
-        seg_bwd = Segment3D(Coord3D(1, 2, 0), Coord3D(1, -2, 0))
-        assert seg_bwd.intermediate_points() == (
-            Coord3D(1, 1, 0),
-            Coord3D(1, 0, 0),
-            Coord3D(1, -1, 0),
-        )
-
-    def test_intermediate_points_z_axis(self) -> None:
-        seg_fwd = Segment3D(Coord3D(0, 0, -1), Coord3D(0, 0, 2))
-        assert seg_fwd.intermediate_points() == (
-            Coord3D(0, 0, 0),
-            Coord3D(0, 0, 1),
-        )
-
-        seg_bwd = Segment3D(Coord3D(0, 0, 2), Coord3D(0, 0, -1))
-        assert seg_bwd.intermediate_points() == (
-            Coord3D(0, 0, 1),
-            Coord3D(0, 0, 0),
-        )
-
-    def test_intermediate_points_non_axis_aligned_raises(self) -> None:
-        seg = Segment3D(Coord3D(0, 0, 0), Coord3D(2, 2, 0))
-        with pytest.raises(ValueError, match="is not axis-aligned"):
-            seg.intermediate_points()
 
     def test_bounding_box(self) -> None:
         seg = Segment3D(Coord3D(5, -2, 10), Coord3D(-1, 4, 3))

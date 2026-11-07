@@ -13,24 +13,11 @@ from romutil.renderers.base import BaseRenderer
 from romutil.types import Coord3D, LayoutDiagnostics, RenderOptions, SolvedLayout, SolverStatus, WorldGraph
 
 
-class _DynamicPalette:
-    """Dynamic palette mapping Z index to an HSL color for backward compatibility."""
-
-    def __init__(self, renderer: SVGRenderer) -> None:
-        self._renderer: SVGRenderer = renderer
-
-    def __getitem__(self, idx: int) -> str:
-        return self._renderer.get_color(idx)
-
-    def __len__(self) -> int:
-        return len(self._renderer.get_unique_elevations())
-
-
 class SVGRenderer:
     """Renderer generating 2D/3D isometric SVG vector maps conforming to BaseRenderer."""
 
     lift: float = 0.15
-    colors: Any = ["red", "orange", "yellow", "green", "blue", "indigo", "violet"]
+    colors: list[str] = ["red", "orange", "yellow", "green", "blue", "indigo", "violet"]
 
     def __init__(
         self,
@@ -47,7 +34,7 @@ class SVGRenderer:
         self.x_max: float = 0.0
         self.y_max: float = 0.0
         self.z_max: float = 0.0
-        self.colors: Any = _DynamicPalette(self)
+        self.colors: list[str] = ["red", "orange", "yellow", "green", "blue", "indigo", "violet"]
         self.custom_exits: Optional[List[Any]] = exits
         self.options: Optional[RenderOptions] = options
         self.graph: WorldGraph = (
@@ -493,5 +480,4 @@ function toggleElevation(z) {
 
 __all__ = [
     "SVGRenderer",
-    "_DynamicPalette",
 ]

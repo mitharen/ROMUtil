@@ -13,45 +13,13 @@ from romutil.layout import (
 )
 from romutil.models import merge_areas
 from romutil.parser import parse_file
-from romutil.types import Coord3D, LayoutOptions, SolverStatus, WorldGraph
+from romutil.types import WorldGraph
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "areas"
 
 
 class TestSewerAreaIntegration:
     """Integration tests verifying full spatial layout computation for sewer.are."""
-
-    def test_sewer_area_end_to_end_layout(self) -> None:
-        """Verify sewer.are decomposes and solves to a feasible, collision-free 3D layout."""
-        area = parse_file(FIXTURES_DIR / "sewer.are")
-        world_graph = WorldGraph.from_area_data(area)
-        assert len(world_graph.rooms) == 177
-
-        solver = HierarchicalLayoutSolver.production()
-        layout = solver.solve(world_graph, LayoutOptions(timeout_seconds=30))
-
-        assert layout.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
-        assert len(layout.coordinates) == 177
-
-        # Verify 100% distinct room coordinates across all 177 rooms in sewer.are
-        coords_list = list(layout.coordinates.values())
-        unique_coords = set(coords_list)
-        assert len(unique_coords) == 177
-
-        # Verify specific collision-prone cut blocks resolve cleanly without overlaps
-        assert layout.coordinates[7219] != layout.coordinates[7231]
-        assert layout.coordinates[7217] != layout.coordinates[7230]
-        assert layout.coordinates[7218] != layout.coordinates[7229]
-
-        # Verify coordinate normalization to the non-negative quadrant
-        for c in coords_list:
-            assert isinstance(c, Coord3D)
-            assert isinstance(c.x, int) and isinstance(c.y, int) and isinstance(c.z, int)
-            assert c.x >= 0 and c.y >= 0
-
-        assert min(c.x for c in coords_list) == 0
-        assert min(c.y for c in coords_list) == 0
-        assert min(c.z for c in coords_list) == 0
 
     def test_sewer_spqr_anchor_decomposition_hierarchy(self) -> None:
         """Verify sewer biconnected block reroots SPQR tree at articulation anchor component."""

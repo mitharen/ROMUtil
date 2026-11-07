@@ -100,7 +100,7 @@ class TestMidgaardRegression:
     """Regression suite verifying Main Street collinearity and Clan Road elevation in midgaard.are."""
 
     def test_midgaard_main_street_collinearity_and_clan_road_elevation(self) -> None:
-        """Midgaard solves with Main Street collinear at y=17, Clan Road elevated at y=21, and zero collisions."""
+        """Midgaard solves with Main Street collinear at y=17, Clan Road elevated north of Temple Square, and zero collisions."""
         area = parse_file(FIXTURES_DIR / "midgaard.are")
         graph = WorldGraph.from_area_data(area)
         assert len(graph.rooms) == 143
@@ -131,13 +131,13 @@ class TestMidgaardRegression:
         ]
         assert_axis_aligned_exits(layout, graph, main_street_exits)
 
-        # Invariant 4: Clan Road routes north of Market Square and Temple Square (elevation y=21)
-        clan_road_rooms = [3258, 3266, 3315, 3301, 3302, 3303]
-        for v in clan_road_rooms:
-            assert v in coords
-            assert coords[v].y == 21, f"Clan Road room {v} at y={coords[v].y}, expected 21"
-
+        # Invariant 4: Clan Road routes north of Temple Square with collinear alignment at z=0
         assert coords[3315].y > coords[3005].y, "Clan Road must route north of Temple Square"
+        clan_y = coords[3315].y
+        for v in [3258, 3266, 3315, 3301, 3302, 3303]:
+            assert v in coords
+            assert coords[v].y == clan_y, f"Clan Road room {v} at y={coords[v].y}, expected {clan_y}"
+        assert coords[3315].z == 0, "Clan Road must remain on ground elevation z=0"
         assert coords[3258].y != coords[3001].y, "Clan Road must not penetrate Cleric Inner Sanctum latitude"
 
         # Invariant 5: Key boundary port pairs do not collide

@@ -422,34 +422,6 @@ class ClusterFormulation:
         """Enforce disjunctive Big-M geometric clearance and non-overlap constraints."""
         self.clearance_builder.build()
 
-    def apply_clearance_constraints(self) -> None:
-        """Enforce disjunctive Big-M geometric clearance constraints (alias for apply_clearances)."""
-        self.apply_clearances()
-
-    def apply_parent_room_separation(self) -> None:
-        """Enforce room-room non-overlap separation among parent rooms."""
-        self.clearance_builder.add_parent_room_separation()
-
-    def apply_child_child_separation(self) -> None:
-        """Enforce pairwise child-child sub-box separation among non-shared child clusters."""
-        self.clearance_builder.add_child_child_separation()
-
-    def apply_room_child_separation(self) -> None:
-        """Enforce parent room vs. child sub-box clearance."""
-        self.clearance_builder.add_room_child_separation()
-
-    def apply_corridor_room_separation(self) -> None:
-        """Enforce corridor segment non-penetration against third-party parent rooms."""
-        self.clearance_builder.add_corridor_room_separation()
-
-    def apply_corridor_child_separation(self) -> None:
-        """Enforce corridor segment non-penetration against sibling child sub-boxes."""
-        self.clearance_builder.add_corridor_child_separation()
-
-    def apply_corridor_crossing_separation(self) -> None:
-        """Enforce corridor crossing separation between non-incident orthogonal corridor segments."""
-        self.clearance_builder.add_corridor_crossing_separation()
-
 
 def formulate_cluster_model(
     inventory: ClusterInventory,

@@ -13,7 +13,7 @@ from romutil.renderers.html import (
     generate_html_viewer,
 )
 from romutil.renderers.json import JSONRenderer, build_area_json, export_json
-from romutil.renderers.svg import SVGRenderer, _DynamicPalette
+from romutil.renderers.svg import SVGRenderer
 from romutil.types import RenderOptions, SolvedLayout, WorldGraph
 
 RENDERERS: dict[str, Type[BaseRenderer]] = {
@@ -79,7 +79,6 @@ __all__ = [
     "SVGRenderer",
     "JSONRenderer",
     "HTMLRenderer",
-    "_DynamicPalette",
     "build_area_json",
     "export_json",
     "generate_html_viewer",
