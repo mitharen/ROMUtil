@@ -1172,17 +1172,6 @@ def detect_cluster_collisions(
     return violations
 
 
-def apply_clearance_constraints(formulation: ClusterFormulation) -> None:
-    """Add disjunctive Big-M clearance and non-overlap constraints to the cluster model.
-
-    Delegates to formulation.apply_clearances() for backward compatibility.
-
-    Args:
-        formulation: ClusterFormulation containing the Pyomo model and inventory.
-    """
-    formulation.apply_clearances()
-
-
 __all__ = [
     "BoundaryExitClearanceBox",
     "ChildSubClearanceBox",
@@ -1194,6 +1183,5 @@ __all__ = [
     "VIOLATION_TIER_PRIORITY",
     "_extract_child_sub_box_bounds",
     "_extract_entity_coord",
-    "apply_clearance_constraints",
     "detect_cluster_collisions",
 ]

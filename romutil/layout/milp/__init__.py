@@ -10,7 +10,6 @@ from romutil.layout.milp.clearance import (
     ClearanceViolation,
     CorridorClearanceBox,
     RoomClearanceBox,
-    apply_clearance_constraints,
     detect_cluster_collisions,
 )
 from romutil.layout.milp.cluster import (
@@ -69,7 +68,6 @@ __all__ = [
     "SolvedClusterExtraction",
     "SplitPairHandler",
     "add_disjunctive_box_separation",
-    "apply_clearance_constraints",
     "calculate_dynamic_bounds",
     "derive_child_sub_boxes",
     "detect_cluster_collisions",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+from typing import Iterable
 
 from romutil.types import Coord3D
 
@@ -133,14 +133,6 @@ class Segment3D:
         """Returns True if the segment is degenerate (p1 == p2)."""
         return self.p1 == self.p2
 
-    def length_manhattan(self) -> int:
-        """Returns the Manhattan (L1) distance between endpoints."""
-        return (
-            abs(self.p1.x - self.p2.x)
-            + abs(self.p1.y - self.p2.y)
-            + abs(self.p1.z - self.p2.z)
-        )
-
     def is_axis_aligned(self) -> bool:
         """Returns True if the segment is parallel to a coordinate axis or is a point."""
         diff_count = (
@@ -149,33 +141,3 @@ class Segment3D:
             + (self.p1.z != self.p2.z)
         )
         return diff_count <= 1
-
-    def intermediate_points(self) -> Sequence[Coord3D]:
-        """Returns discrete integer points strictly between p1 and p2 along axis.
-
-        Raises:
-            ValueError: If the segment is not axis-aligned.
-        """
-        if not self.is_axis_aligned():
-            raise ValueError(f"Segment {self} is not axis-aligned")
-        if self.is_point():
-            return ()
-
-        if self.p1.x != self.p2.x:
-            step = 1 if self.p2.x > self.p1.x else -1
-            return tuple(
-                Coord3D(x, self.p1.y, self.p1.z)
-                for x in range(self.p1.x + step, self.p2.x, step)
-            )
-        if self.p1.y != self.p2.y:
-            step = 1 if self.p2.y > self.p1.y else -1
-            return tuple(
-                Coord3D(self.p1.x, y, self.p1.z)
-                for y in range(self.p1.y + step, self.p2.y, step)
-            )
-        # Otherwise z axis
-        step = 1 if self.p2.z > self.p1.z else -1
-        return tuple(
-            Coord3D(self.p1.x, self.p1.y, z)
-            for z in range(self.p1.z + step, self.p2.z, step)
-        )
