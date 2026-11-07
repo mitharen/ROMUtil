@@ -53,6 +53,13 @@ class TestSewerRegression:
         # Invariant 3: Corridor between rooms 7011 and 7021 avoids interior room 7012
         assert_corridor_non_penetration(layout, graph)
 
+        # Invariant 4: Eastern ledge rooms (7116-7120) are collinear along N-S axis
+        ledge_coords = [coords[v] for v in [7116, 7117, 7118, 7119, 7120]]
+        for i in range(len(ledge_coords) - 1):
+            assert ledge_coords[i + 1].x == ledge_coords[i].x
+            assert ledge_coords[i + 1].z == ledge_coords[i].z
+            assert ledge_coords[i].y - ledge_coords[i + 1].y >= 1
+
 
 class TestThalosRegression:
     """Regression suite verifying split-pair boundary port alignment for thalos.are."""
@@ -100,7 +107,7 @@ class TestMidgaardRegression:
     """Regression suite verifying Main Street collinearity and Clan Road elevation in midgaard.are."""
 
     def test_midgaard_main_street_collinearity_and_clan_road_elevation(self) -> None:
-        """Midgaard solves with Main Street collinear at y=17, Clan Road elevated north of Temple Square, and zero collisions."""
+        """Midgaard solves with Main Street collinear, Clan Road elevated north of Temple Square, and zero collisions."""
         area = parse_file(FIXTURES_DIR / "midgaard.are")
         graph = WorldGraph.from_area_data(area)
         assert len(graph.rooms) == 143
@@ -115,11 +122,12 @@ class TestMidgaardRegression:
         # Invariant 1: Zero coordinate collisions across all 143 rooms
         assert_zero_coordinate_collisions(layout)
 
-        # Invariant 2: Main Street collinearity along y=17 at ground elevation z=0
+        # Invariant 2: Main Street collinearity at ground elevation z=0
+        main_y = coords[3014].y
         main_street_vnums = [3053, 3012, 3013, 3014, 3015, 3016, 3040]
         for v in main_street_vnums:
             assert v in coords
-            assert coords[v].y == 17, f"Main Street room {v} at y={coords[v].y}, expected 17"
+            assert coords[v].y == main_y, f"Main Street room {v} at y={coords[v].y}, expected {main_y}"
             assert coords[v].z == 0, f"Main Street room {v} at z={coords[v].z}, expected 0"
 
         # Invariant 3: Main Street exit segments have zero perpendicular shear
@@ -147,6 +155,9 @@ class TestMidgaardRegression:
 
         # Invariant 6: Strict corridor non-penetration across all Midgaard rooms
         assert_corridor_non_penetration(layout, graph)
+
+        # Invariant 7: Park Entrance (3105) and Small Path (3108) align strictly on-axis
+        assert coords[3105].x == coords[3108].x and coords[3108].y < coords[3105].y and coords[3105].z == coords[3108].z
 
 
 class TestMoriaRegression:

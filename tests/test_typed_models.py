@@ -16,6 +16,7 @@ from romutil.models import (
     Shop,
     Social,
     Special,
+    merge_areas,
 )
 from romutil.parser import Parser
 import importlib
@@ -355,3 +356,23 @@ S
 
         with pytest.raises(TypeError, match="Expected AreaData"):
             cli_module.main([test_file], str(tmp_path / "out"))
+
+
+class TestModelEdgeCases:
+    """Targeted coverage tests for models.py methods."""
+
+    def test_merge_areas_edge_cases(self):
+        # Empty areas list
+        empty_merged = merge_areas([])
+        assert empty_merged.header is not None
+        assert empty_merged.header.name == "Composite Area"
+        assert len(empty_merged.rooms) == 0
+
+        # Single area with custom title
+        r1 = Room(vnum=1, name="R1", description="D")
+        hdr = AreaHeader(filename="a.are", name="Orig", builder="B", vnum_min=1, vnum_max=1)
+        area = AreaData(header=hdr, rooms=(r1,))
+
+        merged = merge_areas([area], title="Super World")
+        assert merged.header is not None
+        assert merged.header.name == "Super World"

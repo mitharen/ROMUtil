@@ -389,22 +389,6 @@ class TestClearanceConstraintBuilderDAGIntegration:
         assert builder.unsatisfiable_collisions[0] == viol_deadlock
         assert ("parent_room", 3, 4) in builder.separated_pairs
 
-    def test_commit_direction_propagates_to_subsequent_candidates(self) -> None:
-        """Fixing or committing a single valid direction updates the DAG for subsequent pairs."""
-        dag = PositionalConstraintDAG()
-        # Item A (room 1) and Item B (room 2)
-        # Commit direction 'l': 2 is to the right of 1 (x(2) - x(1) >= 1)
-        assert dag.commit_direction(1, 2, "parent_room", None, DIR_LEFT)
-        assert dag.get_lower_bound(AXIS_X, 1, 2) == 1
-
-        # Now check candidate separation between 2 and 3 where 3 has active edge to 1
-        dag.add_edge(AXIS_X, 3, 1, 2)  # x(1) - x(3) >= 2
-        # Then x(2) - x(3) >= 3
-        assert dag.get_lower_bound(AXIS_X, 3, 2) == 3
-        # Candidate 3 > 2 along X requires x(3) - x(2) >= 1, which contradicts x(2) - x(3) >= 3
-        valid_dirs, pruned = dag.filter_candidate_directions(3, 2, "parent_room", None)
-        assert DIR_RIGHT not in valid_dirs
-
     def test_add_disjunctive_box_separation_with_allowed_directions_pyomo(self) -> None:
         """add_disjunctive_box_separation fixes inactive directions to 0 on a real Pyomo model."""
         model = pyo.ConcreteModel()

@@ -139,17 +139,6 @@ class ClusterInventory:
     boundary_exits: tuple[BoundaryExit, ...] = ()
     graph: LayoutGraph | None = None
 
-    @classmethod
-    def from_node(
-        cls,
-        node: SolveTreeNode,
-        child_solutions: Mapping[str, NodeSolution],
-        graph: LayoutGraph,
-        options: LayoutOptions | None = None,
-    ) -> ClusterInventory:
-        """Construct ClusterInventory from cluster node, child solutions, and layout graph."""
-        return inventory_cluster(node, child_solutions, graph, options)
-
 
 def get_child_boundary_ports(child: SolveTreeNode) -> set[int]:
     """Return the set of room IDs that act as boundary ports for this child."""

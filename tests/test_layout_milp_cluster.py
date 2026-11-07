@@ -2523,7 +2523,7 @@ class TestSplitPairBoundaryPortAlignment:
         }
         graph = _make_graph([1, 2, 5, 10], [(1, 2, Direction.east, 3), (1, 10, Direction.south, 2)])
 
-        inv = ClusterInventory.from_node(parent, sols, graph)
+        inv = inventory_cluster(parent, sols, graph)
         assert len(inv.children) == 2
         assert any(e.edge_id.startswith("gw_gw_child") for e in inv.active_edges)
         assert any(e.edge_id.startswith("sp_") for e in inv.active_edges)
@@ -2727,21 +2727,6 @@ class TestSplitPairBoundaryPortAlignment:
         sm_quad = [formulation_quad.model.s_transverse_m[k].value for k in formulation_quad.model.s_transverse_m]
         assert all(v == 0.0 for v in sp_quad)
         assert all(v == 0.0 for v in sm_quad)
-
-    def test_midgaard_park_entrance_and_small_path_on_axis(self) -> None:
-        """Park Entrance (3105) and Small Path (3108) in midgaard.are align strictly on-axis with zero transverse shear."""
-        area = parse_file(Path("tests/fixtures/areas/midgaard.are"))
-        world_graph = WorldGraph.from_area_data(area)
-        solver = HierarchicalLayoutSolver.production()
-        result = solver.solve(world_graph)
-        coords = result.coordinates
-
-        p3105 = coords[3105]
-        p3108 = coords[3108]
-        # Exit 3105 -> 3108 is South (Direction.south: dx=0, dy=-1, dz=0)
-        assert p3105.x == p3108.x
-        assert p3108.y < p3105.y
-        assert p3105.z == p3108.z
 
 
 class TestSafe2CutAllowlistEndToEnd:

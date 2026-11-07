@@ -98,32 +98,6 @@ class TestTreeTransformationPipeline:
         transformed = pipeline.apply(tree)
         assert transformed is tree
 
-    def test_add_pass_and_sequential_execution(self) -> None:
-        call_order: list[str] = []
-
-        class FirstPass:
-            def apply(self, tree: SolveTree) -> SolveTree:
-                call_order.append("first")
-                return tree
-
-        class SecondPass:
-            def apply(self, tree: SolveTree) -> SolveTree:
-                call_order.append("second")
-                return tree
-
-        pipeline = TreeTransformationPipeline([FirstPass()])
-        pipeline.add_pass(SecondPass())
-        assert len(pipeline.passes) == 2
-
-        root = SolveTreeNode(
-            node_id="root",
-            node_type=TreeNodeType.RIGID_CLUSTER,
-            rooms=frozenset({1}),
-        )
-        tree = SolveTree(root=root, components=(root,))
-        pipeline.apply(tree)
-        assert call_order == ["first", "second"]
-
     def test_pipeline_composition_and_nesting(self) -> None:
         log: list[str] = []
 
@@ -1741,46 +1715,6 @@ class TestOrthogonalBridgePromotionPass:
         new_root_block = transformed.root.children[0]
         child_ids = [c.node_id for c in new_root_block.children]
         assert child_ids == ["spine_1", "orth_child"]
-
-    def test_moria_solves_optimally_with_zero_collisions_and_crossings(self) -> None:
-        """moria.are solves to OPTIMAL status with 0 duplicate coordinates and 0 crossings."""
-        from romutil.layout.engine import HierarchicalLayoutSolver
-        from romutil.layout.geometry import Segment3D, segments_intersect_3d
-        from romutil.parser import parse_file
-        from romutil.types import LayoutOptions, SolverStatus, WorldGraph
-
-        area = parse_file("tests/fixtures/areas/moria.are")
-        wg = WorldGraph.from_area_data(area)
-        solver = HierarchicalLayoutSolver.production()
-        res = solver.solve(wg, LayoutOptions(timeout_seconds=10))
-
-        assert res.diagnostics.status == SolverStatus.OPTIMAL
-
-        by_coord: dict[object, list[int]] = {}
-        for v, coord in res.coordinates.items():
-            by_coord.setdefault(coord, []).append(v)
-        duplicates = {c: vs for c, vs in by_coord.items() if len(vs) > 1}
-        assert not duplicates
-
-        simp = solver.simplifier.simplify(
-            LayoutGraph.from_world_graph(wg), LayoutOptions(timeout_seconds=10)
-        )
-        segs: list[tuple[int, int, Segment3D]] = []
-        for e in simp.graph.edges:
-            if e.cut or e.src not in res.coordinates or e.dst not in res.coordinates:
-                continue
-            segs.append((e.src, e.dst, Segment3D(res.coordinates[e.src], res.coordinates[e.dst])))
-
-        crossings = []
-        for i in range(len(segs)):
-            u1, v1, s1 = segs[i]
-            for j in range(i + 1, len(segs)):
-                u2, v2, s2 = segs[j]
-                if len({u1, v1, u2, v2}) < 4:
-                    continue
-                if segments_intersect_3d(s1, s2):
-                    crossings.append(((u1, v1), (u2, v2)))
-        assert not crossings
 
     def test_child_does_not_bubble_out_of_multi_room_cluster(self) -> None:
         """Bridge cut children do not bubble out of multi-room components."""

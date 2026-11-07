@@ -39,10 +39,6 @@ class TreeTransformationPipeline:
         """Sequence of transformation passes in execution order."""
         return tuple(self._passes)
 
-    def add_pass(self, pass_: TreeTransformationPass) -> None:
-        """Append a transformation pass to the pipeline."""
-        self._passes.append(pass_)
-
     def apply(self, tree: SolveTree) -> SolveTree:
         """Execute all configured transformation passes sequentially on the tree."""
         current = tree

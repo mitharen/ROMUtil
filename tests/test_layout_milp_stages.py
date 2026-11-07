@@ -2684,17 +2684,6 @@ class TestTypedChildHandlers:
         assert res.active_edges == ()
         assert res.aligned_children == frozenset()
 
-    def test_cluster_inventory_from_node_factory(self) -> None:
-        """ClusterInventory.from_node produces identical result to inventory_cluster."""
-        node = SolveTreeNode(node_id="leaf", node_type="leaf", rooms=frozenset({1, 2}))
-        graph = _make_graph([1, 2], [(1, 2, Direction.east, 1)])
-
-        inv1 = inventory_cluster(node=node, child_solutions={}, graph=graph)
-        inv2 = ClusterInventory.from_node(node=node, child_solutions={}, graph=graph)
-
-        assert inv1 == inv2
-        assert inv2.rooms == (1, 2)
-
     def test_split_pair_handler_inter_split_corridors(self) -> None:
         """SplitPairHandler builds active edges for corridors between sibling split children."""
         child_sp1 = SolveTreeNode(
