@@ -453,7 +453,7 @@ class TestTransverseSNodeSplitPass:
         )
         tree = SolveTree(root=parent, components=(parent,), graph=graph)
 
-        pass_instance = TransverseSNodeSplitPass()
+        pass_instance = TransverseSNodeSplitPass(graph)
         transformed = pass_instance.apply(tree)
         assert len(transformed.root.children) == 1
         assert transformed.root.children[0].node_id == "s_loop_perp"
@@ -761,18 +761,25 @@ class TestTransformHelpersAndEdgeCases:
         res = TransverseSNodeSplitPass(graph).transform_node(parent)
         assert len(res.children) == 2
 
-    def test_transverse_s_node_split_mismatched_entrance_axis(self) -> None:
-        # Entrance at p0 is West (axis 0), at p1 is North (axis 1) -> axis mismatch
+    def test_internal_step_in_covered_direction_not_split(self) -> None:
+        """Internal spine steps whose directions are covered by boundary exit directions are not severed."""
+        # 1 -> 10 (West), 10 -> 20 (West), 20 -> 2 (West, so 2 -> 20 is East)
+        # Forward boundary exit directions along the spine:
+        # p0 -> 10: West.
+        # 20 -> p1: West.
+        # Covered directions: {West}.
+        # Step (10, 20) is West, which is covered by {West}.
+        # Therefore, s_covered remains intact as a single child.
         graph = _make_graph(
             rooms=[1, 2, 10, 20],
             edges=[
                 (1, 10, Direction.west),
-                (10, 20, Direction.north),
-                (2, 20, Direction.north),
+                (10, 20, Direction.west),
+                (20, 2, Direction.west),
             ],
         )
         child = SolveTreeNode(
-            node_id="s_mismatch",
+            node_id="s_covered",
             node_type=TreeNodeType.SERIES_LOOP,
             rooms=frozenset({1, 2, 10, 20}),
             children=(),
@@ -786,6 +793,7 @@ class TestTransformHelpersAndEdgeCases:
         )
         res = TransverseSNodeSplitPass(graph).transform_node(parent)
         assert len(res.children) == 1
+        assert res.children[0].node_id == "s_covered"
 
     def test_transverse_s_node_split_child_partition_fallback(self) -> None:
         # Nested child with no poles or anchor -> falls back to subtree overlap partition
@@ -1316,6 +1324,195 @@ class TestTransformHelpersAndEdgeCases:
         assert "s_elastic_a" in child_ids
         assert "s_elastic_b" in child_ids
         assert res.metadata.get("severed_bridge_edges") == ((10, 11),)
+
+    def test_complete_bidirectional_transverse_reachability(self) -> None:
+        """S-node spanning both transverse axes severing opposing directions provides bidirectional reachability."""
+        # Poles 1 and 2 with North entrance corridors.
+        # Transverse steps cover East (+X), West (-X), Up (+Z), and Down (-Z).
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 12, 13, 20],
+            edges=[
+                (1, 10, Direction.north),
+                (10, 11, Direction.east),
+                (11, 12, Direction.west),
+                (12, 13, Direction.up),
+                (13, 20, Direction.down),
+                (2, 20, Direction.north),
+            ],
+        )
+        child = SolveTreeNode(
+            node_id="s_corridor_3d",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 10, 11, 12, 13, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+        tree = SolveTree(root=parent, components=(parent,), graph=graph)
+        transformed = TransverseSNodeSplitPass(graph).apply(tree)
+
+        # 4 distinct transverse directions (East, West, Up, Down) severed into 5 sub-nodes
+        assert len(transformed.root.children) == 5
+        child_ids = [c.node_id for c in transformed.root.children]
+        assert child_ids == [
+            "s_corridor_3d_a",
+            "s_corridor_3d_b",
+            "s_corridor_3d_c",
+            "s_corridor_3d_d",
+            "s_corridor_3d_e",
+        ]
+        # Severed bridge edges recorded in parent container metadata
+        expected_severed = ((10, 11), (11, 12), (12, 13), (13, 20))
+        assert transformed.root.metadata.get("severed_bridge_edges") == expected_severed
+
+        # End sub-nodes anchored to boundary poles
+        c_a = transformed.root.children[0]
+        c_e = transformed.root.children[4]
+        assert isinstance(c_a.cut_contract, BridgeCut)
+        assert c_a.cut_contract.bridge_edge == (1, 10)
+        assert isinstance(c_e.cut_contract, BridgeCut)
+        assert c_e.cut_contract.bridge_edge == (2, 20)
+
+    def test_snaking_corridor_cohesion_limits_to_one_cut_per_direction(self) -> None:
+        """Snaking corridors with repeated turns in the same direction are severed at most once per direction."""
+        # Entrance corridors are North. The spine alternates East and North repeatedly:
+        # 1 -> 10 (North), 10 -> 11 (East), 11 -> 12 (North), 12 -> 13 (East),
+        # 13 -> 14 (North), 14 -> 15 (East), 15 -> 20 (North), 2 -> 20 (North).
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 12, 13, 14, 15, 20],
+            edges=[
+                (1, 10, Direction.north),
+                (10, 11, Direction.east),
+                (11, 12, Direction.north),
+                (12, 13, Direction.east),
+                (13, 14, Direction.north),
+                (14, 15, Direction.east),
+                (15, 20, Direction.north),
+                (2, 20, Direction.north),
+            ],
+        )
+        child = SolveTreeNode(
+            node_id="s_snake",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 10, 11, 12, 13, 14, 15, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+        tree = SolveTree(root=parent, components=(parent,), graph=graph)
+        transformed = TransverseSNodeSplitPass(graph).apply(tree)
+
+        # Only the first East rung (10, 11) is severed; repeated East rungs are preserved
+        assert len(transformed.root.children) == 2
+        c_a = transformed.root.children[0]
+        c_b = transformed.root.children[1]
+        assert c_a.node_id == "s_snake_a"
+        assert c_b.node_id == "s_snake_b"
+        assert c_a.rooms == frozenset({10})
+        assert c_b.rooms == frozenset({11, 12, 13, 14, 15, 20})
+        assert transformed.root.metadata.get("severed_bridge_edges") == ((10, 11),)
+
+    def test_three_dimensional_vertical_step_decoupling(self) -> None:
+        """S-node with orthogonal horizontal and vertical steps decouples into 3D degrees of freedom."""
+        # 1 -> 10 (North), 10 -> 11 (East), 11 -> 12 (North), 12 -> 13 (Down), 13 -> 20 (North), 2 -> 20 (North).
+        # Entrance is North (Y). Transverse axes are X (East) and Z (Down).
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 12, 13, 20],
+            edges=[
+                (1, 10, Direction.north),
+                (10, 11, Direction.east),
+                (11, 12, Direction.north),
+                (12, 13, Direction.down),
+                (13, 20, Direction.north),
+                (2, 20, Direction.north),
+            ],
+        )
+        child = SolveTreeNode(
+            node_id="s_vertical",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 10, 11, 12, 13, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+        tree = SolveTree(root=parent, components=(parent,), graph=graph)
+        transformed = TransverseSNodeSplitPass(graph).apply(tree)
+
+        # Decomposes into 3 sub-nodes:
+        # a: {10}
+        # b: {11, 12} (severed at East (10, 11))
+        # c: {13, 20} (severed at Down (12, 13))
+        assert len(transformed.root.children) == 3
+        c_a, c_b, c_c = transformed.root.children
+        assert c_a.node_id == "s_vertical_a"
+        assert c_b.node_id == "s_vertical_b"
+        assert c_c.node_id == "s_vertical_c"
+        assert c_a.rooms == frozenset({10})
+        assert c_b.rooms == frozenset({11, 12})
+        assert c_c.rooms == frozenset({13, 20})
+        assert transformed.root.metadata.get("severed_bridge_edges") == ((10, 11), (12, 13))
+
+    def test_asymmetric_boundary_exit_direction_enables_opposing_longitudinal_cut(self) -> None:
+        """Boundary exit covering South (-Y) does not cover North (+Y), allowing opposing longitudinal cuts."""
+        # Forward boundary exit directions along spine:
+        # 1 -> 10 (South), 20 -> 2 (South).
+        # Covered directions: {South}.
+        # Step (10, 11) is North (+Y). Since North is not covered by {South}, it is severed!
+        # Step (11, 12) is East (+X). East is not covered by {South}, so it is severed!
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 12, 20],
+            edges=[
+                (1, 10, Direction.south),
+                (10, 11, Direction.north),
+                (11, 12, Direction.east),
+                (12, 20, Direction.south),
+                (20, 2, Direction.south),
+            ],
+        )
+        child = SolveTreeNode(
+            node_id="s_opposing",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({1, 2, 10, 11, 12, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+        tree = SolveTree(root=parent, components=(parent,), graph=graph)
+        transformed = TransverseSNodeSplitPass(graph).apply(tree)
+
+        # Decomposes into 3 sub-nodes:
+        # a: {10} (anchored to 1 via South bridge)
+        # b: {11} (severed at North (10, 11))
+        # c: {12, 20} (severed at East (11, 12), anchored to 2 via South bridge)
+        assert len(transformed.root.children) == 3
+        c_a, c_b, c_c = transformed.root.children
+        assert c_a.node_id == "s_opposing_a"
+        assert c_b.node_id == "s_opposing_b"
+        assert c_c.node_id == "s_opposing_c"
+        assert c_a.rooms == frozenset({10})
+        assert c_b.rooms == frozenset({11})
+        assert c_c.rooms == frozenset({12, 20})
+        assert transformed.root.metadata.get("severed_bridge_edges") == ((10, 11), (11, 12))
 
 
 class TestUnifiedHierarchicalPipeline:
