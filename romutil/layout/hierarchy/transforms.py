@@ -279,20 +279,25 @@ def _get_block_root(
 
 
 class TransverseSNodeSplitPass:
-    """Split series loop (S-node) children with parallel entrance corridors into sibling clusters.
+    """Split series loop (S-node) children across orthogonal internal rungs into sibling clusters.
 
-    When a series loop child across poles {p0, p1} connects to parent rooms via parallel entrance
-    corridors along the same cardinal axis, an inter-pole span discrepancy along the transverse
-    axis forces shear distortion if the child is solved as a single rigid origin component.
-    This transformation severs the first transverse internal spine corridor, decomposing the S-node
-    into two sibling SolveTreeNode clusters each anchored to its respective pole.
+    When a series loop child across poles {p0, p1} connects to parent rooms via entrance
+    corridors, non-negative active edge lengths (L_e >= 1) only provide forward reachability
+    in boundary exit directions. When span adjustments are required in opposing or orthogonal
+    directions, solving the series loop as a single rigid component forces integer infeasibility.
+    To provide full bidirectional 3D reachability while preserving snaking corridor cohesion,
+    this transformation scans the spine path from p0 to p1 and severs candidate corridor steps
+    whose forward directions are not covered by the boundary exit directions, cutting at most once
+    per distinct cardinal direction across 3D degrees of freedom (North, South, East, West, Up, Down).
 
+    The S-node decomposes into a chain of connected sub-node clusters anchored to boundary
+    poles or intermediate spine segments, with severed corridor boundaries inventoried as
+    elastic active edges carrying longitudinal stretch in their respective directions.
     If an S-node's immediate container parent does not own its boundary poles (as in split-pair
     containers with empty canonical room sets), the split articulation clusters bubble up to the
     nearest owning ancestor S-node or R-node, or are adopted at the block root level if no higher
-    ancestor owns both poles. Any split-pair container left with only a single child is collapsed
-    and promoted. S-nodes whose poles are directly connected by an edge preserve tight Euclidean
-    cycles and are never severed.
+    ancestor owns both poles. S-nodes whose poles are directly connected by an edge and whose
+    spine displacements match across transverse axes preserve tight Euclidean cycles intact.
     """
 
     def __init__(self, graph: LayoutGraph | None = None) -> None:
@@ -332,7 +337,12 @@ class TransverseSNodeSplitPass:
         still_bubbling: list[SolveTreeNode] = []
         for b in pending_bubbles:
             anchor = _get_anchor_vnum(b)
-            if anchor is not None and anchor in node.rooms:
+            owning_poles = b.metadata.get("owning_poles")
+            if (anchor is not None and anchor in node.rooms) or (
+                owning_poles is not None
+                and owning_poles[0] in node.rooms
+                and owning_poles[1] in node.rooms
+            ):
                 adopted.append(b)
             else:
                 still_bubbling.append(b)
@@ -422,12 +432,9 @@ class TransverseSNodeSplitPass:
             axis_0 = 0 if disp_0[0] != 0 else (1 if disp_0[1] != 0 else (2 if disp_0[2] != 0 else None))
             axis_1 = 0 if disp_1[0] != 0 else (1 if disp_1[1] != 0 else (2 if disp_1[2] != 0 else None))
 
-            if axis_0 is None or axis_1 is None or axis_0 != axis_1:
+            if axis_0 is None or axis_0 != axis_1:
                 final_children.append(child_processed)
                 continue
-
-            entrance_axis = axis_0
-            transverse_axis = 1 if entrance_axis == 0 else 0
 
             spine_verts = set(child_processed.rooms) | {p0, p1}
             adj: dict[int, list[int]] = {v: [] for v in spine_verts}
@@ -461,9 +468,36 @@ class TransverseSNodeSplitPass:
                 final_children.append(child_processed)
                 continue
 
+            def _get_forward_step_direction(u: int, v: int) -> Direction | None:
+                for e in graph.edges:
+                    if not e.cut:
+                        if e.src == u and e.dst == v:
+                            return Direction(e.direction)
+                        if e.dst == u and e.src == v:
+                            return Direction(e.direction).invert()
+                for sub_c in child_processed.children:
+                    sub_poles = _get_child_poles_or_anchor(sub_c)
+                    if set(sub_poles) == {u, v}:
+                        sub_rooms = _collect_subtree_rooms(sub_c) - {u, v}
+                        for e in graph.edges:
+                            if not e.cut:
+                                if e.src == u and e.dst in sub_rooms:
+                                    return Direction(e.direction)
+                                if e.dst == u and e.src in sub_rooms:
+                                    return Direction(e.direction).invert()
+                return None
+
+            d_entry = _get_forward_step_direction(spine_path[0], spine_path[1])
+            d_exit = _get_forward_step_direction(spine_path[-2], spine_path[-1])
+            covered_directions: set[Direction] = set()
+            if d_entry is not None:
+                covered_directions.add(d_entry)
+            if d_exit is not None:
+                covered_directions.add(d_exit)
+
             # If boundary poles are directly connected by an edge and the child spine's
-            # transverse displacement matches the direct edge displacement, the Euclidean
-            # cycle is tight with zero discrepancy; preserve it intact.
+            # transverse displacement matches the direct edge displacement across all
+            # transverse axes, the Euclidean cycle is tight with zero discrepancy; preserve it intact.
             direct_edges = [
                 (Direction(e.direction) if e.src == p0 else Direction(e.direction).invert())
                 for e in graph.edges
@@ -471,60 +505,81 @@ class TransverseSNodeSplitPass:
             ]
             if direct_edges:
                 direct_disp = direction_to_displacement(direct_edges[0])
-                direct_trans = direct_disp[transverse_axis]
-                child_trans = 0
-                for i in range(len(spine_path) - 1):
-                    u_i, v_i = spine_path[i], spine_path[i + 1]
-                    s_dirs = [
-                        (Direction(e.direction) if e.src == u_i else Direction(e.direction).invert())
-                        for e in graph.edges
-                        if not e.cut and ((e.src == u_i and e.dst == v_i) or (e.dst == u_i and e.src == v_i))
-                    ]
-                    if s_dirs:
-                        child_trans += direction_to_displacement(s_dirs[0])[transverse_axis]
-                if direct_trans == child_trans:
-                    final_children.append(child_processed)
-                    continue
+                entrance_axes = {
+                    0 if direction_to_displacement(d)[0] != 0 else (1 if direction_to_displacement(d)[1] != 0 else 2)
+                    for d in covered_directions
+                }
+                cycle_transverse = {0, 1, 2} - entrance_axes
+                if cycle_transverse:
+                    child_trans = {ax: 0 for ax in cycle_transverse}
+                    for i in range(len(spine_path) - 1):
+                        u_i, v_i = spine_path[i], spine_path[i + 1]
+                        s_dirs = [
+                            (Direction(e.direction) if e.src == u_i else Direction(e.direction).invert())
+                            for e in graph.edges
+                            if not e.cut and ((e.src == u_i and e.dst == v_i) or (e.dst == u_i and e.src == v_i))
+                        ]
+                        if s_dirs:
+                            d = direction_to_displacement(s_dirs[0])
+                            for ax in cycle_transverse:
+                                child_trans[ax] += d[ax]
+                        else:
+                            for sub_c in child_processed.children:
+                                sub_poles = _get_child_poles_or_anchor(sub_c)
+                                if set(sub_poles) == {u_i, v_i}:
+                                    sub_rooms = _collect_subtree_rooms(sub_c) - {u_i, v_i}
+                                    sub_dirs = [
+                                        (Direction(e.direction) if e.src == u_i else Direction(e.direction).invert())
+                                        for e in graph.edges
+                                        if not e.cut and ((e.src == u_i and e.dst in sub_rooms) or (e.dst == u_i and e.src in sub_rooms))
+                                    ]
+                                    if sub_dirs:
+                                        d = direction_to_displacement(sub_dirs[0])
+                                        for ax in cycle_transverse:
+                                            child_trans[ax] += d[ax]
+                                        break
+                    if all(direct_disp[ax] == child_trans[ax] for ax in cycle_transverse):
+                        final_children.append(child_processed)
+                        continue
 
-            sever_idx: int | None = None
+            sever_indices: list[int] = []
+            severed_directions: set[Direction] = set()
+
             for i in range(1, len(spine_path) - 2):
                 u_i = spine_path[i]
                 v_i = spine_path[i + 1]
+
+                step_dir = _get_forward_step_direction(u_i, v_i)
+                if step_dir is None:
+                    continue
+
+                if step_dir in covered_directions:
+                    continue
+
                 matching_edges = [
                     e for e in graph.edges
                     if not e.cut and {e.src, e.dst} == {u_i, v_i}
                 ]
-                if matching_edges:
-                    edge = matching_edges[0]
-                    step_dir = Direction(edge.direction) if edge.src == u_i else Direction(edge.direction).invert()
-                    disp = direction_to_displacement(step_dir)
-                    if disp[transverse_axis] != 0:
-                        sever_idx = i
-                        break
-                else:
-                    for sub_c in child_processed.children:
-                        sub_poles = _get_child_poles_or_anchor(sub_c)
-                        if set(sub_poles) == {u_i, v_i}:
-                            sub_rooms = _collect_subtree_rooms(sub_c) - {u_i, v_i}
-                            sub_dirs = [
-                                (Direction(e.direction) if e.src == u_i else Direction(e.direction).invert())
-                                for e in graph.edges
-                                if not e.cut and ((e.src == u_i and e.dst in sub_rooms) or (e.dst == u_i and e.src in sub_rooms))
-                            ]
-                            if sub_dirs:
-                                disp = direction_to_displacement(sub_dirs[0])
-                                if disp[transverse_axis] != 0:
-                                    sever_idx = i
-                                    break
-                    if sever_idx is not None:
-                        break
+                has_child_spanning = any(
+                    set(_get_child_poles_or_anchor(sub_c)) == {u_i, v_i}
+                    for sub_c in child_processed.children
+                )
+                if has_child_spanning and len(spine_path) > 4:
+                    continue
+                if not matching_edges and len(spine_path) > 4:
+                    continue
 
-            if sever_idx is None:
+                if step_dir not in severed_directions:
+                    sever_indices.append(i)
+                    severed_directions.add(step_dir)
+
+            if not sever_indices:
                 final_children.append(child_processed)
                 continue
 
-            u_star = spine_path[sever_idx]
-            v_star = spine_path[sever_idx + 1]
+            k = len(sever_indices) + 1
+            severed_spine_steps = [(spine_path[idx], spine_path[idx + 1]) for idx in sever_indices]
+            severed_undirected = {frozenset({u, v}) for u, v in severed_spine_steps}
 
             adj_severed: dict[int, list[int]] = {v: [] for v in spine_verts}
             for e in graph.edges:
@@ -533,169 +588,206 @@ class TransverseSNodeSplitPass:
                     and e.src in spine_verts
                     and e.dst in spine_verts
                     and {e.src, e.dst} != {p0, p1}
-                    and {e.src, e.dst} != {u_star, v_star}
+                    and frozenset({e.src, e.dst}) not in severed_undirected
                 ):
                     adj_severed[e.src].append(e.dst)
                     adj_severed[e.dst].append(e.src)
             for sub_c in child_processed.children:
                 sub_poles = _get_child_poles_or_anchor(sub_c)
-                if len(sub_poles) == 2 and sub_poles <= spine_verts and set(sub_poles) != {u_star, v_star}:
+                if (
+                    len(sub_poles) == 2
+                    and sub_poles <= spine_verts
+                    and frozenset(sub_poles) not in severed_undirected
+                ):
                     sq0, sq1 = tuple(sub_poles)
                     adj_severed[sq0].append(sq1)
                     adj_severed[sq1].append(sq0)
 
-            comp_a: set[int] = set()
-            q_a = [p0]
-            while q_a:
-                curr = q_a.pop()
-                if curr not in comp_a:
-                    comp_a.add(curr)
-                    for nxt in adj_severed[curr]:
-                        if nxt not in comp_a:
-                            q_a.append(nxt)
+            comps: list[set[int]] = []
+            for j in range(k):
+                seed = p0 if j == 0 else spine_path[sever_indices[j - 1] + 1]
+                comp_j: set[int] = set()
+                q = [seed]
+                while q:
+                    curr = q.pop()
+                    if curr not in comp_j:
+                        comp_j.add(curr)
+                        for nxt in adj_severed[curr]:
+                            if nxt not in comp_j:
+                                q.append(nxt)
+                comps.append(comp_j)
 
             child_rooms = frozenset(child_processed.rooms)
-            rooms_a = frozenset(comp_a & child_rooms)
-            rooms_b = frozenset(child_rooms - rooms_a)
+            rooms_list = [frozenset((comps[j] & child_rooms) - {p0, p1}) for j in range(k)]
 
-            if not rooms_a or not rooms_b or p0 not in comp_a or p1 in comp_a:
+            is_valid_partition = (
+                p0 in comps[0]
+                and p1 not in comps[0]
+                and p1 in comps[k - 1]
+                and p0 not in comps[k - 1]
+                and all(len(r) > 0 for r in rooms_list)
+            )
+            if is_valid_partition:
+                for a_idx in range(k):
+                    for b_idx in range(a_idx + 1, k):
+                        if comps[a_idx] & comps[b_idx]:
+                            is_valid_partition = False
+                            break
+                    if not is_valid_partition:
+                        break
+
+            if not is_valid_partition:
                 final_children.append(child_processed)
                 continue
 
-            children_a: list[SolveTreeNode] = []
-            children_b: list[SolveTreeNode] = []
+            sub_children: list[list[SolveTreeNode]] = [[] for _ in range(k)]
             for sub_c in child_processed.children:
                 sub_anc = _get_anchor_vnum(sub_c)
+                target_j: int | None = None
                 if sub_anc is not None:
-                    if sub_anc in rooms_a:
-                        children_a.append(sub_c)
-                    elif sub_anc in rooms_b:
-                        children_b.append(sub_c)
-                    else:
-                        sub_all = _collect_subtree_rooms(sub_c)
-                        if len(sub_all & rooms_a) >= len(sub_all & rooms_b):
-                            children_a.append(sub_c)
-                        else:
-                            children_b.append(sub_c)
-                else:
+                    for j in range(k):
+                        if sub_anc in rooms_list[j]:
+                            target_j = j
+                            break
+                if target_j is None:
                     sub_ports = _get_child_poles_or_anchor(sub_c)
-                    if sub_ports and sub_ports <= rooms_a:
-                        children_a.append(sub_c)
-                    elif sub_ports and sub_ports <= rooms_b:
-                        children_b.append(sub_c)
+                    if sub_ports:
+                        for j in range(k):
+                            if sub_ports <= rooms_list[j]:
+                                target_j = j
+                                break
+                if target_j is None:
+                    sub_all = _collect_subtree_rooms(sub_c)
+                    overlaps = [len(sub_all & rooms_list[j]) for j in range(k)]
+                    max_overlap = max(overlaps)
+                    if max_overlap > 0:
+                        target_j = int(max(range(k), key=lambda idx: overlaps[idx]))
                     else:
-                        sub_all = _collect_subtree_rooms(sub_c)
-                        if len(sub_all & rooms_a) >= len(sub_all & rooms_b):
-                            children_a.append(sub_c)
-                        else:
-                            children_b.append(sub_c)
+                        sub_ports = _get_child_poles_or_anchor(sub_c)
+                        for p in sub_ports:
+                            for j in range(k):
+                                if p in rooms_list[j]:
+                                    target_j = j
+                                    break
+                            if target_j is not None:
+                                break
+                        if target_j is None:
+                            target_j = 0
+                sub_children[target_j].append(sub_c)
 
-            # Under Disjoint Room Ownership, p0 and p1 are owned by the ancestor node.
-            rooms_a = frozenset(rooms_a - {p0, p1})
-            rooms_b = frozenset(rooms_b - {p0, p1})
+            subtree_rooms: list[set[int]] = []
+            for j in range(k):
+                s_rooms = set(rooms_list[j])
+                for c in sub_children[j]:
+                    s_rooms.update(_collect_subtree_rooms(c))
+                s_rooms.discard(p0)
+                s_rooms.discard(p1)
+                subtree_rooms.append(s_rooms)
 
-            subtree_rooms_a = set(rooms_a)
-            for c in children_a:
-                subtree_rooms_a.update(_collect_subtree_rooms(c))
-            subtree_rooms_a.discard(p0)
-            subtree_rooms_a.discard(p1)
+            metas: list[dict[str, Any]] = [dict(child_processed.metadata) for _ in range(k)]
 
-            subtree_rooms_b = set(rooms_b)
-            for c in children_b:
-                subtree_rooms_b.update(_collect_subtree_rooms(c))
-            subtree_rooms_b.discard(p0)
-            subtree_rooms_b.discard(p1)
-
-            # Identify unique entrance graph edge between p0 and subtree_rooms_a
+            # Sub-node 0 connects to p0
             edges_p0 = [
                 e
                 for e in graph.edges
                 if not e.cut
                 and (
-                    (e.src == p0 and e.dst in subtree_rooms_a)
-                    or (e.dst == p0 and e.src in subtree_rooms_a)
+                    (e.src == p0 and e.dst in subtree_rooms[0])
+                    or (e.dst == p0 and e.src in subtree_rooms[0])
                 )
             ]
             u_entries = {e.dst if e.src == p0 else e.src for e in edges_p0}
-            meta_a = dict(child_processed.metadata)
             u_entry_external: int | None = None
             if len(u_entries) == 1:
                 u_entry = next(iter(u_entries))
                 edge_p0 = next((e for e in edges_p0 if e.src == p0 and e.dst == u_entry), None)
                 if edge_p0 is not None:
-                    edge_dir_a = int(edge_p0.direction)
-                    edge_weight_a = edge_p0.weight
+                    edge_dir_0 = int(edge_p0.direction)
+                    edge_weight_0 = edge_p0.weight
                 else:
                     edge_rev = next(e for e in edges_p0 if e.src == u_entry and e.dst == p0)
-                    edge_dir_a = int(Direction(edge_rev.direction).invert())
-                    edge_weight_a = edge_rev.weight
+                    edge_dir_0 = int(Direction(edge_rev.direction).invert())
+                    edge_weight_0 = edge_rev.weight
 
-                meta_a["cut_type"] = CutType.BRIDGE
-                meta_a["cut_contract"] = BridgeCut(
+                metas[0]["cut_type"] = CutType.BRIDGE
+                metas[0]["cut_contract"] = BridgeCut(
                     bridge_edge=(p0, u_entry),
-                    direction=edge_dir_a,
-                    weight=edge_weight_a,
+                    direction=edge_dir_0,
+                    weight=edge_weight_0,
                 )
-                meta_a["bridge_edge"] = (p0, u_entry)
-                meta_a["direction"] = edge_dir_a
-                meta_a["weight"] = edge_weight_a
-                meta_a.pop("anchor_vnum", None)
-                meta_a.pop("poles", None)
-                if u_entry not in rooms_a:
+                metas[0]["bridge_edge"] = (p0, u_entry)
+                metas[0]["direction"] = edge_dir_0
+                metas[0]["weight"] = edge_weight_0
+                metas[0].pop("anchor_vnum", None)
+                metas[0].pop("poles", None)
+                if u_entry not in rooms_list[0]:
                     u_entry_external = u_entry
             else:
-                meta_a["cut_type"] = CutType.ARTICULATION_POINT
-                meta_a["anchor_vnum"] = p0
-                meta_a["cut_contract"] = ArticulationPointCut(anchor_vnum=p0)
-                meta_a.pop("poles", None)
+                metas[0]["cut_type"] = CutType.ARTICULATION_POINT
+                metas[0]["anchor_vnum"] = p0
+                metas[0]["cut_contract"] = ArticulationPointCut(anchor_vnum=p0)
+                metas[0].pop("poles", None)
 
-            # Identify unique entrance graph edge between p1 and subtree_rooms_b
+            # Sub-node k - 1 connects to p1
             edges_p1 = [
                 e
                 for e in graph.edges
                 if not e.cut
                 and (
-                    (e.src == p1 and e.dst in subtree_rooms_b)
-                    or (e.dst == p1 and e.src in subtree_rooms_b)
+                    (e.src == p1 and e.dst in subtree_rooms[k - 1])
+                    or (e.dst == p1 and e.src in subtree_rooms[k - 1])
                 )
             ]
             v_entries = {e.dst if e.src == p1 else e.src for e in edges_p1}
-            meta_b = dict(child_processed.metadata)
             v_entry_external: int | None = None
             if len(v_entries) == 1:
                 v_entry = next(iter(v_entries))
                 edge_p1 = next((e for e in edges_p1 if e.src == p1 and e.dst == v_entry), None)
                 if edge_p1 is not None:
-                    edge_dir_b = int(edge_p1.direction)
-                    edge_weight_b = edge_p1.weight
+                    edge_dir_1 = int(edge_p1.direction)
+                    edge_weight_1 = edge_p1.weight
                 else:
                     edge_rev = next(e for e in edges_p1 if e.src == v_entry and e.dst == p1)
-                    edge_dir_b = int(Direction(edge_rev.direction).invert())
-                    edge_weight_b = edge_rev.weight
+                    edge_dir_1 = int(Direction(edge_rev.direction).invert())
+                    edge_weight_1 = edge_rev.weight
 
-                meta_b["cut_type"] = CutType.BRIDGE
-                meta_b["cut_contract"] = BridgeCut(
+                metas[k - 1]["cut_type"] = CutType.BRIDGE
+                metas[k - 1]["cut_contract"] = BridgeCut(
                     bridge_edge=(p1, v_entry),
-                    direction=edge_dir_b,
-                    weight=edge_weight_b,
+                    direction=edge_dir_1,
+                    weight=edge_weight_1,
                 )
-                meta_b["bridge_edge"] = (p1, v_entry)
-                meta_b["direction"] = edge_dir_b
-                meta_b["weight"] = edge_weight_b
-                meta_b.pop("anchor_vnum", None)
-                meta_b.pop("poles", None)
-                if v_entry not in rooms_b:
+                metas[k - 1]["bridge_edge"] = (p1, v_entry)
+                metas[k - 1]["direction"] = edge_dir_1
+                metas[k - 1]["weight"] = edge_weight_1
+                metas[k - 1].pop("anchor_vnum", None)
+                metas[k - 1].pop("poles", None)
+                if v_entry not in rooms_list[k - 1]:
                     v_entry_external = v_entry
             else:
-                meta_b["cut_type"] = CutType.ARTICULATION_POINT
-                meta_b["anchor_vnum"] = p1
-                meta_b["cut_contract"] = ArticulationPointCut(anchor_vnum=p1)
-                meta_b.pop("poles", None)
+                metas[k - 1]["cut_type"] = CutType.ARTICULATION_POINT
+                metas[k - 1]["anchor_vnum"] = p1
+                metas[k - 1]["cut_contract"] = ArticulationPointCut(anchor_vnum=p1)
+                metas[k - 1].pop("poles", None)
+
+            # Intermediate sub-nodes 1 .. k-2
+            for j in range(1, k - 1):
+                entry_v = spine_path[sever_indices[j - 1] + 1]
+                metas[j]["cut_type"] = CutType.ARTICULATION_POINT
+                metas[j]["anchor_vnum"] = entry_v
+                metas[j]["cut_contract"] = ArticulationPointCut(anchor_vnum=entry_v)
+                metas[j].pop("poles", None)
+                metas[j].pop("bridge_edge", None)
+                metas[j].pop("direction", None)
+                metas[j].pop("weight", None)
+
+            # Record owning_poles on all sub-nodes for bubbling adoption
+            for j in range(k):
+                metas[j]["owning_poles"] = (p0, p1)
 
             descendant_severed = _collect_subtree_severed_edges(child_processed)
 
-            severed_ports_a: set[int] = set()
-            severed_ports_b: set[int] = set()
+            severed_ports: list[set[int]] = [set() for _ in range(k)]
             cross_edges: list[tuple[int, int]] = []
 
             for e in graph.edges:
@@ -704,88 +796,79 @@ class TransverseSNodeSplitPass:
                 edge_pair = (min(e.src, e.dst), max(e.src, e.dst))
                 if edge_pair in descendant_severed:
                     continue
-                if e.src in subtree_rooms_a and e.dst in subtree_rooms_b:
-                    severed_ports_a.add(e.src)
-                    severed_ports_b.add(e.dst)
+                j_src: int | None = None
+                j_dst: int | None = None
+                for idx, s_rooms in enumerate(subtree_rooms):
+                    if e.src in s_rooms:
+                        j_src = idx
+                    if e.dst in s_rooms:
+                        j_dst = idx
+                if j_src is not None and j_dst is not None and j_src != j_dst:
+                    severed_ports[j_src].add(e.src)
+                    severed_ports[j_dst].add(e.dst)
                     cross_edges.append(edge_pair)
-                elif e.src in subtree_rooms_b and e.dst in subtree_rooms_a:
-                    severed_ports_b.add(e.src)
-                    severed_ports_a.add(e.dst)
-                    cross_edges.append(edge_pair)
 
-            if u_star in subtree_rooms_a:
-                severed_ports_a.add(u_star)
-            elif u_star in subtree_rooms_b:
-                severed_ports_b.add(u_star)
+            for u_star, v_star in severed_spine_steps:
+                for idx, s_rooms in enumerate(subtree_rooms):
+                    if u_star in s_rooms:
+                        severed_ports[idx].add(u_star)
+                    if v_star in s_rooms:
+                        severed_ports[idx].add(v_star)
 
-            if v_star in subtree_rooms_a:
-                severed_ports_a.add(v_star)
-            elif v_star in subtree_rooms_b:
-                severed_ports_b.add(v_star)
-
-            if not cross_edges and {u_star, v_star}:
-                cross_edges.append((min(u_star, v_star), max(u_star, v_star)))
+            if not cross_edges:
+                for u_star, v_star in severed_spine_steps:
+                    if {u_star, v_star}:
+                        cross_edges.append((min(u_star, v_star), max(u_star, v_star)))
 
             severed_edges = tuple(sorted(set(cross_edges)))
 
             existing_ports = set(child_processed.metadata.get("boundary_ports", ()))
-            severed_ports_a.update(existing_ports & subtree_rooms_a)
-            severed_ports_b.update(existing_ports & subtree_rooms_b)
-            for c in children_a:
-                if "boundary_ports" in c.metadata:
-                    severed_ports_a.update(c.metadata["boundary_ports"])
-            for c in children_b:
-                if "boundary_ports" in c.metadata:
-                    severed_ports_b.update(c.metadata["boundary_ports"])
+            for j in range(k):
+                severed_ports[j].update(existing_ports & subtree_rooms[j])
+                for c in sub_children[j]:
+                    if "boundary_ports" in c.metadata:
+                        severed_ports[j].update(c.metadata["boundary_ports"])
+
             if u_entry_external is not None:
-                severed_ports_a.add(u_entry_external)
+                severed_ports[0].add(u_entry_external)
             if v_entry_external is not None:
-                severed_ports_b.add(v_entry_external)
+                severed_ports[k - 1].add(v_entry_external)
 
-            ports_a = tuple(sorted(severed_ports_a - rooms_a))
-            ports_b = tuple(sorted(severed_ports_b - rooms_b))
-            if ports_a:
-                meta_a["boundary_ports"] = ports_a
-            if ports_b:
-                meta_b["boundary_ports"] = ports_b
+            for j in range(k):
+                ports_j = tuple(sorted(severed_ports[j] - rooms_list[j]))
+                if ports_j:
+                    metas[j]["boundary_ports"] = ports_j
 
-            severed_edges_a = set(severed_edges)
-            for c in children_a:
-                if "severed_bridge_edges" in c.metadata:
-                    severed_edges_a.update(c.metadata["severed_bridge_edges"])
-            severed_edges_b = set(severed_edges)
-            for c in children_b:
-                if "severed_bridge_edges" in c.metadata:
-                    severed_edges_b.update(c.metadata["severed_bridge_edges"])
+                severed_edges_j = set(severed_edges)
+                for c in sub_children[j]:
+                    if "severed_bridge_edges" in c.metadata:
+                        severed_edges_j.update(c.metadata["severed_bridge_edges"])
+                if severed_edges_j:
+                    metas[j]["severed_bridge_edges"] = tuple(sorted(severed_edges_j))
 
-            if severed_edges_a:
-                meta_a["severed_bridge_edges"] = tuple(sorted(severed_edges_a))
-            if severed_edges_b:
-                meta_b["severed_bridge_edges"] = tuple(sorted(severed_edges_b))
-
-            node_a = SolveTreeNode(
-                node_id=f"{child_processed.node_id}_a",
-                node_type=TreeNodeType.RIGID_CLUSTER,
-                rooms=rooms_a,
-                children=tuple(children_a),
-                metadata=meta_a,
-            )
-            node_b = SolveTreeNode(
-                node_id=f"{child_processed.node_id}_b",
-                node_type=TreeNodeType.RIGID_CLUSTER,
-                rooms=rooms_b,
-                children=tuple(children_b),
-                metadata=meta_b,
-            )
+            sub_nodes: list[SolveTreeNode] = []
+            for j in range(k):
+                suffix = (
+                    chr(ord("a") + j)
+                    if j < 26
+                    else str(j)
+                )
+                node_j = SolveTreeNode(
+                    node_id=f"{child_processed.node_id}_{suffix}",
+                    node_type=TreeNodeType.RIGID_CLUSTER,
+                    rooms=rooms_list[j],
+                    children=tuple(sub_children[j]),
+                    metadata=metas[j],
+                )
+                sub_nodes.append(node_j)
 
             if owning_node is node:
-                final_children.extend([node_a, node_b])
-                if severed_edges_a:
-                    split_severed.update(severed_edges_a)
-                if severed_edges_b:
-                    split_severed.update(severed_edges_b)
+                final_children.extend(sub_nodes)
+                for j in range(k):
+                    if "severed_bridge_edges" in metas[j]:
+                        split_severed.update(metas[j]["severed_bridge_edges"])
             else:
-                still_bubbling.extend([node_a, node_b])
+                still_bubbling.extend(sub_nodes)
 
         # If container was left with 1 child after a split, collapse and promote it
         if (
