@@ -283,12 +283,13 @@ class TransverseSNodeSplitPass:
 
     When a series loop child across poles {p0, p1} connects to parent rooms via entrance
     corridors, non-negative active edge lengths (L_e >= 1) only provide forward reachability
-    in boundary exit directions. When span adjustments are required in opposing or orthogonal
-    directions, solving the series loop as a single rigid component forces integer infeasibility.
-    To provide full bidirectional 3D reachability while preserving snaking corridor cohesion,
+    in boundary exit directions. When span adjustments are required in orthogonal directions,
+    solving the series loop as a single rigid component forces integer infeasibility.
+    To provide full multi-axis reachability while preserving snaking corridor cohesion,
     this transformation scans the spine path from p0 to p1 and severs candidate corridor steps
-    whose forward directions are not covered by the boundary exit directions, cutting at most once
-    per distinct cardinal direction across 3D degrees of freedom (North, South, East, West, Up, Down).
+    whose axis is orthogonal to the boundary exit ports and orthogonal to any previously
+    introduced splits, cutting at most once per distinct orthogonal axis (at most 2 splits total
+    in 3D space, yielding at most 3 sub-nodes).
 
     The S-node decomposes into a chain of connected sub-node clusters anchored to boundary
     poles or intermediate spine segments, with severed corridor boundaries inventoried as
@@ -432,7 +433,7 @@ class TransverseSNodeSplitPass:
             axis_0 = 0 if disp_0[0] != 0 else (1 if disp_0[1] != 0 else (2 if disp_0[2] != 0 else None))
             axis_1 = 0 if disp_1[0] != 0 else (1 if disp_1[1] != 0 else (2 if disp_1[2] != 0 else None))
 
-            if axis_0 is None or axis_0 != axis_1:
+            if axis_0 is None or axis_1 is None:
                 final_children.append(child_processed)
                 continue
 
@@ -487,13 +488,7 @@ class TransverseSNodeSplitPass:
                                     return Direction(e.direction).invert()
                 return None
 
-            d_entry = _get_forward_step_direction(spine_path[0], spine_path[1])
-            d_exit = _get_forward_step_direction(spine_path[-2], spine_path[-1])
-            covered_directions: set[Direction] = set()
-            if d_entry is not None:
-                covered_directions.add(d_entry)
-            if d_exit is not None:
-                covered_directions.add(d_exit)
+            covered_axes: set[int] = {axis_0, axis_1}
 
             # If boundary poles are directly connected by an edge and the child spine's
             # transverse displacement matches the direct edge displacement across all
@@ -505,11 +500,7 @@ class TransverseSNodeSplitPass:
             ]
             if direct_edges:
                 direct_disp = direction_to_displacement(direct_edges[0])
-                entrance_axes = {
-                    0 if direction_to_displacement(d)[0] != 0 else (1 if direction_to_displacement(d)[1] != 0 else 2)
-                    for d in covered_directions
-                }
-                cycle_transverse = {0, 1, 2} - entrance_axes
+                cycle_transverse = {0, 1, 2} - covered_axes
                 if cycle_transverse:
                     child_trans = {ax: 0 for ax in cycle_transverse}
                     for i in range(len(spine_path) - 1):
@@ -543,7 +534,6 @@ class TransverseSNodeSplitPass:
                         continue
 
             sever_indices: list[int] = []
-            severed_directions: set[Direction] = set()
 
             for i in range(1, len(spine_path) - 2):
                 u_i = spine_path[i]
@@ -553,7 +543,9 @@ class TransverseSNodeSplitPass:
                 if step_dir is None:
                     continue
 
-                if step_dir in covered_directions:
+                step_disp = direction_to_displacement(step_dir)
+                step_axis = 0 if step_disp[0] != 0 else (1 if step_disp[1] != 0 else (2 if step_disp[2] != 0 else None))
+                if step_axis is None or step_axis in covered_axes:
                     continue
 
                 matching_edges = [
@@ -569,9 +561,8 @@ class TransverseSNodeSplitPass:
                 if not matching_edges and len(spine_path) > 4:
                     continue
 
-                if step_dir not in severed_directions:
-                    sever_indices.append(i)
-                    severed_directions.add(step_dir)
+                sever_indices.append(i)
+                covered_axes.add(step_axis)
 
             if not sever_indices:
                 final_children.append(child_processed)
