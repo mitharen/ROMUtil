@@ -1641,6 +1641,164 @@ class TestTransformHelpersAndEdgeCases:
         assert transformed.root.children[0].rooms == child.rooms
         assert "severed_bridge_edges" not in transformed.root.metadata
 
+    def test_parent_direct_edge_directional_requirement_severs_targeted_step(self) -> None:
+        """When parent has a direct edge requiring +X displacement and child deviates, scan severs first +X step."""
+        # Parent rooms 1, 2 have direct edge 1 -> 2 (East), so Delta_X = +1, Delta_Y = 0.
+        # Child spine has Delta_X = +2 (steps 10->11 East and 11->12 East):
+        # 1 -> 10 (North), 10 -> 11 (East), 11 -> 12 (East), 12 -> 20 (North), 20 -> 2 (South, so 2 -> 20 is North).
+        # Pole 2 boundary exit is North (+Y, not +X).
+        # Scan along spine finds (10, 11) going East (+X), which provides pole 2 with +X freedom.
+        graph = _make_graph(
+            rooms=[1, 2, 3, 10, 11, 12, 20],
+            edges=[
+                (1, 2, Direction.east),
+                (2, 3, Direction.north),
+                (1, 10, Direction.north),
+                (10, 11, Direction.east),
+                (11, 12, Direction.east),
+                (12, 20, Direction.north),
+                (2, 20, Direction.north),
+            ],
+        )
+        child = SolveTreeNode(
+            node_id="s_branch",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 12, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3}),
+            children=(child,),
+        )
+        tree = SolveTree(root=parent, components=(parent,), graph=graph)
+        transformed = TransverseSNodeSplitPass(graph).apply(tree)
+
+        assert len(transformed.root.children) == 2
+        c_a, c_b = transformed.root.children
+        assert c_a.node_id == "s_branch_a"
+        assert c_b.node_id == "s_branch_b"
+        assert transformed.root.metadata.get("severed_bridge_edges") == ((10, 11),)
+
+    def test_parent_parallel_sibling_branch_directional_requirement(self) -> None:
+        """Parallel sibling branch across poles establishes directional requirement for target branch."""
+        # Sibling branch 1 -> 30 (East) -> 31 (East) -> 2 (East) establishes Delta_X = +3.
+        # Boundary exits of s_target across (1, 2) are North (Y axis).
+        # Target branch has step 10 -> 11 (East).
+        graph = _make_graph(
+            rooms=[1, 2, 3, 10, 11, 20, 30, 31],
+            edges=[
+                # Sibling branch
+                (1, 30, Direction.east),
+                (30, 31, Direction.east),
+                (31, 2, Direction.east),
+                # Target S-node branch across {1, 2}
+                (1, 10, Direction.north),
+                (10, 11, Direction.east),
+                (11, 20, Direction.north),
+                (2, 20, Direction.north),
+            ],
+        )
+        s_sibling = SolveTreeNode(
+            node_id="s_sibling",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({30, 31}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        s_target = SolveTreeNode(
+            node_id="s_target",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3}),
+            children=(s_sibling, s_target),
+        )
+        tree = SolveTree(root=parent, components=(parent,), graph=graph)
+        transformed = TransverseSNodeSplitPass(graph).apply(tree)
+
+        # s_target is severed at (10, 11)
+        child_ids = {c.node_id for c in transformed.root.children}
+        assert "s_target_a" in child_ids
+        assert "s_target_b" in child_ids
+
+    def test_parent_fixed_axis_records_forced_axis_alignments(self) -> None:
+        """When parent determines Delta_k == 0 (fixed axis), forced_axis_alignments is recorded."""
+        # Direct edge 1 -> 2 (East) has Delta_Y = 0.
+        # Child spine 1 -> 10 (North), 10 -> 2 (South). Net displacement is 0 on Y and 0 on X.
+        # Fixed axes include Y (index 1) and Z (index 2).
+        graph = _make_graph(
+            rooms=[1, 2, 3, 10],
+            edges=[
+                (1, 2, Direction.east),
+                (2, 3, Direction.east),
+                (1, 10, Direction.north),
+                (10, 2, Direction.south),
+            ],
+        )
+        child = SolveTreeNode(
+            node_id="s_child",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3}),
+            children=(child,),
+        )
+        tree = SolveTree(root=parent, components=(parent,), graph=graph)
+        transformed = TransverseSNodeSplitPass(graph).apply(tree)
+
+        res_child = transformed.root.children[0]
+        assert "forced_axis_alignments" in res_child.metadata
+        assert 1 in res_child.metadata["forced_axis_alignments"]
+
+    def test_unconstrained_parent_skeleton_elides_cuts(self) -> None:
+        """When parent skeleton has no direct edge, path, or parallel branch between poles, cuts are elided."""
+        # Parent has rooms 1, 2, 3, 4 with edges 1 -> 3 and 2 -> 4, but no connection or path between {1, 2}.
+        # Child S-node has poles {1, 2} with spine 1 -> 10 (North) -> 11 (East) -> 20 (North) -> 2.
+        # In the parent skeleton, displacement between 1 and 2 is unconstrained.
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4, 10, 11, 20],
+            edges=[
+                (1, 3, Direction.west),
+                (2, 4, Direction.east),
+                (1, 10, Direction.north),
+                (10, 11, Direction.east),
+                (11, 20, Direction.north),
+                (2, 20, Direction.north),
+            ],
+        )
+        child = SolveTreeNode(
+            node_id="s_unconstrained",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3, 4}),
+            children=(child,),
+        )
+        tree = SolveTree(root=parent, components=(parent,), graph=graph)
+        transformed = TransverseSNodeSplitPass(graph).apply(tree)
+
+        # Cuts elided; child preserved intact
+        assert len(transformed.root.children) == 1
+        assert transformed.root.children[0].node_id == "s_unconstrained"
+
 
 class TestUnifiedHierarchicalPipeline:
     """Verify SolveTree.seed, decomposition passes, and unified pipeline tree construction."""
