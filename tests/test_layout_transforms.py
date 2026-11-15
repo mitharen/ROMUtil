@@ -2680,3 +2680,158 @@ class TestOrthogonalBridgePromotionPass:
             by_coord.setdefault(coord, []).append(v)
         duplicates = {c: vs for c, vs in by_coord.items() if len(vs) > 1}
         assert not duplicates
+
+    def test_promoted_bridge_records_boundary_port_on_source_node(self) -> None:
+        """Promoting an orthogonal child bridge records its target room in node boundary_ports."""
+        gc = SolveTreeNode(
+            node_id="orth_child",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({4}),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(3, 4),
+                    direction=int(Direction.south),
+                    weight=1,
+                    anchor_vnum=3,
+                )
+            },
+        )
+        parent_block = SolveTreeNode(
+            node_id="spine_block",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3}),
+            children=(gc,),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(2, 3),
+                    direction=int(Direction.west),
+                    weight=1,
+                    anchor_vnum=2,
+                )
+            },
+        )
+        root = SolveTreeNode(
+            node_id="root",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({2}),
+            children=(parent_block,),
+        )
+        tree = SolveTree(root=root, components=(root,))
+        transformed = OrthogonalBridgePromotionPass().apply(tree)
+
+        assert {c.node_id for c in transformed.root.children} == {"spine_block", "orth_child"}
+        new_spine = next(c for c in transformed.root.children if c.node_id == "spine_block")
+        assert 4 in new_spine.metadata.get("boundary_ports", ())
+
+    def test_promoted_bridge_boundary_port_clearance_and_elasticity(self) -> None:
+        """Promoted bridge keeps source exit ray clear and remains elastic in parent."""
+        from romutil.layout.milp.inventory import inventory_cluster
+        from romutil.layout.milp.tree import HierarchicalTreeSolver
+        from romutil.types import LayoutOptions
+
+        # Graph:
+        # 1 -> 2 (West, w=1) [BridgeCut]
+        # 2 -> 3 (West, w=1) -> 4 (South) -> 5 (East) -> 6 (East) [sub-box under 2 unless ray is clear]
+        # 2 -> 7 (South, w=1) [promoted orthogonal bridge] -> 8 (South) -> 9 (East) [loop/block]
+        # 7 -> 9 (East) -> 8 (South)
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4, 5, 6, 7, 8, 9],
+            edges=[
+                (1, 2, Direction.west),
+                (2, 3, Direction.west),
+                (3, 4, Direction.south),
+                (4, 5, Direction.east),
+                (5, 6, Direction.east),
+                (2, 7, Direction.south),
+                (7, 8, Direction.south),
+                (8, 9, Direction.east),
+            ],
+        )
+
+        sub_child = SolveTreeNode(
+            node_id="sub_child",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3, 4, 5, 6}),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(2, 3),
+                    direction=int(Direction.west),
+                    weight=1,
+                    anchor_vnum=2,
+                )
+            },
+        )
+        promoted_body = SolveTreeNode(
+            node_id="promoted_body",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({8, 9}),
+            metadata={
+                "cut_contract": ArticulationPointCut(anchor_vnum=7),
+            },
+        )
+        promoted_child = SolveTreeNode(
+            node_id="promoted_child",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({7}),
+            children=(promoted_body,),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(2, 7),
+                    direction=int(Direction.south),
+                    weight=1,
+                    anchor_vnum=2,
+                )
+            },
+        )
+        mid_node = SolveTreeNode(
+            node_id="mid_node",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({2}),
+            children=(sub_child, promoted_child),
+            metadata={
+                "cut_contract": BridgeCut(
+                    bridge_edge=(1, 2),
+                    direction=int(Direction.west),
+                    weight=1,
+                    anchor_vnum=1,
+                )
+            },
+        )
+        root = SolveTreeNode(
+            node_id="root",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1}),
+            children=(mid_node,),
+        )
+        tree = OrthogonalBridgePromotionPass().apply(
+            SolveTree(root=root, components=(root,), graph=graph)
+        )
+        new_mid = next(c for c in tree.root.children if c.node_id == "mid_node")
+        assert 7 in new_mid.metadata.get("boundary_ports", ())
+
+        # Solve tree bottom-up and verify zero collisions and clear South ray from room 2
+        tree_solver = HierarchicalTreeSolver()
+        sol = tree_solver.solve_tree(tree, LayoutOptions(timeout_seconds=10))
+        coords = sol.node_solutions[tree.root.node_id].metadata["all_room_coordinates"]
+
+        # Room 7 must be strictly South of room 2 (same X, Z; smaller Y)
+        assert coords[7].x == coords[2].x
+        assert coords[7].z == coords[2].z
+        assert coords[7].y < coords[2].y
+
+        # No sub_child room may block room 2's South ray
+        for r in (3, 4, 5, 6):
+            if coords[r].x == coords[2].x and coords[r].z == coords[2].z:
+                assert coords[r].y > coords[2].y
+
+        # Parent inventory must not create spurious edges to mid_node's external port 7
+        child_sols = {
+            "mid_node": sol.node_solutions["mid_node"],
+            "promoted_child": sol.node_solutions["promoted_child"],
+        }
+        parent_inv = inventory_cluster(tree.root, child_sols, graph)
+        ccb_edges = [ae for ae in parent_inv.active_edges if ae.edge_id.startswith("ccb_")]
+        assert len(ccb_edges) == 1
+        assert ccb_edges[0].src == ("mid_node", 2)
+        assert ccb_edges[0].dst == ("promoted_child", 7)
+        assert ccb_edges[0].min_length == 1

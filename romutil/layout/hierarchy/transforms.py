@@ -1387,6 +1387,7 @@ class OrthogonalBridgePromotionPass:
         child_anc_dirs = anc_dirs + ([d_in] if d_in is not None else [])
         kept_children: list[SolveTreeNode] = []
         bubbling_out: list[SolveTreeNode] = []
+        promoted_boundary_ports: set[int] = set(node.metadata.get("boundary_ports", ()))
 
         # Structural invariants on intermediate nodes:
         # 1. Isolated bridge blocks only: node must contain exactly 1 room and be a 1-cut bridge cut.
@@ -1467,18 +1468,34 @@ class OrthogonalBridgePromotionPass:
                 and self._dot(d_in, c_dir) == 0
             )
 
-            if can_bubble_direct:
+            if can_bubble_direct and isinstance(c_contract, BridgeCut):
                 if not stopped_here:
                     bubbling_out.append(c_trans)
+                    u_anc = c_contract.anchor_vnum
+                    b0, b1 = c_contract.bridge_edge
+                    promoted_boundary_ports.add(b1 if b0 == u_anc else b0)
                 elif is_collinear_with_parent:
+                    c_meta = dict(c_trans.metadata)
+                    if "boundary_ports" in c_meta:
+                        stopped_rooms = {r for b in stopped_here for r in b.rooms}
+                        remaining_ports = tuple(
+                            p for p in c_meta["boundary_ports"] if p not in stopped_rooms
+                        )
+                        if remaining_ports:
+                            c_meta["boundary_ports"] = remaining_ports
+                        else:
+                            c_meta.pop("boundary_ports", None)
                     c_with_stopped = SolveTreeNode(
                         node_id=c_trans.node_id,
                         node_type=c_trans.node_type,
                         rooms=c_trans.rooms,
                         children=tuple(list(c_trans.children) + stopped_here),
-                        metadata=c_trans.metadata,
+                        metadata=c_meta,
                     )
                     bubbling_out.append(c_with_stopped)
+                    u_anc = c_contract.anchor_vnum
+                    b0, b1 = c_contract.bridge_edge
+                    promoted_boundary_ports.add(b1 if b0 == u_anc else b0)
                 else:
                     kept_children.append(c_trans)
                     kept_children.extend(stopped_here)
@@ -1486,12 +1503,16 @@ class OrthogonalBridgePromotionPass:
                 kept_children.append(c_trans)
                 kept_children.extend(stopped_here)
 
+        new_metadata = dict(node.metadata)
+        if promoted_boundary_ports:
+            new_metadata["boundary_ports"] = tuple(sorted(promoted_boundary_ports))
+
         new_node = SolveTreeNode(
             node_id=node.node_id,
             node_type=node.node_type,
             rooms=node.rooms,
             children=tuple(kept_children),
-            metadata=node.metadata,
+            metadata=new_metadata,
         )
         return new_node, bubbling_out
 
