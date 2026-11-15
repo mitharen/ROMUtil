@@ -161,7 +161,7 @@ class TestGalleryAssetsGeneration:
 
         cat, name, paths, is_dir = comp_by_name["midgaard_region"][:4]
         assert isinstance(paths, list)
-        assert len(paths) == 7
+        assert len(paths) == 8
         assert [p.name for p in paths] == [
             "midgaard.are",
             "hood.are",
@@ -170,6 +170,7 @@ class TestGalleryAssetsGeneration:
             "school.are",
             "midennir.are",
             "haon.are",
+            "shire.are",
         ]
         assert all(p.is_file() for p in paths)
         assert not is_dir
@@ -471,6 +472,7 @@ class TestGalleryAssetsGeneration:
             "school.are",
             "midennir.are",
             "haon.are",
+            "shire.are",
         )
 
         candidates = resolve_candidate_areas()
@@ -488,6 +490,7 @@ class TestGalleryAssetsGeneration:
             "school.are",
             "midennir.are",
             "haon.are",
+            "shire.are",
         ]
 
     def test_render_composite_area_generates_artifacts_and_resolves_cross_exits(self, tmp_path):
