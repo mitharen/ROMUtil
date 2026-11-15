@@ -1359,10 +1359,8 @@ class TestTransformHelpersAndEdgeCases:
         transformed = TransverseSNodeSplitPass(graph).apply(tree)
 
         # 2 orthogonal transverse axes (X and Z) severed into 3 sub-nodes:
-        # Step (10, 11) severs X axis.
-        # Step (11, 12) is on X axis (already covered) -> not severed.
+        # Step (11, 12) severs X axis (most balanced split among X steps).
         # Step (12, 13) severs Z axis.
-        # Step (13, 20) is on Z axis (already covered) -> not severed.
         assert len(transformed.root.children) == 3
         child_ids = [c.node_id for c in transformed.root.children]
         assert child_ids == [
@@ -1371,7 +1369,7 @@ class TestTransformHelpersAndEdgeCases:
             "s_corridor_3d_c",
         ]
         # Severed bridge edges recorded in parent container metadata
-        expected_severed = ((10, 11), (12, 13))
+        expected_severed = ((11, 12), (12, 13))
         assert transformed.root.metadata.get("severed_bridge_edges") == expected_severed
 
         # End sub-nodes anchored to boundary poles
@@ -1416,15 +1414,15 @@ class TestTransformHelpersAndEdgeCases:
         tree = SolveTree(root=parent, components=(parent,), graph=graph)
         transformed = TransverseSNodeSplitPass(graph).apply(tree)
 
-        # Only the first East rung (10, 11) is severed; repeated East rungs are preserved
+        # Only the most balanced East rung (12, 13) is severed; repeated East rungs are preserved
         assert len(transformed.root.children) == 2
         c_a = transformed.root.children[0]
         c_b = transformed.root.children[1]
         assert c_a.node_id == "s_snake_a"
         assert c_b.node_id == "s_snake_b"
-        assert c_a.rooms == frozenset({10})
-        assert c_b.rooms == frozenset({11, 12, 13, 14, 15, 20})
-        assert transformed.root.metadata.get("severed_bridge_edges") == ((10, 11),)
+        assert c_a.rooms == frozenset({10, 11, 12})
+        assert c_b.rooms == frozenset({13, 14, 15, 20})
+        assert transformed.root.metadata.get("severed_bridge_edges") == ((12, 13),)
 
     def test_three_dimensional_vertical_step_decoupling(self) -> None:
         """S-node with orthogonal horizontal and vertical steps decouples into 3D degrees of freedom."""
@@ -1550,16 +1548,16 @@ class TestTransformHelpersAndEdgeCases:
         tree = SolveTree(root=parent, components=(parent,), graph=graph)
         transformed = TransverseSNodeSplitPass(graph).apply(tree)
 
-        # Y axis severed at most once at (10, 11), yielding 2 sub-nodes:
-        # a: {10}
-        # b: {11, 12, 13, 20}
+        # Y axis severed at most once at the most balanced Y step (12, 13), yielding 2 sub-nodes:
+        # a: {10, 11, 12}
+        # b: {13, 20}
         assert len(transformed.root.children) == 2
         c_a, c_b = transformed.root.children
         assert c_a.node_id == "s_opposing_cardinal_a"
         assert c_b.node_id == "s_opposing_cardinal_b"
-        assert c_a.rooms == frozenset({10})
-        assert c_b.rooms == frozenset({11, 12, 13, 20})
-        assert transformed.root.metadata.get("severed_bridge_edges") == ((10, 11),)
+        assert c_a.rooms == frozenset({10, 11, 12})
+        assert c_b.rooms == frozenset({13, 20})
+        assert transformed.root.metadata.get("severed_bridge_edges") == ((12, 13),)
 
     def test_perpendicular_boundary_exits_sever_orthogonal_axis(self) -> None:
         """Perpendicular boundary exits (X and Y axes) sever orthogonal steps along Z axis."""
@@ -1680,7 +1678,7 @@ class TestTransformHelpersAndEdgeCases:
         c_a, c_b = transformed.root.children
         assert c_a.node_id == "s_branch_a"
         assert c_b.node_id == "s_branch_b"
-        assert transformed.root.metadata.get("severed_bridge_edges") == ((10, 11),)
+        assert transformed.root.metadata.get("severed_bridge_edges") == ((11, 12),)
 
     def test_parent_parallel_sibling_branch_directional_requirement(self) -> None:
         """Parallel sibling branch across poles establishes directional requirement for target branch."""
@@ -1798,6 +1796,146 @@ class TestTransformHelpersAndEdgeCases:
         # Cuts elided; child preserved intact
         assert len(transformed.root.children) == 1
         assert transformed.root.children[0].node_id == "s_unconstrained"
+
+    def test_balanced_split_accounts_for_subchild_subtree_sizes(self) -> None:
+        """Balanced split selector weights each side by attached sub-child subtree sizes."""
+        # Spine: 1 -> 10 (N) -> 11 (E) -> 12 (E) -> 13 (E) -> 20 (N) <- 2 (S/N)
+        # Sub-child sub_a (3 rooms: 100, 101, 102) is anchored at room 10.
+        # Cutting at (10, 11) balances {10, 100, 101, 102} (4) vs {11, 12, 13, 20} (4).
+        graph = _make_graph(
+            rooms=[1, 2, 3, 10, 11, 12, 13, 20, 100, 101, 102],
+            edges=[
+                (1, 2, Direction.east),
+                (2, 3, Direction.north),
+                (1, 10, Direction.north),
+                (10, 11, Direction.east),
+                (11, 12, Direction.east),
+                (12, 13, Direction.east),
+                (13, 20, Direction.north),
+                (2, 20, Direction.north),
+                (10, 100, Direction.west),
+                (100, 101, Direction.west),
+                (101, 102, Direction.west),
+            ],
+        )
+        sub_a = SolveTreeNode(
+            node_id="sub_a",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({100, 101, 102}),
+            children=(),
+            metadata={"cut_contract": ArticulationPointCut(anchor_vnum=10)},
+        )
+        child = SolveTreeNode(
+            node_id="s_weighted",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 12, 13, 20}),
+            children=(sub_a,),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3}),
+            children=(child,),
+        )
+        tree = SolveTree(root=parent, components=(parent,), graph=graph)
+        transformed = TransverseSNodeSplitPass(graph).apply(tree)
+
+        assert transformed.root.metadata.get("severed_bridge_edges") == ((10, 11),)
+
+    def test_balanced_split_fixed_axis_picks_balanced_candidate(self) -> None:
+        """Fixed-axis severing selects the most balanced candidate rather than the first."""
+        # Direct edge 1 -> 2 (East) fixes AXIS_Y = 0.
+        # Child spine: 1 -> 10 (E) -> 11 (N) -> 12 (E) -> 13 (N) -> 14 (E) -> 15 (S) -> 20 (E) -> 2 (E).
+        # Y-axis steps are (11, 12) [2 vs 5], (13, 14) [4 vs 3], (15, 20) [6 vs 1] -> wait:
+        # 10->11 (N, i=1: 1 vs 6), 11->12 (E), 12->13 (N, i=3: 3 vs 4), 13->14 (E), 14->15 (S, i=5: 5 vs 2)
+        # Most balanced Y-step is (12, 13) with sizes 3 vs 4 (max=4).
+        graph = _make_graph(
+            rooms=[1, 2, 3, 10, 11, 12, 13, 14, 15, 20],
+            edges=[
+                (1, 2, Direction.east),
+                (2, 3, Direction.east),
+                (1, 10, Direction.east),
+                (10, 11, Direction.north),
+                (11, 12, Direction.east),
+                (12, 13, Direction.north),
+                (13, 14, Direction.east),
+                (14, 15, Direction.south),
+                (15, 20, Direction.east),
+                (20, 2, Direction.east),
+            ],
+        )
+        child = SolveTreeNode(
+            node_id="s_fixed",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 12, 13, 14, 15, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3}),
+            children=(child,),
+        )
+        tree = SolveTree(root=parent, components=(parent,), graph=graph)
+        transformed = TransverseSNodeSplitPass(graph).apply(tree)
+
+        assert transformed.root.metadata.get("severed_bridge_edges") == ((12, 13),)
+
+    def test_orphan_subchild_placed_by_graph_adjacency(self) -> None:
+        """An orphan sub-child with no direct spine anchor is placed with its graph-adjacent sibling."""
+        # Spine: 1 -> 10 (N) -> 11 (E) -> 12 (E) -> 20 (N) <- 2 (S/N)
+        # sub_b is anchored at room 20 (Side B).
+        # orphan_b is anchored at room 200 (inside sub_b, not on spine), so it must follow sub_b to Side B.
+        graph = _make_graph(
+            rooms=[1, 2, 3, 10, 11, 12, 20, 200, 201],
+            edges=[
+                (1, 2, Direction.east),
+                (2, 3, Direction.north),
+                (1, 10, Direction.north),
+                (10, 11, Direction.east),
+                (11, 12, Direction.east),
+                (12, 20, Direction.north),
+                (2, 20, Direction.north),
+                (20, 200, Direction.east),
+                (200, 201, Direction.south),
+            ],
+        )
+        sub_b = SolveTreeNode(
+            node_id="sub_b",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({200}),
+            children=(),
+            metadata={"cut_contract": ArticulationPointCut(anchor_vnum=20)},
+        )
+        orphan_b = SolveTreeNode(
+            node_id="orphan_b",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({201}),
+            children=(),
+            metadata={"cut_contract": ArticulationPointCut(anchor_vnum=200)},
+        )
+        child = SolveTreeNode(
+            node_id="s_orphan",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 12, 20}),
+            children=(sub_b, orphan_b),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3}),
+            children=(child,),
+        )
+        tree = SolveTree(root=parent, components=(parent,), graph=graph)
+        transformed = TransverseSNodeSplitPass(graph).apply(tree)
+
+        assert len(transformed.root.children) == 2
+        c_a, c_b = transformed.root.children
+        assert {c.node_id for c in c_a.children} == set()
+        assert {c.node_id for c in c_b.children} == {"sub_b", "orphan_b"}
 
 
 class TestUnifiedHierarchicalPipeline:

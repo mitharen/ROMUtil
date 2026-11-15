@@ -386,7 +386,15 @@ def _build_parent_positional_dag(
             siblings.extend(host.children)
     seen: set[str] = set()
     for sib in siblings:
-        if sib is child_processed or sib.node_id == child_processed.node_id or sib.node_id in seen:
+        if (
+            sib is child_processed
+            or sib.node_id == child_processed.node_id
+            or (
+                immediate_parent is not None
+                and (sib is immediate_parent or sib.node_id == immediate_parent.node_id)
+            )
+            or sib.node_id in seen
+        ):
             continue
         seen.add(sib.node_id)
         sib_poles = _get_child_poles_or_anchor(sib)
@@ -421,6 +429,96 @@ def _classify_pole_axes(
         elif bwd is not None and bwd > 0:
             positive.setdefault(p0, set()).add(axis)
     return fixed, positive
+
+
+def _score_split_candidate(
+    idx: int,
+    spine_path: list[int],
+    sub_children_info: list[tuple[SolveTreeNode, int | None, set[int], set[int]]],
+    p0: int,
+    p1: int,
+    graph: LayoutGraph,
+) -> tuple[int, int, float, int]:
+    """Score a candidate split index by subtree size balance between the two resulting sides.
+
+    Minimizes ``max(size_a, size_b)``, tie-breaking by ``abs(size_a - size_b)``,
+    distance to the spine midpoint, and finally ``idx`` for determinism.
+    """
+    side_a_rooms = set(spine_path[1 : idx + 1])
+    side_b_rooms = set(spine_path[idx + 1 : -1])
+
+    if sub_children_info:
+        side_a_all = set(side_a_rooms)
+        side_b_all = set(side_b_rooms)
+        orphans: list[set[int]] = []
+        for _, sub_anc, sub_ports, sub_all in sub_children_info:
+            target: int | None = None
+            if sub_anc is not None:
+                if sub_anc in side_a_rooms or sub_anc == p0:
+                    target = 0
+                elif sub_anc in side_b_rooms or sub_anc == p1:
+                    target = 1
+            if target is None and sub_ports:
+                if sub_ports <= (side_a_rooms | {p0}):
+                    target = 0
+                elif sub_ports <= (side_b_rooms | {p1}):
+                    target = 1
+            if target is None:
+                ov_a = len(sub_all & side_a_rooms)
+                ov_b = len(sub_all & side_b_rooms)
+                if ov_a > 0 or ov_b > 0:
+                    target = 0 if ov_a >= ov_b else 1
+                elif sub_ports:
+                    for p in sub_ports:
+                        if p in side_a_rooms:
+                            target = 0
+                            break
+                        if p in side_b_rooms:
+                            target = 1
+                            break
+            if target == 0:
+                side_a_all |= sub_all
+            elif target == 1:
+                side_b_all |= sub_all
+            else:
+                orphans.append(sub_all)
+
+        while orphans:
+            placed_a = side_a_all | {p0}
+            placed_b = side_b_all | {p1}
+            progressed = False
+            for sub_all in list(orphans):
+                links_a = 0
+                links_b = 0
+                for e in graph.edges:
+                    if e.cut:
+                        continue
+                    for a_room, b_room in ((e.src, e.dst), (e.dst, e.src)):
+                        if a_room in sub_all and b_room not in sub_all:
+                            if b_room in placed_a:
+                                links_a += 1
+                            elif b_room in placed_b:
+                                links_b += 1
+                if links_a > 0 or links_b > 0:
+                    if links_a >= links_b:
+                        side_a_all |= sub_all
+                    else:
+                        side_b_all |= sub_all
+                    orphans.remove(sub_all)
+                    progressed = True
+            if not progressed:
+                for sub_all in orphans:
+                    side_a_all |= sub_all
+                break
+
+        size_a = len(side_a_all - {p0, p1})
+        size_b = len(side_b_all - {p0, p1})
+    else:
+        size_a = len(side_a_rooms)
+        size_b = len(side_b_rooms)
+
+    midpoint = (len(spine_path) - 2) / 2.0
+    return (max(size_a, size_b), abs(size_a - size_b), abs(idx - midpoint), idx)
 
 
 class TransverseSNodeSplitPass:
@@ -736,6 +834,30 @@ class TransverseSNodeSplitPass:
             sever_indices: list[int] = []
             covered_split_axes = set(covered_axes)
             severed_axes: set[int] = set()
+            sub_children_info = [
+                (
+                    sub_c,
+                    _get_anchor_vnum(sub_c),
+                    _get_child_poles_or_anchor(sub_c),
+                    _collect_subtree_rooms(sub_c),
+                )
+                for sub_c in child_processed.children
+            ]
+
+            def _is_valid_split_step(idx: int) -> bool:
+                matching_edges = [
+                    e for e in graph.edges
+                    if not e.cut and {e.src, e.dst} == {spine_path[idx], spine_path[idx + 1]}
+                ]
+                has_child_spanning = any(
+                    sub_ports == {spine_path[idx], spine_path[idx + 1]}
+                    for _, _, sub_ports, _ in sub_children_info
+                )
+                if has_child_spanning and len(spine_path) > 4:
+                    return False
+                if not matching_edges and len(spine_path) > 4:
+                    return False
+                return True
 
             # 1. Targeted severing for deficient poles requiring positive freedom (+k).
             # Coverage is judged per pole: another pole's exit axis does not give this pole freedom.
@@ -745,37 +867,32 @@ class TransverseSNodeSplitPass:
                 for k in sorted(axes_needed):
                     if k in severed_axes:
                         continue
-                    if disp_pole[k] > 0:
+                    if disp_pole[k] < 0:
                         covered_split_axes.add(k)
                         continue
 
-                    # Pole is deficient in +k: scan inward from the pole for the first spine step
-                    # heading away from the pole along -k, so elongating it frees the pole in +k
+                    # Pole is deficient in +k: collect all spine steps heading away from the pole
+                    # along -k, so elongating them frees the pole in +k, then pick the most balanced split.
                     target_sign = -1 if pole_req == p0 else 1
-                    scan = range(1, len(spine_path) - 2)
-                    for i in scan if pole_req == p0 else reversed(scan):
+                    candidates: list[int] = []
+                    for i in range(1, len(spine_path) - 2):
                         step_dir = _get_forward_step_direction(spine_path[i], spine_path[i + 1])
                         if step_dir is None:
                             continue
                         step_disp = direction_to_displacement(step_dir)
-                        if (step_disp[k] > 0 if target_sign > 0 else step_disp[k] < 0):
-                            matching_edges = [
-                                e for e in graph.edges
-                                if not e.cut and {e.src, e.dst} == {spine_path[i], spine_path[i + 1]}
-                            ]
-                            has_child_spanning = any(
-                                set(_get_child_poles_or_anchor(sub_c)) == {spine_path[i], spine_path[i + 1]}
-                                for sub_c in child_processed.children
-                            )
-                            if has_child_spanning and len(spine_path) > 4:
-                                continue
-                            if not matching_edges and len(spine_path) > 4:
-                                continue
-                            if i not in sever_indices:
-                                sever_indices.append(i)
-                            covered_split_axes.add(k)
-                            severed_axes.add(k)
-                            break
+                        if (step_disp[k] > 0 if target_sign > 0 else step_disp[k] < 0) and _is_valid_split_step(i):
+                            candidates.append(i)
+                    if candidates:
+                        best_i = min(
+                            candidates,
+                            key=lambda idx: _score_split_candidate(
+                                idx, spine_path, sub_children_info, p0, p1, graph
+                            ),
+                        )
+                        if best_i not in sever_indices:
+                            sever_indices.append(best_i)
+                        covered_split_axes.add(k)
+                        severed_axes.add(k)
 
             # 2. Severing for fixed axes (Delta_k == 0) where child deviates and requires flexibility
             for k in sorted(fixed_axes):
@@ -785,29 +902,25 @@ class TransverseSNodeSplitPass:
                 if direct_edges and cycle_transverse and all(direct_disp[ax] == child_trans.get(ax, 0) for ax in cycle_transverse):
                     continue
 
+                candidates = []
                 for i in range(1, len(spine_path) - 2):
                     step_dir = _get_forward_step_direction(spine_path[i], spine_path[i + 1])
                     if step_dir is None:
                         continue
                     step_disp = direction_to_displacement(step_dir)
                     step_ax = 0 if step_disp[0] != 0 else (1 if step_disp[1] != 0 else (2 if step_disp[2] != 0 else None))
-                    if step_ax == k:
-                        matching_edges = [
-                            e for e in graph.edges
-                            if not e.cut and {e.src, e.dst} == {spine_path[i], spine_path[i + 1]}
-                        ]
-                        has_child_spanning = any(
-                            set(_get_child_poles_or_anchor(sub_c)) == {spine_path[i], spine_path[i + 1]}
-                            for sub_c in child_processed.children
-                        )
-                        if has_child_spanning and len(spine_path) > 4:
-                            continue
-                        if not matching_edges and len(spine_path) > 4:
-                            continue
-                        if i not in sever_indices:
-                            sever_indices.append(i)
-                        covered_split_axes.add(k)
-                        break
+                    if step_ax == k and _is_valid_split_step(i):
+                        candidates.append(i)
+                if candidates:
+                    best_i = min(
+                        candidates,
+                        key=lambda idx: _score_split_candidate(
+                            idx, spine_path, sub_children_info, p0, p1, graph
+                        ),
+                    )
+                    if best_i not in sever_indices:
+                        sever_indices.append(best_i)
+                    covered_split_axes.add(k)
 
             sever_indices.sort()
 
@@ -889,6 +1002,7 @@ class TransverseSNodeSplitPass:
                 continue
 
             sub_children: list[list[SolveTreeNode]] = [[] for _ in range(k)]
+            orphans: list[SolveTreeNode] = []
             for sub_c in child_processed.children:
                 sub_anc = _get_anchor_vnum(sub_c)
                 target_j: int | None = None
@@ -919,9 +1033,39 @@ class TransverseSNodeSplitPass:
                                     break
                             if target_j is not None:
                                 break
-                        if target_j is None:
-                            target_j = 0
-                sub_children[target_j].append(sub_c)
+                if target_j is None:
+                    orphans.append(sub_c)
+                else:
+                    sub_children[target_j].append(sub_c)
+
+            # A sub-child that touches no sub-node room directly hangs off sibling sub-children;
+            # it belongs to the sub-node holding the rooms it is graph-adjacent to.
+            while orphans:
+                placed_rooms: list[set[int]] = [set(rooms_list[j]) for j in range(k)]
+                placed_rooms[0].add(p0)
+                placed_rooms[k - 1].add(p1)
+                for j in range(k):
+                    for c in sub_children[j]:
+                        placed_rooms[j] |= _collect_subtree_rooms(c)
+                progressed = False
+                for sub_c in list(orphans):
+                    sub_all = _collect_subtree_rooms(sub_c)
+                    links = [0] * k
+                    for e in graph.edges:
+                        if e.cut:
+                            continue
+                        for a_room, b_room in ((e.src, e.dst), (e.dst, e.src)):
+                            if a_room in sub_all and b_room not in sub_all:
+                                for j in range(k):
+                                    if b_room in placed_rooms[j]:
+                                        links[j] += 1
+                    if max(links) > 0:
+                        sub_children[int(max(range(k), key=lambda idx: links[idx]))].append(sub_c)
+                        orphans.remove(sub_c)
+                        progressed = True
+                if not progressed:
+                    sub_children[0].extend(orphans)
+                    break
 
             subtree_rooms: list[set[int]] = []
             for j in range(k):
