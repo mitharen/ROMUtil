@@ -15,6 +15,7 @@ from romutil.layout.ir import (
     SplitPairCut,
     TreeNodeType,
 )
+from romutil.layout.positional_dag import AXIS_X, AXIS_Y, AXIS_Z, PositionalConstraintDAG
 from romutil.layout.simplification.warps import direction_to_displacement
 from romutil.models import Direction
 
@@ -340,79 +341,184 @@ def _compute_node_spine_displacement(
     return (disp[0], disp[1], disp[2])
 
 
-def _resolve_parent_directional_displacement(
+def _build_parent_positional_dag(
     owning_node: SolveTreeNode | None,
     immediate_parent: SolveTreeNode | None,
     p0: int,
     p1: int,
     graph: LayoutGraph,
     child_processed: SolveTreeNode,
-) -> tuple[tuple[int, int, int] | None, bool]:
-    """Determine relative directional displacement requirement (p0 -> p1) in parent graph.
+) -> PositionalConstraintDAG:
+    """Seed a positional DAG from the parent skeleton surrounding a child's poles.
 
-    Returns (displacement_vector, is_constrained). If is_constrained is True, the displacement_vector
-    defines relative parent directional displacement from p0 to p1.
+    Every non-cut directed edge between skeleton rooms contributes the directional
+    lower bound ``coord(dst) - coord(src) >= 1`` along its axis (``src`` precedes ``dst``
+    for positive directions, the reverse for negative ones) and a zero-offset equality on
+    its remaining axes. Sibling children whose poles lie in the skeleton contribute a
+    directional lower bound of 1 along each axis in which their spine travels, in the
+    sign of the net travel. Edges are never treated as bidirectional bounds.
     """
-    # 1. Direct edge in graph between p0 and p1:
-    direct_edges = [
-        (Direction(e.direction) if e.src == p0 else Direction(e.direction).invert())
-        for e in graph.edges
-        if not e.cut and {e.src, e.dst} == {p0, p1}
-    ]
-    if direct_edges:
-        return direction_to_displacement(direct_edges[0]), True
+    skeleton: set[int] = {p0, p1}
+    for host in (owning_node, immediate_parent):
+        if host is not None:
+            skeleton |= set(host.rooms)
 
-    # 2. Path in owning_node skeleton between p0 and p1 (traversing parent rooms and virtual sibling child connections):
-    if owning_node is not None and p0 in owning_node.rooms and p1 in owning_node.rooms:
-        adj: dict[int, list[tuple[int, tuple[int, int, int]]]] = {v: [] for v in owning_node.rooms}
-        for e in graph.edges:
-            if not e.cut and e.src in owning_node.rooms and e.dst in owning_node.rooms:
-                d_fwd = direction_to_displacement(Direction(e.direction))
-                adj[e.src].append((e.dst, d_fwd))
-                adj[e.dst].append((e.src, (-d_fwd[0], -d_fwd[1], -d_fwd[2])))
-        for sib in owning_node.children:
-            if sib is not child_processed and sib.node_id != child_processed.node_id:
-                sib_poles = _get_child_poles_or_anchor(sib)
-                if len(sib_poles) == 2 and sib_poles <= set(owning_node.rooms):
-                    pA, pB = tuple(sib_poles)
-                    disp = _compute_node_spine_displacement(sib, pA, pB, graph)
-                    if disp is not None:
-                        adj[pA].append((pB, disp))
-                        adj[pB].append((pA, (-disp[0], -disp[1], -disp[2])))
+    dag = PositionalConstraintDAG()
 
-        q: collections.deque[tuple[list[int], tuple[int, int, int]]] = collections.deque([([p0], (0, 0, 0))])
-        vis: set[int] = {p0}
-        found_disp: tuple[int, int, int] | None = None
-        while q:
-            path_nodes, curr_disp = q.popleft()
-            u = path_nodes[-1]
-            if u == p1 and len(path_nodes) > 1:
-                found_disp = curr_disp
-                break
-            for v, delta in adj[u]:
-                if v not in vis:
-                    vis.add(v)
-                    q.append((path_nodes + [v], (curr_disp[0] + delta[0], curr_disp[1] + delta[1], curr_disp[2] + delta[2])))
-        if found_disp is not None:
-            return found_disp, True
+    def _add_directional(u: int, v: int, disp: tuple[int, int, int], *, equal_transverse: bool) -> None:
+        for axis in (AXIS_X, AXIS_Y, AXIS_Z):
+            if disp[axis] > 0:
+                dag.add_edge(axis, u, v, 1)
+            elif disp[axis] < 0:
+                dag.add_edge(axis, v, u, 1)
+            elif equal_transverse:
+                dag.add_equality(axis, u, v, 0)
 
-    # 3. Parallel sibling child across {p0, p1} in immediate_parent or owning_node:
-    candidates: list[SolveTreeNode] = []
-    if immediate_parent is not None:
-        candidates.extend(immediate_parent.children)
-    if owning_node is not None and owning_node is not immediate_parent:
-        candidates.extend(owning_node.children)
-    for sib in candidates:
+    for e in graph.edges:
+        if not e.cut and e.src in skeleton and e.dst in skeleton:
+            _add_directional(
+                e.src, e.dst, direction_to_displacement(Direction(e.direction)), equal_transverse=True
+            )
+
+    siblings: list[SolveTreeNode] = []
+    for host in (owning_node, immediate_parent):
+        if host is not None:
+            siblings.extend(host.children)
+    seen: set[str] = set()
+    for sib in siblings:
         if (
-            sib is not child_processed
-            and sib.node_id != child_processed.node_id
-            and _get_child_poles_or_anchor(sib) == {p0, p1}
+            sib is child_processed
+            or sib.node_id == child_processed.node_id
+            or (
+                immediate_parent is not None
+                and (sib is immediate_parent or sib.node_id == immediate_parent.node_id)
+            )
+            or sib.node_id in seen
         ):
-            sib_disp = _compute_node_spine_displacement(sib, p0, p1, graph)
-            if sib_disp is not None:
-                return sib_disp, True
+            continue
+        seen.add(sib.node_id)
+        sib_poles = _get_child_poles_or_anchor(sib)
+        if len(sib_poles) != 2 or not sib_poles <= skeleton:
+            continue
+        pa, pb = sorted(sib_poles)
+        disp = _compute_node_spine_displacement(sib, pa, pb, graph)
+        if disp is not None:
+            _add_directional(pa, pb, disp, equal_transverse=False)
+    return dag
 
-    return None, False
+
+def _classify_pole_axes(
+    dag: PositionalConstraintDAG, p0: int, p1: int
+) -> tuple[set[int], dict[int, set[int]]]:
+    """Classify each axis of the pole pair against the parent positional DAG.
+
+    Returns ``(fixed_axes, positive_reqs)``. An axis is fixed only when both
+    directed bounds are exactly zero, and is a positive requirement of pole ``p`` when
+    a bound proves ``coord(p) - coord(other) >= 1``. Axes with no such proof are
+    unclear and are omitted: the parent retains freedom there.
+    """
+    fixed: set[int] = set()
+    positive: dict[int, set[int]] = {}
+    for axis in (AXIS_X, AXIS_Y, AXIS_Z):
+        fwd = dag.get_lower_bound(axis, p0, p1)
+        bwd = dag.get_lower_bound(axis, p1, p0)
+        if fwd == 0 and bwd == 0:
+            fixed.add(axis)
+        elif fwd is not None and fwd > 0:
+            positive.setdefault(p1, set()).add(axis)
+        elif bwd is not None and bwd > 0:
+            positive.setdefault(p0, set()).add(axis)
+    return fixed, positive
+
+
+def _score_split_candidate(
+    idx: int,
+    spine_path: list[int],
+    sub_children_info: list[tuple[SolveTreeNode, int | None, set[int], set[int]]],
+    p0: int,
+    p1: int,
+    graph: LayoutGraph,
+) -> tuple[int, int, float, int]:
+    """Score a candidate split index by subtree size balance between the two resulting sides.
+
+    Minimizes ``max(size_a, size_b)``, tie-breaking by ``abs(size_a - size_b)``,
+    distance to the spine midpoint, and finally ``idx`` for determinism.
+    """
+    side_a_rooms = set(spine_path[1 : idx + 1])
+    side_b_rooms = set(spine_path[idx + 1 : -1])
+
+    if sub_children_info:
+        side_a_all = set(side_a_rooms)
+        side_b_all = set(side_b_rooms)
+        orphans: list[set[int]] = []
+        for _, sub_anc, sub_ports, sub_all in sub_children_info:
+            target: int | None = None
+            if sub_anc is not None:
+                if sub_anc in side_a_rooms or sub_anc == p0:
+                    target = 0
+                elif sub_anc in side_b_rooms or sub_anc == p1:
+                    target = 1
+            if target is None and sub_ports:
+                if sub_ports <= (side_a_rooms | {p0}):
+                    target = 0
+                elif sub_ports <= (side_b_rooms | {p1}):
+                    target = 1
+            if target is None:
+                ov_a = len(sub_all & side_a_rooms)
+                ov_b = len(sub_all & side_b_rooms)
+                if ov_a > 0 or ov_b > 0:
+                    target = 0 if ov_a >= ov_b else 1
+                elif sub_ports:
+                    for p in sub_ports:
+                        if p in side_a_rooms:
+                            target = 0
+                            break
+                        if p in side_b_rooms:
+                            target = 1
+                            break
+            if target == 0:
+                side_a_all |= sub_all
+            elif target == 1:
+                side_b_all |= sub_all
+            else:
+                orphans.append(sub_all)
+
+        while orphans:
+            placed_a = side_a_all | {p0}
+            placed_b = side_b_all | {p1}
+            progressed = False
+            for sub_all in list(orphans):
+                links_a = 0
+                links_b = 0
+                for e in graph.edges:
+                    if e.cut:
+                        continue
+                    for a_room, b_room in ((e.src, e.dst), (e.dst, e.src)):
+                        if a_room in sub_all and b_room not in sub_all:
+                            if b_room in placed_a:
+                                links_a += 1
+                            elif b_room in placed_b:
+                                links_b += 1
+                if links_a > 0 or links_b > 0:
+                    if links_a >= links_b:
+                        side_a_all |= sub_all
+                    else:
+                        side_b_all |= sub_all
+                    orphans.remove(sub_all)
+                    progressed = True
+            if not progressed:
+                for sub_all in orphans:
+                    side_a_all |= sub_all
+                break
+
+        size_a = len(side_a_all - {p0, p1})
+        size_b = len(side_b_all - {p0, p1})
+    else:
+        size_a = len(side_a_rooms)
+        size_b = len(side_b_rooms)
+
+    midpoint = (len(spine_path) - 2) / 2.0
+    return (max(size_a, size_b), abs(size_a - size_b), abs(idx - midpoint), idx)
 
 
 class TransverseSNodeSplitPass:
@@ -627,8 +733,8 @@ class TransverseSNodeSplitPass:
 
             covered_axes: set[int] = {axis_0, axis_1}
 
-            # Determine parent-relative displacement requirements between boundary poles
-            parent_disp, has_parent_constraint = _resolve_parent_directional_displacement(
+            # Classify pole-to-pole axes against the parent skeleton's positional bounds
+            parent_dag = _build_parent_positional_dag(
                 owning_node=owning_node,
                 immediate_parent=node,
                 p0=p0,
@@ -636,20 +742,14 @@ class TransverseSNodeSplitPass:
                 graph=graph,
                 child_processed=child_processed,
             )
+            fixed_axes, positive_reqs = _classify_pole_axes(parent_dag, p0, p1)
+            has_parent_constraint = any(
+                parent_dag.get_lower_bound(ax, a_, b_) is not None
+                for ax in (AXIS_X, AXIS_Y, AXIS_Z)
+                for a_, b_ in ((p0, p1), (p1, p0))
+            )
 
-            # Determine fixed axes and positive displacement requirements
-            fixed_axes: set[int] = set()
-            positive_reqs: dict[int, set[int]] = {}
-
-            if has_parent_constraint and parent_disp is not None:
-                for k in (0, 1, 2):
-                    if parent_disp[k] == 0:
-                        fixed_axes.add(k)
-                    elif parent_disp[k] > 0:
-                        positive_reqs.setdefault(p1, set()).add(k)
-                    else:
-                        positive_reqs.setdefault(p0, set()).add(k)
-            else:
+            if not has_parent_constraint:
                 # Check for isolated synthetic test harness where parent has at most {p0, p1}
                 # and no wider graph skeleton exists
                 is_isolated_harness = (
@@ -733,42 +833,66 @@ class TransverseSNodeSplitPass:
 
             sever_indices: list[int] = []
             covered_split_axes = set(covered_axes)
+            severed_axes: set[int] = set()
+            sub_children_info = [
+                (
+                    sub_c,
+                    _get_anchor_vnum(sub_c),
+                    _get_child_poles_or_anchor(sub_c),
+                    _collect_subtree_rooms(sub_c),
+                )
+                for sub_c in child_processed.children
+            ]
 
-            # 1. Targeted severing for deficient poles requiring positive freedom (+k)
+            def _is_valid_split_step(idx: int) -> bool:
+                matching_edges = [
+                    e for e in graph.edges
+                    if not e.cut and {e.src, e.dst} == {spine_path[idx], spine_path[idx + 1]}
+                ]
+                has_child_spanning = any(
+                    sub_ports == {spine_path[idx], spine_path[idx + 1]}
+                    for _, _, sub_ports, _ in sub_children_info
+                )
+                if has_child_spanning and len(spine_path) > 4:
+                    return False
+                if not matching_edges and len(spine_path) > 4:
+                    return False
+                return True
+
+            # 1. Targeted severing for deficient poles requiring positive freedom (+k).
+            # Coverage is judged per pole: another pole's exit axis does not give this pole freedom.
             for pole_req, axes_needed in positive_reqs.items():
                 d_pole = dir_0 if pole_req == p0 else dir_1
                 disp_pole = direction_to_displacement(d_pole)
                 for k in sorted(axes_needed):
-                    if k in covered_split_axes:
+                    if k in severed_axes:
                         continue
-                    if disp_pole[k] > 0:
+                    if disp_pole[k] < 0:
                         covered_split_axes.add(k)
                         continue
 
-                    # Pole is deficient in +k: scan along spine for first step that provides +k expansion to the pole
+                    # Pole is deficient in +k: collect all spine steps heading away from the pole
+                    # along -k, so elongating them frees the pole in +k, then pick the most balanced split.
                     target_sign = -1 if pole_req == p0 else 1
+                    candidates: list[int] = []
                     for i in range(1, len(spine_path) - 2):
                         step_dir = _get_forward_step_direction(spine_path[i], spine_path[i + 1])
                         if step_dir is None:
                             continue
                         step_disp = direction_to_displacement(step_dir)
-                        if (step_disp[k] > 0 if target_sign > 0 else step_disp[k] < 0):
-                            matching_edges = [
-                                e for e in graph.edges
-                                if not e.cut and {e.src, e.dst} == {spine_path[i], spine_path[i + 1]}
-                            ]
-                            has_child_spanning = any(
-                                set(_get_child_poles_or_anchor(sub_c)) == {spine_path[i], spine_path[i + 1]}
-                                for sub_c in child_processed.children
-                            )
-                            if has_child_spanning and len(spine_path) > 4:
-                                continue
-                            if not matching_edges and len(spine_path) > 4:
-                                continue
-                            if i not in sever_indices:
-                                sever_indices.append(i)
-                            covered_split_axes.add(k)
-                            break
+                        if (step_disp[k] > 0 if target_sign > 0 else step_disp[k] < 0) and _is_valid_split_step(i):
+                            candidates.append(i)
+                    if candidates:
+                        best_i = min(
+                            candidates,
+                            key=lambda idx: _score_split_candidate(
+                                idx, spine_path, sub_children_info, p0, p1, graph
+                            ),
+                        )
+                        if best_i not in sever_indices:
+                            sever_indices.append(best_i)
+                        covered_split_axes.add(k)
+                        severed_axes.add(k)
 
             # 2. Severing for fixed axes (Delta_k == 0) where child deviates and requires flexibility
             for k in sorted(fixed_axes):
@@ -778,29 +902,25 @@ class TransverseSNodeSplitPass:
                 if direct_edges and cycle_transverse and all(direct_disp[ax] == child_trans.get(ax, 0) for ax in cycle_transverse):
                     continue
 
+                candidates = []
                 for i in range(1, len(spine_path) - 2):
                     step_dir = _get_forward_step_direction(spine_path[i], spine_path[i + 1])
                     if step_dir is None:
                         continue
                     step_disp = direction_to_displacement(step_dir)
                     step_ax = 0 if step_disp[0] != 0 else (1 if step_disp[1] != 0 else (2 if step_disp[2] != 0 else None))
-                    if step_ax == k:
-                        matching_edges = [
-                            e for e in graph.edges
-                            if not e.cut and {e.src, e.dst} == {spine_path[i], spine_path[i + 1]}
-                        ]
-                        has_child_spanning = any(
-                            set(_get_child_poles_or_anchor(sub_c)) == {spine_path[i], spine_path[i + 1]}
-                            for sub_c in child_processed.children
-                        )
-                        if has_child_spanning and len(spine_path) > 4:
-                            continue
-                        if not matching_edges and len(spine_path) > 4:
-                            continue
-                        if i not in sever_indices:
-                            sever_indices.append(i)
-                        covered_split_axes.add(k)
-                        break
+                    if step_ax == k and _is_valid_split_step(i):
+                        candidates.append(i)
+                if candidates:
+                    best_i = min(
+                        candidates,
+                        key=lambda idx: _score_split_candidate(
+                            idx, spine_path, sub_children_info, p0, p1, graph
+                        ),
+                    )
+                    if best_i not in sever_indices:
+                        sever_indices.append(best_i)
+                    covered_split_axes.add(k)
 
             sever_indices.sort()
 
@@ -882,6 +1002,7 @@ class TransverseSNodeSplitPass:
                 continue
 
             sub_children: list[list[SolveTreeNode]] = [[] for _ in range(k)]
+            orphans: list[SolveTreeNode] = []
             for sub_c in child_processed.children:
                 sub_anc = _get_anchor_vnum(sub_c)
                 target_j: int | None = None
@@ -912,9 +1033,39 @@ class TransverseSNodeSplitPass:
                                     break
                             if target_j is not None:
                                 break
-                        if target_j is None:
-                            target_j = 0
-                sub_children[target_j].append(sub_c)
+                if target_j is None:
+                    orphans.append(sub_c)
+                else:
+                    sub_children[target_j].append(sub_c)
+
+            # A sub-child that touches no sub-node room directly hangs off sibling sub-children;
+            # it belongs to the sub-node holding the rooms it is graph-adjacent to.
+            while orphans:
+                placed_rooms: list[set[int]] = [set(rooms_list[j]) for j in range(k)]
+                placed_rooms[0].add(p0)
+                placed_rooms[k - 1].add(p1)
+                for j in range(k):
+                    for c in sub_children[j]:
+                        placed_rooms[j] |= _collect_subtree_rooms(c)
+                progressed = False
+                for sub_c in list(orphans):
+                    sub_all = _collect_subtree_rooms(sub_c)
+                    links = [0] * k
+                    for e in graph.edges:
+                        if e.cut:
+                            continue
+                        for a_room, b_room in ((e.src, e.dst), (e.dst, e.src)):
+                            if a_room in sub_all and b_room not in sub_all:
+                                for j in range(k):
+                                    if b_room in placed_rooms[j]:
+                                        links[j] += 1
+                    if max(links) > 0:
+                        sub_children[int(max(range(k), key=lambda idx: links[idx]))].append(sub_c)
+                        orphans.remove(sub_c)
+                        progressed = True
+                if not progressed:
+                    sub_children[0].extend(orphans)
+                    break
 
             subtree_rooms: list[set[int]] = []
             for j in range(k):

@@ -1,13 +1,20 @@
-"""Stage 3: 1D positional constraint DAG for pre-injection clearance cut filtering."""
+"""Cluster-level seeding and clearance cut filtering on top of the positional constraint DAG."""
 
 from __future__ import annotations
 
-import collections
 from dataclasses import dataclass
 import logging
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from romutil.layout.geometry import BoundingBox3D
+from romutil.layout.positional_dag import (
+    AXIS_NAMES,
+    AXIS_X,
+    AXIS_Y,
+    AXIS_Z,
+    NodeRef,
+    PositionalConstraintDAG,
+)
 from romutil.layout.milp.inventory import (
     ActiveEdge,
     BoundaryExit,
@@ -21,10 +28,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-AXIS_X: int = 0
-AXIS_Y: int = 1
-AXIS_Z: int = 2
-AXIS_NAMES: tuple[str, str, str] = ("x", "y", "z")
 
 DIR_RIGHT: str = "r"
 DIR_LEFT: str = "l"
@@ -53,7 +56,6 @@ DIRECTION_AXIS_MAP: Mapping[str, tuple[int, bool]] = {
     DIR_DOWN: (AXIS_Z, False),
 }
 
-NodeRef = int | str
 
 
 @dataclass(frozen=True)
@@ -340,117 +342,8 @@ def get_entity_spatial_bounds(
     return None
 
 
-class PositionalConstraintDAG:
-    """Incremental 1D positional constraint DAG tracking relative coordinate bounds across 3 axes.
-
-    For each axis k in {X, Y, Z}, maintains a system of difference constraints
-    where a directed edge u -(w)-> v represents the relative lower bound:
-        coord_k(v) - coord_k(u) >= w
-
-    Provides microsecond cycle and contradiction detection to determine if a candidate
-    separation cut can be satisfied without introducing a positive cycle (integer infeasibility).
-    """
-
-    def __init__(self) -> None:
-        self._nodes: dict[int, set[NodeRef]] = {AXIS_X: set(), AXIS_Y: set(), AXIS_Z: set()}
-        self._dist: dict[int, dict[NodeRef, dict[NodeRef, int]]] = {
-            AXIS_X: collections.defaultdict(dict),
-            AXIS_Y: collections.defaultdict(dict),
-            AXIS_Z: collections.defaultdict(dict),
-        }
-        self._edges: dict[int, dict[NodeRef, dict[NodeRef, int]]] = {
-            AXIS_X: collections.defaultdict(dict),
-            AXIS_Y: collections.defaultdict(dict),
-            AXIS_Z: collections.defaultdict(dict),
-        }
-
-    def _ensure_node(self, axis: int, u: NodeRef) -> None:
-        """Register a node on the specified axis if not already present."""
-        if u not in self._nodes[axis]:
-            self._nodes[axis].add(u)
-            self._dist[axis][u][u] = 0
-
-    def get_lower_bound(self, axis: int, u: NodeRef, v: NodeRef) -> int | None:
-        """Retrieve the maximum lower bound on coord_axis(v) - coord_axis(u).
-
-        Returns 0 if u == v, the path weight if a directed path exists, or None if no path exists.
-        """
-        if u == v:
-            return 0
-        if u not in self._nodes[axis] or v not in self._nodes[axis]:
-            return None
-        return self._dist[axis][u].get(v)
-
-    def can_add_edge(self, axis: int, u: NodeRef, v: NodeRef, weight: int) -> bool:
-        """Determine if adding the edge u -(weight)-> v would introduce a positive cycle.
-
-        Enforcing coord_axis(v) - coord_axis(u) >= weight creates a contradiction if the existing
-        graph already establishes that coord_axis(u) - coord_axis(v) >= w_vu with w_vu + weight > 0.
-        """
-        if u == v:
-            return weight <= 0
-
-        if u not in self._nodes[axis] or v not in self._nodes[axis]:
-            return True
-
-        w_vu = self.get_lower_bound(axis, v, u)
-        if w_vu is not None and w_vu + weight > 0:
-            return False
-
-        return True
-
-    def add_edge(self, axis: int, u: NodeRef, v: NodeRef, weight: int) -> bool:
-        """Add a directed constraint edge u -(weight)-> v on the specified axis.
-
-        Returns True if the edge was successfully integrated without contradiction,
-        or False if rejected due to positive cycle formation.
-        """
-        if not self.can_add_edge(axis, u, v, weight):
-            return False
-
-        self._ensure_node(axis, u)
-        self._ensure_node(axis, v)
-
-        if u == v:
-            return True
-
-        self._edges[axis][u][v] = max(self._edges[axis][u].get(v, weight), weight)
-
-        current_d = self._dist[axis][u].get(v)
-        if current_d is not None and current_d >= weight:
-            return True
-
-        self._dist[axis][u][v] = weight
-
-        nodes_to_u = [
-            (i, d_iu)
-            for i, d_map in self._dist[axis].items()
-            if (d_iu := d_map.get(u)) is not None
-        ]
-        nodes_from_v = [
-            (j, d_vj)
-            for j, d_vj in self._dist[axis][v].items()
-        ]
-
-        for i, d_iu in nodes_to_u:
-            dist_i = self._dist[axis][i]
-            for j, d_vj in nodes_from_v:
-                candidate = d_iu + weight + d_vj
-                old_val = dist_i.get(j)
-                if old_val is None or candidate > old_val:
-                    dist_i[j] = candidate
-
-        return True
-
-    def add_equality(self, axis: int, u: NodeRef, v: NodeRef, offset: int) -> bool:
-        """Add an exact coordinate displacement equality coord_axis(v) - coord_axis(u) == offset."""
-        if not self.can_add_edge(axis, u, v, offset):
-            return False
-        if not self.can_add_edge(axis, v, u, -offset):
-            return False
-        added_uv = self.add_edge(axis, u, v, offset)
-        added_vu = self.add_edge(axis, v, u, -offset)
-        return added_uv and added_vu
+class ClusterPositionalDAG(PositionalConstraintDAG):
+    """Positional constraint DAG seeded from a cluster formulation, with clearance direction filtering."""
 
     def check_candidate_direction(
         self,
@@ -543,8 +436,8 @@ class PositionalConstraintDAG:
         return valid_dirs, pruned_reasons
 
     @classmethod
-    def from_formulation(cls, formulation: ClusterFormulation) -> PositionalConstraintDAG:
-        """Instantiate and seed a PositionalConstraintDAG from a ClusterFormulation instance.
+    def from_formulation(cls, formulation: ClusterFormulation) -> ClusterPositionalDAG:
+        """Instantiate and seed a ClusterPositionalDAG from a ClusterFormulation instance.
 
         Extracts directional minimum distance bounds from active edges and exact coordinate
         equalities from child-child alignments.

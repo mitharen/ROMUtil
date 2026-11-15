@@ -19,20 +19,18 @@ from romutil.layout.milp.inventory import (
 )
 from romutil.layout.milp.spatial_dag import (
     ALL_DIRECTIONS,
-    AXIS_X,
-    AXIS_Y,
-    AXIS_Z,
     DIR_AHEAD,
     DIR_BEHIND,
     DIR_DOWN,
     DIR_LEFT,
     DIR_RIGHT,
     DIR_UP,
-    PositionalConstraintDAG,
+    ClusterPositionalDAG,
     SpatialBoundExpr,
     get_entity_spatial_bounds,
     resolve_endpoint_node_offset,
 )
+from romutil.layout.positional_dag import AXIS_X, AXIS_Y, AXIS_Z, PositionalConstraintDAG
 from romutil.types import Coord3D, LayoutOptions
 
 
@@ -259,7 +257,7 @@ class TestCandidateDirectionFiltering:
         mock_form = MagicMock()
         mock_form.inventory = mock_inv
 
-        dag = PositionalConstraintDAG.from_formulation(mock_form)
+        dag = ClusterPositionalDAG.from_formulation(mock_form)
         valid_dirs, pruned = dag.filter_candidate_directions(10, 20, "parent_room", mock_inv)
 
         # Direction 'r': 10 > 20 along X requires x(10) - x(20) >= 1 (contradicts x(20) - x(10) >= 2)
@@ -278,7 +276,7 @@ class TestCandidateDirectionFiltering:
     def test_unsatisfiable_collision_detection(self) -> None:
         """When two items are rigidly constrained to exact coordinate equality, all directions are pruned."""
         # Rooms 10 and 20 constrained to exact coordinate equality on all 3 axes
-        dag = PositionalConstraintDAG()
+        dag = ClusterPositionalDAG()
         dag.add_equality(AXIS_X, 10, 20, 0)
         dag.add_equality(AXIS_Y, 10, 20, 0)
         dag.add_equality(AXIS_Z, 10, 20, 0)

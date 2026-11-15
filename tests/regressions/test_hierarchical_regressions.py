@@ -284,3 +284,17 @@ class TestConcaveSubBoxClearanceRegression:
         violations = detect_cluster_collisions(formulation, extraction)
         cchild_violations = [v for v in violations if v.category == "corridor_child"]
         assert len(cchild_violations) == 0
+
+
+class TestShireMidgaardHaonCompositeRegression:
+    """Midgaard, Haon-Dor and the Shire solve together without infeasible loop clusters."""
+
+    def test_midgaard_haon_shire_solves_without_collisions(self) -> None:
+        """The Shire loop sits beside a rigid parent R-node and must keep eastward freedom."""
+        areas = [parse_file(FIXTURES_DIR / f) for f in ("midgaard.are", "haon.are", "shire.are")]
+        graph = WorldGraph.from_area_data(merge_areas(areas))
+        layout = HierarchicalLayoutSolver.production().solve(graph, LayoutOptions(timeout_seconds=120))
+
+        assert layout.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
+        assert set(layout.coordinates) == set(graph.rooms)
+        assert_zero_coordinate_collisions(layout)

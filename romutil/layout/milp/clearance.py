@@ -21,7 +21,7 @@ from romutil.layout.milp.inventory import (
     direction_to_displacement,
     get_child_coordinate,
 )
-from romutil.layout.milp.spatial_dag import PositionalConstraintDAG
+from romutil.layout.milp.spatial_dag import ClusterPositionalDAG
 from romutil.layout.hierarchy.spqr import SplitPairCut
 from romutil.types import Coord3D
 
@@ -101,7 +101,7 @@ class ClearanceConstraintBuilder:
     def __init__(self, formulation: ClusterFormulation) -> None:
         self.formulation = formulation
         self.separated_pairs: set[tuple[str, Any, Any]] = set()
-        self.spatial_dag = PositionalConstraintDAG.from_formulation(formulation)
+        self.spatial_dag = ClusterPositionalDAG.from_formulation(formulation)
         self.unsatisfiable_collisions: list[ClearanceViolation] = []
 
     @property
@@ -528,7 +528,7 @@ class ClearanceConstraintBuilder:
         # Sort candidate un-separated violations according to priority tier (stable sort)
         candidates.sort(key=lambda item: VIOLATION_TIER_PRIORITY.get(item[0], 5))
 
-        # Filter candidate separation directions with the PositionalConstraintDAG
+        # Filter candidate separation directions with the ClusterPositionalDAG
         inventory = getattr(self.formulation, "inventory", None)
         resolvable: list[
             tuple[str, tuple[str, Any, Any], tuple[Any, Any], list[str]]
