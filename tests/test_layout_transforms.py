@@ -1937,6 +1937,103 @@ class TestTransformHelpersAndEdgeCases:
         assert {c.node_id for c in c_a.children} == set()
         assert {c.node_id for c in c_b.children} == {"sub_b", "orphan_b"}
 
+    def test_one_pole_covered_fixed_axis_splits_opposing_step_when_already_split(self) -> None:
+        """A flat sibling S-node fixes Y across poles and forces an opposing Y split on an already-split S-node."""
+        # Sibling s_flat: 1 -> 30 (West) -> 2 (West), with hanging North bridge 30 -> 300.
+        # Because 30 -> 300 is a 1-cut dead-end branch, s_flat still fixes y(1) == y(2) and x(1) > x(2).
+        # Target s_target: 1 -> 10 (North) -> 11 (North) -> 12 (West) -> 13 (South) -> 20 (West) <- 2 (East, so 2->20 is West).
+        # Positive req on X severs (11, 12) (West).
+        # Fixed axis Y is covered at pole 1 (+Y) but uncovered at pole 2 (-X), so opposing step (12, 13) (-Y) is severed,
+        # while same-sign step (10, 11) (+Y) is not severed.
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 12, 13, 20, 30, 300],
+            edges=[
+                (1, 30, Direction.west),
+                (30, 2, Direction.west),
+                (30, 300, Direction.north),
+                (1, 10, Direction.north),
+                (10, 11, Direction.north),
+                (11, 12, Direction.west),
+                (12, 13, Direction.south),
+                (13, 20, Direction.west),
+                (2, 20, Direction.west),
+            ],
+        )
+        dead_end = SolveTreeNode(
+            node_id="dead_end",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({300}),
+            children=(),
+            metadata={
+                "cut_type": CutType.BRIDGE,
+                "anchor_vnum": 30,
+                "bridge_edge": (30, 300),
+                "direction": Direction.north,
+                "weight": 1,
+            },
+        )
+        s_flat = SolveTreeNode(
+            node_id="s_flat",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({30}),
+            children=(dead_end,),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        s_target = SolveTreeNode(
+            node_id="s_target",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 12, 13, 20}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(s_flat, s_target),
+        )
+        tree = SolveTree(root=parent, components=(parent,), graph=graph)
+        transformed = TransverseSNodeSplitPass(graph).apply(tree)
+
+        severed = transformed.root.metadata.get("severed_bridge_edges")
+        assert severed == ((11, 12), (12, 13))
+
+    def test_one_pole_covered_fixed_axis_not_split_when_no_other_split_exists(self) -> None:
+        """Without an orthogonal split, a one-pole-covered fixed axis keeps the loop intact."""
+        # Parent has direct edge 1 -> 2 (East), fixing Y and Z, requiring x(2) > x(1).
+        # Target s_loop: 1 -> 10 (North) -> 11 (East) -> 12 (South) -> 2 (East, so 2 -> 12 is West).
+        # Pole 2 covers X (-X), pole 1 covers Y (+Y). Positive req on X (2 needs +X, disp_2[0] = -1 < 0) is covered.
+        # No other split exists, so Y is not unnecessarily severed.
+        graph = _make_graph(
+            rooms=[1, 2, 10, 11, 12],
+            edges=[
+                (1, 2, Direction.east),
+                (1, 10, Direction.north),
+                (10, 11, Direction.east),
+                (11, 12, Direction.south),
+                (12, 2, Direction.east),
+            ],
+        )
+        s_loop = SolveTreeNode(
+            node_id="s_loop",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11, 12}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(s_loop,),
+        )
+        tree = SolveTree(root=parent, components=(parent,), graph=graph)
+        transformed = TransverseSNodeSplitPass(graph).apply(tree)
+
+        assert len(transformed.root.children) == 1
+        assert transformed.root.children[0].node_id == "s_loop"
+        assert "severed_bridge_edges" not in transformed.root.metadata
+
 
 class TestUnifiedHierarchicalPipeline:
     """Verify SolveTree.seed, decomposition passes, and unified pipeline tree construction."""

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from romutil.layout import HierarchicalLayoutSolver, LayoutGraph, Segment3D, segments_intersect_3d
+from romutil.models import merge_areas
 from romutil.parser import parse_file
 from romutil.types import LayoutOptions, SolverStatus, WorldGraph
 from tests.regressions.invariants import (
@@ -204,3 +205,33 @@ class TestMoriaRegression:
                     crossings.append(((u1, v1), (u2, v2)))
 
         assert crossings == [], f"Found corridor crossings in Moria: {crossings}"
+
+
+class TestMidgaardHaonShireCompositeRegression:
+    """Regression suite verifying Shire-Midgaard boundary alignment in composite layout."""
+
+    def test_shire_midgaard_boundary_axis_alignment(self) -> None:
+        """Composite midgaard + haon + shire aligns (1149, 1150) on Y/Z with x(1150) > x(1149)."""
+        area = merge_areas(
+            [
+                parse_file(FIXTURES_DIR / "midgaard.are"),
+                parse_file(FIXTURES_DIR / "haon.are"),
+                parse_file(FIXTURES_DIR / "shire.are"),
+            ]
+        )
+        graph = WorldGraph.from_area_data(area)
+
+        solver = HierarchicalLayoutSolver.production()
+        layout = solver.solve(graph, LayoutOptions(timeout_seconds=30))
+
+        assert layout.diagnostics.status in (SolverStatus.FEASIBLE, SolverStatus.OPTIMAL)
+        assert_zero_coordinate_collisions(layout)
+
+        coords = layout.coordinates
+        assert 1149 in coords and 1150 in coords
+        c1149 = coords[1149]
+        c1150 = coords[1150]
+        assert c1149.y == c1150.y, f"Expected y(1149) == y(1150), got {c1149} vs {c1150}"
+        assert c1149.z == c1150.z, f"Expected z(1149) == z(1150), got {c1149} vs {c1150}"
+        assert c1150.x > c1149.x, f"Expected x(1150) > x(1149), got {c1149} vs {c1150}"
+        assert coords[3014].y == coords[3040].y

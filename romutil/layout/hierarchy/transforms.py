@@ -404,6 +404,26 @@ def _build_parent_positional_dag(
         disp = _compute_node_spine_displacement(sib, pa, pb, graph)
         if disp is not None:
             _add_directional(pa, pb, disp, equal_transverse=False)
+            if not _collect_subtree_severed_edges(sib):
+                sib_all = set(sib.rooms) | {pa, pb}
+                for sub_c in sib.children:
+                    if not _is_one_cut_child(sub_c):
+                        sib_all |= _collect_subtree_rooms(sub_c)
+                active_axes: set[int] = set()
+                for e in graph.edges:
+                    if (
+                        not e.cut
+                        and e.src in sib_all
+                        and e.dst in sib_all
+                        and {e.src, e.dst} != {pa, pb}
+                    ):
+                        ed = direction_to_displacement(Direction(e.direction))
+                        for ax in (AXIS_X, AXIS_Y, AXIS_Z):
+                            if ed[ax] != 0:
+                                active_axes.add(ax)
+                for ax in (AXIS_X, AXIS_Y, AXIS_Z):
+                    if disp[ax] == 0 and ax not in active_axes:
+                        dag.add_equality(ax, pa, pb, 0)
     return dag
 
 
@@ -894,10 +914,23 @@ class TransverseSNodeSplitPass:
                         covered_split_axes.add(k)
                         severed_axes.add(k)
 
-            # 2. Severing for fixed axes (Delta_k == 0) where child deviates and requires flexibility
-            for k in sorted(fixed_axes):
-                if k in covered_split_axes:
+            # 2. Severing for fixed axes (Delta_k == 0) where child deviates and requires flexibility.
+            # Uncovered axes are processed before one-pole-covered axes so that an orthogonal
+            # split populates sever_indices first; a one-pole-covered fixed axis only needs an
+            # opposing-side split when the S-node is already being split across sub-problems.
+            for k in sorted(fixed_axes, key=lambda ax: (1 if (axis_0 == ax or axis_1 == ax) else 0, ax)):
+                if k in severed_axes:
                     continue
+                p0_covers = axis_0 == k
+                p1_covers = axis_1 == k
+                if p0_covers and p1_covers:
+                    continue
+                if not p0_covers and not p1_covers:
+                    if k in covered_split_axes:
+                        continue
+                elif not sever_indices:
+                    continue
+
                 # If tight cycle with zero discrepancy matches fixed axis, elide split
                 if direct_edges and cycle_transverse and all(direct_disp[ax] == child_trans.get(ax, 0) for ax in cycle_transverse):
                     continue
@@ -909,8 +942,13 @@ class TransverseSNodeSplitPass:
                         continue
                     step_disp = direction_to_displacement(step_dir)
                     step_ax = 0 if step_disp[0] != 0 else (1 if step_disp[1] != 0 else (2 if step_disp[2] != 0 else None))
-                    if step_ax == k and _is_valid_split_step(i):
-                        candidates.append(i)
+                    if step_ax != k or not _is_valid_split_step(i):
+                        continue
+                    if p0_covers and step_disp[k] * disp_0[k] >= 0:
+                        continue
+                    if p1_covers and step_disp[k] * disp_1[k] <= 0:
+                        continue
+                    candidates.append(i)
                 if candidates:
                     best_i = min(
                         candidates,
@@ -921,6 +959,7 @@ class TransverseSNodeSplitPass:
                     if best_i not in sever_indices:
                         sever_indices.append(best_i)
                     covered_split_axes.add(k)
+                    severed_axes.add(k)
 
             sever_indices.sort()
 
