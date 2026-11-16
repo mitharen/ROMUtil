@@ -23,7 +23,6 @@ from romutil.layout.milp.inventory import (
 )
 from romutil.layout.milp.spatial_dag import ClusterPositionalDAG
 from romutil.layout.hierarchy.spqr import SplitPairCut
-from romutil.layout.ir import ArticulationPointCut
 from romutil.types import Coord3D
 
 logger = logging.getLogger(__name__)
@@ -94,108 +93,6 @@ VIOLATION_TIER_PRIORITY: Mapping[str, int] = {
     "corridor_child": 2,
     "corridor_crossing": 3,
 }
-
-
-def _get_external_port_exit_direction(
-    ae: ActiveEdge,
-    inventory: ClusterInventory | None,
-    *,
-    child_id: str | None = None,
-) -> tuple[int, tuple[int, int, int]] | None:
-    """Return (anchor_u, exit_dir) if ae connects a local room to a degree-1 external boundary port."""
-    if inventory is None:
-        return None
-    b_ports = set(getattr(inventory, "boundary_ports", ()))
-    if not b_ports:
-        return None
-    local_rooms = set(inventory.rooms)
-    if (
-        isinstance(ae.src, int)
-        and ae.src in local_rooms
-        and isinstance(ae.dst, int)
-        and ae.dst in b_ports
-        and ae.dst not in local_rooms
-    ):
-        anchor_u, port_v = ae.src, ae.dst
-        exit_dir = ae.direction
-    elif (
-        isinstance(ae.dst, int)
-        and ae.dst in local_rooms
-        and isinstance(ae.src, int)
-        and ae.src in b_ports
-        and ae.src not in local_rooms
-    ):
-        anchor_u, port_v = ae.dst, ae.src
-        exit_dir = (-ae.direction[0], -ae.direction[1], -ae.direction[2])
-    else:
-        return None
-
-    if child_id is not None:
-        for c in inventory.children:
-            if c.node_id == child_id and isinstance(c.cut_contract, ArticulationPointCut):
-                return None
-
-    if sum(1 for d in exit_dir if d != 0) != 1:
-        return None
-    if sum(1 for e in inventory.active_edges if e.src == port_v or e.dst == port_v) != 1:
-        return None
-    return anchor_u, exit_dir
-
-
-def _ray_intersects_box(
-    origin: tuple[int, int, int],
-    exit_dir: tuple[int, int, int],
-    box: tuple[int, int, int, int, int, int],
-) -> bool:
-    """Return True if the open ray from origin along exit_dir intersects the 3D box."""
-    ox, oy, oz = origin
-    dx, dy, dz = exit_dir
-    min_x, max_x, min_y, max_y, min_z, max_z = box
-    if dx > 0:
-        return min_y <= oy <= max_y and min_z <= oz <= max_z and max_x > ox
-    if dx < 0:
-        return min_y <= oy <= max_y and min_z <= oz <= max_z and min_x < ox
-    if dy > 0:
-        return min_x <= ox <= max_x and min_z <= oz <= max_z and max_y > oy
-    if dy < 0:
-        return min_x <= ox <= max_x and min_z <= oz <= max_z and min_y < oy
-    if dz > 0:
-        return min_x <= ox <= max_x and min_y <= oy <= max_y and max_z > oz
-    return min_x <= ox <= max_x and min_y <= oy <= max_y and min_z < oz
-
-
-def _pruned_ray_direction(exit_dir: tuple[int, int, int]) -> str:
-    """Return the disjunctive separation code that would place an obstacle ahead of the exit ray."""
-    dx, dy, dz = exit_dir
-    if dx > 0:
-        return "l"
-    if dx < 0:
-        return "r"
-    if dy > 0:
-        return "b"
-    if dy < 0:
-        return "a"
-    if dz > 0:
-        return "d"
-    return "u"
-
-
-def _is_bridge_anchor_bexit(
-    be: BoundaryExit,
-    inventory: ClusterInventory | None,
-) -> bool:
-    """Return True if be is the incoming 1-cut bridge exit to the node's BridgeCut anchor."""
-    if inventory is None:
-        return False
-    node = getattr(inventory, "node", None)
-    contract = getattr(node, "cut_contract", None) if node is not None else None
-    anchor_vnum = getattr(contract, "anchor_vnum", None)
-    return (
-        anchor_vnum is not None
-        and be.target_vnum == anchor_vnum
-        and be.port in set(inventory.rooms)
-        and sum(1 for d in be.direction if d != 0) == 1
-    )
 
 
 class ClearanceConstraintBuilder:
@@ -641,46 +538,6 @@ class ClearanceConstraintBuilder:
             valid_dirs, pruned_reasons = self.spatial_dag.filter_candidate_directions(
                 item_a, item_b, cat, inventory
             )
-            if cat in ("corridor_room", "corridor_child") and inventory is not None:
-                ae_idx: int | None = None
-                if isinstance(item_a, int):
-                    ae_idx = item_a
-                elif isinstance(item_a, CorridorClearanceBox):
-                    ae_idx = item_a.edge_index
-                if ae_idx is not None and 0 <= ae_idx < len(inventory.active_edges):
-                    target_cid = (
-                        item_b[0]
-                        if cat == "corridor_child" and isinstance(item_b, (tuple, list)) and len(item_b) == 2
-                        else (item_b.child_id if cat == "corridor_child" and isinstance(item_b, ChildSubClearanceBox) else None)
-                    )
-                    ext_info = _get_external_port_exit_direction(
-                        inventory.active_edges[ae_idx],
-                        inventory,
-                        child_id=target_cid,
-                    )
-                    if ext_info is not None:
-                        pruned_dir = _pruned_ray_direction(ext_info[1])
-                        if pruned_dir in valid_dirs:
-                            valid_dirs = [d for d in valid_dirs if d != pruned_dir]
-                            pruned_reasons[pruned_dir] = "Blocked along external boundary-port exit ray"
-                elif isinstance(item_a, (tuple, list)) and len(item_a) == 2 and item_a[0] == "bexit":
-                    be_idx = item_a[1]
-                    if 0 <= be_idx < len(inventory.boundary_exits):
-                        be = inventory.boundary_exits[be_idx]
-                        if _is_bridge_anchor_bexit(be, inventory):
-                            pruned_dir = _pruned_ray_direction(be.direction)
-                            if pruned_dir in valid_dirs:
-                                valid_dirs = [d for d in valid_dirs if d != pruned_dir]
-                                pruned_reasons[pruned_dir] = "Blocked along incoming bridge anchor exit ray"
-                elif isinstance(item_a, BoundaryExitClearanceBox):
-                    be_idx = item_a.exit_index
-                    if 0 <= be_idx < len(inventory.boundary_exits):
-                        be = inventory.boundary_exits[be_idx]
-                        if _is_bridge_anchor_bexit(be, inventory):
-                            pruned_dir = _pruned_ray_direction(be.direction)
-                            if pruned_dir in valid_dirs:
-                                valid_dirs = [d for d in valid_dirs if d != pruned_dir]
-                                pruned_reasons[pruned_dir] = "Blocked along incoming bridge anchor exit ray"
             if not valid_dirs:
                 # All separation directions contradicted: mark as unresolvable geometric deadlock
                 self.unsatisfiable_collisions.append(viol)
@@ -994,7 +851,6 @@ def detect_cluster_collisions(
         except KeyError:
             continue
         seg = Segment3D(Coord3D(*p1), Coord3D(*p2))
-        ext_info = _get_external_port_exit_direction(ae, inventory)
         for w in parent_rooms:
             if w in ae.associated_rooms:
                 continue
@@ -1008,14 +864,7 @@ def detect_cluster_collisions(
             w_coord = parent_coords.get(w)
             if w_coord is None:
                 continue
-            if segment_room_penetration(seg, Coord3D(*w_coord)) or (
-                ext_info is not None
-                and _ray_intersects_box(
-                    p1 if ae.src == ext_info[0] else p2,
-                    ext_info[1],
-                    (w_coord[0], w_coord[0], w_coord[1], w_coord[1], w_coord[2], w_coord[2]),
-                )
-            ):
+            if segment_room_penetration(seg, Coord3D(*w_coord)):
                 violations.append(
                     ClearanceViolation(
                         category="corridor_room",
@@ -1041,7 +890,6 @@ def detect_cluster_collisions(
         b_min_y, b_max_y = min(p1[1] + dy, p2[1]), max(p1[1] + dy, p2[1])
         b_min_z, b_max_z = min(p1[2] + dz, p2[2]), max(p1[2] + dz, p2[2])
 
-        is_anchor_ray = _is_bridge_anchor_bexit(be, inventory)
         for w in parent_rooms:
             if w == be.port:
                 continue
@@ -1052,13 +900,6 @@ def detect_cluster_collisions(
                 b_min_x <= w_coord[0] <= b_max_x
                 and b_min_y <= w_coord[1] <= b_max_y
                 and b_min_z <= w_coord[2] <= b_max_z
-            ) or (
-                is_anchor_ray
-                and _ray_intersects_box(
-                    p1,
-                    be.direction,
-                    (w_coord[0], w_coord[0], w_coord[1], w_coord[1], w_coord[2], w_coord[2]),
-                )
             ):
                 violations.append(
                     ClearanceViolation(
@@ -1108,10 +949,8 @@ def detect_cluster_collisions(
             c_min_y, c_max_y = p1[1], p1[1]
             c_min_z, c_max_z = p2[2] + 1, p1[2] - 1
 
-        ext_info_base = _get_external_port_exit_direction(ae, inventory)
         if c_min_x > c_max_x or c_min_y > c_max_y or c_min_z > c_max_z:
-            if ext_info_base is None:
-                continue
+            continue
 
         for s_child in children:
             s_id = s_child.node_id
@@ -1120,25 +959,15 @@ def detect_cluster_collisions(
             if not s_sol or not sb or s_id not in extraction.raw_child_offsets:
                 continue
 
-            ext_info = _get_external_port_exit_direction(ae, inventory, child_id=s_id)
             for k in range(len(sb)):
                 box = _extract_child_sub_box_bounds(
                     (s_id, k), extraction, inventory
                 )
-                seg_hits = (
-                    c_min_x <= c_max_x
-                    and c_min_y <= c_max_y
-                    and c_min_z <= c_max_z
-                    and max(c_min_x, box[0]) <= min(c_max_x, box[1])
+                if (
+                    max(c_min_x, box[0]) <= min(c_max_x, box[1])
                     and max(c_min_y, box[2]) <= min(c_max_y, box[3])
                     and max(c_min_z, box[4]) <= min(c_max_z, box[5])
-                )
-                ray_hits = ext_info is not None and _ray_intersects_box(
-                    p1 if ae.src == ext_info[0] else p2,
-                    ext_info[1],
-                    box,
-                )
-                if seg_hits or ray_hits:
+                ):
                     violations.append(
                         ClearanceViolation(
                             category="corridor_child",
@@ -1164,7 +993,6 @@ def detect_cluster_collisions(
         c_min_y, c_max_y = min(p1[1] + dy, p2[1]), max(p1[1] + dy, p2[1])
         c_min_z, c_max_z = min(p1[2] + dz, p2[2]), max(p1[2] + dz, p2[2])
 
-        is_anchor_ray = _is_bridge_anchor_bexit(be, inventory)
         for s_child in children:
             s_id = s_child.node_id
             s_sol = child_solutions.get(s_id)
@@ -1182,9 +1010,6 @@ def detect_cluster_collisions(
                     max(c_min_x, box[0]) <= min(c_max_x, box[1])
                     and max(c_min_y, box[2]) <= min(c_max_y, box[3])
                     and max(c_min_z, box[4]) <= min(c_max_z, box[5])
-                ) or (
-                    is_anchor_ray
-                    and _ray_intersects_box(p1, be.direction, box)
                 ):
                     violations.append(
                         ClearanceViolation(

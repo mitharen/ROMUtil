@@ -1150,18 +1150,6 @@ class InterChildBridgeHandler:
 
         # Build map of available interface coordinates for each child (excluding parent rooms)
         parent_rooms = set(self.node.rooms)
-        owned_by_child: dict[str, set[int]] = {}
-        all_owned_by_children: set[int] = set()
-        for child in self.children:
-            cid = child.node_id
-            c_sol = self.child_solutions.get(cid)
-            if not c_sol:
-                continue
-            owned: set[int] = set(c_sol.local_coordinates.keys())
-            owned.update(c_sol.metadata.get("all_room_coordinates", {}).keys())
-            owned_by_child[cid] = owned
-            all_owned_by_children.update(owned)
-
         child_coords: dict[str, dict[int, Coord3D]] = {}
         for child in self.children:
             cid = child.node_id
@@ -1175,12 +1163,6 @@ class InterChildBridgeHandler:
                 anc = getattr(contract, "anchor_vnum", None)
                 if anc is not None and anc not in c_sol.local_coordinates:
                     ext_anchors.add(int(anc))
-            if "boundary_ports" in child.metadata:
-                owned = owned_by_child.get(cid, set())
-                for p in child.metadata["boundary_ports"]:
-                    ip = int(p)
-                    if ip not in owned and ip in all_owned_by_children:
-                        ext_anchors.add(ip)
             child_coords[cid] = {
                 r: pt
                 for r, pt in coords.items()

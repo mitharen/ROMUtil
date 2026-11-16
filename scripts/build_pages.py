@@ -40,7 +40,7 @@ COMPOSITE_SHOWCASE_AREAS = (
             "hood.are",
             "grave.are",
             "mobfact.are",
-            "moria.are",
+            "school.are",
             "midennir.are",
             "haon.are",
             "shire.are",
