@@ -167,7 +167,7 @@ class TestGalleryAssetsGeneration:
             "hood.are",
             "grave.are",
             "mobfact.are",
-            "moria.are",
+            "school.are",
             "midennir.are",
             "haon.are",
             "shire.are",
@@ -461,7 +461,7 @@ class TestGalleryAssetsGeneration:
         cluster_entry = next((item for item in COMPOSITE_SHOWCASE_AREAS if item[1] == "midgaard_region"), None)
         assert cluster_entry is not None
         cat, name, filenames = cluster_entry[:3]
-        assert "moria.are" in filenames
+        assert "school.are" in filenames
         assert "haon.are" in filenames
         assert "midennir.are" in filenames
         assert filenames == (
@@ -469,7 +469,7 @@ class TestGalleryAssetsGeneration:
             "hood.are",
             "grave.are",
             "mobfact.are",
-            "moria.are",
+            "school.are",
             "midennir.are",
             "haon.are",
             "shire.are",
@@ -481,13 +481,13 @@ class TestGalleryAssetsGeneration:
         source_paths = comp_candidate.source_path
         assert isinstance(source_paths, list)
         source_filenames = [p.name for p in source_paths]
-        assert "moria.are" in source_filenames
+        assert "school.are" in source_filenames
         assert source_filenames == [
             "midgaard.are",
             "hood.are",
             "grave.are",
             "mobfact.are",
-            "moria.are",
+            "school.are",
             "midennir.are",
             "haon.are",
             "shire.are",
