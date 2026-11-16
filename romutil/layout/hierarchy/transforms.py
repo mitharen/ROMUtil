@@ -1470,21 +1470,17 @@ class OrthogonalBridgePromotionPass:
                 and self._dot(anc_dirs[-1], d_in) != 0
             )
 
-            touches_node = isinstance(c_contract, BridgeCut) and (
-                (c_contract.anchor_vnum is not None and c_contract.anchor_vnum in node.rooms)
-                or c_contract.bridge_edge[0] in node.rooms
-                or c_contract.bridge_edge[1] in node.rooms
-            )
-
             # Direct promotion of child bridge cut:
             # - Both child and node must be BridgeCut blocks
-            # - Anchor/bridge_edge of child must touch node.rooms
+            # - Anchor room of child must be directly in node.rooms
             # - Departing in an orthogonal planar direction to any parent incident planar dir
             can_bubble_direct = (
                 has_parent_block
                 and node_is_bridge
                 and c_is_bridge
-                and touches_node
+                and isinstance(c_contract, BridgeCut)
+                and c_contract.anchor_vnum is not None
+                and c_contract.anchor_vnum in node.rooms
                 and c_dir is not None
                 and c_dir[2] == 0
                 and any(
