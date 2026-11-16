@@ -2471,11 +2471,11 @@ class TestOrthogonalBridgePromotionPass:
         tree = SolveTree(root=root, components=(root,))
         transformed = OrthogonalBridgePromotionPass().apply(tree)
 
-        # Child must remain inside parent_multi rather than bubbling into root
-        new_parent = transformed.root.children[0]
-        assert len(new_parent.children) == 1
-        assert new_parent.children[0].node_id == "child"
-        assert len(transformed.root.children) == 1
+        # Child bubbles out of parent_multi into root
+        assert len(transformed.root.children) == 2
+        assert {c.node_id for c in transformed.root.children} == {"parent_multi", "child"}
+        new_parent = next(c for c in transformed.root.children if c.node_id == "parent_multi")
+        assert len(new_parent.children) == 0
 
     def test_child_does_not_bubble_through_branching_junction(self) -> None:
         """Intermediate nodes with multiple children block child bubbling."""
@@ -2596,10 +2596,10 @@ class TestOrthogonalBridgePromotionPass:
         tree = SolveTree(root=root, components=(root,))
         transformed = OrthogonalBridgePromotionPass().apply(tree)
 
-        new_parent = transformed.root.children[0]
-        assert len(new_parent.children) == 1
-        assert new_parent.children[0].node_id == "child_multi"
-        assert len(transformed.root.children) == 1
+        assert len(transformed.root.children) == 2
+        assert {c.node_id for c in transformed.root.children} == {"parent", "child_multi"}
+        new_parent = next(c for c in transformed.root.children if c.node_id == "parent")
+        assert len(new_parent.children) == 0
 
     def test_bubbling_stops_at_non_collinear_intermediate_rung(self) -> None:
         """Bubbling along a hallway spine stops when an intermediate rung turns non-collinearly."""

@@ -1376,11 +1376,38 @@ class OrthogonalBridgePromotionPass:
     def _dot(d1: tuple[int, int, int], d2: tuple[int, int, int]) -> int:
         return d1[0] * d2[0] + d1[1] * d2[1] + d1[2] * d2[2]
 
+    @staticmethod
+    def _parent_incident_planar_dirs(
+        node: SolveTreeNode,
+        d_in: tuple[int, int, int] | None,
+        graph: LayoutGraph | None,
+    ) -> list[tuple[int, int, int]]:
+        dirs: list[tuple[int, int, int]] = []
+        if d_in is not None and d_in[2] == 0:
+            dirs.append(d_in)
+        severed = node.metadata.get("severed_bridge_edges")
+        if severed and graph is not None:
+            severed_pairs = {tuple(sorted((int(u), int(v)))) for u, v in severed}
+            for e in graph.edges:
+                if e.cut:
+                    continue
+                if (e.src in node.rooms or e.dst in node.rooms) and tuple(
+                    sorted((e.src, e.dst))
+                ) in severed_pairs:
+                    try:
+                        disp = direction_to_displacement(e.direction)
+                    except ValueError:
+                        continue
+                    if disp[2] == 0:
+                        dirs.append(disp)
+        return dirs
+
     def _transform_node(
         self,
         node: SolveTreeNode,
         has_parent_block: bool,
         anc_dirs: list[tuple[int, int, int]],
+        graph: LayoutGraph | None = None,
     ) -> tuple[SolveTreeNode, list[SolveTreeNode]]:
         d_in = self._bridge_direction(node)
         is_block = node.node_type != TreeNodeType.WORLD_ROOT
@@ -1388,17 +1415,14 @@ class OrthogonalBridgePromotionPass:
         kept_children: list[SolveTreeNode] = []
         bubbling_out: list[SolveTreeNode] = []
 
-        # Structural invariants on intermediate nodes:
-        # 1. Isolated bridge blocks only: node must contain exactly 1 room and be a 1-cut bridge cut.
-        # 2. No branching junctions: intermediate rungs along bubbling path must have at most 1 child.
-        node_is_single_room_bridge = (
-            len(node.rooms) == 1
-            and isinstance(node.cut_contract, BridgeCut)
-        )
+        node_is_bridge = isinstance(node.cut_contract, BridgeCut)
         node_is_linear_rung = len(node.children) <= 1
+        parent_incident_dirs = self._parent_incident_planar_dirs(node, d_in, graph)
 
         for child in node.children:
-            c_trans, c_bubbled = self._transform_node(child, is_block, child_anc_dirs)
+            c_trans, c_bubbled = self._transform_node(
+                child, is_block, child_anc_dirs, graph
+            )
             stopped_here: list[SolveTreeNode] = []
 
             for b in c_bubbled:
@@ -1416,11 +1440,11 @@ class OrthogonalBridgePromotionPass:
                 )
 
                 # Intermediate nodes along the bubbling path must be linear hallway rungs
-                # (len(node.children) <= 1) and isolated single-room bridge blocks (len(node.rooms) == 1).
+                # (len(node.children) <= 1) and BridgeCut blocks.
                 # Propagation stops when the intermediate ancestor is no longer collinear with the spine.
                 can_bubble_through = (
                     has_parent_block
-                    and node_is_single_room_bridge
+                    and node_is_bridge
                     and node_is_linear_rung
                     and b_dir is not None
                     and d_in is not None
@@ -1436,10 +1460,7 @@ class OrthogonalBridgePromotionPass:
 
             c_dir = self._bridge_direction(c_trans)
             c_contract = c_trans.cut_contract
-            c_is_single_room_bridge = (
-                len(c_trans.rooms) == 1
-                and isinstance(c_contract, BridgeCut)
-            )
+            c_is_bridge = isinstance(c_contract, BridgeCut)
 
             is_collinear_with_parent = bool(
                 anc_dirs
@@ -1449,22 +1470,27 @@ class OrthogonalBridgePromotionPass:
                 and self._dot(anc_dirs[-1], d_in) != 0
             )
 
+            touches_node = isinstance(c_contract, BridgeCut) and (
+                (c_contract.anchor_vnum is not None and c_contract.anchor_vnum in node.rooms)
+                or c_contract.bridge_edge[0] in node.rooms
+                or c_contract.bridge_edge[1] in node.rooms
+            )
+
             # Direct promotion of child bridge cut:
-            # - Must be isolated single-room 1-cut bridge blocks for both child and node
-            # - Anchor room of child must be directly in node.rooms
-            # - Departing in an orthogonal planar direction (d_in . c_dir == 0)
+            # - Both child and node must be BridgeCut blocks
+            # - Anchor/bridge_edge of child must touch node.rooms
+            # - Departing in an orthogonal planar direction to any parent incident planar dir
             can_bubble_direct = (
                 has_parent_block
-                and node_is_single_room_bridge
-                and c_is_single_room_bridge
-                and isinstance(c_contract, BridgeCut)
-                and c_contract.anchor_vnum is not None
-                and c_contract.anchor_vnum in node.rooms
-                and d_in is not None
+                and node_is_bridge
+                and c_is_bridge
+                and touches_node
                 and c_dir is not None
-                and d_in[2] == 0
                 and c_dir[2] == 0
-                and self._dot(d_in, c_dir) == 0
+                and any(
+                    d[2] == 0 and self._dot(d, c_dir) == 0
+                    for d in parent_incident_dirs
+                )
             )
 
             if can_bubble_direct:
@@ -1500,7 +1526,7 @@ class OrthogonalBridgePromotionPass:
         if tree.root.node_type == TreeNodeType.EMPTY:
             return tree
 
-        new_root, _ = self._transform_node(tree.root, False, [])
+        new_root, _ = self._transform_node(tree.root, False, [], self._graph or tree.graph)
         components = (
             new_root.children
             if new_root.node_type == TreeNodeType.WORLD_ROOT
