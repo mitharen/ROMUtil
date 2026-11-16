@@ -2680,3 +2680,81 @@ class TestOrthogonalBridgePromotionPass:
             by_coord.setdefault(coord, []).append(v)
         duplicates = {c: vs for c, vs in by_coord.items() if len(vs) > 1}
         assert not duplicates
+
+
+class TestBlockCutMonotoneBridgeGrouping:
+    """Verify parameter-free 3-direction monotone bridge grouping in BlockCutDecompositionPass."""
+
+    @staticmethod
+    def _graph_from_edges(edges: list[tuple[int, int, Direction]]) -> LayoutGraph:
+        from romutil.layout.ir import LayoutEdge
+        from romutil.models import Room
+
+        vnums = {u for u, _, _ in edges} | {v for _, v, _ in edges}
+        rooms = {
+            v: Room(vnum=v, name=f"R{v}", description="", area_name="test")
+            for v in vnums
+        }
+        layout_edges = tuple(
+            LayoutEdge(src=u, dst=v, direction=int(d)) for u, v, d in edges
+        )
+        return LayoutGraph(rooms=rooms, edges=layout_edges)
+
+    def test_monotone_three_direction_grouping(self) -> None:
+        """Consecutive 1-room bridges with < 4 planar directions group into one node."""
+        # Root cycle: 0-10-11-0; bridge chain: 0 -E-> 1 -N-> 2 -W-> 3 (3 planar dirs)
+        graph = self._graph_from_edges([
+            (0, 10, Direction.north),
+            (10, 11, Direction.east),
+            (11, 0, Direction.south),
+            (0, 1, Direction.east),
+            (1, 2, Direction.north),
+            (2, 3, Direction.west),
+        ])
+        tree = BlockCutDecompositionPass().apply(SolveTree.seed(graph))
+        comp_root = tree.root
+        assert len(comp_root.children) == 1
+        grouped = comp_root.children[0]
+        assert grouped.rooms == frozenset({1, 2, 3})
+        assert grouped.children == ()
+
+    def test_fourth_direction_closes_window(self) -> None:
+        """Adding a 4th planar direction closes the monotone window."""
+        # Root cycle: 0-10-11-0; bridge chain: 0 -E-> 1 -N-> 2 -W-> 3 -S-> 4
+        graph = self._graph_from_edges([
+            (0, 10, Direction.north),
+            (10, 11, Direction.east),
+            (11, 0, Direction.south),
+            (0, 1, Direction.east),
+            (1, 2, Direction.north),
+            (2, 3, Direction.west),
+            (3, 4, Direction.south),
+        ])
+        tree = BlockCutDecompositionPass().apply(SolveTree.seed(graph))
+        comp_root = tree.root
+        assert len(comp_root.children) == 1
+        outer = comp_root.children[0]
+        assert outer.rooms == frozenset({1})
+        assert len(outer.children) == 1
+        assert outer.children[0].rooms == frozenset({2, 3, 4})
+
+    def test_non_bridge_children_stay_separate(self) -> None:
+        """Multi-room biconnected children stay as separate child nodes."""
+        # Root cycle: 0-10-11-0; bridge 0 -E-> 1 -N-> 2; cycle at 2: 2-20-21-2
+        graph = self._graph_from_edges([
+            (0, 10, Direction.north),
+            (10, 11, Direction.east),
+            (11, 0, Direction.south),
+            (0, 1, Direction.east),
+            (1, 2, Direction.north),
+            (2, 20, Direction.east),
+            (20, 21, Direction.north),
+            (21, 2, Direction.west),
+        ])
+        tree = BlockCutDecompositionPass().apply(SolveTree.seed(graph))
+        comp_root = tree.root
+        assert len(comp_root.children) == 1
+        grouped = comp_root.children[0]
+        assert grouped.rooms == frozenset({1, 2})
+        assert len(grouped.children) == 1
+        assert grouped.children[0].rooms == frozenset({20, 21})

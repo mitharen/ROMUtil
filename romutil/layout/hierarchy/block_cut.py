@@ -19,6 +19,7 @@ from romutil.layout.ir import (
     TreeNodeType,
 )
 from romutil.layout.protocols import TreeBuilder
+from romutil.layout.simplification.warps import direction_to_displacement
 from romutil.models import Direction
 from romutil.types import LayoutOptions
 
@@ -130,6 +131,18 @@ class BlockCutDecompositionPass(TreeTransformationPass):
 
         effective_graph = target_graph or self._graph
         counter = 0
+        monotone_dirs: dict[str, frozenset[tuple[int, int, int]]] = {}
+
+        def _planar_disp(direction: int | None) -> tuple[int, int, int] | None:
+            if direction is None:
+                return None
+            try:
+                disp = direction_to_displacement(direction)
+            except ValueError:
+                return None
+            if disp[2] == 0 and (disp[0] != 0 or disp[1] != 0):
+                return disp
+            return None
 
         def build_node(b_idx: int, anchor: int | None) -> SolveTreeNode:
             nonlocal counter
@@ -209,6 +222,21 @@ class BlockCutDecompositionPass(TreeTransformationPass):
                     meta["weight"] = edge_weight
 
             node_rooms = frozenset(blocks[b_idx]) - {anchor} if anchor is not None else blocks[b_idx]
+
+            node_disp = _planar_disp(meta.get("direction")) if meta.get("cut_type") == CutType.BRIDGE else None
+            if len(node_rooms) == 1 and node_disp is not None:
+                active_dirs: set[tuple[int, int, int]] = {node_disp}
+                grouped_children: list[SolveTreeNode] = []
+                for child in child_nodes:
+                    c_dirs = monotone_dirs.get(child.node_id)
+                    if c_dirs is not None and len(active_dirs | c_dirs) < 4:
+                        node_rooms = node_rooms | frozenset(child.rooms)
+                        active_dirs |= c_dirs
+                        grouped_children.extend(child.children)
+                    else:
+                        grouped_children.append(child)
+                child_nodes = grouped_children
+                monotone_dirs[curr_id] = frozenset(active_dirs)
 
             return SolveTreeNode(
                 node_id=curr_id,
