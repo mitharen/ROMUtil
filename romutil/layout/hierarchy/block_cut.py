@@ -131,7 +131,6 @@ class BlockCutDecompositionPass(TreeTransformationPass):
 
         effective_graph = target_graph or self._graph
         counter = 0
-        monotone_dirs: dict[str, frozenset[tuple[int, int, int]]] = {}
 
         def _planar_disp(direction: int | None) -> tuple[int, int, int] | None:
             if direction is None:
@@ -144,15 +143,9 @@ class BlockCutDecompositionPass(TreeTransformationPass):
                 return disp
             return None
 
-        def build_node(b_idx: int, anchor: int | None) -> SolveTreeNode:
-            nonlocal counter
-            curr_id = f"comp_{comp_idx}_block_{counter}"
-            counter += 1
-
-            child_nodes = [
-                build_node(child_idx, child_anchor)
-                for child_idx, child_anchor in block_children[b_idx]
-            ]
+        def _get_cut_metadata(
+            b_idx: int, anchor: int | None
+        ) -> tuple[dict[str, Any], frozenset[int]]:
             meta: dict[str, Any] = {}
             if anchor is not None:
                 block_child_rooms = frozenset(blocks[b_idx]) - {anchor}
@@ -222,27 +215,67 @@ class BlockCutDecompositionPass(TreeTransformationPass):
                     meta["weight"] = edge_weight
 
             node_rooms = frozenset(blocks[b_idx]) - {anchor} if anchor is not None else blocks[b_idx]
+            return meta, node_rooms
 
-            node_disp = _planar_disp(meta.get("direction")) if meta.get("cut_type") == CutType.BRIDGE else None
-            if len(node_rooms) == 1 and node_disp is not None:
-                active_dirs: set[tuple[int, int, int]] = {node_disp}
-                grouped_children: list[SolveTreeNode] = []
-                for child in child_nodes:
-                    c_dirs = monotone_dirs.get(child.node_id)
-                    if c_dirs is not None and len(active_dirs | c_dirs) < 4:
-                        node_rooms = node_rooms | frozenset(child.rooms)
-                        active_dirs |= c_dirs
-                        grouped_children.extend(child.children)
+        def build_node(b_idx: int, anchor: int | None) -> SolveTreeNode:
+            nonlocal counter
+            curr_id = f"comp_{comp_idx}_block_{counter}"
+            counter += 1
+
+            meta, node_rooms = _get_cut_metadata(b_idx, anchor)
+            node_disp = (
+                _planar_disp(meta.get("direction"))
+                if meta.get("cut_type") == CutType.BRIDGE
+                else None
+            )
+
+            # If not a 1-room bridge block, do not initiate monotone grouping
+            if len(node_rooms) != 1 or node_disp is None:
+                child_nodes = [
+                    build_node(child_idx, child_anchor)
+                    for child_idx, child_anchor in block_children[b_idx]
+                ]
+                return SolveTreeNode(
+                    node_id=curr_id,
+                    node_type=TreeNodeType.BLOCK,
+                    rooms=node_rooms,
+                    children=tuple(child_nodes),
+                    metadata=meta,
+                )
+
+            # 1-room bridge block: start a monotone block and expand lookahead
+            accum_rooms = set(node_rooms)
+            active_dirs = {node_disp}
+
+            def expand(curr_b: int) -> list[SolveTreeNode]:
+                nonlocal accum_rooms, active_dirs, counter
+                children_out: list[SolveTreeNode] = []
+                for child_idx, child_anchor in block_children[curr_b]:
+                    c_meta, c_rooms = _get_cut_metadata(child_idx, child_anchor)
+                    c_disp = (
+                        _planar_disp(c_meta.get("direction"))
+                        if c_meta.get("cut_type") == CutType.BRIDGE
+                        else None
+                    )
+                    if (
+                        len(c_rooms) == 1
+                        and c_disp is not None
+                        and len(active_dirs | {c_disp}) < 4
+                    ):
+                        counter += 1
+                        accum_rooms.update(c_rooms)
+                        active_dirs.add(c_disp)
+                        children_out.extend(expand(child_idx))
                     else:
-                        grouped_children.append(child)
-                child_nodes = grouped_children
-                monotone_dirs[curr_id] = frozenset(active_dirs)
+                        children_out.append(build_node(child_idx, child_anchor))
+                return children_out
 
+            grouped_children = expand(b_idx)
             return SolveTreeNode(
                 node_id=curr_id,
                 node_type=TreeNodeType.BLOCK,
-                rooms=node_rooms,
-                children=tuple(child_nodes),
+                rooms=frozenset(accum_rooms),
+                children=tuple(grouped_children),
                 metadata=meta,
             )
 
