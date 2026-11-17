@@ -1480,7 +1480,11 @@ class OrthogonalBridgePromotionPass:
                 and c_is_bridge
                 and isinstance(c_contract, BridgeCut)
                 and c_contract.anchor_vnum is not None
-                and c_contract.anchor_vnum in node.rooms
+                and (
+                    c_contract.anchor_vnum == node.cut_contract.bridge_edge[1]
+                    if isinstance(node.cut_contract, BridgeCut)
+                    else c_contract.anchor_vnum in node.rooms
+                )
                 and c_dir is not None
                 and c_dir[2] == 0
                 and any(

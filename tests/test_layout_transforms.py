@@ -2719,7 +2719,7 @@ class TestBlockCutMonotoneBridgeGrouping:
         assert grouped.children == ()
 
     def test_fourth_direction_closes_window(self) -> None:
-        """Adding a 4th planar direction closes the monotone window."""
+        """Adding a 4th planar direction closes the monotone window and cuts at the opposing step."""
         # Root cycle: 0-10-11-0; bridge chain: 0 -E-> 1 -N-> 2 -W-> 3 -S-> 4
         graph = self._graph_from_edges([
             (0, 10, Direction.north),
@@ -2734,9 +2734,13 @@ class TestBlockCutMonotoneBridgeGrouping:
         comp_root = tree.root
         assert len(comp_root.children) == 1
         outer = comp_root.children[0]
-        assert outer.rooms == frozenset({1})
+        assert outer.rooms == frozenset({1, 2, 3})
         assert len(outer.children) == 1
-        assert outer.children[0].rooms == frozenset({2, 3, 4})
+        child = outer.children[0]
+        assert child.rooms == frozenset({4})
+        assert child.metadata.get("bridge_edge") == (3, 4)
+        assert child.metadata.get("direction") == int(Direction.south)
+        assert child.metadata.get("anchor_vnum") == 3
 
     def test_non_bridge_children_stay_separate(self) -> None:
         """Multi-room biconnected children stay as separate child nodes."""
@@ -2758,3 +2762,68 @@ class TestBlockCutMonotoneBridgeGrouping:
         assert grouped.rooms == frozenset({1, 2})
         assert len(grouped.children) == 1
         assert grouped.children[0].rooms == frozenset({20, 21})
+
+    def test_branching_hairpin_chain_cuts_at_opposing_step(self) -> None:
+        """Branching hairpin chain groups North/East/West and cuts South to preserve elasticity."""
+        # Root cycle at 0; bridge chain:
+        # 0 -N-> 16
+        # 16 -E-> 17
+        # 16 -W-> 23
+        # 23 -S-> 22
+        # 22 -E-> 24
+        graph = self._graph_from_edges([
+            (0, 10, Direction.north),
+            (10, 11, Direction.east),
+            (11, 0, Direction.south),
+            (0, 16, Direction.north),
+            (16, 17, Direction.east),
+            (16, 23, Direction.west),
+            (23, 22, Direction.south),
+            (22, 24, Direction.east),
+        ])
+        tree = BlockCutDecompositionPass().apply(SolveTree.seed(graph))
+        comp_root = tree.root
+        assert len(comp_root.children) == 1
+        monotone_parent = comp_root.children[0]
+        # 16, 17, 23 are accumulated in the first monotone window (North, East, West)
+        assert monotone_parent.rooms == frozenset({16, 17, 23})
+        assert len(monotone_parent.children) == 1
+        monotone_child = monotone_parent.children[0]
+        # 22, 24 start the next monotone block via South cut edge (23, 22)
+        assert monotone_child.rooms == frozenset({22, 24})
+        assert monotone_child.metadata.get("bridge_edge") == (23, 22)
+        assert monotone_child.metadata.get("direction") == int(Direction.south)
+        assert monotone_child.metadata.get("anchor_vnum") == 23
+
+    def test_consecutive_monotone_windows(self) -> None:
+        """Multiple consecutive monotone windows group separately along a long bridge snake."""
+        # 0 -E-> 1 -N-> 2 -W-> 3 (Window 1: E, N, W)
+        # 3 -S-> 4 -E-> 5 -N-> 6 (Window 2: S, E, N)
+        # 6 -W-> 7 (Window 3: W)
+        graph = self._graph_from_edges([
+            (0, 10, Direction.north),
+            (10, 11, Direction.east),
+            (11, 0, Direction.south),
+            (0, 1, Direction.east),
+            (1, 2, Direction.north),
+            (2, 3, Direction.west),
+            (3, 4, Direction.south),
+            (4, 5, Direction.east),
+            (5, 6, Direction.north),
+            (6, 7, Direction.west),
+        ])
+        tree = BlockCutDecompositionPass().apply(SolveTree.seed(graph))
+        comp_root = tree.root
+        assert len(comp_root.children) == 1
+        w1 = comp_root.children[0]
+        assert w1.rooms == frozenset({1, 2, 3})
+        assert len(w1.children) == 1
+        w2 = w1.children[0]
+        assert w2.rooms == frozenset({4, 5, 6})
+        assert w2.metadata.get("bridge_edge") == (3, 4)
+        assert w2.metadata.get("direction") == int(Direction.south)
+        assert len(w2.children) == 1
+        w3 = w2.children[0]
+        assert w3.rooms == frozenset({7})
+        assert w3.metadata.get("bridge_edge") == (6, 7)
+        assert w3.metadata.get("direction") == int(Direction.west)
