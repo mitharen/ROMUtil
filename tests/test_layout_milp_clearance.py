@@ -24,7 +24,7 @@ from romutil.layout.milp.clearance import (
     ClearanceViolation,
     VIOLATION_TIER_PRIORITY,
 )
-from romutil.layout.milp.inventory import ActiveEdge
+from romutil.layout.milp.inventory import ActiveEdge, BoundaryExit
 from romutil.layout.milp.solver import SolvedClusterExtraction
 from romutil.models import Direction, Room
 from romutil.types import (
@@ -386,12 +386,12 @@ class TestClearanceCutPriorityAndLimits:
 
     def test_violation_tier_priority_mapping(self) -> None:
         """Category tier priority reflects structural hierarchy from macroscopic to corridor crossings."""
-        assert VIOLATION_TIER_PRIORITY["parent_room"] == 0
-        assert VIOLATION_TIER_PRIORITY["child_child"] == 1
+        assert VIOLATION_TIER_PRIORITY["child_child"] == 0
         assert VIOLATION_TIER_PRIORITY["room_child"] == 1
-        assert VIOLATION_TIER_PRIORITY["corridor_room"] == 2
-        assert VIOLATION_TIER_PRIORITY["corridor_child"] == 2
-        assert VIOLATION_TIER_PRIORITY["corridor_crossing"] == 3
+        assert VIOLATION_TIER_PRIORITY["parent_room"] == 2
+        assert VIOLATION_TIER_PRIORITY["corridor_child"] == 3
+        assert VIOLATION_TIER_PRIORITY["corridor_room"] == 4
+        assert VIOLATION_TIER_PRIORITY["corridor_crossing"] == 5
 
     def test_priority_tiering_injects_highest_priority_violations_first(self) -> None:
         """inject_clearance_cuts prioritizes higher tiers (0-1) over lower tiers (2-3) within budget."""
@@ -410,10 +410,10 @@ class TestClearanceCutPriorityAndLimits:
         with patch("romutil.layout.milp.clearance.add_disjunctive_box_separation") as mock_sep:
             injected_count = builder.inject_clearance_cuts(violations)
             assert injected_count == 3
-            # Tier 0 (parent_room), Tier 1 (child_child, room_child) should be injected
-            assert ("parent_room", 100, 101) in builder.separated_pairs
+            # Tier 0 (child_child), Tier 1 (room_child), Tier 2 (parent_room) should be injected
             assert ("child_child", ("c1", 0), ("c2", 0)) in builder.separated_pairs
             assert ("room_child", 30, ("c1", 0)) in builder.separated_pairs
+            assert ("parent_room", 100, 101) in builder.separated_pairs
             # Lower tier violations (corridor_room, corridor_crossing) should NOT be injected in this pass
             assert ("corridor_room", 0, 10) not in builder.separated_pairs
             assert ("corridor_crossing", 1, 2) not in builder.separated_pairs
@@ -540,3 +540,109 @@ class TestClearanceCutPriorityAndLimits:
             assert cuts == 3
             assert len(builder.separated_pairs) == 3
             assert mock_sep.call_count == 3
+
+    def test_per_pass_macro_corridor_budget_split_and_rollover(self) -> None:
+        """Per-pass budgeting reserves a corridor slice while rolling unused quota in both directions."""
+        # Case 1: Both plentiful (6 macro, 6 corridor) with budget=6 -> 4 macro, 2 corridor
+        b1 = ClearanceConstraintBuilder(MagicMock())
+        viols_both = [
+            ClearanceViolation(category="parent_room", item_a=100 + i, item_b=200 + i)
+            for i in range(6)
+        ] + [
+            ClearanceViolation(category="corridor_crossing", item_a=i, item_b=50 + i)
+            for i in range(6)
+        ]
+        with patch("romutil.layout.milp.clearance.add_disjunctive_box_separation"):
+            assert b1.inject_clearance_cuts(viols_both, max_cuts_per_pass=6) == 6
+            macro_cnt = sum(1 for p in b1.separated_pairs if p[0] == "parent_room")
+            corr_cnt = sum(1 for p in b1.separated_pairs if p[0] == "corridor_crossing")
+            assert macro_cnt == 4
+            assert corr_cnt == 2
+
+        # Case 2: Few macro (1), many corridors (6) -> unused macro quota rolls to corridor (1 + 5)
+        b2 = ClearanceConstraintBuilder(MagicMock())
+        viols_corr_heavy = [
+            ClearanceViolation(category="parent_room", item_a=100, item_b=200),
+        ] + [
+            ClearanceViolation(category="corridor_crossing", item_a=i, item_b=50 + i)
+            for i in range(6)
+        ]
+        with patch("romutil.layout.milp.clearance.add_disjunctive_box_separation"):
+            assert b2.inject_clearance_cuts(viols_corr_heavy, max_cuts_per_pass=6) == 6
+            assert sum(1 for p in b2.separated_pairs if p[0] == "parent_room") == 1
+            assert sum(1 for p in b2.separated_pairs if p[0] == "corridor_crossing") == 5
+
+        # Case 3: Many macro (6), few corridors (1) -> unused corridor quota rolls back to macro (5 + 1)
+        b3 = ClearanceConstraintBuilder(MagicMock())
+        viols_macro_heavy = [
+            ClearanceViolation(category="parent_room", item_a=100 + i, item_b=200 + i)
+            for i in range(6)
+        ] + [
+            ClearanceViolation(category="corridor_crossing", item_a=0, item_b=50),
+        ]
+        with patch("romutil.layout.milp.clearance.add_disjunctive_box_separation"):
+            assert b3.inject_clearance_cuts(viols_macro_heavy, max_cuts_per_pass=6) == 6
+            assert sum(1 for p in b3.separated_pairs if p[0] == "parent_room") == 5
+            assert sum(1 for p in b3.separated_pairs if p[0] == "corridor_crossing") == 1
+
+    def test_macro_entity_deduplication_selects_max_overlap_volume(self) -> None:
+        """Within a macro-entity pair, the sub-box pair with largest overlap_volume is selected."""
+        builder = ClearanceConstraintBuilder(MagicMock())
+        violations = [
+            ClearanceViolation(
+                category="child_child",
+                item_a=("c1", 0),
+                item_b=("c2", 0),
+                overlap_volume=2,
+            ),
+            ClearanceViolation(
+                category="child_child",
+                item_a=("c1", 1),
+                item_b=("c2", 2),
+                overlap_volume=12,
+            ),
+            ClearanceViolation(
+                category="child_child",
+                item_a=("c1", 3),
+                item_b=("c2", 1),
+                overlap_volume=5,
+            ),
+        ]
+        with patch("romutil.layout.milp.clearance.add_disjunctive_box_separation"):
+            assert builder.inject_clearance_cuts(violations, max_cuts_per_pass=10) == 1
+            assert builder.separated_pairs == {("child_child", ("c1", 1), ("c2", 2))}
+
+    def test_corridor_child_detect_computes_overlap_volume(self) -> None:
+        """detect_cluster_collisions records exact overlap_volume for active edge and boundary exit corridor_child hits."""
+        c_sib = SolveTreeNode(node_id="c_sib", node_type="leaf", rooms=frozenset({200}))
+        parent = SolveTreeNode(
+            node_id="p_root",
+            node_type="container",
+            rooms=frozenset({10, 20, 30}),
+            children=(c_sib,),
+        )
+        sol = NodeSolution(
+            node_id="c_sib",
+            local_coordinates={200: Coord3D(3, 0, 0)},
+            sub_boxes=(BoundingBox3D(2, 4, 0, 0, 0, 0),),
+        )
+        graph = _make_graph([10, 20, 30, 200], [(10, 20, Direction.east, 6)])
+        inv = inventory_cluster(node=parent, child_solutions={"c_sib": sol}, graph=graph)
+        be = BoundaryExit(port=30, direction=(1, 0, 0), length=4, target_vnum=999)
+        inv = dataclasses.replace(inv, boundary_exits=(be,))
+        formulation = ClusterFormulation(inventory=inv)
+
+        extraction = SolvedClusterExtraction(
+            raw_parent_coords={10: (0, 0, 0), 20: (6, 0, 0), 30: (1, 0, 0)},
+            raw_child_offsets={"c_sib": (0, 0, 0)},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        viols = [
+            v for v in detect_cluster_collisions(formulation, extraction) if v.category == "corridor_child"
+        ]
+        edge_viol = next(v for v in viols if v.item_a == 0)
+        bexit_viol = next(v for v in viols if v.item_a == ("bexit", 0))
+        # Edge interior is x in [1, 5] vs box x in [2, 4] -> overlap length 3
+        assert edge_viol.overlap_volume == 3
+        # Bexit interior is x in [2, 5] vs box x in [2, 4] -> overlap length 3
+        assert bexit_viol.overlap_volume == 3

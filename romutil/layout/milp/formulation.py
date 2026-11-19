@@ -146,6 +146,7 @@ class ClusterFormulation:
             else 10.0 * (self.m_scale**2)
         )
         self.model = pyo.ConcreteModel()
+        self._edge_transverse_slack: dict[str, tuple[Any, Any]] = {}
         self._build_model()
         self.clearance_builder = ClearanceConstraintBuilder(self)
 
@@ -238,6 +239,7 @@ class ClusterFormulation:
                     sp = model.s_transverse_p.add()
                     sm = model.s_transverse_m.add()
                     model.edge_x.add(dst_x - src_x == sp - sm)
+                    self._edge_transverse_slack[ae.edge_id] = (sp, sm)
                 else:
                     model.edge_x.add(dst_x - src_x == 0)
 
@@ -247,6 +249,7 @@ class ClusterFormulation:
                     sp = model.s_transverse_p.add()
                     sm = model.s_transverse_m.add()
                     model.edge_y.add(dst_y - src_y == sp - sm)
+                    self._edge_transverse_slack[ae.edge_id] = (sp, sm)
                 else:
                     model.edge_y.add(dst_y - src_y == 0)
 
@@ -346,41 +349,51 @@ class ClusterFormulation:
             self.model.cz[cid] + sb.max_z,
         )
 
-    def get_corridor_interior_box(self, ae: ActiveEdge) -> tuple[Any, Any, Any, Any, Any, Any]:
-        """Return 3D bounding box for a corridor's interior (excluding endpoints)."""
+    def _get_corridor_box(
+        self,
+        ae: ActiveEdge,
+        *,
+        interior: bool,
+        include_transverse_slack: bool = False,
+    ) -> tuple[Any, Any, Any, Any, Any, Any]:
+        """Return 3D bounding box for a corridor segment, optionally including transverse slack."""
         x1, y1, z1 = self.get_point(ae.src)
         x2, y2, z2 = self.get_point(ae.dst)
         dx, dy, dz = ae.direction
-        if dx > 0:
-            return (x1 + 1, x2 - 1, y1, y1, z1, z1)
-        elif dx < 0:
-            return (x2 + 1, x1 - 1, y1, y1, z1, z1)
-        elif dy > 0:
-            return (x1, x1, y1 + 1, y2 - 1, z1, z1)
-        elif dy < 0:
-            return (x1, x1, y2 + 1, y1 - 1, z1, z1)
-        elif dz > 0:
-            return (x1, x1, y1, y1, z1 + 1, z2 - 1)
-        else:  # dz < 0
-            return (x1, x1, y1, y1, z2 + 1, z1 - 1)
+        margin = 1 if interior else 0
+        slack = (
+            self._edge_transverse_slack.get(ae.edge_id)
+            if include_transverse_slack and ae.allow_transverse_slack
+            else None
+        )
+
+        if dx != 0:
+            x_min, x_max = (x1 + margin, x2 - margin) if dx > 0 else (x2 + margin, x1 - margin)
+            y_min, y_max = (y1 - slack[1], y1 + slack[0]) if slack is not None else (y1, y1)
+            return (x_min, x_max, y_min, y_max, z1, z1)
+        if dy != 0:
+            y_min, y_max = (y1 + margin, y2 - margin) if dy > 0 else (y2 + margin, y1 - margin)
+            x_min, x_max = (x1 - slack[1], x1 + slack[0]) if slack is not None else (x1, x1)
+            return (x_min, x_max, y_min, y_max, z1, z1)
+        z_min, z_max = (z1 + margin, z2 - margin) if dz > 0 else (z2 + margin, z1 - margin)
+        return (x1, x1, y1, y1, z_min, z_max)
+
+    def get_corridor_interior_box(self, ae: ActiveEdge) -> tuple[Any, Any, Any, Any, Any, Any]:
+        """Return 3D bounding box for a corridor's interior (excluding endpoints)."""
+        return self._get_corridor_box(ae, interior=True, include_transverse_slack=False)
 
     def get_corridor_full_box(self, ae: ActiveEdge) -> tuple[Any, Any, Any, Any, Any, Any]:
         """Return 3D bounding box for an entire corridor segment (including endpoints)."""
-        x1, y1, z1 = self.get_point(ae.src)
-        x2, y2, z2 = self.get_point(ae.dst)
-        dx, dy, dz = ae.direction
-        if dx > 0:
-            return (x1, x2, y1, y1, z1, z1)
-        elif dx < 0:
-            return (x2, x1, y1, y1, z1, z1)
-        elif dy > 0:
-            return (x1, x1, y1, y2, z1, z1)
-        elif dy < 0:
-            return (x1, x1, y2, y1, z1, z1)
-        elif dz > 0:
-            return (x1, x1, y1, y1, z1, z2)
-        else:  # dz < 0
-            return (x1, x1, y1, y1, z2, z1)
+        return self._get_corridor_box(ae, interior=False, include_transverse_slack=False)
+
+    def get_corridor_envelope_box(
+        self,
+        ae: ActiveEdge,
+        *,
+        interior: bool = True,
+    ) -> tuple[Any, Any, Any, Any, Any, Any]:
+        """Return 3D corridor bounding box enclosing any permitted transverse slack."""
+        return self._get_corridor_box(ae, interior=interior, include_transverse_slack=True)
 
     def get_boundary_exit_interior_box(self, be: BoundaryExit) -> tuple[Any, Any, Any, Any, Any, Any]:
         """Return 3D bounding box for a boundary exit's interior segment (excluding the boundary port)."""

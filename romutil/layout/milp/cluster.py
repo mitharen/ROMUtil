@@ -209,7 +209,9 @@ def solve_cluster_with_cutting_planes(
 
         if physical_collisions:
             phase = ClusterSolvePhase.PHYSICAL_CLEARANCE
-            new_cuts = formulation.clearance_builder.inject_clearance_cuts(physical_collisions)
+            new_cuts = formulation.clearance_builder.inject_clearance_cuts(
+                physical_collisions, extraction=extraction
+            )
             if new_cuts == 0:
                 if iteration > 0 and intermediate_timeout < remaining_budget - 1.0:
                     intermediate_timeout = remaining_budget
@@ -282,7 +284,9 @@ def solve_cluster_with_cutting_planes(
                 if final_physical:
                     phase = ClusterSolvePhase.PHYSICAL_CLEARANCE
                     extraction = final_extraction
-                    new_cuts = formulation.clearance_builder.inject_clearance_cuts(final_physical)
+                    new_cuts = formulation.clearance_builder.inject_clearance_cuts(
+                        final_physical, extraction=final_extraction
+                    )
                     if new_cuts == 0:
                         raise LayoutSolverError(
                             f"MILP solver encountered unresolvable geometric collisions for cluster '{node.node_id}'."

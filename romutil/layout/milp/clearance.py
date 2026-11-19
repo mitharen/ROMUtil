@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 from dataclasses import dataclass
+import hashlib
 import logging
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
@@ -13,11 +14,15 @@ from romutil.layout.geometry import (
     segment_room_penetration,
     segments_intersect_3d,
 )
+from romutil.layout.milp.clearance_boxes import (
+    ExactCollisionCutGrower,
+    GrownClearanceCut,
+    extract_entity_coord as _extract_entity_coord,
+)
 from romutil.layout.milp.constraints import add_disjunctive_box_separation
 from romutil.layout.milp.inventory import (
     ActiveEdge,
     BoundaryExit,
-    EndpointRef,
     direction_to_displacement,
     get_child_coordinate,
 )
@@ -83,16 +88,82 @@ class ClearanceViolation:
     item_a: Any
     item_b: Any
     description: str = ""
+    overlap_volume: int = 1
 
 
 VIOLATION_TIER_PRIORITY: Mapping[str, int] = {
-    "parent_room": 0,
-    "child_child": 1,
+    "child_child": 0,
     "room_child": 1,
-    "corridor_room": 2,
-    "corridor_child": 2,
-    "corridor_crossing": 3,
+    "parent_room": 2,
+    "corridor_child": 3,
+    "corridor_room": 4,
+    "corridor_crossing": 5,
 }
+
+
+@dataclass(frozen=True)
+class _PendingCut:
+    """Unified cut candidate for tier-budgeted Big-M constraint injection."""
+
+    category: str
+    norm_key: tuple[Any, ...]
+    pair: tuple[Any, Any]
+    valid_dirs: tuple[str, ...]
+    grown: GrownClearanceCut | None = None
+
+
+def _item_sort_key(it: Any) -> tuple[int, Any]:
+    """Return a deterministic ordering key for symmetric collision pair canonicalization."""
+    if isinstance(it, int):
+        return (0, it)
+    if isinstance(it, RoomClearanceBox):
+        return (0, it.vnum)
+    if isinstance(it, ChildSubClearanceBox):
+        return (1, (it.child_id, it.box_index))
+    if isinstance(it, CorridorClearanceBox):
+        return (2, (0, it.edge_index))
+    if isinstance(it, BoundaryExitClearanceBox):
+        return (2, (1, it.exit_index))
+    if isinstance(it, tuple):
+        return (3, it)
+    return (4, str(it))
+
+
+def _normalize_violation_pair(
+    viol: ClearanceViolation,
+) -> tuple[str, tuple[Any, ...], tuple[Any, Any]]:
+    """Return canonical (category, norm_key, pair) for deduplication."""
+    cat = viol.category
+    a = viol.item_a
+    b = viol.item_b
+    if cat in ("parent_room", "child_child", "corridor_crossing"):
+        first, second = (a, b) if _item_sort_key(a) <= _item_sort_key(b) else (b, a)
+        return cat, (cat, first, second), (first, second)
+    return cat, (cat, a, b), (a, b)
+
+
+def _macro_entity_key(it: Any) -> tuple[str, Any]:
+    """Return macro-level entity key for per-pass deduplication and hashing."""
+    if isinstance(it, int):
+        return ("room", it)
+    if isinstance(it, RoomClearanceBox):
+        return ("room", it.vnum)
+    if isinstance(it, ChildSubClearanceBox):
+        return ("child", it.child_id)
+    if isinstance(it, CorridorClearanceBox):
+        return ("corridor", ("edge", it.edge_index))
+    if isinstance(it, BoundaryExitClearanceBox):
+        return ("corridor", ("bexit", it.exit_index))
+    if (
+        isinstance(it, tuple)
+        and len(it) == 2
+        and isinstance(it[0], str)
+        and isinstance(it[1], int)
+    ):
+        if it[0] in ("bexit", "edge"):
+            return ("corridor", it)
+        return ("child", it[0])
+    return ("other", str(it))
 
 
 class ClearanceConstraintBuilder:
@@ -100,9 +171,48 @@ class ClearanceConstraintBuilder:
 
     def __init__(self, formulation: ClusterFormulation) -> None:
         self.formulation = formulation
-        self.separated_pairs: set[tuple[str, Any, Any]] = set()
+        self.separated_pairs: set[tuple[Any, ...]] = set()
         self.spatial_dag = ClusterPositionalDAG.from_formulation(formulation)
         self.unsatisfiable_collisions: list[ClearanceViolation] = []
+        self._cut_grower: ExactCollisionCutGrower | None = None
+
+    def _get_cut_grower(self) -> ExactCollisionCutGrower | None:
+        """Lazily initialize the exact collision cut grower when cluster inventory supports it."""
+        if self._cut_grower is not None:
+            return self._cut_grower
+        inventory = getattr(self.formulation, "inventory", None)
+        child_sub_boxes = getattr(inventory, "child_sub_boxes", None)
+        active_edges = getattr(inventory, "active_edges", None)
+        rooms = getattr(inventory, "rooms", None)
+        if (
+            inventory is None
+            or not isinstance(child_sub_boxes, Mapping)
+            or not isinstance(active_edges, (list, tuple))
+            or not isinstance(rooms, (list, tuple))
+        ):
+            return None
+        self._cut_grower = ExactCollisionCutGrower(inventory, self.spatial_dag)
+        return self._cut_grower
+
+    def _get_child_origin_box(self, cid: str) -> tuple[Any, Any, Any, Any, Any, Any]:
+        """Return zero-width point box for child cid's local origin variable."""
+        m = self.formulation.model
+        return (m.cx[cid], m.cx[cid], m.cy[cid], m.cy[cid], m.cz[cid], m.cz[cid])
+
+    def _get_child_offset_box(
+        self, target: tuple[str, BoundingBox3D]
+    ) -> tuple[Any, Any, Any, Any, Any, Any]:
+        """Return symbolic 3D box for child cid translated by a grown obstacle box."""
+        m = self.formulation.model
+        cid, box = target
+        return (
+            m.cx[cid] + box.min_x,
+            m.cx[cid] + box.max_x,
+            m.cy[cid] + box.min_y,
+            m.cy[cid] + box.max_y,
+            m.cz[cid] + box.min_z,
+            m.cz[cid] + box.max_z,
+        )
 
     @property
     def local_rooms(self) -> tuple[int, ...]:
@@ -226,6 +336,27 @@ class ClearanceConstraintBuilder:
             )
         raise ValueError(f"Unknown corridor item reference: {item}")
 
+    def get_corridor_room_box(self, item: Any) -> tuple[Any, Any, Any, Any, Any, Any]:
+        """Return 3D interior box for corridor-vs-room separation, including transverse slack."""
+        if isinstance(item, CorridorClearanceBox):
+            ae = self.formulation.inventory.active_edges[item.edge_index]
+        elif isinstance(item, int):
+            ae = self.formulation.inventory.active_edges[item]
+        elif isinstance(item, BoundaryExitClearanceBox):
+            return self.formulation.get_boundary_exit_interior_box(
+                self.formulation.inventory.boundary_exits[item.exit_index]
+            )
+        elif isinstance(item, (tuple, list)) and len(item) == 2 and item[0] == "bexit":
+            return self.formulation.get_boundary_exit_interior_box(
+                self.formulation.inventory.boundary_exits[item[1]]
+            )
+        else:
+            raise ValueError(f"Unknown corridor item reference: {item}")
+
+        if hasattr(type(self.formulation), "get_corridor_envelope_box"):
+            return self.formulation.get_corridor_envelope_box(ae, interior=True)
+        return self.formulation.get_corridor_interior_box(ae)
+
     def get_corridor_full_box(self, item: Any) -> tuple[Any, Any, Any, Any, Any, Any]:
         """Return 3D bounding box for active edge or boundary exit entire segment."""
         if isinstance(item, CorridorClearanceBox):
@@ -288,7 +419,7 @@ class ClearanceConstraintBuilder:
             add_disjunctive_box_separation(
                 model=self.formulation.model,
                 pairs=corridor_room_pairs,
-                get_box_a=self.get_corridor_interior_box,
+                get_box_a=self.get_corridor_room_box,
                 get_box_b=self.formulation.get_room_box,
                 prefix="corridor_room",
                 m_big=self.formulation.m_big,
@@ -450,26 +581,92 @@ class ClearanceConstraintBuilder:
                 m_big=self.formulation.m_big,
             )
 
+    def _resolve_group_cut(
+        self,
+        items: Sequence[ClearanceViolation],
+        grower: ExactCollisionCutGrower | None,
+        extraction: SolvedClusterExtraction | None,
+        inventory: Any,
+        batch_seen: set[tuple[Any, ...]],
+    ) -> _PendingCut | None:
+        """Pick the highest-penetration resolvable cut for one macro entity pair."""
+        for viol in items:
+            if grower is not None and extraction is not None:
+                grown = grower.try_grow_cut(
+                    viol.category, viol.item_a, viol.item_b, extraction
+                )
+                if (
+                    grown is not None
+                    and grown.norm_key not in self.separated_pairs
+                    and grown.norm_key not in batch_seen
+                ):
+                    pair = (grown.entity_a, (grown.target_child_id, grown.obstacle_box))
+                    return _PendingCut(
+                        category=viol.category,
+                        norm_key=grown.norm_key,
+                        pair=pair,
+                        valid_dirs=grown.valid_dirs,
+                        grown=grown,
+                    )
+
+            cat, norm_key, pair = _normalize_violation_pair(viol)
+            if norm_key in self.separated_pairs or norm_key in batch_seen:
+                continue
+            valid_dirs, pruned_reasons = self.spatial_dag.filter_candidate_directions(
+                pair[0], pair[1], cat, inventory
+            )
+            if not valid_dirs:
+                self.unsatisfiable_collisions.append(viol)
+                self.separated_pairs.add(norm_key)
+                logger.warning(
+                    "Detected unresolvable geometric deadlock (UNSATISFIABLE_COLLISION) between %s and %s in category '%s'. "
+                    "All 6 separation directions contradicted by positional constraint DAG: %s",
+                    pair[0],
+                    pair[1],
+                    cat,
+                    pruned_reasons,
+                )
+                continue
+
+            if pruned_reasons:
+                logger.debug(
+                    "Pruned %d contradicted separation directions for (%s, %s) in category '%s': %s",
+                    len(pruned_reasons),
+                    pair[0],
+                    pair[1],
+                    cat,
+                    pruned_reasons,
+                )
+
+            return _PendingCut(
+                category=cat,
+                norm_key=norm_key,
+                pair=pair,
+                valid_dirs=tuple(valid_dirs),
+                grown=None,
+            )
+        return None
+
     def inject_clearance_cuts(
         self,
         violations: Sequence[ClearanceViolation],
         max_cuts_per_pass: int | None = None,
+        *,
+        extraction: SolvedClusterExtraction | None = None,
     ) -> int:
         """Inject disjunctive Big-M separation cuts for detected collision violations.
 
         Sorts candidate un-separated violations according to priority tier and limits
         newly injected cuts to at most `max_cuts_per_pass` (defaulting to
         `formulation.options.max_cuts_per_pass` or 20) per pass to prevent branch-and-bound
-        explosion.
-
-        Filters candidate separation directions through the positional constraint DAG to
-        prune contradicted half-spaces. If all separation directions for a candidate collision
-        are contradicted by active edges or topological alignments, the collision is classified
-        as an unresolvable geometric deadlock (UNSATISFIABLE_COLLISION) and impossible cuts are omitted.
+        explosion. When `extraction` is supplied, synthesizes exact collision-time
+        configuration-space and hole-filled obstacle boxes when valid; otherwise uses
+        the exact detected entity sub-boxes.
 
         Args:
             violations: Sequence of ClearanceViolation instances detected in the current extraction.
             max_cuts_per_pass: Optional override for the maximum number of cuts to inject in this pass.
+            extraction: Optional current iteration extraction for collision-time cut growth.
 
         Returns:
             Number of newly injected separation constraints.
@@ -486,160 +683,127 @@ class ClearanceConstraintBuilder:
         if budget <= 0:
             return 0
 
-        candidates: list[tuple[str, tuple[str, Any, Any], tuple[Any, Any], ClearanceViolation]] = []
-        seen: set[tuple[str, Any, Any]] = set()
-
-        for viol in violations:
-            cat = viol.category
-            a = viol.item_a
-            b = viol.item_b
-
-            if cat in ("parent_room", "child_child", "corridor_crossing"):
-                def _item_sort_key(it: Any) -> tuple[int, Any]:
-                    if isinstance(it, int):
-                        return (0, it)
-                    elif isinstance(it, RoomClearanceBox):
-                        return (0, it.vnum)
-                    elif isinstance(it, ChildSubClearanceBox):
-                        return (1, (it.child_id, it.box_index))
-                    elif isinstance(it, CorridorClearanceBox):
-                        return (2, (0, it.edge_index))
-                    elif isinstance(it, BoundaryExitClearanceBox):
-                        return (2, (1, it.exit_index))
-                    elif isinstance(it, tuple):
-                        return (3, it)
-                    return (4, str(it))
-
-                first, second = (a, b) if _item_sort_key(a) <= _item_sort_key(b) else (b, a)
-                norm_key = (cat, first, second)
-                pair = (first, second)
-            else:
-                norm_key = (cat, a, b)
-                pair = (a, b)
-
-            if norm_key in self.separated_pairs or norm_key in seen:
-                continue
-            seen.add(norm_key)
-            candidates.append((cat, norm_key, pair, viol))
-
-        if not candidates:
-            return 0
-
-        # Sort candidate un-separated violations according to priority tier (stable sort)
-        candidates.sort(key=lambda item: VIOLATION_TIER_PRIORITY.get(item[0], 5))
-
-        # Filter candidate separation directions with the ClusterPositionalDAG
         inventory = getattr(self.formulation, "inventory", None)
-        resolvable: list[
-            tuple[str, tuple[str, Any, Any], tuple[Any, Any], list[str]]
-        ] = []
-        for cat, norm_key, pair, viol in candidates:
-            item_a, item_b = pair
-            valid_dirs, pruned_reasons = self.spatial_dag.filter_candidate_directions(
-                item_a, item_b, cat, inventory
+        grower = self._get_cut_grower() if extraction is not None else None
+
+        macro_groups: dict[
+            tuple[int, tuple[tuple[str, Any], tuple[str, Any]]],
+            list[ClearanceViolation],
+        ] = collections.defaultdict(list)
+        for viol in violations:
+            tier = VIOLATION_TIER_PRIORITY.get(viol.category, 5)
+            m_a = _macro_entity_key(viol.item_a)
+            m_b = _macro_entity_key(viol.item_b)
+            m_pair = (m_a, m_b) if m_a <= m_b else (m_b, m_a)
+            macro_groups[(tier, m_pair)].append(viol)
+
+        pass_iteration = getattr(self, "_pass_iteration", 0)
+        self._pass_iteration = pass_iteration + 1
+
+        candidates_by_tier: dict[int, list[tuple[int, int, _PendingCut]]] = collections.defaultdict(list)
+        batch_seen: set[tuple[Any, ...]] = set()
+        for (tier, m_pair), group_viols in sorted(macro_groups.items(), key=lambda kv: kv[0][0]):
+            h = int(
+                hashlib.sha256(f"{m_pair}_{pass_iteration}".encode("utf-8")).hexdigest(),
+                16,
             )
-            if not valid_dirs:
-                # All separation directions contradicted: mark as unresolvable geometric deadlock
-                self.unsatisfiable_collisions.append(viol)
-                self.separated_pairs.add(norm_key)
-                logger.warning(
-                    "Detected unresolvable geometric deadlock (UNSATISFIABLE_COLLISION) between %s and %s in category '%s'. "
-                    "All 6 separation directions contradicted by positional constraint DAG: %s",
-                    item_a,
-                    item_b,
-                    cat,
-                    pruned_reasons,
-                )
-                continue
+            group_viols.sort(key=lambda v: v.overlap_volume, reverse=True)
+            pending = self._resolve_group_cut(
+                group_viols, grower, extraction, inventory, batch_seen
+            )
+            if pending is not None:
+                batch_seen.add(pending.norm_key)
+                candidates_by_tier[tier].append((tier, h, pending))
 
-            if pruned_reasons:
-                logger.debug(
-                    "Pruned %d contradicted separation directions for (%s, %s) in category '%s': %s",
-                    len(pruned_reasons),
-                    item_a,
-                    item_b,
-                    cat,
-                    pruned_reasons,
-                )
-
-            resolvable.append((cat, norm_key, pair, valid_dirs))
-
-        if not resolvable:
+        if not candidates_by_tier:
             return 0
 
-        # Limit newly injected cuts to at most max_cuts_per_pass
-        selected = resolvable[:budget]
+        for tier_list in candidates_by_tier.values():
+            tier_list.sort(key=lambda x: x[1])
 
-        new_pairs_by_cat: dict[str, list[tuple[Any, Any]]] = collections.defaultdict(list)
-        allowed_dirs_by_cat: dict[str, dict[tuple[Any, Any], list[str]]] = collections.defaultdict(dict)
+        macro_tiers = (0, 1, 2)
+        corridor_tiers = (3, 4, 5)
+        has_macro = any(t in candidates_by_tier for t in macro_tiers)
+        has_corridor = any(t in candidates_by_tier for t in corridor_tiers)
 
-        for cat, norm_key, pair, valid_dirs in selected:
-            self.separated_pairs.add(norm_key)
-            new_pairs_by_cat[cat].append(pair)
-            allowed_dirs_by_cat[cat][pair] = valid_dirs
+        selected: list[_PendingCut] = []
+        if has_macro and has_corridor and budget >= 4:
+            corridor_quota = max(1, budget // 3)
+            macro_quota = budget - corridor_quota
 
-        for cat, pairs in new_pairs_by_cat.items():
-            allowed = allowed_dirs_by_cat[cat]
-            if cat == "parent_room":
-                add_disjunctive_box_separation(
-                    model=self.formulation.model,
-                    pairs=pairs,
-                    get_box_a=self.formulation.get_room_box,
-                    get_box_b=self.formulation.get_room_box,
-                    prefix="parent_room",
-                    m_big=self.formulation.m_big,
-                    allowed_directions=allowed,
+            macro_pool = [cand for t in macro_tiers for cand in candidates_by_tier.get(t, ())]
+            corridor_pool = [cand for t in corridor_tiers for cand in candidates_by_tier.get(t, ())]
+
+            selected_macro = [x[2] for x in macro_pool[:macro_quota]]
+            selected.extend(selected_macro)
+
+            actual_corridor_budget = budget - len(selected_macro)
+            selected.extend([x[2] for x in corridor_pool[:actual_corridor_budget]])
+
+            if len(selected) < budget and len(macro_pool) > len(selected_macro):
+                remainder = budget - len(selected)
+                selected.extend(
+                    [x[2] for x in macro_pool[len(selected_macro) : len(selected_macro) + remainder]]
                 )
-            elif cat == "room_child":
-                add_disjunctive_box_separation(
-                    model=self.formulation.model,
-                    pairs=pairs,
-                    get_box_a=self.formulation.get_room_box,
-                    get_box_b=self.formulation.get_child_sub_box,
-                    prefix="room_child",
-                    m_big=self.formulation.m_big,
-                    allowed_directions=allowed,
-                )
-            elif cat == "child_child":
-                add_disjunctive_box_separation(
-                    model=self.formulation.model,
-                    pairs=pairs,
-                    get_box_a=self.formulation.get_child_sub_box,
-                    get_box_b=self.formulation.get_child_sub_box,
-                    prefix="child_child",
-                    m_big=self.formulation.m_big,
-                    allowed_directions=allowed,
-                )
-            elif cat == "corridor_room":
-                add_disjunctive_box_separation(
-                    model=self.formulation.model,
-                    pairs=pairs,
-                    get_box_a=self.get_corridor_interior_box,
-                    get_box_b=self.formulation.get_room_box,
-                    prefix="corridor_room",
-                    m_big=self.formulation.m_big,
-                    allowed_directions=allowed,
-                )
-            elif cat == "corridor_child":
-                add_disjunctive_box_separation(
-                    model=self.formulation.model,
-                    pairs=pairs,
-                    get_box_a=self.get_corridor_interior_box,
-                    get_box_b=self.formulation.get_child_sub_box,
-                    prefix="corridor_child",
-                    m_big=self.formulation.m_big,
-                    allowed_directions=allowed,
-                )
-            elif cat == "corridor_crossing":
-                add_disjunctive_box_separation(
-                    model=self.formulation.model,
-                    pairs=pairs,
-                    get_box_a=self.get_corridor_full_box,
-                    get_box_b=self.get_corridor_full_box,
-                    prefix="corridor_crossing",
-                    m_big=self.formulation.m_big,
-                    allowed_directions=allowed,
-                )
+        else:
+            all_cands = [cand for t in sorted(candidates_by_tier) for cand in candidates_by_tier[t]]
+            selected = [x[2] for x in all_cands[:budget]]
+
+        if not selected:
+            return 0
+
+        std_pairs_by_cat: dict[str, list[tuple[Any, Any]]] = collections.defaultdict(list)
+        std_dirs_by_cat: dict[str, dict[tuple[Any, Any], list[str]]] = collections.defaultdict(dict)
+        grown_pairs_by_kind: dict[str, list[tuple[Any, Any]]] = collections.defaultdict(list)
+        grown_dirs_by_kind: dict[str, dict[tuple[Any, Any], list[str]]] = collections.defaultdict(dict)
+
+        for cut in selected:
+            self.separated_pairs.add(cut.norm_key)
+            if cut.grown is not None:
+                grown_pairs_by_kind[cut.grown.kind].append(cut.pair)
+                grown_dirs_by_kind[cut.grown.kind][cut.pair] = list(cut.valid_dirs)
+            else:
+                std_pairs_by_cat[cut.category].append(cut.pair)
+                std_dirs_by_cat[cut.category][cut.pair] = list(cut.valid_dirs)
+
+        std_box_getters: Mapping[str, tuple[Any, Any]] = {
+            "parent_room": (self.formulation.get_room_box, self.formulation.get_room_box),
+            "room_child": (self.formulation.get_room_box, self.formulation.get_child_sub_box),
+            "child_child": (self.formulation.get_child_sub_box, self.formulation.get_child_sub_box),
+            "corridor_room": (self.get_corridor_room_box, self.formulation.get_room_box),
+            "corridor_child": (self.get_corridor_interior_box, self.formulation.get_child_sub_box),
+            "corridor_crossing": (self.get_corridor_full_box, self.get_corridor_full_box),
+        }
+        for cat, pairs in std_pairs_by_cat.items():
+            getters = std_box_getters.get(cat)
+            if getters is None:
+                continue
+            add_disjunctive_box_separation(
+                model=self.formulation.model,
+                pairs=pairs,
+                get_box_a=getters[0],
+                get_box_b=getters[1],
+                prefix=cat,
+                m_big=self.formulation.m_big,
+                allowed_directions=std_dirs_by_cat[cat],
+            )
+
+        grown_box_getters: Mapping[str, tuple[Any, Any]] = {
+            "mink_child_child": (self._get_child_origin_box, self._get_child_offset_box),
+            "grown_corridor_child": (self.get_corridor_interior_box, self._get_child_offset_box),
+            "grown_room_child": (self.formulation.get_room_box, self._get_child_offset_box),
+        }
+        for kind, pairs in grown_pairs_by_kind.items():
+            getters = grown_box_getters[kind]
+            add_disjunctive_box_separation(
+                model=self.formulation.model,
+                pairs=pairs,
+                get_box_a=getters[0],
+                get_box_b=getters[1],
+                prefix=kind,
+                m_big=self.formulation.m_big,
+                allowed_directions=grown_dirs_by_kind[kind],
+            )
 
         return len(selected)
 
@@ -651,30 +815,6 @@ class ClearanceConstraintBuilder:
         self.add_corridor_room_separation()
         self.add_corridor_child_separation()
         self.add_corridor_crossing_separation()
-
-
-def _extract_entity_coord(
-    ref: EndpointRef,
-    extraction: SolvedClusterExtraction,
-    inventory: ClusterInventory,
-) -> tuple[int, int, int]:
-    """Retrieve absolute integer coordinate (x, y, z) for an endpoint reference."""
-    if isinstance(ref, int):
-        if ref in extraction.raw_parent_coords:
-            return extraction.raw_parent_coords[ref]
-        if ref in extraction.raw_port_coords:
-            return extraction.raw_port_coords[ref]
-        raise KeyError(
-            f"Room or boundary port {ref} not found in solved extraction coordinates."
-        )
-
-    cid, v = ref
-    cx, cy, cz = extraction.raw_child_offsets[cid]
-    c_sol = inventory.child_solutions[cid]
-    loc = get_child_coordinate(c_sol, v)
-    if loc is None:
-        loc = c_sol.local_coordinates[v]
-    return (cx + loc.x, cy + loc.y, cz + loc.z)
 
 
 def _extract_child_sub_box_bounds(
@@ -785,6 +925,7 @@ def detect_cluster_collisions(
                     (cid, k), extraction, inventory
                 )
                 if min_x <= ux <= max_x and min_y <= uy <= max_y and min_z <= uz <= max_z:
+                    vol = (max_x - min_x + 1) * (max_y - min_y + 1) * (max_z - min_z + 1)
                     violations.append(
                         ClearanceViolation(
                             category="room_child",
@@ -794,6 +935,7 @@ def detect_cluster_collisions(
                                 f"Room {u} at {u_coord} overlaps child '{cid}' sub-box {k} "
                                 f"bounds ({min_x}..{max_x}, {min_y}..{max_y}, {min_z}..{max_z})."
                             ),
+                            overlap_volume=vol,
                         )
                     )
 
@@ -828,6 +970,10 @@ def detect_cluster_collisions(
                         and max(box1[2], box2[2]) <= min(box1[3], box2[3])
                         and max(box1[4], box2[4]) <= min(box1[5], box2[5])
                     ):
+                        ov_x = min(box1[1], box2[1]) - max(box1[0], box2[0]) + 1
+                        ov_y = min(box1[3], box2[3]) - max(box1[2], box2[2]) + 1
+                        ov_z = min(box1[5], box2[5]) - max(box1[4], box2[4]) + 1
+                        vol = ov_x * ov_y * ov_z
                         violations.append(
                             ClearanceViolation(
                                 category="child_child",
@@ -837,6 +983,7 @@ def detect_cluster_collisions(
                                     f"Child '{c1.node_id}' sub-box {k1} overlaps "
                                     f"child '{c2.node_id}' sub-box {k2}."
                                 ),
+                                overlap_volume=vol,
                             )
                         )
 
@@ -968,6 +1115,10 @@ def detect_cluster_collisions(
                     and max(c_min_y, box[2]) <= min(c_max_y, box[3])
                     and max(c_min_z, box[4]) <= min(c_max_z, box[5])
                 ):
+                    ov_x = min(c_max_x, box[1]) - max(c_min_x, box[0]) + 1
+                    ov_y = min(c_max_y, box[3]) - max(c_min_y, box[2]) + 1
+                    ov_z = min(c_max_z, box[5]) - max(c_min_z, box[4]) + 1
+                    vol = ov_x * ov_y * ov_z
                     violations.append(
                         ClearanceViolation(
                             category="corridor_child",
@@ -976,6 +1127,7 @@ def detect_cluster_collisions(
                             description=(
                                 f"Corridor '{ae.edge_id}' interior intersects sibling child '{s_id}' sub-box {k}."
                             ),
+                            overlap_volume=vol,
                         )
                     )
 
@@ -1011,6 +1163,10 @@ def detect_cluster_collisions(
                     and max(c_min_y, box[2]) <= min(c_max_y, box[3])
                     and max(c_min_z, box[4]) <= min(c_max_z, box[5])
                 ):
+                    ov_x = min(c_max_x, box[1]) - max(c_min_x, box[0]) + 1
+                    ov_y = min(c_max_y, box[3]) - max(c_min_y, box[2]) + 1
+                    ov_z = min(c_max_z, box[5]) - max(c_min_z, box[4]) + 1
+                    vol = ov_x * ov_y * ov_z
                     violations.append(
                         ClearanceViolation(
                             category="corridor_child",
@@ -1019,6 +1175,7 @@ def detect_cluster_collisions(
                             description=(
                                 f"Boundary exit '{be.edge_id}' interior intersects sibling child '{s_id}' sub-box {k}."
                             ),
+                            overlap_volume=vol,
                         )
                     )
 

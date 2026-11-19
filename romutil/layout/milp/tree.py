@@ -2,17 +2,478 @@
 
 from __future__ import annotations
 
+import collections
+from dataclasses import replace
+from typing import Any, Collection, Mapping, Sequence
+
+from romutil.layout.geometry import BoundingBox3D, decompose_into_orthogonal_sub_boxes
 from romutil.layout.ir import (
+    BridgeCut,
+    CutType,
     LayoutGraph,
     NodeSolution,
     SolveTree,
     SolveTreeNode,
+    TreeNodeType,
     TreeSolution,
 )
 from romutil.layout.milp.cluster import solve_cluster
+from romutil.layout.milp.inventory import get_child_boundary_ports, get_child_coordinate
 from romutil.layout.protocols import TreeSolver
-from romutil.models import Room
-from romutil.types import LayoutOptions
+from romutil.layout.simplification.warps import direction_to_displacement
+from romutil.models import Direction, Room
+from romutil.types import Coord3D, LayoutOptions, SolverStatus
+
+_MAX_DYNAMIC_BRIDGE_SPLIT_DEPTH = 4
+
+
+def _safe_displacement(direction: int | Direction) -> tuple[int, int, int] | None:
+    """Return the 3D unit displacement for direction, or None if unsupported."""
+    try:
+        return direction_to_displacement(direction)
+    except (ValueError, KeyError):
+        return None
+
+
+def _as_coord3d(raw: Any) -> Coord3D:
+    """Normalize a Coord3D or 3-tuple offset into a Coord3D instance."""
+    if isinstance(raw, Coord3D):
+        return raw
+    if isinstance(raw, (tuple, list)) and len(raw) == 3:
+        return Coord3D(int(raw[0]), int(raw[1]), int(raw[2]))
+    return Coord3D(0, 0, 0)
+
+
+def _collect_subtree_rooms(node: SolveTreeNode) -> set[int]:
+    """Return all room IDs owned by node and its descendants."""
+    rooms = set(node.rooms)
+    for child in node.children:
+        rooms |= _collect_subtree_rooms(child)
+    return rooms
+
+
+def _ray_hits_box(
+    origin: Coord3D,
+    direction: tuple[int, int, int],
+    box: tuple[int, int, int, int, int, int],
+) -> bool:
+    """Return True if the open planar cardinal ray from origin intersects box."""
+    rx, ry, _rz = direction
+    min_x, max_x, min_y, max_y, min_z, max_z = box
+    if not (min_z <= origin.z <= max_z):
+        return False
+    if rx > 0:
+        return max_x > origin.x and min_y <= origin.y <= max_y
+    if rx < 0:
+        return min_x < origin.x and min_y <= origin.y <= max_y
+    if ry > 0:
+        return max_y > origin.y and min_x <= origin.x <= max_x
+    if ry < 0:
+        return min_y < origin.y and min_x <= origin.x <= max_x
+    return False
+
+
+def _child_attachment_rooms(
+    sub_child: SolveTreeNode,
+    parent_rooms: Collection[int],
+    graph: LayoutGraph,
+) -> set[int]:
+    """Return parent room IDs to which a nested child cluster attaches."""
+    ports = get_child_boundary_ports(sub_child) & set(parent_rooms)
+    if ports:
+        return ports
+    sub_rooms = _collect_subtree_rooms(sub_child)
+    for edge in graph.edges:
+        if edge.cut:
+            continue
+        if edge.src in parent_rooms and edge.dst in sub_rooms:
+            ports.add(edge.src)
+        elif edge.dst in parent_rooms and edge.src in sub_rooms:
+            ports.add(edge.dst)
+    return ports
+
+
+def _has_outward_exit_in_direction(
+    anchor_vnum: int,
+    direction: tuple[int, int, int],
+    subtree_rooms: set[int],
+    graph: LayoutGraph,
+) -> bool:
+    """Return True if anchor_vnum has an outward exit outside subtree_rooms along direction."""
+    for edge in graph.edges:
+        if edge.cut:
+            continue
+        if edge.src == anchor_vnum and edge.dst not in subtree_rooms:
+            if _safe_displacement(edge.direction) == direction:
+                return True
+        elif edge.dst == anchor_vnum and edge.src not in subtree_rooms:
+            ed = _safe_displacement(edge.direction)
+            if ed is not None and (-ed[0], -ed[1], -ed[2]) == direction:
+                return True
+
+    if anchor_vnum in graph.rooms:
+        for exit_def in graph.rooms[anchor_vnum].exits:
+            if exit_def.dst_vnum not in subtree_rooms and _safe_displacement(exit_def.direction) == direction:
+                return True
+    return False
+
+
+def _find_bridge_ray_blockers(
+    node: SolveTreeNode,
+    node_sol: NodeSolution,
+    graph: LayoutGraph,
+) -> tuple[int, int, tuple[int, int, int], set[int]] | None:
+    """Detect whether a solved BridgeCut child's local geometry blocks its outward anchor ray."""
+    contract = node.cut_contract
+    if not isinstance(contract, BridgeCut) or contract.anchor_vnum is None:
+        return None
+    u, v = contract.bridge_edge
+    if contract.anchor_vnum != u or v not in node.rooms:
+        return None
+    disp = _safe_displacement(contract.direction)
+    if disp is None or disp[2] != 0 or sum(abs(c) for c in disp) != 1:
+        return None
+
+    rev_d = (-disp[0], -disp[1], -disp[2])
+    if not _has_outward_exit_in_direction(u, rev_d, _collect_subtree_rooms(node), graph):
+        return None
+
+    origin = get_child_coordinate(node_sol, u)
+    if origin is None:
+        return None
+
+    blockers: set[int] = set()
+    for room_vnum in node.rooms:
+        pt = node_sol.local_coordinates.get(room_vnum)
+        if pt is not None and _ray_hits_box(origin, rev_d, (pt.x, pt.x, pt.y, pt.y, pt.z, pt.z)):
+            blockers.add(room_vnum)
+
+    for edge in graph.edges:
+        if edge.cut:
+            continue
+        if edge.src in node.rooms and edge.dst in node.rooms:
+            p1 = node_sol.local_coordinates.get(edge.src)
+            p2 = node_sol.local_coordinates.get(edge.dst)
+            if p1 is not None and p2 is not None:
+                box = (
+                    min(p1.x, p2.x),
+                    max(p1.x, p2.x),
+                    min(p1.y, p2.y),
+                    max(p1.y, p2.y),
+                    min(p1.z, p2.z),
+                    max(p1.z, p2.z),
+                )
+                if _ray_hits_box(origin, rev_d, box):
+                    blockers.add(edge.src)
+                    blockers.add(edge.dst)
+
+    child_offsets = node_sol.metadata.get("child_offsets", {})
+    child_sub_boxes = node_sol.metadata.get("child_sub_boxes", {})
+    for sc in node.children:
+        off = _as_coord3d(child_offsets.get(sc.node_id))
+        for sb in child_sub_boxes.get(sc.node_id, ()):
+            box = (
+                off.x + sb.min_x,
+                off.x + sb.max_x,
+                off.y + sb.min_y,
+                off.y + sb.max_y,
+                off.z + sb.min_z,
+                off.z + sb.max_z,
+            )
+            if _ray_hits_box(origin, rev_d, box):
+                blockers.update(_child_attachment_rooms(sc, node.rooms, graph))
+                break
+
+    return (u, v, rev_d, blockers) if blockers else None
+
+
+def _try_split_ray_blocked_child(
+    child: SolveTreeNode,
+    child_sol: NodeSolution,
+    graph: LayoutGraph,
+) -> tuple[SolveTreeNode, SolveTreeNode] | None:
+    """Split a ray-blocked BridgeCut child across an internal orthogonal planar bridge edge."""
+    blocker_info = _find_bridge_ray_blockers(child, child_sol, graph)
+    if blocker_info is None:
+        return None
+
+    _u, v, rev_d, blockers = blocker_info
+    adj: dict[int, list[int]] = collections.defaultdict(list)
+    edge_info: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
+    for edge in graph.edges:
+        if edge.cut:
+            continue
+        if edge.src in child.rooms and edge.dst in child.rooms:
+            ed = _safe_displacement(edge.direction)
+            if ed is None:
+                continue
+            dir_int = int(edge.direction)
+            rev_dir = int(Direction(edge.direction).invert())
+            adj[edge.src].append(edge.dst)
+            adj[edge.dst].append(edge.src)
+            weight = max(1, edge.weight)
+            edge_info[(edge.src, edge.dst)] = (dir_int, ed, weight)
+            edge_info[(edge.dst, edge.src)] = (rev_dir, (-ed[0], -ed[1], -ed[2]), weight)
+
+    sc_attach = {
+        sc.node_id: _child_attachment_rooms(sc, child.rooms, graph)
+        for sc in child.children
+    }
+
+    dist: dict[int, int] = {v: 0}
+    queue: collections.deque[int] = collections.deque([v])
+    while queue:
+        curr = queue.popleft()
+        for nxt in adj[curr]:
+            if nxt not in dist:
+                dist[nxt] = dist[curr] + 1
+                queue.append(nxt)
+
+    best: tuple[
+        tuple[int, int, int, int],
+        int,
+        int,
+        int,
+        int,
+        set[int],
+        set[int],
+        list[SolveTreeNode],
+        list[SolveTreeNode],
+    ] | None = None
+    seen_undirected: set[tuple[int, int]] = set()
+
+    for (raw_a, raw_b), _info in edge_info.items():
+        undir_key = (min(raw_a, raw_b), max(raw_a, raw_b))
+        if undir_key in seen_undirected:
+            continue
+        seen_undirected.add(undir_key)
+
+        if raw_a not in dist or raw_b not in dist:
+            continue
+        a, b = (raw_a, raw_b) if dist[raw_a] <= dist[raw_b] else (raw_b, raw_a)
+        dir_int, ed, weight = edge_info[(a, b)]
+        # Candidate cut must be planar cardinal and orthogonal to the blocked ray
+        if ed[2] != 0 or sum(abs(c) for c in ed) != 1 or (ed[0] * rev_d[0] + ed[1] * rev_d[1]) != 0:
+            continue
+
+        side_v: set[int] = {v}
+        q_bridge: collections.deque[int] = collections.deque([v])
+        while q_bridge:
+            curr = q_bridge.popleft()
+            for nxt in adj[curr]:
+                if (curr == a and nxt == b) or (curr == b and nxt == a):
+                    continue
+                if nxt not in side_v:
+                    side_v.add(nxt)
+                    q_bridge.append(nxt)
+        if b in side_v:
+            continue
+
+        side_other = set(child.rooms) - side_v
+        valid_partition = True
+        base_children: list[SolveTreeNode] = []
+        wing_children: list[SolveTreeNode] = []
+        for sc in child.children:
+            pts = sc_attach[sc.node_id]
+            if (pts & side_v) and (pts & side_other):
+                valid_partition = False
+                break
+            if pts & side_other:
+                wing_children.append(sc)
+            else:
+                base_children.append(sc)
+        if not valid_partition:
+            continue
+
+        separated_blockers = len(blockers & side_other)
+        if separated_blockers == 0:
+            continue
+
+        score = (-separated_blockers, dist[a], a, b)
+        if best is None or score < best[0]:
+            best = (score, a, b, dir_int, weight, side_v, side_other, base_children, wing_children)
+
+    if best is None:
+        return None
+
+    _score, a, b, dir_int, weight, side_v, side_other, base_children, wing_children = best
+    base_node = SolveTreeNode(
+        node_id=f"{child.node_id}__base",
+        node_type=child.node_type,
+        rooms=frozenset(side_v),
+        children=tuple(base_children),
+        metadata=dict(child.metadata),
+    )
+    wing_contract = BridgeCut(bridge_edge=(a, b), direction=dir_int, weight=weight, anchor_vnum=a)
+    wing_node = SolveTreeNode(
+        node_id=f"{child.node_id}__wing",
+        node_type=child.node_type,
+        rooms=frozenset(side_other),
+        children=tuple(wing_children),
+        metadata={
+            "cut_type": CutType.BRIDGE,
+            "anchor_vnum": a,
+            "bridge_edge": (a, b),
+            "direction": dir_int,
+            "weight": weight,
+            "cut_contract": wing_contract,
+        },
+    )
+    return base_node, wing_node
+
+
+def _extract_status(node_sol: NodeSolution) -> SolverStatus:
+    """Normalize a NodeSolution status metadata entry to SolverStatus."""
+    raw = node_sol.metadata.get("status", SolverStatus.FEASIBLE)
+    if isinstance(raw, SolverStatus):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return SolverStatus(raw.lower())
+        except ValueError:
+            return SolverStatus.FEASIBLE
+    return SolverStatus.FEASIBLE
+
+
+def _resynthesize_split_child_solution(
+    orig_child: SolveTreeNode,
+    pieces: Sequence[tuple[SolveTreeNode, NodeSolution]],
+    parent_sol: NodeSolution,
+    solutions: Mapping[str, NodeSolution],
+) -> tuple[NodeSolution, Coord3D, tuple[BoundingBox3D, ...]]:
+    """Recombine dynamically split sub-pieces back into orig_child's normalized NodeSolution."""
+    parent_offsets = parent_sol.metadata.get("child_offsets", {})
+
+    local_in_parent: dict[int, Coord3D] = {}
+    sub_offsets_in_parent: dict[str, Coord3D] = {}
+    sub_boxes_map: dict[str, tuple[BoundingBox3D, ...]] = {}
+    all_coords_in_parent: dict[Any, Coord3D] = {}
+    port_in_parent: dict[int, Coord3D] = {}
+
+    for p_node, p_sol in pieces:
+        p_off = _as_coord3d(parent_offsets.get(p_node.node_id))
+        for room_vnum, pt in p_sol.local_coordinates.items():
+            translated = Coord3D(p_off.x + pt.x, p_off.y + pt.y, p_off.z + pt.z)
+            if room_vnum in orig_child.rooms:
+                local_in_parent[room_vnum] = translated
+            all_coords_in_parent.setdefault(room_vnum, translated)
+
+        for key, pt in p_sol.metadata.get("all_room_coordinates", {}).items():
+            all_coords_in_parent[key] = Coord3D(p_off.x + pt.x, p_off.y + pt.y, p_off.z + pt.z)
+
+        for port_vnum, pt in p_sol.port_coordinates.items():
+            port_in_parent[port_vnum] = Coord3D(p_off.x + pt.x, p_off.y + pt.y, p_off.z + pt.z)
+
+        p_child_offsets = p_sol.metadata.get("child_offsets", {})
+        p_child_sbs = p_sol.metadata.get("child_sub_boxes", {})
+        for sc in p_node.children:
+            sc_off = _as_coord3d(p_child_offsets.get(sc.node_id))
+            sub_offsets_in_parent[sc.node_id] = Coord3D(
+                p_off.x + sc_off.x,
+                p_off.y + sc_off.y,
+                p_off.z + sc_off.z,
+            )
+            if sc.node_id in p_child_sbs:
+                sub_boxes_map[sc.node_id] = tuple(p_child_sbs[sc.node_id])
+
+    # Include stretched corridor cells along inter-piece split bridges
+    for p_node, _p_sol in pieces:
+        contract = p_node.cut_contract
+        if not isinstance(contract, BridgeCut):
+            continue
+        a, b = contract.bridge_edge
+        if a in local_in_parent and b in local_in_parent:
+            disp = _safe_displacement(contract.direction)
+            if disp is None:
+                continue
+            dx, dy, dz = disp
+            pa, pb = local_in_parent[a], local_in_parent[b]
+            dist = abs(pb.x - pa.x) + abs(pb.y - pa.y) + abs(pb.z - pa.z)
+            if (
+                dist > 1
+                and pb.x - pa.x == dist * dx
+                and pb.y - pa.y == dist * dy
+                and pb.z - pa.z == dist * dz
+            ):
+                for step in range(1, dist):
+                    all_coords_in_parent[f"corridor_{a}_{b}_{step}"] = Coord3D(
+                        pa.x + step * dx,
+                        pa.y + step * dy,
+                        pa.z + step * dz,
+                    )
+
+    bound_pts: list[Coord3D] = list(local_in_parent.values()) + list(all_coords_in_parent.values())
+    for sc in orig_child.children:
+        nested_off = sub_offsets_in_parent.get(sc.node_id)
+        sc_sol = solutions.get(sc.node_id)
+        if nested_off is not None and sc_sol is not None and sc_sol.bounding_box is not None:
+            bb = sc_sol.bounding_box
+            bound_pts.append(Coord3D(nested_off.x + bb.min_x, nested_off.y + bb.min_y, nested_off.z + bb.min_z))
+            bound_pts.append(Coord3D(nested_off.x + bb.max_x, nested_off.y + bb.max_y, nested_off.z + bb.max_z))
+
+    if bound_pts:
+        orig_offset = Coord3D(
+            min(pt.x for pt in bound_pts),
+            min(pt.y for pt in bound_pts),
+            min(pt.z for pt in bound_pts),
+        )
+    else:
+        orig_offset = Coord3D(0, 0, 0)
+
+    def _shift(pt: Coord3D) -> Coord3D:
+        return Coord3D(pt.x - orig_offset.x, pt.y - orig_offset.y, pt.z - orig_offset.z)
+
+    merged_local_coords = {r: _shift(pt) for r, pt in local_in_parent.items()}
+    merged_sub_offsets = {cid: _shift(pt) for cid, pt in sub_offsets_in_parent.items()}
+    merged_all_coords = {k: _shift(pt) for k, pt in all_coords_in_parent.items()}
+
+    merged_port_coords: dict[int, Coord3D] = {}
+    for bp in get_child_boundary_ports(orig_child):
+        raw_pt = (
+            parent_sol.local_coordinates.get(bp)
+            or parent_sol.port_coordinates.get(bp)
+            or port_in_parent.get(bp)
+            or all_coords_in_parent.get(bp)
+        )
+        if raw_pt is not None:
+            merged_port_coords[bp] = _shift(raw_pt)
+
+    bp_coord_set = set(merged_port_coords.values())
+    interior_cells = {
+        pt
+        for key, pt in merged_all_coords.items()
+        if key not in merged_port_coords and pt not in bp_coord_set
+    }
+    if interior_cells:
+        orig_sub_boxes = decompose_into_orthogonal_sub_boxes(interior_cells)
+    elif merged_all_coords:
+        orig_sub_boxes = (BoundingBox3D.from_coordinates(merged_all_coords.values()),)
+    else:
+        orig_sub_boxes = ()
+
+    statuses = [_extract_status(p_sol) for _p_node, p_sol in pieces]
+    statuses.append(_extract_status(parent_sol))
+    if any(s == SolverStatus.TIMEOUT for s in statuses):
+        merged_status = SolverStatus.TIMEOUT
+    elif all(s == SolverStatus.OPTIMAL for s in statuses):
+        merged_status = SolverStatus.OPTIMAL
+    else:
+        merged_status = SolverStatus.FEASIBLE
+
+    merged_sol = NodeSolution(
+        node_id=orig_child.node_id,
+        local_coordinates=merged_local_coords,
+        port_coordinates=merged_port_coords,
+        sub_boxes=(),
+        metadata={
+            "child_offsets": merged_sub_offsets,
+            "status": merged_status,
+            "child_sub_boxes": sub_boxes_map,
+            "all_room_coordinates": merged_all_coords,
+            "port_coordinates": merged_port_coords,
+        },
+    )
+    return merged_sol, orig_offset, orig_sub_boxes
 
 
 class HierarchicalTreeSolver(TreeSolver):
@@ -52,6 +513,44 @@ class HierarchicalTreeSolver(TreeSolver):
 
         solutions: dict[str, NodeSolution] = {}
 
+        def _expand_child(
+            child_node: SolveTreeNode,
+            child_sol: NodeSolution,
+            g: LayoutGraph,
+            depth: int = 0,
+        ) -> list[tuple[SolveTreeNode, NodeSolution]]:
+            if depth >= _MAX_DYNAMIC_BRIDGE_SPLIT_DEPTH:
+                return [(child_node, child_sol)]
+            split_pair = _try_split_ray_blocked_child(child_node, child_sol, g)
+            if split_pair is None:
+                return [(child_node, child_sol)]
+            base_node, wing_node = split_pair
+            base_sol = solve_cluster(
+                node=base_node,
+                child_solutions={
+                    sc.node_id: solutions[sc.node_id]
+                    for sc in base_node.children
+                    if sc.node_id in solutions
+                },
+                graph=g,
+                options=options,
+                solver_name=self.solver_name,
+            )
+            wing_sol = solve_cluster(
+                node=wing_node,
+                child_solutions={
+                    sc.node_id: solutions[sc.node_id]
+                    for sc in wing_node.children
+                    if sc.node_id in solutions
+                },
+                graph=g,
+                options=options,
+                solver_name=self.solver_name,
+            )
+            return _expand_child(base_node, base_sol, g, depth + 1) + _expand_child(
+                wing_node, wing_sol, g, depth + 1
+            )
+
         def _solve_node(node: SolveTreeNode, g: LayoutGraph) -> NodeSolution:
             if node.node_id in solutions:
                 return solutions[node.node_id]
@@ -62,16 +561,72 @@ class HierarchicalTreeSolver(TreeSolver):
                 child_sol = _solve_node(child, g)
                 child_solutions_map[child.node_id] = child_sol
 
+            if node.node_type == TreeNodeType.WORLD_ROOT or not node.children:
+                cluster_sol = solve_cluster(
+                    node=node,
+                    child_solutions=child_solutions_map,
+                    graph=g,
+                    options=options,
+                    solver_name=self.solver_name,
+                )
+                solutions[node.node_id] = cluster_sol
+                return cluster_sol
+
+            effective_children: list[SolveTreeNode] = []
+            effective_child_solutions: dict[str, NodeSolution] = {}
+            split_map: dict[str, tuple[SolveTreeNode, list[tuple[SolveTreeNode, NodeSolution]]]] = {}
+
+            for child in node.children:
+                pieces = _expand_child(child, child_solutions_map[child.node_id], g)
+                if len(pieces) > 1:
+                    split_map[child.node_id] = (child, pieces)
+                for p_node, p_sol in pieces:
+                    effective_children.append(p_node)
+                    effective_child_solutions[p_node.node_id] = p_sol
+
+            if not split_map:
+                cluster_sol = solve_cluster(
+                    node=node,
+                    child_solutions=child_solutions_map,
+                    graph=g,
+                    options=options,
+                    solver_name=self.solver_name,
+                )
+                solutions[node.node_id] = cluster_sol
+                return cluster_sol
+
+            effective_node = replace(node, children=tuple(effective_children))
             cluster_sol = solve_cluster(
-                node=node,
-                child_solutions=child_solutions_map,
+                node=effective_node,
+                child_solutions=effective_child_solutions,
                 graph=g,
                 options=options,
                 solver_name=self.solver_name,
             )
 
-            solutions[node.node_id] = cluster_sol
-            return cluster_sol
+            updated_meta = dict(cluster_sol.metadata)
+            updated_offsets = dict(updated_meta.get("child_offsets", {}))
+            updated_sub_boxes = dict(updated_meta.get("child_sub_boxes", {}))
+
+            for orig_cid, (orig_child, pieces) in split_map.items():
+                merged_sol, orig_offset, orig_sub_boxes = _resynthesize_split_child_solution(
+                    orig_child=orig_child,
+                    pieces=pieces,
+                    parent_sol=cluster_sol,
+                    solutions=solutions,
+                )
+                solutions[orig_cid] = merged_sol
+                for p_node, _p_sol in pieces:
+                    updated_offsets.pop(p_node.node_id, None)
+                    updated_sub_boxes.pop(p_node.node_id, None)
+                updated_offsets[orig_cid] = orig_offset
+                updated_sub_boxes[orig_cid] = orig_sub_boxes
+
+            updated_meta["child_offsets"] = updated_offsets
+            updated_meta["child_sub_boxes"] = updated_sub_boxes
+            resynthesized_parent = replace(cluster_sol, metadata=updated_meta)
+            solutions[node.node_id] = resynthesized_parent
+            return resynthesized_parent
 
         _solve_node(tree.root, layout_graph)
         for comp in tree.components:
