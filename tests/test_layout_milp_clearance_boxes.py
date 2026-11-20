@@ -20,7 +20,6 @@ from romutil.layout.ir import (
 )
 from romutil.layout.milp import ClusterFormulation, detect_cluster_collisions, inventory_cluster
 from romutil.layout.milp.clearance import (
-    BoundaryExitClearanceBox,
     ChildSubClearanceBox,
     ClearanceViolation,
     CorridorClearanceBox,
@@ -39,7 +38,7 @@ from romutil.layout.milp.clearance_boxes import (
     sub_boxes_to_cells,
 )
 from romutil.layout.milp.cluster import solve_cluster
-from romutil.layout.milp.inventory import ActiveEdge, BoundaryExit, ClusterInventory
+from romutil.layout.milp.inventory import ActiveEdge, ClusterInventory
 from romutil.layout.milp.solver import SolvedClusterExtraction
 from romutil.layout.milp.spatial_dag import ClusterPositionalDAG, SpatialBoundExpr
 from romutil.layout.positional_dag import AXIS_X, AXIS_Y, AXIS_Z
@@ -404,7 +403,7 @@ class TestExactCollisionCutGrower:
         assert grower_locked.try_grow_cut("child_child", ("c1", 0), ("c2", 0), ext) is None
 
     def test_corridor_and_room_child_growth_and_fallback_behavior(self) -> None:
-        """Tests orthogonal dilation, slanted slack corridors, BoundaryExit, room_child, and fallbacks."""
+        """Tests orthogonal dilation, slanted slack corridors, room_child, and fallbacks."""
         ch = SolveTreeNode("c1", TreeNodeType.BLOCK, frozenset({200, 201}))
         s1 = NodeSolution(
             node_id="c1",
@@ -462,10 +461,6 @@ class TestExactCollisionCutGrower:
             associated_rooms=frozenset({1, 6}),
             associated_children=frozenset(),
         )
-        be_east = BoundaryExit(port=1, direction=(1, 0, 0), length=3, target_vnum=900)
-        be_south = BoundaryExit(port=1, direction=(0, -1, 0), length=3, target_vnum=901)
-        be_inc = BoundaryExit(port=10, direction=(0, -1, 0), length=2, target_vnum=902)
-        be_up = BoundaryExit(port=1, direction=(0, 0, 1), length=2, target_vnum=903)
 
         parent = SolveTreeNode(
             node_id="root",
@@ -477,7 +472,6 @@ class TestExactCollisionCutGrower:
         inv = dataclasses.replace(
             inv,
             active_edges=(ae_x, ae_y_slack, ae_inc, ae_port_touch, ae_vert),
-            boundary_exits=(be_east, be_south, be_inc, be_up),
             child_sub_boxes={
                 "c1": (
                     BoundingBox3D(0, 0, 0, 1, 0, 0),
@@ -534,29 +528,13 @@ class TestExactCollisionCutGrower:
         assert cut_y_filled is not None
         assert cut_y_filled.obstacle_box == BoundingBox3D(0, 0, 0, 2, 0, 0)
 
-        # 3. BoundaryExit east & south (dilated on port-exclusion side only)
-        cut_be_e = grower.try_grow_cut("corridor_child", BoundaryExitClearanceBox(0, "be0"), ("c1", 0), ext)
-        assert cut_be_e is not None
-        assert cut_be_e.obstacle_box.max_x >= 3
-
-        ext_be_s = SolvedClusterExtraction(
-            raw_parent_coords={1: (2, 2, 0)},
-            raw_child_offsets={"c1": (0, 0, 0)},
-            solver_status=SolverStatus.OPTIMAL,
-        )
-        cut_be_s = grower.try_grow_cut("corridor_child", ("bexit", 1), ("c1", 1), ext_be_s)
-        assert cut_be_s is not None
-        assert cut_be_s.obstacle_box.min_y == -1
-
-        # 4. Incident edge, port-touching edge, Z-edge, incident bexit, vertical bexit return None
+        # 3. Incident edge, port-touching edge, Z-edge, out-of-range edge return None
         assert grower.try_grow_cut("corridor_child", 2, ("c1", 0), ext) is None
         assert grower.try_grow_cut("corridor_child", 3, ("c1", 0), ext) is None
         assert grower.try_grow_cut("corridor_child", 4, ("c1", 0), ext) is None
-        assert grower.try_grow_cut("corridor_child", ("bexit", 2), ("c1", 0), ext) is None
-        assert grower.try_grow_cut("corridor_child", ("bexit", 3), ("c1", 0), ext) is None
         assert grower.try_grow_cut("corridor_child", 999, ("c1", 0), ext) is None
 
-        # 5. Room-child: RoomClearanceBox(77) resolves via raw_port_coords, while incident room 10 returns None
+        # 4. Room-child: RoomClearanceBox(77) resolves via raw_port_coords, while incident room 10 returns None
         builder.spatial_dag.add_equality(AXIS_Z, 77, "c1", 0)
         grower2 = ExactCollisionCutGrower(form.inventory, builder.spatial_dag)
         cut_rc = grower2.try_grow_cut("room_child", RoomClearanceBox(77), ("c1", 0), ext)

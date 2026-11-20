@@ -799,18 +799,23 @@ class TransverseSNodeSplitPass:
 
             # If boundary poles are directly connected by an edge and the child spine's
             # transverse displacement matches the direct edge displacement across all
-            # transverse axes, the Euclidean cycle is tight with zero discrepancy; preserve it intact.
+            # transverse axes with zero back-and-forth excursion, the Euclidean cycle is
+            # tight with zero discrepancy; preserve it intact.
             direct_edges = [
                 (Direction(e.direction) if e.src == p0 else Direction(e.direction).invert())
                 for e in graph.edges
                 if not e.cut and {e.src, e.dst} == {p0, p1}
             ]
             child_trans: dict[int, int] = {}
+            child_abs_trans: dict[int, int] = {}
+            cycle_transverse: set[int] = set()
+            direct_disp: tuple[int, int, int] = (0, 0, 0)
             if direct_edges:
                 direct_disp = direction_to_displacement(direct_edges[0])
                 cycle_transverse = {0, 1, 2} - covered_axes
                 if cycle_transverse:
                     child_trans = {ax: 0 for ax in cycle_transverse}
+                    child_abs_trans = {ax: 0 for ax in cycle_transverse}
                     for i in range(len(spine_path) - 1):
                         u_i, v_i = spine_path[i], spine_path[i + 1]
                         s_dirs = [
@@ -822,6 +827,7 @@ class TransverseSNodeSplitPass:
                             d = direction_to_displacement(s_dirs[0])
                             for ax in cycle_transverse:
                                 child_trans[ax] += d[ax]
+                                child_abs_trans[ax] += abs(d[ax])
                         else:
                             for sub_c in child_processed.children:
                                 sub_poles = _get_child_poles_or_anchor(sub_c)
@@ -836,8 +842,13 @@ class TransverseSNodeSplitPass:
                                         d = direction_to_displacement(sub_dirs[0])
                                         for ax in cycle_transverse:
                                             child_trans[ax] += d[ax]
+                                            child_abs_trans[ax] += abs(d[ax])
                                         break
-                    if all(direct_disp[ax] == child_trans[ax] for ax in cycle_transverse):
+                    if all(
+                        direct_disp[ax] == child_trans[ax]
+                        and (direct_disp[ax] != 0 or child_abs_trans[ax] == 0)
+                        for ax in cycle_transverse
+                    ):
                         if fixed_axes:
                             new_meta = dict(child_processed.metadata)
                             new_meta["forced_axis_alignments"] = tuple(sorted(fixed_axes))
@@ -932,9 +943,15 @@ class TransverseSNodeSplitPass:
                     continue
 
                 # If tight cycle with zero discrepancy matches fixed axis, elide split
-                if direct_edges and cycle_transverse and all(direct_disp[ax] == child_trans.get(ax, 0) for ax in cycle_transverse):
+                if direct_edges and cycle_transverse and all(
+                    direct_disp[ax] == child_trans.get(ax, 0)
+                    and (direct_disp[ax] != 0 or child_abs_trans.get(ax, 0) == 0)
+                    for ax in cycle_transverse
+                ):
                     continue
 
+                pos_candidates: list[int] = []
+                neg_candidates: list[int] = []
                 candidates = []
                 for i in range(1, len(spine_path) - 2):
                     step_dir = _get_forward_step_direction(spine_path[i], spine_path[i + 1])
@@ -949,9 +966,28 @@ class TransverseSNodeSplitPass:
                     if p1_covers and step_disp[k] * disp_1[k] <= 0:
                         continue
                     candidates.append(i)
-                if candidates:
+                    if step_disp[k] > 0:
+                        pos_candidates.append(i)
+                    elif step_disp[k] < 0:
+                        neg_candidates.append(i)
+                is_concentric_arch = (
+                    not p0_covers
+                    and not p1_covers
+                    and bool(direct_edges)
+                    and direct_disp[k] == 0
+                    and child_trans.get(k, 0) == 0
+                    and child_abs_trans.get(k, 0) > 0
+                    and bool(pos_candidates)
+                    and bool(neg_candidates)
+                )
+                candidate_groups = (
+                    [pos_candidates, neg_candidates]
+                    if is_concentric_arch
+                    else ([candidates] if candidates else [])
+                )
+                for cand_group in candidate_groups:
                     best_i = min(
-                        candidates,
+                        cand_group,
                         key=lambda idx: _score_split_candidate(
                             idx, spine_path, sub_children_info, p0, p1, graph
                         ),

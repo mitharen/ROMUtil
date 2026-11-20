@@ -592,7 +592,20 @@ class TestSafe2CutAllowlistContract:
         tree = builder.build_tree(simplified)
         assert tree.root.node_type == TreeNodeType.SPLIT_PAIR_CONTAINER
         assert tree.root.rooms == frozenset({1, 2})
-        assert len(tree.root.children) == 3
+        assert len(tree.root.children) == 6
+        assert {c.rooms for c in tree.root.children} == {
+            frozenset({100, 101}),
+            frozenset({3, 4}),
+            frozenset({20}),
+            frozenset({21}),
+            frozenset({22}),
+            frozenset({23}),
+        }
+        assert tree.root.metadata.get("severed_bridge_edges") == (
+            (20, 21),
+            (21, 22),
+            (22, 23),
+        )
 
 
 class TestTransverseCorridorSNodeSplitting:

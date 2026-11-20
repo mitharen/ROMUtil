@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import collections
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
@@ -35,20 +34,6 @@ class ActiveEdge:
     associated_rooms: frozenset[int]
     associated_children: frozenset[str]
     allow_transverse_slack: bool = False
-
-
-@dataclass(frozen=True)
-class BoundaryExit:
-    """Exit corridor segment leaving a cluster boundary port into the surrounding graph."""
-
-    port: int
-    direction: tuple[int, int, int]
-    length: int
-    target_vnum: int
-
-    @property
-    def edge_id(self) -> str:
-        return f"bexit_{self.port}_{self.direction[0]}_{self.direction[1]}_{self.direction[2]}"
 
 
 def get_child_coordinate(c_sol: NodeSolution, vnum: int) -> Coord3D | None:
@@ -136,7 +121,6 @@ class ClusterInventory:
     aligned_children: frozenset[str]
     equated_children: frozenset[frozenset[str]]
     child_sub_boxes: Mapping[str, tuple[BoundingBox3D, ...]] = field(default_factory=dict)
-    boundary_exits: tuple[BoundaryExit, ...] = ()
     graph: LayoutGraph | None = None
 
 
@@ -1508,8 +1492,9 @@ def inventory_cluster(
                 if any(c.node_id == child.node_id for c in s_children):
                     child_ports.add(p0)
                     child_ports.add(p1)
-            child_ports.update(
-                set(child_solutions[child.node_id].local_coordinates.keys())
+            # Exclude only external interface ports, never rooms exclusively owned by this child
+            child_ports = (child_ports - set(child.rooms)) | (
+                (child_ports | set(child_solutions[child.node_id].local_coordinates.keys()))
                 & (set(rooms) | set(boundary_ports))
             )
             child_sub_boxes[child.node_id] = derive_child_sub_boxes(
@@ -1535,92 +1520,6 @@ def inventory_cluster(
         *direct_edges,
     ]
 
-    # 6. Boundary exit corridors leaving local rooms/ports into the exterior
-    sub_rooms: set[int] = set(node.rooms)
-
-    def _collect_tree_rooms(n: SolveTreeNode) -> None:
-        sub_rooms.update(n.rooms)
-        for ch in n.children:
-            _collect_tree_rooms(ch)
-
-    for ch in node.children:
-        _collect_tree_rooms(ch)
-
-    if graph:
-        for e in getattr(graph, "edges", ()):
-            corr = (
-                e.metadata.get("corridor")
-                if hasattr(e, "metadata") and e.metadata
-                else None
-            )
-            if corr and (corr.start_vnum in sub_rooms and corr.end_vnum in sub_rooms):
-                sub_rooms.update(corr.intermediate_vnums)
-
-    active_dirs: dict[int, set[tuple[int, int, int]]] = collections.defaultdict(set)
-    for ae in active_edges:
-        if isinstance(ae.src, int):
-            active_dirs[ae.src].add(ae.direction)
-        if isinstance(ae.dst, int):
-            rev = (-ae.direction[0], -ae.direction[1], -ae.direction[2])
-            active_dirs[ae.dst].add(rev)
-
-    boundary_exits: list[BoundaryExit] = []
-    seen_bexit_dirs: set[tuple[int, tuple[int, int, int]]] = set()
-    if graph:
-        for e in getattr(graph, "edges", ()):
-            if getattr(e, "cut", False):
-                continue
-            if e.src in all_local_rooms and e.dst > 0 and e.dst not in sub_rooms:
-                u, dst_vnum = e.src, e.dst
-                try:
-                    disp = direction_to_displacement(e.direction)
-                except ValueError:
-                    continue
-            elif e.dst in all_local_rooms and e.src > 0 and e.src not in sub_rooms:
-                u, dst_vnum = e.dst, e.src
-                try:
-                    rev_d = direction_to_displacement(e.direction)
-                except ValueError:
-                    continue
-                disp = (-rev_d[0], -rev_d[1], -rev_d[2])
-            else:
-                continue
-            if disp in active_dirs[u] or (u, disp) in seen_bexit_dirs:
-                continue
-            seen_bexit_dirs.add((u, disp))
-            boundary_exits.append(
-                BoundaryExit(
-                    port=u,
-                    direction=disp,
-                    length=max(1, getattr(e, "weight", 1)),
-                    target_vnum=dst_vnum,
-                )
-            )
-
-        for u in all_local_rooms:
-            if u not in graph.rooms:
-                continue
-            for ex in graph.rooms[u].exits:
-                if ex.dst_vnum > 0 and ex.dst_vnum not in sub_rooms:
-                    try:
-                        disp = direction_to_displacement(ex.direction)
-                    except ValueError:
-                        continue
-                    if disp in active_dirs[u]:
-                        continue
-                    if (u, disp) in seen_bexit_dirs:
-                        continue
-                    seen_bexit_dirs.add((u, disp))
-                    weight = max(1, getattr(ex, "weight", 1))
-                    boundary_exits.append(
-                        BoundaryExit(
-                            port=u,
-                            direction=disp,
-                            length=weight,
-                            target_vnum=ex.dst_vnum,
-                        )
-                    )
-
     return ClusterInventory(
         node=node,
         rooms=rooms,
@@ -1628,7 +1527,6 @@ def inventory_cluster(
         child_solutions=child_solutions,
         boundary_ports=boundary_ports,
         active_edges=tuple(active_edges),
-        boundary_exits=tuple(boundary_exits),
         child_alignments=split_res.child_alignments,
         gateway_anchors={k: frozenset(v) for k, v in gateway_anchors.items()},
         aligned_children=frozenset(aligned_children),
@@ -1640,7 +1538,6 @@ def inventory_cluster(
 
 __all__ = [
     "ActiveEdge",
-    "BoundaryExit",
     "ChildChildAlignment",
     "ClusterInventory",
     "EndpointRef",

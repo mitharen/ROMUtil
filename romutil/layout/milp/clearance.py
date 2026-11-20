@@ -22,7 +22,6 @@ from romutil.layout.milp.clearance_boxes import (
 from romutil.layout.milp.constraints import add_disjunctive_box_separation
 from romutil.layout.milp.inventory import (
     ActiveEdge,
-    BoundaryExit,
     direction_to_displacement,
     get_child_coordinate,
 )
@@ -63,20 +62,10 @@ class CorridorClearanceBox:
     kind: str = "internal"
 
 
-@dataclass(frozen=True)
-class BoundaryExitClearanceBox:
-    """Clearance box representing an external boundary exit corridor segment."""
-
-    exit_index: int
-    edge_id: str = ""
-    kind: str = "bexit"
-
-
 ClearanceEntity = (
     RoomClearanceBox
     | ChildSubClearanceBox
     | CorridorClearanceBox
-    | BoundaryExitClearanceBox
 )
 
 
@@ -122,8 +111,6 @@ def _item_sort_key(it: Any) -> tuple[int, Any]:
         return (1, (it.child_id, it.box_index))
     if isinstance(it, CorridorClearanceBox):
         return (2, (0, it.edge_index))
-    if isinstance(it, BoundaryExitClearanceBox):
-        return (2, (1, it.exit_index))
     if isinstance(it, tuple):
         return (3, it)
     return (4, str(it))
@@ -152,15 +139,13 @@ def _macro_entity_key(it: Any) -> tuple[str, Any]:
         return ("child", it.child_id)
     if isinstance(it, CorridorClearanceBox):
         return ("corridor", ("edge", it.edge_index))
-    if isinstance(it, BoundaryExitClearanceBox):
-        return ("corridor", ("bexit", it.exit_index))
     if (
         isinstance(it, tuple)
         and len(it) == 2
         and isinstance(it[0], str)
         and isinstance(it[1], int)
     ):
-        if it[0] in ("bexit", "edge"):
+        if it[0] == "edge":
             return ("corridor", it)
         return ("child", it[0])
     return ("other", str(it))
@@ -317,22 +302,14 @@ class ClearanceConstraintBuilder:
             )
 
     def get_corridor_interior_box(self, item: Any) -> tuple[Any, Any, Any, Any, Any, Any]:
-        """Return 3D bounding box for active edge or boundary exit interior segment."""
+        """Return 3D bounding box for active edge interior segment."""
         if isinstance(item, CorridorClearanceBox):
             return self.formulation.get_corridor_interior_box(
                 self.formulation.inventory.active_edges[item.edge_index]
             )
-        elif isinstance(item, BoundaryExitClearanceBox):
-            return self.formulation.get_boundary_exit_interior_box(
-                self.formulation.inventory.boundary_exits[item.exit_index]
-            )
         elif isinstance(item, int):
             return self.formulation.get_corridor_interior_box(
                 self.formulation.inventory.active_edges[item]
-            )
-        elif isinstance(item, (tuple, list)) and len(item) == 2 and item[0] == "bexit":
-            return self.formulation.get_boundary_exit_interior_box(
-                self.formulation.inventory.boundary_exits[item[1]]
             )
         raise ValueError(f"Unknown corridor item reference: {item}")
 
@@ -342,14 +319,6 @@ class ClearanceConstraintBuilder:
             ae = self.formulation.inventory.active_edges[item.edge_index]
         elif isinstance(item, int):
             ae = self.formulation.inventory.active_edges[item]
-        elif isinstance(item, BoundaryExitClearanceBox):
-            return self.formulation.get_boundary_exit_interior_box(
-                self.formulation.inventory.boundary_exits[item.exit_index]
-            )
-        elif isinstance(item, (tuple, list)) and len(item) == 2 and item[0] == "bexit":
-            return self.formulation.get_boundary_exit_interior_box(
-                self.formulation.inventory.boundary_exits[item[1]]
-            )
         else:
             raise ValueError(f"Unknown corridor item reference: {item}")
 
@@ -358,22 +327,14 @@ class ClearanceConstraintBuilder:
         return self.formulation.get_corridor_interior_box(ae)
 
     def get_corridor_full_box(self, item: Any) -> tuple[Any, Any, Any, Any, Any, Any]:
-        """Return 3D bounding box for active edge or boundary exit entire segment."""
+        """Return 3D bounding box for active edge entire segment."""
         if isinstance(item, CorridorClearanceBox):
             return self.formulation.get_corridor_full_box(
                 self.formulation.inventory.active_edges[item.edge_index]
             )
-        elif isinstance(item, BoundaryExitClearanceBox):
-            return self.formulation.get_boundary_exit_full_box(
-                self.formulation.inventory.boundary_exits[item.exit_index]
-            )
         elif isinstance(item, int):
             return self.formulation.get_corridor_full_box(
                 self.formulation.inventory.active_edges[item]
-            )
-        elif isinstance(item, (tuple, list)) and len(item) == 2 and item[0] == "bexit":
-            return self.formulation.get_boundary_exit_full_box(
-                self.formulation.inventory.boundary_exits[item[1]]
             )
         raise ValueError(f"Unknown corridor item reference: {item}")
 
@@ -381,37 +342,25 @@ class ClearanceConstraintBuilder:
         """Enforce corridor segment non-penetration against third-party parent rooms."""
         rooms = tuple(sorted(self.formulation.inventory.rooms))
         active_edges = self.formulation.inventory.active_edges
-        boundary_exits = getattr(self.formulation.inventory, "boundary_exits", ())
         child_solutions = self.formulation.inventory.child_solutions
         edge_indices = list(range(len(active_edges)))
 
-        corridor_room_pairs: list[tuple[Any, int]] = []
-        if rooms:
-            if edge_indices:
-                for i, ae in enumerate(active_edges):
-                    if sum(1 for d in ae.direction if d != 0) != 1:
-                        continue
-                    for w in rooms:
-                        if w in ae.associated_rooms:
-                            continue
-                        if any(
-                            w in child_solutions[cid].local_coordinates
-                            or w in getattr(child_solutions[cid], "port_coordinates", {})
-                            for cid in ae.associated_children
-                            if cid in child_solutions
-                        ):
-                            continue
-                        pair: tuple[int | tuple[str, int], int] = (i, w)
-                        corridor_room_pairs.append(pair)
-                        self.separated_pairs.add(("corridor_room", pair[0], pair[1]))
-
-            for j, be in enumerate(boundary_exits):
-                if sum(1 for d in be.direction if d != 0) != 1:
+        corridor_room_pairs: list[tuple[int, int]] = []
+        if rooms and edge_indices:
+            for i, ae in enumerate(active_edges):
+                if sum(1 for d in ae.direction if d != 0) != 1:
                     continue
                 for w in rooms:
-                    if w == be.port:
+                    if w in ae.associated_rooms:
                         continue
-                    pair = (("bexit", j), w)
+                    if any(
+                        w in child_solutions[cid].local_coordinates
+                        or w in getattr(child_solutions[cid], "port_coordinates", {})
+                        for cid in ae.associated_children
+                        if cid in child_solutions
+                    ):
+                        continue
+                    pair = (i, w)
                     corridor_room_pairs.append(pair)
                     self.separated_pairs.add(("corridor_room", pair[0], pair[1]))
 
@@ -428,34 +377,17 @@ class ClearanceConstraintBuilder:
     def add_corridor_child_separation(self) -> None:
         """Enforce corridor segment non-penetration against sibling child sub-boxes."""
         active_edges = self.formulation.inventory.active_edges
-        boundary_exits = getattr(self.formulation.inventory, "boundary_exits", ())
         children = self.formulation.inventory.children
         child_solutions = self.formulation.inventory.child_solutions
         child_sub_boxes = self.formulation.inventory.child_sub_boxes
         edge_indices = list(range(len(active_edges)))
 
-        corridor_child_pairs: list[tuple[Any, tuple[str, int]]] = []
-        if len(children) > 0:
-            if edge_indices:
-                for i, ae in enumerate(active_edges):
-                    if ae.edge_id.startswith("sp_"):
-                        continue
-                    if sum(1 for d in ae.direction if d != 0) != 1:
-                        continue
-                    for s_child in children:
-                        s_id = s_child.node_id
-                        s_sol = child_solutions.get(s_id)
-                        sb = child_sub_boxes.get(s_id, ())
-                        if not s_sol or not sb:
-                            continue
-
-                        for k in range(len(sb)):
-                            pair: tuple[int | tuple[str, int], tuple[str, int]] = (i, (s_id, k))
-                            corridor_child_pairs.append(pair)
-                            self.separated_pairs.add(("corridor_child", pair[0], pair[1]))
-
-            for j, be in enumerate(boundary_exits):
-                if sum(1 for d in be.direction if d != 0) != 1:
+        corridor_child_pairs: list[tuple[int, tuple[str, int]]] = []
+        if len(children) > 0 and edge_indices:
+            for i, ae in enumerate(active_edges):
+                if ae.edge_id.startswith("sp_"):
+                    continue
+                if sum(1 for d in ae.direction if d != 0) != 1:
                     continue
                 for s_child in children:
                     s_id = s_child.node_id
@@ -463,11 +395,9 @@ class ClearanceConstraintBuilder:
                     sb = child_sub_boxes.get(s_id, ())
                     if not s_sol or not sb:
                         continue
-                    if be.port in s_sol.local_coordinates or be.port in getattr(s_sol, "port_coordinates", {}):
-                        continue
 
                     for k in range(len(sb)):
-                        pair = (("bexit", j), (s_id, k))
+                        pair = (i, (s_id, k))
                         corridor_child_pairs.append(pair)
                         self.separated_pairs.add(("corridor_child", pair[0], pair[1]))
 
@@ -484,9 +414,8 @@ class ClearanceConstraintBuilder:
     def add_corridor_crossing_separation(self) -> None:
         """Enforce corridor crossing separation between non-incident orthogonal corridor segments."""
         active_edges = self.formulation.inventory.active_edges
-        boundary_exits = getattr(self.formulation.inventory, "boundary_exits", ())
 
-        crossing_pairs: list[tuple[Any, Any]] = []
+        crossing_pairs: list[tuple[int, int]] = []
         for i1 in range(len(active_edges)):
             ae1 = active_edges[i1]
             if ae1.edge_id.startswith("sp_"):
@@ -515,61 +444,11 @@ class ClearanceConstraintBuilder:
                     ae1.associated_rooms & ae2.associated_rooms
                 ) or bool({ae1.src, ae1.dst} & {ae2.src, ae2.dst})
                 if not incident:
-                    pair: tuple[int | tuple[str, int], int | tuple[str, int]] = (i1, i2)
+                    pair = (i1, i2)
                     crossing_pairs.append(pair)
                     self.separated_pairs.add(
                         ("corridor_crossing", pair[0], pair[1])
                     )
-
-            for j in range(len(boundary_exits)):
-                be = boundary_exits[j]
-                if sum(1 for d in be.direction if d != 0) != 1:
-                    continue
-                act_be = (
-                    "x"
-                    if be.direction[0] != 0
-                    else ("y" if be.direction[1] != 0 else "z")
-                )
-                if act1 == act_be:
-                    continue
-                incident = (
-                    be.port in ae1.associated_rooms
-                    or be.port in (ae1.src, ae1.dst)
-                )
-                if not incident:
-                    pair = (i1, ("bexit", j))
-                    crossing_pairs.append(pair)
-                    self.separated_pairs.add(
-                        ("corridor_crossing", pair[0], pair[1])
-                    )
-
-        for j1 in range(len(boundary_exits)):
-            be1 = boundary_exits[j1]
-            if sum(1 for d in be1.direction if d != 0) != 1:
-                continue
-            act1 = (
-                "x"
-                if be1.direction[0] != 0
-                else ("y" if be1.direction[1] != 0 else "z")
-            )
-            for j2 in range(j1 + 1, len(boundary_exits)):
-                be2 = boundary_exits[j2]
-                if sum(1 for d in be2.direction if d != 0) != 1:
-                    continue
-                act2 = (
-                    "x"
-                    if be2.direction[0] != 0
-                    else ("y" if be2.direction[1] != 0 else "z")
-                )
-                if act1 == act2:
-                    continue
-                if be1.port == be2.port:
-                    continue
-                pair = (("bexit", j1), ("bexit", j2))
-                crossing_pairs.append(pair)
-                self.separated_pairs.add(
-                    ("corridor_crossing", pair[0], pair[1])
-                )
 
         if crossing_pairs:
             add_disjunctive_box_separation(
@@ -880,7 +759,6 @@ def detect_cluster_collisions(
     child_sub_boxes = inventory.child_sub_boxes
     gateway_anchors = inventory.gateway_anchors
     active_edges = inventory.active_edges
-    boundary_exits = getattr(inventory, "boundary_exits", ())
     b_ports = inventory.boundary_ports
 
     # Category 1: Room-Room Collisions
@@ -1023,42 +901,6 @@ def detect_cluster_collisions(
                     )
                 )
 
-    for j, be in enumerate(boundary_exits):
-        if sum(1 for d in be.direction if d != 0) != 1:
-            continue
-        try:
-            p1 = _extract_entity_coord(be.port, extraction, inventory)
-        except KeyError:
-            continue
-        dx, dy, dz = be.direction
-        length = be.length
-        p2 = (p1[0] + dx * length, p1[1] + dy * length, p1[2] + dz * length)
-        b_min_x, b_max_x = min(p1[0] + dx, p2[0]), max(p1[0] + dx, p2[0])
-        b_min_y, b_max_y = min(p1[1] + dy, p2[1]), max(p1[1] + dy, p2[1])
-        b_min_z, b_max_z = min(p1[2] + dz, p2[2]), max(p1[2] + dz, p2[2])
-
-        for w in parent_rooms:
-            if w == be.port:
-                continue
-            w_coord = parent_coords.get(w)
-            if w_coord is None:
-                continue
-            if (
-                b_min_x <= w_coord[0] <= b_max_x
-                and b_min_y <= w_coord[1] <= b_max_y
-                and b_min_z <= w_coord[2] <= b_max_z
-            ):
-                violations.append(
-                    ClearanceViolation(
-                        category="corridor_room",
-                        item_a=("bexit", j),
-                        item_b=w,
-                        description=(
-                            f"Boundary exit '{be.edge_id}' interior overlaps parent room {w} at {w_coord}."
-                        ),
-                    )
-                )
-
     # Category 5: Corridor-Child Collisions
     for i, ae in enumerate(active_edges):
         if ae.edge_id.startswith("sp_"):
@@ -1131,54 +973,6 @@ def detect_cluster_collisions(
                         )
                     )
 
-    for j, be in enumerate(boundary_exits):
-        if sum(1 for d in be.direction if d != 0) != 1:
-            continue
-        try:
-            p1 = _extract_entity_coord(be.port, extraction, inventory)
-        except KeyError:
-            continue
-        dx, dy, dz = be.direction
-        length = be.length
-        p2 = (p1[0] + dx * length, p1[1] + dy * length, p1[2] + dz * length)
-        c_min_x, c_max_x = min(p1[0] + dx, p2[0]), max(p1[0] + dx, p2[0])
-        c_min_y, c_max_y = min(p1[1] + dy, p2[1]), max(p1[1] + dy, p2[1])
-        c_min_z, c_max_z = min(p1[2] + dz, p2[2]), max(p1[2] + dz, p2[2])
-
-        for s_child in children:
-            s_id = s_child.node_id
-            s_sol = child_solutions.get(s_id)
-            sb = child_sub_boxes.get(s_id, ())
-            if not s_sol or not sb or s_id not in extraction.raw_child_offsets:
-                continue
-            if be.port in s_sol.local_coordinates or be.port in getattr(s_sol, "port_coordinates", {}):
-                continue
-
-            for k in range(len(sb)):
-                box = _extract_child_sub_box_bounds(
-                    (s_id, k), extraction, inventory
-                )
-                if (
-                    max(c_min_x, box[0]) <= min(c_max_x, box[1])
-                    and max(c_min_y, box[2]) <= min(c_max_y, box[3])
-                    and max(c_min_z, box[4]) <= min(c_max_z, box[5])
-                ):
-                    ov_x = min(c_max_x, box[1]) - max(c_min_x, box[0]) + 1
-                    ov_y = min(c_max_y, box[3]) - max(c_min_y, box[2]) + 1
-                    ov_z = min(c_max_z, box[5]) - max(c_min_z, box[4]) + 1
-                    vol = ov_x * ov_y * ov_z
-                    violations.append(
-                        ClearanceViolation(
-                            category="corridor_child",
-                            item_a=("bexit", j),
-                            item_b=(s_id, k),
-                            description=(
-                                f"Boundary exit '{be.edge_id}' interior intersects sibling child '{s_id}' sub-box {k}."
-                            ),
-                            overlap_volume=vol,
-                        )
-                    )
-
     # Category 6: Corridor-Corridor Collisions
     for i1 in range(len(active_edges)):
         ae1 = active_edges[i1]
@@ -1232,105 +1026,10 @@ def detect_cluster_collisions(
                     )
                 )
 
-        for j in range(len(boundary_exits)):
-            be = boundary_exits[j]
-            if sum(1 for d in be.direction if d != 0) != 1:
-                continue
-            act_be = (
-                "x"
-                if be.direction[0] != 0
-                else ("y" if be.direction[1] != 0 else "z")
-            )
-            if act1 == act_be:
-                continue
-            incident = (
-                be.port in ae1.associated_rooms
-                or be.port in (ae1.src, ae1.dst)
-            )
-            if incident:
-                continue
-            try:
-                p_be_1 = _extract_entity_coord(be.port, extraction, inventory)
-            except KeyError:
-                continue
-            p_be_2 = (
-                p_be_1[0] + be.direction[0] * be.length,
-                p_be_1[1] + be.direction[1] * be.length,
-                p_be_1[2] + be.direction[2] * be.length,
-            )
-            seg_be = Segment3D(Coord3D(*p_be_1), Coord3D(*p_be_2))
-            if segments_intersect_3d(seg1, seg_be):
-                violations.append(
-                    ClearanceViolation(
-                        category="corridor_crossing",
-                        item_a=i1,
-                        item_b=("bexit", j),
-                        description=(
-                            f"Corridor '{ae1.edge_id}' and boundary exit '{be.edge_id}' cross in 3D."
-                        ),
-                    )
-                )
-
-    for j1 in range(len(boundary_exits)):
-        be1 = boundary_exits[j1]
-        if sum(1 for d in be1.direction if d != 0) != 1:
-            continue
-        act1 = (
-            "x"
-            if be1.direction[0] != 0
-            else ("y" if be1.direction[1] != 0 else "z")
-        )
-        try:
-            p1_a = _extract_entity_coord(be1.port, extraction, inventory)
-        except KeyError:
-            continue
-        p1_b = (
-            p1_a[0] + be1.direction[0] * be1.length,
-            p1_a[1] + be1.direction[1] * be1.length,
-            p1_a[2] + be1.direction[2] * be1.length,
-        )
-        seg1 = Segment3D(Coord3D(*p1_a), Coord3D(*p1_b))
-
-        for j2 in range(j1 + 1, len(boundary_exits)):
-            be2 = boundary_exits[j2]
-            if sum(1 for d in be2.direction if d != 0) != 1:
-                continue
-            act2 = (
-                "x"
-                if be2.direction[0] != 0
-                else ("y" if be2.direction[1] != 0 else "z")
-            )
-            if act1 == act2:
-                continue
-            if be1.port == be2.port:
-                continue
-            try:
-                p2_a = _extract_entity_coord(be2.port, extraction, inventory)
-            except KeyError:
-                continue
-            p2_b = (
-                p2_a[0] + be2.direction[0] * be2.length,
-                p2_a[1] + be2.direction[1] * be2.length,
-                p2_a[2] + be2.direction[2] * be2.length,
-            )
-            seg2 = Segment3D(Coord3D(*p2_a), Coord3D(*p2_b))
-            if segments_intersect_3d(seg1, seg2):
-                violations.append(
-                    ClearanceViolation(
-                        category="corridor_crossing",
-                        item_a=("bexit", j1),
-                        item_b=("bexit", j2),
-                        description=(
-                            f"Boundary exits '{be1.edge_id}' and '{be2.edge_id}' cross in 3D."
-                        ),
-                    )
-                )
-
     return violations
 
 
 __all__ = [
-    "BoundaryExitClearanceBox",
     "ChildSubClearanceBox",
     "ClearanceConstraintBuilder",
     "ClearanceEntity",

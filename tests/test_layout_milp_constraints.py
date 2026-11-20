@@ -219,20 +219,19 @@ class TestAddDisjunctiveBoxSeparation:
     def test_heterogeneous_pair_shapes_indexed_by_integer(self) -> None:
         """Pairs with heterogeneous tuple dimensions and typed entities succeed without Set dimension errors."""
         from romutil.layout.milp.clearance import (
-            BoundaryExitClearanceBox,
             ChildSubClearanceBox,
             CorridorClearanceBox,
             RoomClearanceBox,
         )
 
         model = pyo.ConcreteModel()
-        # Pair 0: 3-tuple flattened (int, (str, int)) vs 4-tuple (("bexit", 0), ("child", 1))
+        # Pair 0: 3-tuple flattened (int, (str, int)) vs 4-tuple (("edge", 0), ("child", 1))
         # Pair 1: Typed clearance entity dataclasses
         pairs = [
             (10, ("child_a", 0)),
-            (("bexit", 0), ("comp_0_block_11", 8)),
+            (("edge", 0), ("comp_0_block_11", 8)),
             (RoomClearanceBox(10), ChildSubClearanceBox("child_a", 0)),
-            (CorridorClearanceBox(0), BoundaryExitClearanceBox(1)),
+            (CorridorClearanceBox(0), CorridorClearanceBox(1)),
         ]
 
         add_disjunctive_box_separation(
