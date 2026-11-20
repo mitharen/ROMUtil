@@ -1570,13 +1570,13 @@ def inventory_cluster(
         for e in getattr(graph, "edges", ()):
             if getattr(e, "cut", False):
                 continue
-            if e.src in all_local_rooms and e.dst not in sub_rooms:
+            if e.src in all_local_rooms and e.dst > 0 and e.dst not in sub_rooms:
                 u, dst_vnum = e.src, e.dst
                 try:
                     disp = direction_to_displacement(e.direction)
                 except ValueError:
                     continue
-            elif e.dst in all_local_rooms and e.src not in sub_rooms:
+            elif e.dst in all_local_rooms and e.src > 0 and e.src not in sub_rooms:
                 u, dst_vnum = e.dst, e.src
                 try:
                     rev_d = direction_to_displacement(e.direction)
@@ -1601,7 +1601,7 @@ def inventory_cluster(
             if u not in graph.rooms:
                 continue
             for ex in graph.rooms[u].exits:
-                if ex.dst_vnum not in sub_rooms:
+                if ex.dst_vnum > 0 and ex.dst_vnum not in sub_rooms:
                     try:
                         disp = direction_to_displacement(ex.direction)
                     except ValueError:

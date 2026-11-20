@@ -7,6 +7,7 @@ from typing import Any
 import pyomo.environ as pyo
 
 from romutil.layout.geometry import BoundingBox3D
+from romutil.layout.ir import SplitPairCut
 from romutil.layout.milp.clearance import ClearanceConstraintBuilder
 from romutil.layout.milp.inventory import (
     ActiveEdge,
@@ -281,12 +282,31 @@ class ClusterFormulation:
                     == model.s_stretch_1[i] + model.s_stretch_2[i] + model.s_stretch_3[i]
                 )
 
-            stretch_expr = sum(
-                10.0 * model.s_stretch_1[i]
-                + 30.0 * model.s_stretch_2[i]
-                + 100.0 * model.s_stretch_3[i]
-                for i in edge_indices
+            # Discount stretch on temporary edges to external split-pair boundary poles,
+            # which are re-solved elastically by SplitPairHandler in parent clusters.
+            is_split_pair = isinstance(inventory.node.cut_contract, SplitPairCut)
+            external_ports = (
+                set(inventory.boundary_ports) - set(inventory.rooms)
+                if is_split_pair
+                else set()
             )
+            stretch_terms = []
+            for i in edge_indices:
+                ae = inventory.active_edges[i]
+                is_external_port_edge = (
+                    (isinstance(ae.src, int) and ae.src in external_ports)
+                    or (isinstance(ae.dst, int) and ae.dst in external_ports)
+                )
+                weight_scale = 0.1 if is_external_port_edge else 1.0
+                stretch_terms.append(
+                    weight_scale
+                    * (
+                        10.0 * model.s_stretch_1[i]
+                        + 30.0 * model.s_stretch_2[i]
+                        + 100.0 * model.s_stretch_3[i]
+                    )
+                )
+            stretch_expr = sum(stretch_terms)
         else:
             model.s_stretch_1 = pyo.Var([], domain=pyo.NonNegativeReals)
             model.s_stretch_2 = pyo.Var([], domain=pyo.NonNegativeReals)
