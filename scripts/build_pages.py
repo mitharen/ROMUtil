@@ -45,7 +45,6 @@ COMPOSITE_SHOWCASE_AREAS = (
             "haon.are",
             "shire.are",
         ),
-        240,
     ),
 )
 
