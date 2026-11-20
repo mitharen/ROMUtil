@@ -129,16 +129,23 @@ def solve_cluster_with_cutting_planes(
     if total_cluster_budget is None:
         total_cluster_budget = float(compute_adaptive_cluster_timeout(node, options))
     t_start = time.monotonic()
+    n_entities = len(node.rooms) + len(node.children)
     base_timeout = float(options.timeout_seconds) if options is not None and options.timeout_seconds else 15.0
     intermediate_timeout = (
         float(options.intermediate_pass_timeout)
         if options is not None and getattr(options, "intermediate_pass_timeout", None) and options.intermediate_pass_timeout != 15
-        else max(15.0, min(60.0, base_timeout * 0.67))
+        else (8.0 if n_entities > 20 else max(15.0, min(60.0, base_timeout * 0.67)))
     )
     ratio_gap = (
         float(options.ratio_gap)
         if options is not None and getattr(options, "ratio_gap", None)
         else 0.05
+    )
+    raw_inter_rgap = getattr(options, "intermediate_ratio_gap", None) if options is not None else None
+    intermediate_ratio_gap = (
+        float(raw_inter_rgap)
+        if raw_inter_rgap is not None
+        else (max(ratio_gap, 0.20) if n_entities > 20 else ratio_gap)
     )
     effective_max_solutions = (
         max_solutions
@@ -149,11 +156,16 @@ def solve_cluster_with_cutting_planes(
     phase: ClusterSolvePhase = ClusterSolvePhase.PHYSICAL_CLEARANCE
     extraction: SolvedClusterExtraction | None = None
     best_physical_extraction: SolvedClusterExtraction | None = None
+    best_clean_extraction: SolvedClusterExtraction | None = None
 
     for iteration in range(max_iterations):
         elapsed = time.monotonic() - t_start
         remaining_budget = total_cluster_budget - elapsed
         if remaining_budget <= 0:
+            if best_clean_extraction is not None:
+                extraction = best_clean_extraction
+                phase = ClusterSolvePhase.DONE
+                break
             if best_physical_extraction is not None:
                 extraction = best_physical_extraction
                 phase = ClusterSolvePhase.DONE
@@ -165,7 +177,7 @@ def solve_cluster_with_cutting_planes(
         solver_opts: dict[str, Any] = {}
         if solver_name == "cbc":
             solver_opts["heuristics"] = "on"
-            solver_opts["ratioGap"] = ratio_gap
+            solver_opts["ratioGap"] = intermediate_ratio_gap if iteration > 0 else ratio_gap
             solver_opts["threads"] = min(4, os.cpu_count() or 1)
             solver_opts["timeMode"] = "elapsed"
 
@@ -181,20 +193,32 @@ def solve_cluster_with_cutting_planes(
             pass_max_sol = None
             use_warmstart = False
 
-        pass_options = (
-            replace(options, timeout_seconds=pass_timeout)
-            if options is not None
-            else LayoutOptions(timeout_seconds=pass_timeout)
-        )
-
-        extraction = solve_and_extract(
-            formulation=formulation,
-            solver_name=solver_name,
-            options=pass_options,
-            max_solutions=pass_max_sol,
-            solver_options=solver_opts if solver_opts else None,
-            warmstart=use_warmstart,
-        )
+        while True:
+            pass_options = (
+                replace(options, timeout_seconds=pass_timeout)
+                if options is not None
+                else LayoutOptions(timeout_seconds=pass_timeout)
+            )
+            try:
+                extraction = solve_and_extract(
+                    formulation=formulation,
+                    solver_name=solver_name,
+                    options=pass_options,
+                    max_solutions=pass_max_sol,
+                    solver_options=solver_opts if solver_opts else None,
+                    warmstart=use_warmstart,
+                )
+                break
+            except LayoutSolverError:
+                if iteration == 0:
+                    raise
+                rem = total_cluster_budget - (time.monotonic() - t_start)
+                if rem <= 2.0 or pass_timeout >= int(round(rem)):
+                    raise
+                next_timeout = min(max(1, int(round(rem))), max(pass_timeout * 2, 30))
+                if next_timeout <= pass_timeout:
+                    raise
+                pass_timeout = next_timeout
 
         violations = detect_cluster_collisions(
             formulation=formulation,
@@ -204,7 +228,9 @@ def solve_cluster_with_cutting_planes(
         physical_collisions = [v for v in violations if v.category != "corridor_crossing"]
         corridor_crossings = [v for v in violations if v.category == "corridor_crossing"]
 
-        if not physical_collisions:
+        if not physical_collisions and not corridor_crossings:
+            best_clean_extraction = extraction
+        if not physical_collisions and (best_clean_extraction is None or not corridor_crossings):
             best_physical_extraction = extraction
 
         if physical_collisions:
@@ -287,7 +313,12 @@ def solve_cluster_with_cutting_planes(
                     new_cuts = formulation.clearance_builder.inject_clearance_cuts(
                         final_physical, extraction=final_extraction
                     )
-                    if new_cuts == 0:
+                    remaining_budget = total_cluster_budget - (time.monotonic() - t_start)
+                    if new_cuts == 0 or remaining_budget < 1.0:
+                        if best_clean_extraction is not None:
+                            extraction = best_clean_extraction
+                            phase = ClusterSolvePhase.DONE
+                            break
                         raise LayoutSolverError(
                             f"MILP solver encountered unresolvable geometric collisions for cluster '{node.node_id}'."
                         )
@@ -301,8 +332,11 @@ def solve_cluster_with_cutting_planes(
                     new_cuts = formulation.clearance_builder.inject_clearance_cuts(
                         final_crossings, max_cuts_per_pass=max_crossing_cuts
                     )
+                    remaining_budget = total_cluster_budget - (time.monotonic() - t_start)
                     if new_cuts > 0 and remaining_budget >= 15.0:
                         continue
+                    if best_clean_extraction is not None:
+                        extraction = best_clean_extraction
                     phase = ClusterSolvePhase.DONE
                     break
                 else:
@@ -320,6 +354,8 @@ def solve_cluster_with_cutting_planes(
                     break
             except LayoutSolverError:
                 # If final optimization pass fails but current extraction is verified clean, accept incumbent.
+                if best_clean_extraction is not None:
+                    extraction = best_clean_extraction
                 phase = ClusterSolvePhase.DONE
                 break
         else:
@@ -327,7 +363,9 @@ def solve_cluster_with_cutting_planes(
             break
 
     if phase != ClusterSolvePhase.DONE or extraction is None:
-        if best_physical_extraction is not None:
+        if best_clean_extraction is not None:
+            extraction = best_clean_extraction
+        elif best_physical_extraction is not None:
             extraction = best_physical_extraction
         else:
             raise LayoutSolverError(

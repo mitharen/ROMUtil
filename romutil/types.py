@@ -74,6 +74,7 @@ class LayoutOptions:
     max_cuts_per_pass: int = 20
     intermediate_pass_timeout: int = 15
     ratio_gap: float = 0.05
+    intermediate_ratio_gap: float | None = None
     max_solutions: int | None = None
     warmstart: bool = False
 
