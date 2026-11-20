@@ -107,7 +107,7 @@ def _get_child_sub_box_bounds(
     if inventory is None:
         return None
     child_sub_boxes = getattr(inventory, "child_sub_boxes", {})
-    if cid not in child_sub_boxes or k_box >= len(child_sub_boxes[cid]):
+    if cid not in child_sub_boxes or k_box < 0 or k_box >= len(child_sub_boxes[cid]):
         return None
     raw_sb = child_sub_boxes[cid][k_box]
     sb = (
@@ -480,6 +480,8 @@ class ClusterPositionalDAG(PositionalConstraintDAG):
                 elif dx < 0:
                     w = min_len * (-dx) + dst_off[0] - src_off[0]
                     dag.add_edge(AXIS_X, dst_node, src_node, w)
+                elif not (allow_transverse and dy != 0):
+                    dag.add_equality(AXIS_X, src_node, dst_node, src_off[0] - dst_off[0])
 
                 # Process Y axis
                 if dy > 0:
@@ -488,6 +490,8 @@ class ClusterPositionalDAG(PositionalConstraintDAG):
                 elif dy < 0:
                     w = min_len * (-dy) + dst_off[1] - src_off[1]
                     dag.add_edge(AXIS_Y, dst_node, src_node, w)
+                elif not (allow_transverse and dx != 0):
+                    dag.add_equality(AXIS_Y, src_node, dst_node, src_off[1] - dst_off[1])
 
                 # Process Z axis
                 if dz > 0:
@@ -496,5 +500,7 @@ class ClusterPositionalDAG(PositionalConstraintDAG):
                 elif dz < 0:
                     w = min_len * (-dz) + dst_off[2] - src_off[2]
                     dag.add_edge(AXIS_Z, dst_node, src_node, w)
+                else:
+                    dag.add_equality(AXIS_Z, src_node, dst_node, src_off[2] - dst_off[2])
 
         return dag

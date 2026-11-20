@@ -6,11 +6,15 @@ from unittest.mock import patch
 
 import pytest
 
+from romutil.layout.assembly.hierarchical import HierarchicalLayoutAssembler
 from romutil.layout.geometry import BoundingBox3D
 from romutil.layout.ir import (
+    BridgeCut,
+    CutType,
     LayoutEdge,
     LayoutGraph,
     NodeSolution,
+    SimplifiedGraph,
     SolveTree,
     SolveTreeNode,
     TreeNodeType,
@@ -22,10 +26,22 @@ from romutil.layout.milp import (
     pack_world_root_components,
     solve_cluster,
 )
-from romutil.layout.milp.tree import HierarchicalTreeSolver
+from romutil.layout.milp.tree import (
+    HierarchicalTreeSolver,
+    _as_coord3d,
+    _child_attachment_rooms,
+    _extract_status,
+    _find_bridge_ray_blockers,
+    _has_outward_exit_in_direction,
+    _ray_hits_box,
+    _resynthesize_split_child_solution,
+    _safe_displacement,
+    _try_split_ray_blocked_child,
+)
 from romutil.layout.protocols import TreeSolver
 from romutil.models import Direction, Exit, Room
 from romutil.types import Coord3D, LayoutOptions, LayoutSolverError, SolverStatus
+from tests.regressions.invariants import assert_zero_coordinate_collisions
 
 
 def _make_room(vnum: int, exits: dict[Direction, int] | None = None) -> Room:
@@ -549,3 +565,562 @@ class TestWorldRootComponentPacking:
         for r in disconnected:
             assert layout.coordinates[r].x > main_max_x
             assert layout.coordinates[r].x <= main_max_x + 10
+
+
+class TestDynamicBridgeRaySplit:
+    """Tests for post-solve outward ray-blockage detection and dynamic orthogonal bridge splitting."""
+
+    def test_splits_ray_blocked_bridge_child_and_resynthesizes_cleanly(self) -> None:
+        """Splits a ray-blocked BridgeCut child across an orthogonal internal bridge and re-synthesizes cleanly."""
+        r1 = _make_room(1, {Direction.east: 2})
+        r2 = _make_room(2, {Direction.west: 1, Direction.east: 3})
+        r3 = _make_room(3, {Direction.west: 2, Direction.north: 4})
+        r4 = _make_room(4, {Direction.south: 3, Direction.east: 40, Direction.west: 5})
+        r40 = _make_room(40, {Direction.west: 4, Direction.south: 8})
+        r8 = _make_room(8, {Direction.north: 40, Direction.west: 7})
+        r7 = _make_room(7, {Direction.east: 8, Direction.north: 6})
+        r6 = _make_room(6, {Direction.south: 7, Direction.north: 5})
+        r5 = _make_room(5, {Direction.south: 6, Direction.east: 4})
+
+        edges = (
+            LayoutEdge(src=1, dst=2, direction=Direction.east, weight=1),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, weight=1),
+            LayoutEdge(src=3, dst=4, direction=Direction.north, weight=1),
+            LayoutEdge(src=4, dst=40, direction=Direction.east, weight=1),
+            LayoutEdge(src=40, dst=8, direction=Direction.south, weight=2),
+            LayoutEdge(src=8, dst=7, direction=Direction.west, weight=4),
+            LayoutEdge(src=7, dst=6, direction=Direction.north, weight=1),
+            LayoutEdge(src=6, dst=5, direction=Direction.north, weight=1),
+            LayoutEdge(src=5, dst=4, direction=Direction.east, weight=3),
+        )
+        graph = LayoutGraph(
+            rooms={r.vnum: r for r in (r1, r2, r3, r4, r40, r8, r7, r6, r5)},
+            edges=edges,
+        )
+
+        child = SolveTreeNode(
+            node_id="child",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3, 4, 40, 8, 7, 6, 5}),
+            children=(),
+            metadata={
+                "cut_type": CutType.BRIDGE,
+                "anchor_vnum": 2,
+                "bridge_edge": (2, 3),
+                "direction": int(Direction.east),
+                "weight": 1,
+                "cut_contract": BridgeCut((2, 3), int(Direction.east), 1, 2),
+            },
+        )
+        root = SolveTreeNode(
+            node_id="root",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+        tree = SolveTree(root=root, graph=graph)
+
+        sol = HierarchicalTreeSolver().solve_tree(tree, options=LayoutOptions(timeout_seconds=15))
+
+        # Synthetic split piece IDs must never leak into TreeSolution or root child_offsets
+        assert set(sol.node_solutions.keys()) == {"child", "root"}
+        assert set(sol.node_solutions["root"].metadata["child_offsets"].keys()) == {"child"}
+        assert set(sol.node_solutions["child"].local_coordinates.keys()) == {3, 4, 40, 8, 7, 6, 5}
+        assert 2 in sol.node_solutions["child"].port_coordinates
+        assert set(sol.node_solutions["root"].metadata["child_sub_boxes"].keys()) == {"child"}
+
+        assembled = HierarchicalLayoutAssembler().assemble(
+            tree=tree,
+            solution=sol,
+            simplified=SimplifiedGraph(graph=graph),
+        )
+        assert_zero_coordinate_collisions(assembled)
+        assert assembled.coordinates[1].x < assembled.coordinates[2].x
+        assert assembled.coordinates[2].x < assembled.coordinates[3].x
+
+    def test_recursive_two_level_ray_blockage_split(self) -> None:
+        """Recurses ray-blockage splitting across two levels when the Level-1 wing is also blocked."""
+        r1 = _make_room(1, {Direction.east: 2})
+        r2 = _make_room(2, {Direction.west: 1, Direction.east: 3})
+        # Room 3 has a warp-cut outward South exit toward 20 in root
+        r3 = _make_room(3, {Direction.west: 2, Direction.south: 20, Direction.north: 4})
+        r20 = _make_room(20, {Direction.north: 3})
+        r4 = _make_room(4, {Direction.south: 3, Direction.east: 5})
+        r5 = _make_room(5, {Direction.west: 4, Direction.south: 6, Direction.north: 11})
+        r6 = _make_room(6, {Direction.north: 5, Direction.west: 7})
+        r7 = _make_room(7, {Direction.east: 6, Direction.west: 8})
+        r8 = _make_room(8, {Direction.east: 7, Direction.north: 9})
+        r9 = _make_room(9, {Direction.south: 8, Direction.north: 10})
+        r10 = _make_room(10, {Direction.south: 9, Direction.east: 11})
+        r11 = _make_room(11, {Direction.west: 10, Direction.south: 5})
+
+        edges = (
+            LayoutEdge(src=1, dst=2, direction=Direction.east, weight=1),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, weight=1),
+            LayoutEdge(src=3, dst=20, direction=Direction.south, weight=1, cut=True),
+            LayoutEdge(src=3, dst=4, direction=Direction.north, weight=1),
+            LayoutEdge(src=4, dst=5, direction=Direction.east, weight=1),
+            LayoutEdge(src=5, dst=6, direction=Direction.south, weight=3),
+            LayoutEdge(src=6, dst=7, direction=Direction.west, weight=1),
+            LayoutEdge(src=7, dst=8, direction=Direction.west, weight=4),
+            LayoutEdge(src=8, dst=9, direction=Direction.north, weight=2),
+            LayoutEdge(src=9, dst=10, direction=Direction.north, weight=2),
+            LayoutEdge(src=10, dst=11, direction=Direction.east, weight=5),
+            LayoutEdge(src=11, dst=5, direction=Direction.south, weight=1),
+        )
+        graph = LayoutGraph(
+            rooms={r.vnum: r for r in (r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r20)},
+            edges=edges,
+        )
+
+        child = SolveTreeNode(
+            node_id="child",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3, 4, 5, 6, 7, 8, 9, 10, 11}),
+            children=(),
+            metadata={
+                "cut_type": CutType.BRIDGE,
+                "anchor_vnum": 2,
+                "bridge_edge": (2, 3),
+                "direction": int(Direction.east),
+                "weight": 1,
+                "cut_contract": BridgeCut((2, 3), int(Direction.east), 1, 2),
+            },
+        )
+        root = SolveTreeNode(
+            node_id="root",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1, 2}),
+            children=(child,),
+        )
+        tree = SolveTree(root=root, graph=graph)
+
+        solved_node_ids: list[str] = []
+        orig_solve_cluster = solve_cluster
+
+        def spy_solve_cluster(node, child_solutions=None, graph=None, options=None, solver_name="cbc", debug_solve_dir=None):
+            solved_node_ids.append(node.node_id)
+            return orig_solve_cluster(
+                node=node,
+                child_solutions=child_solutions,
+                graph=graph,
+                options=options,
+                solver_name=solver_name,
+                debug_solve_dir=debug_solve_dir,
+            )
+
+        with patch("romutil.layout.milp.tree.solve_cluster", side_effect=spy_solve_cluster):
+            sol = HierarchicalTreeSolver().solve_tree(tree, options=LayoutOptions(timeout_seconds=15))
+
+        assert "child__base" in solved_node_ids
+        assert "child__wing" in solved_node_ids
+        assert "child__wing__base" in solved_node_ids
+        assert "child__wing__wing" in solved_node_ids
+        assert set(sol.node_solutions.keys()) == {"child", "root"}
+        assert set(sol.node_solutions["root"].metadata["child_offsets"].keys()) == {"child"}
+
+        assembled = HierarchicalLayoutAssembler().assemble(
+            tree=tree,
+            solution=sol,
+            simplified=SimplifiedGraph(graph=graph),
+        )
+        assert_zero_coordinate_collisions(assembled)
+
+    def test_skips_split_when_anchor_has_no_outward_exit_in_reverse_direction(self) -> None:
+        """Does not split a BridgeCut child whose anchor exits vertically instead of opposite -d."""
+        r1 = _make_room(1, {Direction.down: 2})
+        r2 = _make_room(2, {Direction.up: 1, Direction.east: 3})
+        r3 = _make_room(3, {Direction.west: 2, Direction.north: 4})
+        r4 = _make_room(4, {Direction.south: 3, Direction.west: 5})
+        r5 = _make_room(5, {Direction.east: 4, Direction.west: 6})
+        r6 = _make_room(6, {Direction.east: 5, Direction.south: 7})
+        r7 = _make_room(7, {Direction.north: 6})
+
+        edges = (
+            LayoutEdge(src=2, dst=1, direction=Direction.up, weight=1),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, weight=1),
+            LayoutEdge(src=3, dst=4, direction=Direction.north, weight=1),
+            LayoutEdge(src=4, dst=5, direction=Direction.west, weight=1),
+            LayoutEdge(src=5, dst=6, direction=Direction.west, weight=1),
+            LayoutEdge(src=6, dst=7, direction=Direction.south, weight=1),
+        )
+        graph = LayoutGraph(
+            rooms={r.vnum: r for r in (r1, r2, r3, r4, r5, r6, r7)},
+            edges=edges,
+        )
+        child = SolveTreeNode(
+            node_id="child_z_escape",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3, 4, 5, 6, 7}),
+            children=(),
+            metadata={
+                "cut_type": CutType.BRIDGE,
+                "anchor_vnum": 2,
+                "bridge_edge": (2, 3),
+                "direction": int(Direction.east),
+                "weight": 1,
+                "cut_contract": BridgeCut((2, 3), int(Direction.east), 1, 2),
+            },
+        )
+        # Place room 7 strictly West of port 2 along y=0
+        child_sol = NodeSolution(
+            node_id="child_z_escape",
+            local_coordinates={
+                3: Coord3D(3, 0, 0),
+                4: Coord3D(3, 1, 0),
+                5: Coord3D(2, 1, 0),
+                6: Coord3D(1, 1, 0),
+                7: Coord3D(1, 0, 0),
+            },
+            port_coordinates={2: Coord3D(2, 0, 0)},
+        )
+        assert _find_bridge_ray_blockers(child, child_sol, graph) is None
+        assert _try_split_ray_blocked_child(child, child_sol, graph) is None
+
+    def test_skips_split_when_ray_is_unblocked(self) -> None:
+        """Does not split a BridgeCut child when all owned geometry clears the outward ray."""
+        r1 = _make_room(1, {Direction.east: 2})
+        r2 = _make_room(2, {Direction.west: 1, Direction.east: 3})
+        r3 = _make_room(3, {Direction.west: 2, Direction.north: 4})
+        r4 = _make_room(4, {Direction.south: 3})
+        edges = (
+            LayoutEdge(src=1, dst=2, direction=Direction.east, weight=1),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, weight=1),
+            LayoutEdge(src=3, dst=4, direction=Direction.north, weight=1),
+        )
+        graph = LayoutGraph(rooms={r.vnum: r for r in (r1, r2, r3, r4)}, edges=edges)
+        child = SolveTreeNode(
+            node_id="child_clean",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3, 4}),
+            metadata={
+                "cut_type": CutType.BRIDGE,
+                "anchor_vnum": 2,
+                "bridge_edge": (2, 3),
+                "direction": int(Direction.east),
+                "weight": 1,
+                "cut_contract": BridgeCut((2, 3), int(Direction.east), 1, 2),
+            },
+        )
+        child_sol = NodeSolution(
+            node_id="child_clean",
+            local_coordinates={3: Coord3D(1, 0, 0), 4: Coord3D(1, 1, 0)},
+            port_coordinates={2: Coord3D(0, 0, 0)},
+        )
+        assert _find_bridge_ray_blockers(child, child_sol, graph) is None
+
+    def test_skips_split_when_no_valid_orthogonal_bridge_exists(self) -> None:
+        """Covers negative guard paths: cycles, straddling sub-children, vertical/non-cardinal cuts."""
+        # Case A: Vertical BridgeCut direction is ignored
+        g_base = LayoutGraph(
+            rooms={1: _make_room(1), 2: _make_room(2), 3: _make_room(3)},
+            edges=(LayoutEdge(src=1, dst=2, direction=Direction.east, weight=1),),
+        )
+        vert_child = SolveTreeNode(
+            node_id="vert",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3}),
+            metadata={"cut_contract": BridgeCut((2, 3), int(Direction.up), 1, 2)},
+        )
+        assert _find_bridge_ray_blockers(vert_child, NodeSolution("vert", {3: Coord3D(0, 0, 0)}), g_base) is None
+
+        # Case B: Blocker inside a 2-connected cycle with no orthogonal bridge edge
+        edges_cycle = (
+            LayoutEdge(src=1, dst=2, direction=Direction.east, weight=1),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, weight=1),
+            LayoutEdge(src=3, dst=4, direction=Direction.north, weight=1),
+            LayoutEdge(src=4, dst=5, direction=Direction.west, weight=2),
+            LayoutEdge(src=5, dst=6, direction=Direction.south, weight=1),
+            LayoutEdge(src=6, dst=3, direction=Direction.east, weight=1),
+        )
+        g_cycle = LayoutGraph(rooms={v: _make_room(v) for v in (1, 2, 3, 4, 5, 6)}, edges=edges_cycle)
+        cyc_child = SolveTreeNode(
+            node_id="cyc",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3, 4, 5, 6}),
+            metadata={"cut_contract": BridgeCut((2, 3), int(Direction.east), 1, 2)},
+        )
+        cyc_sol = NodeSolution(
+            node_id="cyc",
+            local_coordinates={3: Coord3D(2, 0, 0), 4: Coord3D(2, 1, 0), 5: Coord3D(0, 1, 0), 6: Coord3D(0, 0, 0)},
+            port_coordinates={2: Coord3D(1, 0, 0)},
+        )
+        # Room 6 blocks 2's West ray, yet all internal edges form a 4-cycle so no bridge exists
+        assert _find_bridge_ray_blockers(cyc_child, cyc_sol, g_cycle) is not None
+        assert _try_split_ray_blocked_child(cyc_child, cyc_sol, g_cycle) is None
+
+        # Case C: Orthogonal bridge exists, but a sub-child attaches to both sides via sub-box blocking ray
+        sub_c = SolveTreeNode(
+            node_id="sub_shared",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({99}),
+            metadata={},
+        )
+        edges_straddle = (
+            LayoutEdge(src=1, dst=2, direction=Direction.east, weight=1),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, weight=1),
+            LayoutEdge(src=3, dst=4, direction=Direction.north, weight=1),
+            LayoutEdge(src=3, dst=99, direction=Direction.west, weight=1),
+            LayoutEdge(src=4, dst=99, direction=Direction.south, weight=1),
+        )
+        g_straddle = LayoutGraph(rooms={v: _make_room(v) for v in (1, 2, 3, 4, 99)}, edges=edges_straddle)
+        straddle_child = SolveTreeNode(
+            node_id="straddle",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3, 4}),
+            children=(sub_c,),
+            metadata={"cut_contract": BridgeCut((2, 3), int(Direction.east), 1, 2)},
+        )
+        straddle_sol = NodeSolution(
+            node_id="straddle",
+            local_coordinates={3: Coord3D(3, 0, 0), 4: Coord3D(3, 1, 0)},
+            port_coordinates={2: Coord3D(2, 0, 0)},
+            metadata={
+                "child_offsets": {"sub_shared": Coord3D(0, 0, 0)},
+                "child_sub_boxes": {"sub_shared": (BoundingBox3D(0, 1, 0, 1, 0, 0),)},
+            },
+        )
+        assert _try_split_ray_blocked_child(straddle_child, straddle_sol, g_straddle) is None
+
+        # Case D: Nested sub-child resynthesis preserves sub-offsets and stretched corridor cells
+        nested_sub = SolveTreeNode(node_id="sc1", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({40}))
+        orig_parent_child = SolveTreeNode(
+            node_id="c_orig",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3, 4}),
+            children=(nested_sub,),
+            metadata={"cut_contract": BridgeCut((2, 3), int(Direction.east), 1, 2)},
+        )
+        p_base = SolveTreeNode(node_id="c_orig__base", node_type=TreeNodeType.BLOCK, rooms=frozenset({3}))
+        p_wing = SolveTreeNode(
+            node_id="c_orig__wing",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({4}),
+            children=(nested_sub,),
+            metadata={"cut_contract": BridgeCut((3, 4), int(Direction.north), 1, 3)},
+        )
+        s_base = NodeSolution("c_orig__base", {3: Coord3D(0, 0, 0)}, port_coordinates={2: Coord3D(-1, 0, 0)}, metadata={"status": SolverStatus.OPTIMAL})
+        s_wing = NodeSolution(
+            "c_orig__wing",
+            {4: Coord3D(0, 0, 0)},
+            metadata={
+                "status": SolverStatus.OPTIMAL,
+                "child_offsets": {"sc1": Coord3D(1, 0, 0)},
+                "child_sub_boxes": {"sc1": (BoundingBox3D(0, 0, 0, 0, 0, 0),)},
+                "all_room_coordinates": {4: Coord3D(0, 0, 0), 40: Coord3D(1, 0, 0)},
+            },
+        )
+        s_parent = NodeSolution(
+            "root",
+            {1: Coord3D(0, 0, 0), 2: Coord3D(1, 0, 0)},
+            metadata={
+                "status": SolverStatus.OPTIMAL,
+                "child_offsets": {"c_orig__base": Coord3D(2, 0, 0), "c_orig__wing": Coord3D(2, 3, 0)},
+            },
+        )
+        sc_sol = NodeSolution("sc1", {40: Coord3D(0, 0, 0)}, sub_boxes=(BoundingBox3D(0, 0, 0, 0, 0, 0),))
+        merged_sol, orig_off, orig_sbs = _resynthesize_split_child_solution(
+            orig_child=orig_parent_child,
+            pieces=[(p_base, s_base), (p_wing, s_wing)],
+            parent_sol=s_parent,
+            solutions={"sc1": sc_sol},
+        )
+        assert orig_off == Coord3D(2, 0, 0)
+        assert merged_sol.local_coordinates[3] == Coord3D(0, 0, 0)
+        assert merged_sol.local_coordinates[4] == Coord3D(0, 3, 0)
+        assert merged_sol.metadata["child_offsets"]["sc1"] == Coord3D(1, 3, 0)
+        assert "corridor_3_4_1" in merged_sol.metadata["all_room_coordinates"]
+        assert "corridor_3_4_2" in merged_sol.metadata["all_room_coordinates"]
+        assert len(orig_sbs) >= 1
+
+    def test_dynamic_split_helper_edge_cases(self) -> None:
+        """Exercises edge-case guards across dynamic ray-split helper functions."""
+        # 1. _as_coord3d normalization
+        assert _as_coord3d(Coord3D(1, 2, 3)) == Coord3D(1, 2, 3)
+        assert _as_coord3d((4, 5, 6)) == Coord3D(4, 5, 6)
+        assert _as_coord3d(None) == Coord3D(0, 0, 0)
+
+        # 2. _safe_displacement valid & invalid directions
+        assert _safe_displacement(Direction.east) == (1, 0, 0)
+        assert _safe_displacement(999) is None
+
+        # 3. _ray_hits_box across all planar directions, z mismatch, and non-planar axis
+        orig = Coord3D(5, 5, 0)
+        assert _ray_hits_box(orig, (1, 0, 0), (6, 8, 4, 6, 0, 0)) is True
+        assert _ray_hits_box(orig, (-1, 0, 0), (1, 3, 4, 6, 0, 0)) is True
+        assert _ray_hits_box(orig, (0, 1, 0), (4, 6, 6, 8, 0, 0)) is True
+        assert _ray_hits_box(orig, (0, -1, 0), (4, 6, 1, 3, 0, 0)) is True
+        assert _ray_hits_box(orig, (1, 0, 0), (6, 8, 4, 6, 1, 2)) is False
+        assert _ray_hits_box(orig, (0, 0, 1), (0, 10, 0, 10, 0, 10)) is False
+
+        # 4. _child_attachment_rooms skipping cut=True and matching dst in parent_rooms
+        sub_n = SolveTreeNode(node_id="sub_n", node_type=TreeNodeType.BLOCK, rooms=frozenset({50}))
+        g_att = LayoutGraph(
+            rooms={10: _make_room(10), 11: _make_room(11), 50: _make_room(50)},
+            edges=(
+                LayoutEdge(src=50, dst=10, direction=Direction.east, cut=True),
+                LayoutEdge(src=50, dst=11, direction=Direction.west, cut=False),
+            ),
+        )
+        assert _child_attachment_rooms(sub_n, frozenset({10, 11}), g_att) == {11}
+
+        # 4b. _has_outward_exit_in_direction via reverse edge direction (dst == anchor_vnum)
+        g_rev = LayoutGraph(
+            rooms={1: _make_room(1), 2: _make_room(2), 3: _make_room(3)},
+            edges=(LayoutEdge(src=1, dst=2, direction=Direction.east, cut=False),),
+        )
+        assert _has_outward_exit_in_direction(2, (-1, 0, 0), {3}, g_rev) is True
+        g_rev_bad = LayoutGraph(
+            rooms={1: _make_room(1), 2: _make_room(2), 3: _make_room(3)},
+            edges=(LayoutEdge(src=1, dst=2, direction=999, cut=False),),
+        )
+        assert _has_outward_exit_in_direction(2, (-1, 0, 0), {3}, g_rev_bad) is False
+
+        # 5. _find_bridge_ray_blockers negative guards
+        assert (
+            _find_bridge_ray_blockers(
+                SolveTreeNode(
+                    node_id="bad_anchor",
+                    node_type=TreeNodeType.BLOCK,
+                    rooms=frozenset({3}),
+                    metadata={"cut_contract": BridgeCut((2, 3), int(Direction.east), 1, 99)},
+                ),
+                NodeSolution("bad_anchor", {3: Coord3D(0, 0, 0)}),
+                g_rev,
+            )
+            is None
+        )
+        assert (
+            _find_bridge_ray_blockers(
+                SolveTreeNode(
+                    node_id="bad_dir",
+                    node_type=TreeNodeType.BLOCK,
+                    rooms=frozenset({3}),
+                    metadata={"cut_contract": BridgeCut((2, 3), 999, 1, 2)},
+                ),
+                NodeSolution("bad_dir", {3: Coord3D(0, 0, 0)}),
+                g_rev,
+            )
+            is None
+        )
+        assert (
+            _find_bridge_ray_blockers(
+                SolveTreeNode(
+                    node_id="missing_origin",
+                    node_type=TreeNodeType.BLOCK,
+                    rooms=frozenset({3}),
+                    metadata={"cut_contract": BridgeCut((2, 3), int(Direction.east), 1, 2)},
+                ),
+                NodeSolution("missing_origin", {3: Coord3D(0, 0, 0)}),
+                g_rev,
+            )
+            is None
+        )
+
+        # 6. _try_split_ray_blocked_child: child assignment to base & wing, zero-blocker bridge skip, disconnected edge skip
+        sc_base = SolveTreeNode(node_id="sc_base", node_type=TreeNodeType.BLOCK, rooms=frozenset({80}))
+        sc_wing = SolveTreeNode(node_id="sc_wing", node_type=TreeNodeType.BLOCK, rooms=frozenset({81}))
+        edges_split_edge_cases = (
+            LayoutEdge(src=1, dst=2, direction=Direction.east, weight=1),
+            LayoutEdge(src=2, dst=3, direction=Direction.east, weight=1),
+            LayoutEdge(src=3, dst=80, direction=Direction.south, weight=1),
+            LayoutEdge(src=3, dst=10, direction=Direction.south, weight=1),  # orthogonal bridge separating zero blockers
+            LayoutEdge(src=3, dst=4, direction=Direction.north, weight=1),   # orthogonal bridge separating blocker 6
+            LayoutEdge(src=4, dst=5, direction=Direction.west, weight=2),
+            LayoutEdge(src=5, dst=6, direction=Direction.south, weight=1),
+            LayoutEdge(src=6, dst=81, direction=Direction.west, weight=1),
+            LayoutEdge(src=90, dst=91, direction=Direction.north, weight=1),  # disconnected internal edge
+            LayoutEdge(src=3, dst=92, direction=999, weight=1),  # unsupported direction skipped cleanly
+        )
+        g_split_ec = LayoutGraph(
+            rooms={v: _make_room(v) for v in (1, 2, 3, 4, 5, 6, 10, 80, 81, 90, 91, 92)},
+            edges=edges_split_edge_cases,
+        )
+        ch_ec = SolveTreeNode(
+            node_id="ch_ec",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3, 4, 5, 6, 10, 90, 91}),
+            children=(sc_base, sc_wing),
+            metadata={"cut_contract": BridgeCut((2, 3), int(Direction.east), 1, 2)},
+        )
+        sol_ec = NodeSolution(
+            "ch_ec",
+            {
+                3: Coord3D(3, 1, 0),
+                4: Coord3D(3, 2, 0),
+                5: Coord3D(1, 2, 0),
+                6: Coord3D(1, 1, 0),
+                10: Coord3D(3, 0, 0),
+            },
+            port_coordinates={2: Coord3D(2, 1, 0)},
+        )
+        split_res = _try_split_ray_blocked_child(ch_ec, sol_ec, g_split_ec)
+        assert split_res is not None
+        b_node, w_node = split_res
+        assert b_node.children == (sc_base,)
+        assert w_node.children == (sc_wing,)
+
+        # 7. _extract_status variants
+        assert _extract_status(NodeSolution("s", {}, metadata={"status": SolverStatus.OPTIMAL})) == SolverStatus.OPTIMAL
+        assert _extract_status(NodeSolution("s", {}, metadata={"status": "timeout"})) == SolverStatus.TIMEOUT
+        assert _extract_status(NodeSolution("s", {}, metadata={"status": "unknown"})) == SolverStatus.FEASIBLE
+        assert _extract_status(NodeSolution("s", {}, metadata={"status": 123})) == SolverStatus.FEASIBLE
+
+        # 8. _resynthesize_split_child_solution empty pieces, timeout/feasible statuses, and port-only fallback
+        orig_empty = SolveTreeNode(node_id="c_emp", node_type=TreeNodeType.BLOCK, rooms=frozenset())
+        p_emp_sol = NodeSolution("root", {}, metadata={"status": SolverStatus.OPTIMAL})
+        ms_emp, off_emp, sb_emp = _resynthesize_split_child_solution(orig_empty, [], p_emp_sol, {})
+        assert off_emp == Coord3D(0, 0, 0)
+        assert sb_emp == ()
+        assert ms_emp.metadata["status"] == SolverStatus.OPTIMAL
+
+        orig_port_only = SolveTreeNode(
+            node_id="c_po",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({2}),
+            metadata={"cut_contract": BridgeCut((2, 3), int(Direction.east), 1, 2)},
+        )
+        p_po = SolveTreeNode("c_po__base", TreeNodeType.BLOCK, frozenset({2}))
+        s_po = NodeSolution("c_po__base", {2: Coord3D(0, 0, 0)}, port_coordinates={2: Coord3D(0, 0, 0)}, metadata={"status": SolverStatus.TIMEOUT})
+        ms_to, _off_to, sb_to = _resynthesize_split_child_solution(orig_port_only, [(p_po, s_po)], p_emp_sol, {})
+        assert ms_to.metadata["status"] == SolverStatus.TIMEOUT
+        assert len(sb_to) == 1
+
+        s_po_feas = NodeSolution("c_po__base", {2: Coord3D(0, 0, 0)}, metadata={"status": SolverStatus.FEASIBLE})
+        ms_feas, _, _ = _resynthesize_split_child_solution(orig_port_only, [(p_po, s_po_feas)], p_emp_sol, {})
+        assert ms_feas.metadata["status"] == SolverStatus.FEASIBLE
+
+        # 9. Respect _MAX_DYNAMIC_BRIDGE_SPLIT_DEPTH = 0 cap
+        r1 = _make_room(1, {Direction.east: 2})
+        r2 = _make_room(2, {Direction.west: 1, Direction.east: 3})
+        r3 = _make_room(3, {Direction.west: 2, Direction.north: 4})
+        r4 = _make_room(4, {Direction.south: 3, Direction.east: 40, Direction.west: 5})
+        r40 = _make_room(40, {Direction.west: 4, Direction.south: 8})
+        r8 = _make_room(8, {Direction.north: 40, Direction.west: 7})
+        r7 = _make_room(7, {Direction.east: 8, Direction.north: 6})
+        r6 = _make_room(6, {Direction.south: 7, Direction.north: 5})
+        r5 = _make_room(5, {Direction.south: 6, Direction.east: 4})
+        g_cap = LayoutGraph(
+            rooms={r.vnum: r for r in (r1, r2, r3, r4, r40, r8, r7, r6, r5)},
+            edges=(
+                LayoutEdge(src=1, dst=2, direction=Direction.east, weight=1),
+                LayoutEdge(src=2, dst=3, direction=Direction.east, weight=1),
+                LayoutEdge(src=3, dst=4, direction=Direction.north, weight=1),
+                LayoutEdge(src=4, dst=40, direction=Direction.east, weight=1),
+                LayoutEdge(src=40, dst=8, direction=Direction.south, weight=2),
+                LayoutEdge(src=8, dst=7, direction=Direction.west, weight=4),
+                LayoutEdge(src=7, dst=6, direction=Direction.north, weight=1),
+                LayoutEdge(src=6, dst=5, direction=Direction.north, weight=1),
+                LayoutEdge(src=5, dst=4, direction=Direction.east, weight=3),
+            ),
+        )
+        ch_cap = SolveTreeNode(
+            node_id="ch_cap",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3, 4, 40, 8, 7, 6, 5}),
+            metadata={"cut_contract": BridgeCut((2, 3), int(Direction.east), 1, 2)},
+        )
+        rt_cap = SolveTreeNode(node_id="rt_cap", node_type=TreeNodeType.BLOCK, rooms=frozenset({1, 2}), children=(ch_cap,))
+        with patch("romutil.layout.milp.tree._MAX_DYNAMIC_BRIDGE_SPLIT_DEPTH", 0):
+            sol_cap = HierarchicalTreeSolver().solve_tree(SolveTree(root=rt_cap, graph=g_cap), LayoutOptions(timeout_seconds=15))
+            assert set(sol_cap.node_solutions.keys()) == {"ch_cap", "rt_cap"}

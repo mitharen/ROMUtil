@@ -3912,3 +3912,234 @@ class TestClusterClearanceStateMachine:
                     node=node,
                     total_cluster_budget=20.0,
                 )
+
+    def test_large_cluster_defaults_to_fast_intermediate_pass_and_respects_override(self) -> None:
+        """Clusters with >20 entities default to 8s/0.20 intermediate passes while preserving 0.05 convergence."""
+        from romutil.layout.milp.clearance import ClearanceViolation
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+        from romutil.layout.milp.solver import SolvedClusterExtraction
+
+        large_node = SolveTreeNode(
+            node_id="large_cluster",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset(range(1, 26)),
+        )
+        mock_formulation = MagicMock()
+        mock_formulation.clearance_builder.inject_clearance_cuts.return_value = 1
+
+        solve_calls: list[dict[str, Any]] = []
+
+        def mock_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            solve_calls.append(kwargs)
+            return SolvedClusterExtraction(
+                raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0)},
+                raw_child_offsets={},
+                solver_status=SolverStatus.OPTIMAL,
+            )
+
+        detect_count = 0
+
+        def mock_detect(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal detect_count
+            detect_count += 1
+            if detect_count == 1:
+                return [ClearanceViolation(category="parent_room", item_a=1, item_b=2)]
+            return []
+
+        with (
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            solve_cluster_with_cutting_planes(
+                formulation=mock_formulation,
+                node=large_node,
+                options=LayoutOptions(timeout_seconds=120),
+                total_cluster_budget=200.0,
+            )
+            assert len(solve_calls) == 3
+            assert solve_calls[0]["options"].timeout_seconds == 200
+            assert solve_calls[0]["solver_options"]["ratioGap"] == 0.05
+            assert solve_calls[1]["options"].timeout_seconds == 8
+            assert solve_calls[1]["solver_options"]["ratioGap"] == 0.20
+            assert solve_calls[2]["solver_options"]["ratioGap"] == 0.05
+
+        solve_calls.clear()
+        detect_count = 0
+        with (
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            solve_cluster_with_cutting_planes(
+                formulation=mock_formulation,
+                node=large_node,
+                options=LayoutOptions(
+                    timeout_seconds=120,
+                    intermediate_pass_timeout=10,
+                    intermediate_ratio_gap=0.12,
+                ),
+                total_cluster_budget=200.0,
+            )
+            assert solve_calls[1]["options"].timeout_seconds == 10
+            assert solve_calls[1]["solver_options"]["ratioGap"] == 0.12
+
+    def test_intermediate_pass_timeout_escalation_and_budget_exhaustion(self) -> None:
+        """Intermediate pass failure escalates timeout toward budget and re-raises once exhausted."""
+        from romutil.layout.milp.clearance import ClearanceViolation
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+        from romutil.layout.milp.solver import SolvedClusterExtraction
+
+        large_node = SolveTreeNode(
+            node_id="esc_cluster",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset(range(1, 26)),
+        )
+        mock_formulation = MagicMock()
+        mock_formulation.clearance_builder.inject_clearance_cuts.return_value = 1
+
+        recorded_timeouts: list[int] = []
+        call_idx = 0
+
+        def mock_solve_escalate(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal call_idx
+            call_idx += 1
+            recorded_timeouts.append(kwargs["options"].timeout_seconds)
+            if call_idx == 2:
+                # Pass 1 initial 8s attempt fails -> triggers escalation to 30s on retry (call 3)
+                raise LayoutSolverError("No solution within 8s")
+            return SolvedClusterExtraction(
+                raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0)},
+                raw_child_offsets={},
+                solver_status=SolverStatus.OPTIMAL,
+            )
+
+        detect_count = 0
+
+        def mock_detect(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal detect_count
+            detect_count += 1
+            if detect_count == 1:
+                return [ClearanceViolation(category="parent_room", item_a=1, item_b=2)]
+            return []
+
+        with (
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_escalate),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            ext = solve_cluster_with_cutting_planes(
+                formulation=mock_formulation,
+                node=large_node,
+                options=LayoutOptions(timeout_seconds=120),
+                total_cluster_budget=100.0,
+            )
+            assert ext.solver_status == SolverStatus.OPTIMAL
+            assert recorded_timeouts == [100, 8, 30, 100]
+
+        # When remaining budget is exhausted (rem <= 2.0), LayoutSolverError is re-raised
+        call_idx_exhaust = 0
+
+        def mock_solve_exhaust(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal call_idx_exhaust
+            call_idx_exhaust += 1
+            if call_idx_exhaust == 1:
+                return SolvedClusterExtraction({1: (0, 0, 0)}, {}, SolverStatus.OPTIMAL)
+            raise LayoutSolverError("Timeout with no solution")
+
+        fake_time = [100.0, 100.0, 101.0, 118.5]
+        with (
+            patch("time.monotonic", side_effect=fake_time),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_exhaust),
+            patch(
+                "romutil.layout.milp.cluster.detect_cluster_collisions",
+                return_value=[ClearanceViolation(category="parent_room", item_a=1, item_b=2)],
+            ),
+        ):
+            with pytest.raises(LayoutSolverError, match="Timeout with no solution"):
+                solve_cluster_with_cutting_planes(
+                    formulation=mock_formulation,
+                    node=large_node,
+                    total_cluster_budget=20.0,
+                )
+
+    def test_convergence_preserves_best_clean_extraction_near_budget_end(self) -> None:
+        """Clean incumbent is preserved if convergence reintroduces collisions or crossings with low budget."""
+        from romutil.layout.milp.clearance import ClearanceViolation
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+        from romutil.layout.milp.solver import SolvedClusterExtraction
+
+        node = SolveTreeNode(node_id="clean_node", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2}))
+        mock_formulation = MagicMock()
+        mock_formulation.clearance_builder.inject_clearance_cuts.return_value = 1
+
+        clean_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (10, 0, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        dirty_conv_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (0, 0, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.TIMEOUT,
+        )
+
+        # Case 1: CONVERGENCE reintroduces physical collision when remaining_budget < 1.0
+        detect_idx = 0
+
+        def mock_detect_phys(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal detect_idx
+            detect_idx += 1
+            if detect_idx == 1:
+                return [ClearanceViolation(category="parent_room", item_a=1, item_b=2)]
+            if detect_idx == 2:
+                return []
+            return [ClearanceViolation(category="parent_room", item_a=1, item_b=2)]
+
+        solve_idx = 0
+
+        def mock_solve_phys(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal solve_idx
+            solve_idx += 1
+            return dirty_conv_ext if solve_idx == 3 else clean_ext
+
+        # t_start=0, iter0=1, iter1=2, pre-conv=5, post-conv=9.5 (rem=0.5 < 1.0)
+        with (
+            patch("time.monotonic", side_effect=[0.0, 1.0, 2.0, 5.0, 9.5]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_phys),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect_phys),
+        ):
+            ext = solve_cluster_with_cutting_planes(
+                formulation=mock_formulation,
+                node=node,
+                total_cluster_budget=10.0,
+            )
+            assert ext is clean_ext
+
+        # Case 2: CONVERGENCE reintroduces corridor_crossing when remaining_budget < 15.0
+        detect_idx = 0
+
+        def mock_detect_cross(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal detect_idx
+            detect_idx += 1
+            if detect_idx == 1:
+                return [ClearanceViolation(category="parent_room", item_a=1, item_b=2)]
+            if detect_idx == 2:
+                return []
+            return [ClearanceViolation(category="corridor_crossing", item_a=0, item_b=1)]
+
+        solve_idx = 0
+
+        def mock_solve_cross(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal solve_idx
+            solve_idx += 1
+            return dirty_conv_ext if solve_idx == 3 else clean_ext
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 1.0, 2.0, 10.0, 16.0]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_cross),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect_cross),
+        ):
+            ext2 = solve_cluster_with_cutting_planes(
+                formulation=mock_formulation,
+                node=node,
+                total_cluster_budget=25.0,
+            )
+            assert ext2 is clean_ext

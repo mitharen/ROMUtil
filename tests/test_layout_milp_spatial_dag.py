@@ -267,11 +267,51 @@ class TestCandidateDirectionFiltering:
         # Direction 'l': 20 > 10 along X requires x(20) - x(10) >= 1 (consistent with min_length 2)
         assert DIR_LEFT in valid_dirs
 
-        # Transverse axes Y and Z remain unconstrained by X-aligned edge, allowing transverse separation
-        assert DIR_AHEAD in valid_dirs
-        assert DIR_BEHIND in valid_dirs
-        assert DIR_UP in valid_dirs
-        assert DIR_DOWN in valid_dirs
+        # Without transverse slack, rigid zero-axis equalities on Y and Z eliminate transverse/elevation separation
+        assert valid_dirs == [DIR_LEFT]
+        for eliminated in (DIR_RIGHT, DIR_AHEAD, DIR_BEHIND, DIR_UP, DIR_DOWN):
+            assert eliminated in pruned
+
+    def test_active_edge_with_transverse_slack_allows_transverse_separation(self) -> None:
+        """Rigid edges with allow_transverse_slack=True permit planar transverse separation while still pruning Z."""
+        ae_x = ActiveEdge(
+            edge_id="e_x_slack",
+            src=10,
+            dst=20,
+            direction=(1, 0, 0),
+            min_length=2,
+            associated_rooms=frozenset({10, 20}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+        )
+        ae_y = ActiveEdge(
+            edge_id="e_y_slack",
+            src=30,
+            dst=40,
+            direction=(0, 1, 0),
+            min_length=2,
+            associated_rooms=frozenset({30, 40}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+        )
+        mock_inv = MagicMock()
+        mock_inv.active_edges = [ae_x, ae_y]
+        mock_inv.child_alignments = ()
+
+        mock_form = MagicMock()
+        mock_form.inventory = mock_inv
+
+        dag = ClusterPositionalDAG.from_formulation(mock_form)
+
+        valid_x, pruned_x = dag.filter_candidate_directions(10, 20, "parent_room", mock_inv)
+        assert valid_x == [DIR_LEFT, DIR_AHEAD, DIR_BEHIND]
+        for eliminated in (DIR_RIGHT, DIR_UP, DIR_DOWN):
+            assert eliminated in pruned_x
+
+        valid_y, pruned_y = dag.filter_candidate_directions(30, 40, "parent_room", mock_inv)
+        assert valid_y == [DIR_RIGHT, DIR_LEFT, DIR_BEHIND]
+        for eliminated in (DIR_AHEAD, DIR_UP, DIR_DOWN):
+            assert eliminated in pruned_y
 
     def test_unsatisfiable_collision_detection(self) -> None:
         """When two items are rigidly constrained to exact coordinate equality, all directions are pruned."""
