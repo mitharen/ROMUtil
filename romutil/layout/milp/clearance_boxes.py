@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 from romutil.layout.geometry import BoundingBox3D
 from romutil.layout.milp.inventory import (
     ActiveEdge,
-    BoundaryExit,
     EndpointRef,
     get_child_coordinate,
 )
@@ -19,7 +18,6 @@ from romutil.layout.milp.spatial_dag import (
     ClusterPositionalDAG,
     EntitySpatialBounds,
     SpatialBoundExpr,
-    _get_boundary_exit_bounds,
     _get_corridor_bounds,
     resolve_endpoint_node_offset,
 )
@@ -365,7 +363,7 @@ def _unwrap_child_ref(item: Any) -> tuple[str, int] | None:
         and len(item) == 2
         and isinstance(item[0], str)
         and isinstance(item[1], int)
-        and item[0] not in ("bexit", "edge")
+        and item[0] != "edge"
     ):
         return (item[0], item[1])
     return None
@@ -581,23 +579,14 @@ class ExactCollisionCutGrower:
         sb = _as_bbox3d(sbs[box_idx])
 
         edge_idx: int | None = None
-        bexit_idx: int | None = None
         if isinstance(item_a, int):
             edge_idx = item_a
         elif hasattr(item_a, "edge_index"):
             edge_idx = int(item_a.edge_index)
-        elif isinstance(item_a, tuple) and len(item_a) == 2 and item_a[0] == "bexit":
-            bexit_idx = int(item_a[1])
-        elif hasattr(item_a, "exit_index"):
-            bexit_idx = int(item_a.exit_index)
 
         if edge_idx is not None:
             return self._grow_active_edge_child_cut(
                 item_a, edge_idx, cid, sb, extraction
-            )
-        if bexit_idx is not None:
-            return self._grow_bexit_child_cut(
-                item_a, bexit_idx, cid, sb, extraction
             )
         return None
 
@@ -686,91 +675,6 @@ class ExactCollisionCutGrower:
         return GrownClearanceCut(
             kind="grown_corridor_child",
             norm_key=("grown_corridor_child", ("edge", edge_idx), cid, box),
-            entity_a=raw_corridor,
-            target_child_id=cid,
-            obstacle_box=box,
-            valid_dirs=tuple(valid_dirs),
-        )
-
-    def _grow_bexit_child_cut(
-        self,
-        raw_corridor: Any,
-        bexit_idx: int,
-        cid: str,
-        sb: BoundingBox3D,
-        extraction: SolvedClusterExtraction,
-    ) -> GrownClearanceCut | None:
-        bexits = getattr(self.inventory, "boundary_exits", ())
-        if bexit_idx < 0 or bexit_idx >= len(bexits):
-            return None
-        be: BoundaryExit = bexits[bexit_idx]
-        if be.direction[2] != 0 or sum(1 for d in be.direction if d != 0) != 1:
-            return None
-
-        c_sol = self.inventory.child_solutions.get(cid)
-        if c_sol is not None:
-            if (
-                be.port in c_sol.local_coordinates
-                or be.port in getattr(c_sol, "port_coordinates", {})
-                or be.port in c_sol.metadata.get("port_coordinates", {})
-            ):
-                return None
-
-        dz_locked = get_locked_z_diff(self.spatial_dag, be.port, 0, cid, 0)
-        if dz_locked is None or dz_locked not in self._child_cells_by_z.get(cid, {}):
-            return None
-
-        try:
-            p1 = extract_entity_coord(be.port, extraction, self.inventory)
-        except KeyError:
-            return None
-
-        dx, dy, dz = be.direction
-        p2 = (p1[0] + dx * be.length, p1[1] + dy * be.length, p1[2] + dz * be.length)
-        cx, cy, _cz = extraction.raw_child_offsets[cid]
-        if dx != 0:
-            c_x0 = min(p1[0] + dx, p2[0]) - cx
-            c_x1 = max(p1[0] + dx, p2[0]) - cx
-            c_y0 = c_y1 = p1[1] - cy
-            axis = "x"
-        else:
-            c_x0 = c_x1 = p1[0] - cx
-            c_y0 = min(p1[1] + dy, p2[1]) - cy
-            c_y1 = max(p1[1] + dy, p2[1]) - cy
-            axis = "y"
-
-        ov_x0, ov_x1 = max(sb.min_x, c_x0), min(sb.max_x, c_x1)
-        ov_y0, ov_y1 = max(sb.min_y, c_y0), min(sb.max_y, c_y1)
-        if ov_x0 > ov_x1 or ov_y0 > ov_y1:
-            return None
-        sx, sy = ov_x0, ov_y0
-
-        p_size = self._planar_comp_sizes.get(be.port, be.length + 1)
-        oc_f = self._get_hole_filled_slice(cid, dz_locked, max(0, p_size - 1))
-        # The port cell lies immediately behind the interior box (-dx, -dy) and cannot overlap O_C,
-        # which excludes any interior box start at O_C + (+dx, +dy).
-        neg_dil = 1 if (dx < 0 or dy < 0) else 0
-        pos_dil = 1 if (dx > 0 or dy > 0) else 0
-        oc_f = dilate_2d_along_axis(oc_f, axis, neg=neg_dil, pos=pos_dil)
-        oc_f = fill_narrow_gaps_along_axis(oc_f, axis, be.length)
-
-        if (sx, sy) not in oc_f:
-            return None
-        rx0, rx1, ry0, ry1 = max_rect_2d_containing(oc_f, sx, sy)
-        box = BoundingBox3D(rx0, rx1, ry0, ry1, dz_locked, dz_locked)
-
-        valid_dirs = filter_box_directions(
-            self.spatial_dag,
-            _get_boundary_exit_bounds(be, self.inventory, full=False),
-            _child_offset_bounds(cid, box),
-            _PLANAR_DIRS,
-        )
-        if not valid_dirs:
-            return None
-
-        return GrownClearanceCut(
-            kind="grown_corridor_child",
-            norm_key=("grown_corridor_child", ("bexit", bexit_idx), cid, box),
             entity_a=raw_corridor,
             target_child_id=cid,
             obstacle_box=box,

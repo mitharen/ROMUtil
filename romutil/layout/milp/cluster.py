@@ -7,12 +7,13 @@ import time
 from dataclasses import replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from romutil.layout.ir import LayoutGraph, NodeSolution, SolveTreeNode, TreeNodeType
-from romutil.layout.milp.clearance import detect_cluster_collisions
+from romutil.layout.milp.clearance import ClearanceViolation, detect_cluster_collisions
 from romutil.layout.milp.formulation import ClusterFormulation, formulate_cluster_model
 from romutil.layout.milp.inventory import (
+    ActiveEdge,
     get_child_boundary_ports,
     inventory_cluster,
 )
@@ -80,6 +81,18 @@ def _has_populated_warmstart_coordinates(formulation: ClusterFormulation) -> boo
         except (TypeError, AttributeError):
             continue
     return True
+
+
+def _has_compacted_crossing(
+    crossings: Sequence[ClearanceViolation],
+    active_edges: Sequence[ActiveEdge],
+) -> bool:
+    """Return True if any crossing violation involves a compacted multi-room hallway (min_length > 1)."""
+    return any(
+        isinstance(idx, int) and 0 <= idx < len(active_edges) and active_edges[idx].min_length > 1
+        for viol in crossings
+        for idx in (viol.item_a, viol.item_b)
+    )
 
 
 def solve_cluster_with_cutting_planes(
@@ -227,10 +240,17 @@ def solve_cluster_with_cutting_planes(
 
         physical_collisions = [v for v in violations if v.category != "corridor_crossing"]
         corridor_crossings = [v for v in violations if v.category == "corridor_crossing"]
+        has_compacted_crossing = _has_compacted_crossing(
+            corridor_crossings, formulation.inventory.active_edges
+        )
 
         if not physical_collisions and not corridor_crossings:
             best_clean_extraction = extraction
-        if not physical_collisions and (best_clean_extraction is None or not corridor_crossings):
+        if (
+            not physical_collisions
+            and not has_compacted_crossing
+            and (best_clean_extraction is None or not corridor_crossings)
+        ):
             best_physical_extraction = extraction
 
         if physical_collisions:
@@ -255,8 +275,17 @@ def solve_cluster_with_cutting_planes(
             new_cuts = formulation.clearance_builder.inject_clearance_cuts(
                 corridor_crossings, max_cuts_per_pass=max_crossing_cuts
             )
-            if new_cuts > 0 and remaining_budget >= 15.0:
+            if new_cuts > 0 and (has_compacted_crossing or remaining_budget >= 15.0):
                 continue
+            if has_compacted_crossing:
+                if best_clean_extraction is not None:
+                    extraction = best_clean_extraction
+                    phase = ClusterSolvePhase.DONE
+                    break
+                if best_physical_extraction is not None:
+                    extraction = best_physical_extraction
+                    phase = ClusterSolvePhase.DONE
+                    break
 
         # Both physical collisions and corridor crossings are zero.
         if (
@@ -326,6 +355,9 @@ def solve_cluster_with_cutting_planes(
                 elif final_crossings:
                     phase = ClusterSolvePhase.CROSSING_CLEARANCE
                     extraction = final_extraction
+                    final_has_compacted = _has_compacted_crossing(
+                        final_crossings, formulation.inventory.active_edges
+                    )
                     max_crossing_cuts = (
                         getattr(options, "max_cuts_per_pass", 20) if options else 20
                     )
@@ -333,10 +365,12 @@ def solve_cluster_with_cutting_planes(
                         final_crossings, max_cuts_per_pass=max_crossing_cuts
                     )
                     remaining_budget = total_cluster_budget - (time.monotonic() - t_start)
-                    if new_cuts > 0 and remaining_budget >= 15.0:
+                    if new_cuts > 0 and (final_has_compacted or remaining_budget >= 15.0):
                         continue
                     if best_clean_extraction is not None:
                         extraction = best_clean_extraction
+                    elif final_has_compacted and best_physical_extraction is not None:
+                        extraction = best_physical_extraction
                     phase = ClusterSolvePhase.DONE
                     break
                 else:

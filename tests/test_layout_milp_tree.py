@@ -9,6 +9,7 @@ import pytest
 from romutil.layout.assembly.hierarchical import HierarchicalLayoutAssembler
 from romutil.layout.geometry import BoundingBox3D
 from romutil.layout.ir import (
+    ArticulationPointCut,
     BridgeCut,
     CutType,
     LayoutEdge,
@@ -36,6 +37,7 @@ from romutil.layout.milp.tree import (
     _ray_hits_box,
     _resynthesize_split_child_solution,
     _safe_displacement,
+    _try_detach_articulation_ray_blocking_subchild,
     _try_split_ray_blocked_child,
 )
 from romutil.layout.protocols import TreeSolver
@@ -1124,3 +1126,234 @@ class TestDynamicBridgeRaySplit:
         with patch("romutil.layout.milp.tree._MAX_DYNAMIC_BRIDGE_SPLIT_DEPTH", 0):
             sol_cap = HierarchicalTreeSolver().solve_tree(SolveTree(root=rt_cap, graph=g_cap), LayoutOptions(timeout_seconds=15))
             assert set(sol_cap.node_solutions.keys()) == {"ch_cap", "rt_cap"}
+
+    def test_try_split_ray_blocked_child_groups_connected_sibling_subchildren(self) -> None:
+        """Connected sibling sub-children (such as intermediate _b split pieces) stay grouped on the same side."""
+        # Parent room 1 -> East -> 2 -> East -> 3 (child entry).
+        # Blocked ray from anchor 2 is West (-X). Blocker 6 sits at x=1, y=1.
+        # Wing sub-child sc_wing_a attaches to 6 (on side_other), while sc_wing_b only connects to sc_wing_a
+        # (zero direct attachment to ch.rooms), with severed_bridge_edges=((81, 82),).
+        sc_wing_a = SolveTreeNode(
+            node_id="sc_wing_a",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({81}),
+            metadata={
+                "cut_contract": BridgeCut((6, 81), int(Direction.west), 1, 6),
+                "severed_bridge_edges": ((81, 82),),
+            },
+        )
+        sc_wing_b = SolveTreeNode(
+            node_id="sc_wing_b",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({82}),
+            metadata={"severed_bridge_edges": ((81, 82),)},
+        )
+        g_grp = LayoutGraph(
+            rooms={v: _make_room(v) for v in (1, 2, 3, 4, 5, 6, 81, 82)},
+            edges=(
+                LayoutEdge(src=1, dst=2, direction=Direction.east, weight=1),
+                LayoutEdge(src=2, dst=3, direction=Direction.east, weight=1),
+                LayoutEdge(src=3, dst=4, direction=Direction.north, weight=1),
+                LayoutEdge(src=4, dst=5, direction=Direction.west, weight=2),
+                LayoutEdge(src=5, dst=6, direction=Direction.south, weight=1),
+                LayoutEdge(src=6, dst=81, direction=Direction.west, weight=1),
+                LayoutEdge(src=81, dst=82, direction=Direction.south, weight=1),
+            ),
+        )
+        ch_grp = SolveTreeNode(
+            node_id="ch_grp",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({3, 4, 5, 6}),
+            children=(sc_wing_a, sc_wing_b),
+            metadata={"cut_contract": BridgeCut((2, 3), int(Direction.east), 1, 2)},
+        )
+        sol_grp = NodeSolution(
+            "ch_grp",
+            {
+                3: Coord3D(3, 1, 0),
+                4: Coord3D(3, 2, 0),
+                5: Coord3D(1, 2, 0),
+                6: Coord3D(1, 1, 0),
+            },
+            port_coordinates={2: Coord3D(2, 1, 0)},
+        )
+        split_res = _try_split_ray_blocked_child(ch_grp, sol_grp, g_grp)
+        assert split_res is not None
+        b_node, w_node = split_res
+        assert b_node.children == ()
+        assert {c.node_id for c in w_node.children} == {"sc_wing_a", "sc_wing_b"}
+        assert w_node.metadata.get("severed_bridge_edges") == ((81, 82),)
+
+        # If a bridge connects sc_wing_b back to room 3 (on side_v), the connected group straddles
+        # the split boundary and prevents separating across (3, 4) -> split returns None.
+        g_straddle = LayoutGraph(
+            rooms=g_grp.rooms,
+            edges=g_grp.edges + (LayoutEdge(src=3, dst=82, direction=Direction.south, weight=1),),
+        )
+        assert _try_split_ray_blocked_child(ch_grp, sol_grp, g_straddle) is None
+
+    def test_detaches_articulation_ray_blocking_subchild_end_to_end(self) -> None:
+        """Detaches a BridgeCut sub-child inside an ArticulationPointCut loop blocking an outward ray."""
+        r106 = _make_room(106, {Direction.east: 120, Direction.west: 112, Direction.south: 105})
+        r120 = _make_room(120, {Direction.west: 106})
+        r112 = _make_room(112, {Direction.east: 106, Direction.south: 111})
+        r111 = _make_room(111, {Direction.north: 112, Direction.east: 105})
+        r105 = _make_room(105, {Direction.west: 111, Direction.north: 106, Direction.east: 110})
+        r110 = _make_room(110, {Direction.west: 105, Direction.north: 119})
+        r119 = _make_room(119, {Direction.south: 110})
+
+        edges = (
+            LayoutEdge(src=106, dst=120, direction=Direction.east, weight=1),
+            LayoutEdge(src=106, dst=112, direction=Direction.west, weight=1),
+            LayoutEdge(src=112, dst=111, direction=Direction.south, weight=1),
+            LayoutEdge(src=111, dst=105, direction=Direction.east, weight=1),
+            LayoutEdge(src=105, dst=106, direction=Direction.north, weight=1),
+            LayoutEdge(src=105, dst=110, direction=Direction.east, weight=1),
+            LayoutEdge(src=110, dst=119, direction=Direction.north, weight=1),
+        )
+        graph = LayoutGraph(
+            rooms={r.vnum: r for r in (r106, r120, r112, r111, r105, r110, r119)},
+            edges=edges,
+        )
+
+        sc = SolveTreeNode(
+            node_id="sc_wing",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({110, 119}),
+            children=(),
+            metadata={
+                "cut_type": CutType.BRIDGE,
+                "anchor_vnum": 105,
+                "bridge_edge": (105, 110),
+                "direction": int(Direction.east),
+                "weight": 1,
+                "cut_contract": BridgeCut((105, 110), int(Direction.east), 1, 105),
+            },
+        )
+        ap_child = SolveTreeNode(
+            node_id="ap_loop",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({105, 111, 112}),
+            children=(sc,),
+            metadata={
+                "cut_type": CutType.ARTICULATION_POINT,
+                "anchor_vnum": 106,
+                "cut_contract": ArticulationPointCut(anchor_vnum=106),
+            },
+        )
+        root = SolveTreeNode(
+            node_id="root",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({106, 120}),
+            children=(ap_child,),
+        )
+        tree = SolveTree(root=root, components=(root,), graph=graph)
+
+        sol = HierarchicalTreeSolver().solve_tree(tree, options=LayoutOptions(timeout_seconds=15))
+
+        assert set(sol.node_solutions.keys()) == {"sc_wing", "ap_loop", "root"}
+        assert sol.node_solutions["root"].metadata["status"] == SolverStatus.OPTIMAL
+        assert set(sol.node_solutions["root"].metadata["child_offsets"].keys()) == {"ap_loop"}
+        assert "sc_wing" in sol.node_solutions["ap_loop"].metadata["child_offsets"]
+        assert "corridor_105_110_1" in sol.node_solutions["ap_loop"].metadata["all_room_coordinates"]
+
+        assembled = HierarchicalLayoutAssembler().assemble(
+            tree=tree,
+            solution=sol,
+            simplified=SimplifiedGraph(graph=graph),
+        )
+        assert_zero_coordinate_collisions(assembled)
+        assert assembled.coordinates[120].x == assembled.coordinates[106].x + 1
+        assert assembled.coordinates[120].y == assembled.coordinates[106].y
+        assert assembled.coordinates[110].x >= assembled.coordinates[105].x + 2
+
+    def test_try_detach_articulation_ray_blocking_subchild_guards(self) -> None:
+        """Negative unit guards verify cut warps, sibling-connected sub-children, and non-blockers do not detach."""
+        sc = SolveTreeNode(
+            node_id="sc_wing",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({110, 119}),
+            children=(),
+            metadata={
+                "cut_type": CutType.BRIDGE,
+                "anchor_vnum": 105,
+                "bridge_edge": (105, 110),
+                "direction": int(Direction.east),
+                "weight": 1,
+                "cut_contract": BridgeCut((105, 110), int(Direction.east), 1, 105),
+            },
+        )
+        ap_child = SolveTreeNode(
+            node_id="ap_loop",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({105, 111, 112}),
+            children=(sc,),
+            metadata={"cut_contract": ArticulationPointCut(anchor_vnum=106)},
+        )
+        ap_sol = NodeSolution(
+            node_id="ap_loop",
+            local_coordinates={
+                105: Coord3D(1, 0, 0),
+                111: Coord3D(0, 0, 0),
+                112: Coord3D(0, 1, 0),
+            },
+            port_coordinates={106: Coord3D(1, 1, 0)},
+            metadata={
+                "child_offsets": {"sc_wing": Coord3D(2, 0, 0)},
+                "child_sub_boxes": {"sc_wing": (BoundingBox3D(0, 0, 0, 1, 0, 0),)},
+            },
+        )
+        base_rooms = {
+            v: _make_room(v)
+            for v in (105, 106, 110, 111, 112, 119, 120)
+        }
+
+        # 1. Cut warp outward exit from anchor 106 -> must NOT trigger detachment
+        g_cut_warp = LayoutGraph(
+            rooms=base_rooms,
+            edges=(
+                LayoutEdge(src=106, dst=120, direction=Direction.east, weight=1, cut=True),
+                LayoutEdge(src=105, dst=110, direction=Direction.east, weight=1),
+            ),
+        )
+        assert _try_detach_articulation_ray_blocking_subchild(ap_child, ap_sol, g_cut_warp) is None
+
+        # 2. Sub-child connected to another sibling sub-child -> must NOT detach
+        sc_sib = SolveTreeNode(
+            node_id="sc_sib",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({130}),
+            children=(),
+            metadata={"cut_contract": BridgeCut((111, 130), int(Direction.south), 1, 111)},
+        )
+        ap_two_sibs = SolveTreeNode(
+            node_id="ap_loop",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({105, 111, 112}),
+            children=(sc, sc_sib),
+            metadata={"cut_contract": ArticulationPointCut(anchor_vnum=106)},
+        )
+        g_sib_linked = LayoutGraph(
+            rooms={**base_rooms, 130: _make_room(130)},
+            edges=(
+                LayoutEdge(src=106, dst=120, direction=Direction.east, weight=1),
+                LayoutEdge(src=110, dst=130, direction=Direction.south, weight=1),
+            ),
+        )
+        assert _try_detach_articulation_ray_blocking_subchild(ap_two_sibs, ap_sol, g_sib_linked) is None
+
+        # 3. Non-blocking sub-child box (y=2, outside anchor y=1) -> must NOT detach
+        ap_non_blocking_sol = NodeSolution(
+            node_id="ap_loop",
+            local_coordinates=ap_sol.local_coordinates,
+            port_coordinates=ap_sol.port_coordinates,
+            metadata={
+                "child_offsets": {"sc_wing": Coord3D(2, 2, 0)},
+                "child_sub_boxes": {"sc_wing": (BoundingBox3D(0, 0, 0, 1, 0, 0),)},
+            },
+        )
+        g_east = LayoutGraph(
+            rooms=base_rooms,
+            edges=(LayoutEdge(src=106, dst=120, direction=Direction.east, weight=1),),
+        )
+        assert _try_detach_articulation_ray_blocking_subchild(ap_child, ap_non_blocking_sol, g_east) is None

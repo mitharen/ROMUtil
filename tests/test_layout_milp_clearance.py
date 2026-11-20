@@ -24,7 +24,7 @@ from romutil.layout.milp.clearance import (
     ClearanceViolation,
     VIOLATION_TIER_PRIORITY,
 )
-from romutil.layout.milp.inventory import ActiveEdge, BoundaryExit
+from romutil.layout.milp.inventory import ActiveEdge
 from romutil.layout.milp.solver import SolvedClusterExtraction
 from romutil.models import Direction, Room
 from romutil.types import (
@@ -476,24 +476,17 @@ class TestClearanceCutPriorityAndLimits:
             assert len(builder.separated_pairs) == 2
 
     def test_get_corridor_boxes_typed_entities(self) -> None:
-        """get_corridor_interior_box and get_corridor_full_box resolve CorridorClearanceBox and BoundaryExitClearanceBox."""
-        from romutil.layout.milp.clearance import (
-            BoundaryExitClearanceBox,
-            CorridorClearanceBox,
-        )
+        """get_corridor_interior_box and get_corridor_full_box resolve CorridorClearanceBox."""
+        from romutil.layout.milp.clearance import CorridorClearanceBox
 
         formulation = MagicMock()
         formulation.inventory.active_edges = ["edge0", "edge1"]
-        formulation.inventory.boundary_exits = ["exit0", "exit1"]
         formulation.get_corridor_interior_box.return_value = (0, 0, 0, 1, 1, 1)
         formulation.get_corridor_full_box.return_value = (0, 0, 0, 2, 2, 2)
-        formulation.get_boundary_exit_interior_box.return_value = (3, 3, 3, 4, 4, 4)
-        formulation.get_boundary_exit_full_box.return_value = (3, 3, 3, 5, 5, 5)
 
         builder = ClearanceConstraintBuilder(formulation)
 
         c_box = CorridorClearanceBox(edge_index=1, edge_id="e1")
-        b_box = BoundaryExitClearanceBox(exit_index=0, edge_id="be0")
 
         assert builder.get_corridor_interior_box(c_box) == (0, 0, 0, 1, 1, 1)
         formulation.get_corridor_interior_box.assert_called_with("edge1")
@@ -501,16 +494,9 @@ class TestClearanceCutPriorityAndLimits:
         assert builder.get_corridor_full_box(c_box) == (0, 0, 0, 2, 2, 2)
         formulation.get_corridor_full_box.assert_called_with("edge1")
 
-        assert builder.get_corridor_interior_box(b_box) == (3, 3, 3, 4, 4, 4)
-        formulation.get_boundary_exit_interior_box.assert_called_with("exit0")
-
-        assert builder.get_corridor_full_box(b_box) == (3, 3, 3, 5, 5, 5)
-        formulation.get_boundary_exit_full_box.assert_called_with("exit0")
-
     def test_inject_clearance_cuts_typed_entities(self) -> None:
         """inject_clearance_cuts sorts and injects violations using typed clearance box objects."""
         from romutil.layout.milp.clearance import (
-            BoundaryExitClearanceBox,
             ChildSubClearanceBox,
             CorridorClearanceBox,
             RoomClearanceBox,
@@ -531,7 +517,7 @@ class TestClearanceCutPriorityAndLimits:
             ),
             ClearanceViolation(
                 category="corridor_crossing",
-                item_a=BoundaryExitClearanceBox(0, "b0"),
+                item_a=CorridorClearanceBox(0, "e0"),
                 item_b=CorridorClearanceBox(1, "e1"),
             ),
         ]
@@ -613,7 +599,7 @@ class TestClearanceCutPriorityAndLimits:
             assert builder.separated_pairs == {("child_child", ("c1", 1), ("c2", 2))}
 
     def test_corridor_child_detect_computes_overlap_volume(self) -> None:
-        """detect_cluster_collisions records exact overlap_volume for active edge and boundary exit corridor_child hits."""
+        """detect_cluster_collisions records exact overlap_volume for active edge corridor_child hits."""
         c_sib = SolveTreeNode(node_id="c_sib", node_type="leaf", rooms=frozenset({200}))
         parent = SolveTreeNode(
             node_id="p_root",
@@ -628,8 +614,6 @@ class TestClearanceCutPriorityAndLimits:
         )
         graph = _make_graph([10, 20, 30, 200], [(10, 20, Direction.east, 6)])
         inv = inventory_cluster(node=parent, child_solutions={"c_sib": sol}, graph=graph)
-        be = BoundaryExit(port=30, direction=(1, 0, 0), length=4, target_vnum=999)
-        inv = dataclasses.replace(inv, boundary_exits=(be,))
         formulation = ClusterFormulation(inventory=inv)
 
         extraction = SolvedClusterExtraction(
@@ -641,8 +625,5 @@ class TestClearanceCutPriorityAndLimits:
             v for v in detect_cluster_collisions(formulation, extraction) if v.category == "corridor_child"
         ]
         edge_viol = next(v for v in viols if v.item_a == 0)
-        bexit_viol = next(v for v in viols if v.item_a == ("bexit", 0))
         # Edge interior is x in [1, 5] vs box x in [2, 4] -> overlap length 3
         assert edge_viol.overlap_volume == 3
-        # Bexit interior is x in [2, 5] vs box x in [2, 4] -> overlap length 3
-        assert bexit_viol.overlap_volume == 3

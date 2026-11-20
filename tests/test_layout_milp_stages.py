@@ -1238,32 +1238,49 @@ class TestStage1Inventory:
         assert inv.child_sub_boxes["c_unsolved"] == ()
         assert "c_solved" in inv.child_sub_boxes
 
-    def test_inventory_cluster_ignores_nonpositive_flavor_boundary_exits(self) -> None:
-        """Stage 1 inventory excludes look-only flavor exits with non-positive target_vnum."""
-        rooms = {
-            1: Room(
-                vnum=1,
-                name="Room 1",
-                description="",
-                exits=(
-                    Exit(direction=Direction.east, dst_vnum=-1),
-                    Exit(direction=Direction.west, dst_vnum=0),
-                    Exit(direction=Direction.north, dst_vnum=999),
-                ),
-            ),
-            2: Room(vnum=2, name="Room 2", description="", exits=()),
-        }
-        edges = (
-            LayoutEdge(src=1, dst=2, direction=int(Direction.south), weight=1, cut=False),
-            LayoutEdge(src=2, dst=-1, direction=int(Direction.east), weight=1, cut=False),
-            LayoutEdge(src=2, dst=888, direction=int(Direction.west), weight=1, cut=False),
+    def test_inventory_cluster_preserves_sub_boxes_for_intermediate_self_anchored_child(self) -> None:
+        """Intermediate split sub-nodes anchored on their own owned room retain keep-out sub-boxes."""
+        c_mid = SolveTreeNode(
+            node_id="s_mid_b",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({20}),
+            metadata={
+                "cut_type": CutType.ARTICULATION_POINT,
+                "cut_contract": ArticulationPointCut(anchor_vnum=20),
+                "anchor_vnum": 20,
+            },
         )
-        graph = LayoutGraph(rooms=rooms, edges=edges)
-        node = SolveTreeNode(node_id="leaf_flavor", node_type="leaf", rooms=frozenset({1, 2}))
+        c_ext = SolveTreeNode(
+            node_id="c_ext",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({30}),
+            metadata={
+                "cut_type": CutType.ARTICULATION_POINT,
+                "cut_contract": ArticulationPointCut(anchor_vnum=10),
+                "anchor_vnum": 10,
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="p_root",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({10}),
+            children=(c_mid, c_ext),
+        )
+        sol_mid = NodeSolution("s_mid_b", {20: Coord3D(0, 0, 0)}, ())
+        sol_ext = NodeSolution(
+            "c_ext",
+            {30: Coord3D(0, 1, 0)},
+            port_coordinates={10: Coord3D(0, 0, 0)},
+        )
+        graph = _make_graph([10, 20, 30], [(10, 30, Direction.north, 1)])
 
-        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
-
-        assert {(be.port, be.target_vnum) for be in inv.boundary_exits} == {(1, 999), (2, 888)}
+        inv = inventory_cluster(
+            node=parent,
+            child_solutions={"s_mid_b": sol_mid, "c_ext": sol_ext},
+            graph=graph,
+        )
+        assert inv.child_sub_boxes["s_mid_b"] == (BoundingBox3D(0, 0, 0, 0, 0, 0),)
+        assert inv.child_sub_boxes["c_ext"] == (BoundingBox3D(0, 0, 1, 1, 0, 0),)
 
 
 class TestStage2Formulation:
@@ -1728,59 +1745,6 @@ class TestStage2Formulation:
         assert len(formulation.model.s_stretch_1) == 0
         assert len(formulation.model.s_stretch_2) == 0
         assert len(formulation.model.s_stretch_3) == 0
-
-    def test_external_boundary_port_edge_stretch_discounted(self) -> None:
-        """Temporary edges incident to external boundary ports prefer stretching over owned internal edges."""
-        rooms = {
-            v: Room(
-                vnum=v,
-                name=f"Room {v}",
-                description="",
-                exits=((Exit(direction=Direction.east, dst_vnum=v * 10),) if v in (10, 20) else ()),
-            )
-            for v in (10, 11, 20, 30)
-        }
-        edges = (
-            LayoutEdge(src=10, dst=11, direction=int(Direction.north), weight=1, cut=False),
-            LayoutEdge(src=11, dst=20, direction=int(Direction.north), weight=1, cut=False),
-            LayoutEdge(src=11, dst=30, direction=int(Direction.east), weight=1, cut=False),
-        )
-        graph = LayoutGraph(rooms=rooms, edges=edges)
-        c_box = SolveTreeNode(node_id="c_box", node_type="block", rooms=frozenset({30}))
-        c_sol = NodeSolution(
-            node_id="c_box",
-            local_coordinates={30: Coord3D(0, 1, 0)},
-            sub_boxes=(BoundingBox3D(0, 1, 0, 2, 0, 0),),
-        )
-        node = SolveTreeNode(
-            node_id="s_poles",
-            node_type=TreeNodeType.SERIES_LOOP,
-            rooms=frozenset({11}),
-            children=(c_box,),
-            metadata={"cut_contract": SplitPairCut(poles=(10, 20))},
-        )
-        inv = inventory_cluster(node=node, child_solutions={"c_box": c_sol}, graph=graph)
-        formulation = ClusterFormulation(inventory=inv)
-        model = formulation.model
-
-        # Fix one internal vs one external stretch bucket to verify the 0.1x objective discount
-        ext_idx = next(i for i, ae in enumerate(inv.active_edges) if 10 in (ae.src, ae.dst))
-        int_idx = next(i for i, ae in enumerate(inv.active_edges) if ae.src == 11 and ae.dst == ("c_box", 30))
-        assert inv.active_edges[ext_idx].min_length == 1
-        assert inv.active_edges[int_idx].min_length == 1
-        model.L[ext_idx].fix(2)
-        solve_and_extract(formulation, options=LayoutOptions(timeout_seconds=10))
-        obj_ext = pyo.value(model.obj)
-        model.L[ext_idx].unfix()
-        model.L[int_idx].fix(2)
-        solve_and_extract(formulation, options=LayoutOptions(timeout_seconds=10))
-        obj_int = pyo.value(model.obj)
-
-        # End-to-end cluster solve stretches the pole edges rather than gapping 11 -> c_box
-        sol = solve_cluster(node=node, child_solutions={"c_box": c_sol}, graph=graph)
-        assert obj_ext == pytest.approx(1.0)
-        assert obj_int == pytest.approx(10.0)
-        assert sol.metadata["child_offsets"]["c_box"].x - sol.local_coordinates[11].x == 1
 
 
 class TestStage3Clearance:

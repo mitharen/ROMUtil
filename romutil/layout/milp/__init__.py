@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from romutil.layout.milp.clearance import (
-    BoundaryExitClearanceBox,
     ChildSubClearanceBox,
     ClearanceConstraintBuilder,
     ClearanceEntity,
@@ -50,7 +49,6 @@ from romutil.types import LayoutSolverError
 
 __all__ = [
     "ActiveEdge",
-    "BoundaryExitClearanceBox",
     "ChildSubClearanceBox",
     "ClearanceConstraintBuilder",
     "ClearanceEntity",

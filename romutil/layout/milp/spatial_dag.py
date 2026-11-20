@@ -17,7 +17,6 @@ from romutil.layout.positional_dag import (
 )
 from romutil.layout.milp.inventory import (
     ActiveEdge,
-    BoundaryExit,
     EndpointRef,
     get_child_coordinate,
 )
@@ -178,44 +177,6 @@ def _get_corridor_bounds(
     return bounds_x, bounds_y, bounds_z
 
 
-def _get_boundary_exit_bounds(
-    be: BoundaryExit,
-    inventory: ClusterInventory | None,
-    full: bool = False,
-) -> EntitySpatialBounds:
-    """Compute 1D affine coordinate bound expressions for a boundary exit segment."""
-    port_node = be.port
-    dx, dy, dz = be.direction
-    length = be.length
-    margin = 0 if full else 1
-
-    if dx > 0:
-        min_cx, max_cx = margin, length
-    elif dx < 0:
-        min_cx, max_cx = -length, -margin
-    else:
-        min_cx, max_cx = 0, 0
-    bounds_x = SpatialBoundExpr(min_node=port_node, min_const=min_cx, max_node=port_node, max_const=max_cx)
-
-    if dy > 0:
-        min_cy, max_cy = margin, length
-    elif dy < 0:
-        min_cy, max_cy = -length, -margin
-    else:
-        min_cy, max_cy = 0, 0
-    bounds_y = SpatialBoundExpr(min_node=port_node, min_const=min_cy, max_node=port_node, max_const=max_cy)
-
-    if dz > 0:
-        min_cz, max_cz = margin, length
-    elif dz < 0:
-        min_cz, max_cz = -length, -margin
-    else:
-        min_cz, max_cz = 0, 0
-    bounds_z = SpatialBoundExpr(min_node=port_node, min_const=min_cz, max_node=port_node, max_const=max_cz)
-
-    return bounds_x, bounds_y, bounds_z
-
-
 def get_entity_spatial_bounds(
     item: Any,
     category: str,
@@ -278,22 +239,11 @@ def get_entity_spatial_bounds(
                 if idx < 0 or idx >= len(active_edges):
                     return None
                 return _get_corridor_bounds(active_edges[idx], inventory, full=False)
-            elif hasattr(item, "exit_index"):
-                idx = item.exit_index
-                boundary_exits = getattr(inventory, "boundary_exits", ())
-                if idx < 0 or idx >= len(boundary_exits):
-                    return None
-                return _get_boundary_exit_bounds(boundary_exits[idx], inventory, full=False)
             elif isinstance(item, int):
                 active_edges = getattr(inventory, "active_edges", ())
                 if item < 0 or item >= len(active_edges):
                     return None
                 return _get_corridor_bounds(active_edges[item], inventory, full=False)
-            elif isinstance(item, (tuple, list)) and len(item) == 2 and item[0] == "bexit":
-                boundary_exits = getattr(inventory, "boundary_exits", ())
-                if item[1] < 0 or item[1] >= len(boundary_exits):
-                    return None
-                return _get_boundary_exit_bounds(boundary_exits[item[1]], inventory, full=False)
             return None
         else:
             if category == "corridor_room":
@@ -321,22 +271,11 @@ def get_entity_spatial_bounds(
             if idx < 0 or idx >= len(active_edges):
                 return None
             return _get_corridor_bounds(active_edges[idx], inventory, full=True)
-        elif hasattr(item, "exit_index"):
-            idx = item.exit_index
-            boundary_exits = getattr(inventory, "boundary_exits", ())
-            if idx < 0 or idx >= len(boundary_exits):
-                return None
-            return _get_boundary_exit_bounds(boundary_exits[idx], inventory, full=True)
         elif isinstance(item, int):
             active_edges = getattr(inventory, "active_edges", ())
             if item < 0 or item >= len(active_edges):
                 return None
             return _get_corridor_bounds(active_edges[item], inventory, full=True)
-        elif isinstance(item, (tuple, list)) and len(item) == 2 and item[0] == "bexit":
-            boundary_exits = getattr(inventory, "boundary_exits", ())
-            if item[1] < 0 or item[1] >= len(boundary_exits):
-                return None
-            return _get_boundary_exit_bounds(boundary_exits[item[1]], inventory, full=True)
         return None
 
     return None

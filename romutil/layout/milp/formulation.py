@@ -7,11 +7,9 @@ from typing import Any
 import pyomo.environ as pyo
 
 from romutil.layout.geometry import BoundingBox3D
-from romutil.layout.ir import SplitPairCut
 from romutil.layout.milp.clearance import ClearanceConstraintBuilder
 from romutil.layout.milp.inventory import (
     ActiveEdge,
-    BoundaryExit,
     ClusterInventory,
     EndpointRef,
     get_child_coordinate,
@@ -282,31 +280,12 @@ class ClusterFormulation:
                     == model.s_stretch_1[i] + model.s_stretch_2[i] + model.s_stretch_3[i]
                 )
 
-            # Discount stretch on temporary edges to external split-pair boundary poles,
-            # which are re-solved elastically by SplitPairHandler in parent clusters.
-            is_split_pair = isinstance(inventory.node.cut_contract, SplitPairCut)
-            external_ports = (
-                set(inventory.boundary_ports) - set(inventory.rooms)
-                if is_split_pair
-                else set()
+            stretch_expr = sum(
+                10.0 * model.s_stretch_1[i]
+                + 30.0 * model.s_stretch_2[i]
+                + 100.0 * model.s_stretch_3[i]
+                for i in edge_indices
             )
-            stretch_terms = []
-            for i in edge_indices:
-                ae = inventory.active_edges[i]
-                is_external_port_edge = (
-                    (isinstance(ae.src, int) and ae.src in external_ports)
-                    or (isinstance(ae.dst, int) and ae.dst in external_ports)
-                )
-                weight_scale = 0.1 if is_external_port_edge else 1.0
-                stretch_terms.append(
-                    weight_scale
-                    * (
-                        10.0 * model.s_stretch_1[i]
-                        + 30.0 * model.s_stretch_2[i]
-                        + 100.0 * model.s_stretch_3[i]
-                    )
-                )
-            stretch_expr = sum(stretch_terms)
         else:
             model.s_stretch_1 = pyo.Var([], domain=pyo.NonNegativeReals)
             model.s_stretch_2 = pyo.Var([], domain=pyo.NonNegativeReals)
@@ -414,42 +393,6 @@ class ClusterFormulation:
     ) -> tuple[Any, Any, Any, Any, Any, Any]:
         """Return 3D corridor bounding box enclosing any permitted transverse slack."""
         return self._get_corridor_box(ae, interior=interior, include_transverse_slack=True)
-
-    def get_boundary_exit_interior_box(self, be: BoundaryExit) -> tuple[Any, Any, Any, Any, Any, Any]:
-        """Return 3D bounding box for a boundary exit's interior segment (excluding the boundary port)."""
-        xu, yu, zu = self.get_point(be.port)
-        dx, dy, dz = be.direction
-        length = be.length
-        if dx > 0:
-            return (xu + 1, xu + length, yu, yu, zu, zu)
-        elif dx < 0:
-            return (xu - length, xu - 1, yu, yu, zu, zu)
-        elif dy > 0:
-            return (xu, xu, yu + 1, yu + length, zu, zu)
-        elif dy < 0:
-            return (xu, xu, yu - length, yu - 1, zu, zu)
-        elif dz > 0:
-            return (xu, xu, yu, yu, zu + 1, zu + length)
-        else:  # dz < 0
-            return (xu, xu, yu, yu, zu - length, zu - 1)
-
-    def get_boundary_exit_full_box(self, be: BoundaryExit) -> tuple[Any, Any, Any, Any, Any, Any]:
-        """Return 3D bounding box for an entire boundary exit corridor segment (including the boundary port)."""
-        xu, yu, zu = self.get_point(be.port)
-        dx, dy, dz = be.direction
-        length = be.length
-        if dx > 0:
-            return (xu, xu + length, yu, yu, zu, zu)
-        elif dx < 0:
-            return (xu - length, xu, yu, yu, zu, zu)
-        elif dy > 0:
-            return (xu, xu, yu, yu + length, zu, zu)
-        elif dy < 0:
-            return (xu, xu, yu - length, yu, zu, zu)
-        elif dz > 0:
-            return (xu, xu, yu, yu, zu, zu + length)
-        else:  # dz < 0
-            return (xu, xu, yu, yu, zu - length, zu)
 
     def apply_clearances(self) -> None:
         """Enforce disjunctive Big-M geometric clearance and non-overlap constraints."""

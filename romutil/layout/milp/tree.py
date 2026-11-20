@@ -8,6 +8,7 @@ from typing import Any, Collection, Mapping, Sequence
 
 from romutil.layout.geometry import BoundingBox3D, decompose_into_orthogonal_sub_boxes
 from romutil.layout.ir import (
+    ArticulationPointCut,
     BridgeCut,
     CutType,
     LayoutGraph,
@@ -93,13 +94,13 @@ def _child_attachment_rooms(
     return ports
 
 
-def _has_outward_exit_in_direction(
+def _has_uncut_outward_edge_in_direction(
     anchor_vnum: int,
     direction: tuple[int, int, int],
     subtree_rooms: set[int],
     graph: LayoutGraph,
 ) -> bool:
-    """Return True if anchor_vnum has an outward exit outside subtree_rooms along direction."""
+    """Return True if anchor_vnum has an uncut outward graph edge along direction outside subtree_rooms."""
     for edge in graph.edges:
         if edge.cut:
             continue
@@ -110,6 +111,18 @@ def _has_outward_exit_in_direction(
             ed = _safe_displacement(edge.direction)
             if ed is not None and (-ed[0], -ed[1], -ed[2]) == direction:
                 return True
+    return False
+
+
+def _has_outward_exit_in_direction(
+    anchor_vnum: int,
+    direction: tuple[int, int, int],
+    subtree_rooms: set[int],
+    graph: LayoutGraph,
+) -> bool:
+    """Return True if anchor_vnum has an outward exit outside subtree_rooms along direction."""
+    if _has_uncut_outward_edge_in_direction(anchor_vnum, direction, subtree_rooms, graph):
+        return True
 
     if anchor_vnum in graph.rooms:
         for exit_def in graph.rooms[anchor_vnum].exits:
@@ -187,6 +200,76 @@ def _find_bridge_ray_blockers(
     return (u, v, rev_d, blockers) if blockers else None
 
 
+def _try_detach_articulation_ray_blocking_subchild(
+    child: SolveTreeNode,
+    child_sol: NodeSolution,
+    graph: LayoutGraph,
+) -> tuple[SolveTreeNode, SolveTreeNode] | None:
+    """Detach a nested BridgeCut sub-child whose solved sub-box blocks an anchor outward ray."""
+    contract = child.cut_contract
+    if not isinstance(contract, ArticulationPointCut) or not child.children:
+        return None
+    if len(child.children) == 1 and not child.rooms:
+        return None
+
+    anchor_vnum = contract.anchor_vnum
+    origin = get_child_coordinate(child_sol, anchor_vnum)
+    if origin is None:
+        return None
+
+    subtree_rooms = _collect_subtree_rooms(child)
+    out_dirs = [
+        direction
+        for direction in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0))
+        if _has_uncut_outward_edge_in_direction(anchor_vnum, direction, subtree_rooms, graph)
+    ]
+    if not out_dirs:
+        return None
+
+    sc_rooms = {sc.node_id: _collect_subtree_rooms(sc) for sc in child.children}
+    room_to_sc: dict[int, str] = {}
+    for sc in child.children:
+        for room_vnum in sc_rooms[sc.node_id]:
+            room_to_sc[room_vnum] = sc.node_id
+    sibling_connected: set[str] = set()
+    for edge in graph.edges:
+        if edge.cut:
+            continue
+        c1 = room_to_sc.get(edge.src)
+        c2 = room_to_sc.get(edge.dst)
+        if c1 is not None and c2 is not None and c1 != c2:
+            sibling_connected.add(c1)
+            sibling_connected.add(c2)
+
+    child_offsets = child_sol.metadata.get("child_offsets", {})
+    child_sub_boxes = child_sol.metadata.get("child_sub_boxes", {})
+    for sc in child.children:
+        if not isinstance(sc.cut_contract, BridgeCut) or sc.cut_contract.anchor_vnum is None:
+            continue
+        if sc.node_id in sibling_connected:
+            continue
+        off = _as_coord3d(child_offsets.get(sc.node_id))
+        for sb in child_sub_boxes.get(sc.node_id, ()):
+            box = (
+                off.x + sb.min_x,
+                off.x + sb.max_x,
+                off.y + sb.min_y,
+                off.y + sb.max_y,
+                off.z + sb.min_z,
+                off.z + sb.max_z,
+            )
+            if any(_ray_hits_box(origin, direction, box) for direction in out_dirs):
+                base_node = SolveTreeNode(
+                    node_id=f"{child.node_id}__base",
+                    node_type=child.node_type,
+                    rooms=child.rooms,
+                    children=tuple(c for c in child.children if c.node_id != sc.node_id),
+                    metadata=dict(child.metadata),
+                )
+                return base_node, sc
+    return None
+
+
 def _try_split_ray_blocked_child(
     child: SolveTreeNode,
     child_sol: NodeSolution,
@@ -195,7 +278,7 @@ def _try_split_ray_blocked_child(
     """Split a ray-blocked BridgeCut child across an internal orthogonal planar bridge edge."""
     blocker_info = _find_bridge_ray_blockers(child, child_sol, graph)
     if blocker_info is None:
-        return None
+        return _try_detach_articulation_ray_blocking_subchild(child, child_sol, graph)
 
     _u, v, rev_d, blockers = blocker_info
     adj: dict[int, list[int]] = collections.defaultdict(list)
@@ -219,6 +302,41 @@ def _try_split_ray_blocked_child(
         sc.node_id: _child_attachment_rooms(sc, child.rooms, graph)
         for sc in child.children
     }
+    sc_rooms = {sc.node_id: _collect_subtree_rooms(sc) for sc in child.children}
+    sc_adj: dict[str, set[str]] = {sc.node_id: set() for sc in child.children}
+    room_to_sc: dict[int, str] = {}
+    for sc in child.children:
+        for room_vnum in sc_rooms[sc.node_id]:
+            room_to_sc[room_vnum] = sc.node_id
+    for edge in graph.edges:
+        if edge.cut:
+            continue
+        c1 = room_to_sc.get(edge.src)
+        c2 = room_to_sc.get(edge.dst)
+        if c1 is not None and c2 is not None and c1 != c2:
+            sc_adj[c1].add(c2)
+            sc_adj[c2].add(c1)
+    sc_groups: list[tuple[list[SolveTreeNode], set[int]]] = []
+    sc_by_id = {sc.node_id: sc for sc in child.children}
+    seen_sc: set[str] = set()
+    for sc in child.children:
+        if sc.node_id in seen_sc:
+            continue
+        grp_ids: list[str] = []
+        q_grp: collections.deque[str] = collections.deque([sc.node_id])
+        seen_sc.add(sc.node_id)
+        while q_grp:
+            cur_id = q_grp.popleft()
+            grp_ids.append(cur_id)
+            for nxt_id in sorted(sc_adj[cur_id]):
+                if nxt_id not in seen_sc:
+                    seen_sc.add(nxt_id)
+                    q_grp.append(nxt_id)
+        grp_nodes = [sc_by_id[gid] for gid in grp_ids]
+        grp_pts: set[int] = set()
+        for gid in grp_ids:
+            grp_pts.update(sc_attach[gid])
+        sc_groups.append((grp_nodes, grp_pts))
 
     dist: dict[int, int] = {v: 0}
     queue: collections.deque[int] = collections.deque([v])
@@ -273,15 +391,14 @@ def _try_split_ray_blocked_child(
         valid_partition = True
         base_children: list[SolveTreeNode] = []
         wing_children: list[SolveTreeNode] = []
-        for sc in child.children:
-            pts = sc_attach[sc.node_id]
+        for grp_nodes, pts in sc_groups:
             if (pts & side_v) and (pts & side_other):
                 valid_partition = False
                 break
             if pts & side_other:
-                wing_children.append(sc)
+                wing_children.extend(grp_nodes)
             else:
-                base_children.append(sc)
+                base_children.extend(grp_nodes)
         if not valid_partition:
             continue
 
@@ -305,19 +422,29 @@ def _try_split_ray_blocked_child(
         metadata=dict(child.metadata),
     )
     wing_contract = BridgeCut(bridge_edge=(a, b), direction=dir_int, weight=weight, anchor_vnum=a)
+    wing_meta: dict[str, Any] = {
+        "cut_type": CutType.BRIDGE,
+        "anchor_vnum": a,
+        "bridge_edge": (a, b),
+        "direction": dir_int,
+        "weight": weight,
+        "cut_contract": wing_contract,
+    }
+    wing_severed = sorted(
+        {
+            tuple(edge)
+            for wc in wing_children
+            for edge in wc.metadata.get("severed_bridge_edges", ())
+        }
+    )
+    if wing_severed:
+        wing_meta["severed_bridge_edges"] = tuple(wing_severed)
     wing_node = SolveTreeNode(
         node_id=f"{child.node_id}__wing",
         node_type=child.node_type,
         rooms=frozenset(side_other),
         children=tuple(wing_children),
-        metadata={
-            "cut_type": CutType.BRIDGE,
-            "anchor_vnum": a,
-            "bridge_edge": (a, b),
-            "direction": dir_int,
-            "weight": weight,
-            "cut_contract": wing_contract,
-        },
+        metadata=wing_meta,
     )
     return base_node, wing_node
 
@@ -350,8 +477,27 @@ def _resynthesize_split_child_solution(
     all_coords_in_parent: dict[Any, Coord3D] = {}
     port_in_parent: dict[int, Coord3D] = {}
 
+    orig_child_ids = {c.node_id for c in orig_child.children}
+    parent_sub_boxes = parent_sol.metadata.get("child_sub_boxes", {})
+
     for p_node, p_sol in pieces:
         p_off = _as_coord3d(parent_offsets.get(p_node.node_id))
+        if p_node.node_id in orig_child_ids:
+            sub_offsets_in_parent[p_node.node_id] = p_off
+            if p_node.node_id in parent_sub_boxes:
+                sub_boxes_map[p_node.node_id] = tuple(parent_sub_boxes[p_node.node_id])
+            for room_vnum, pt in p_sol.local_coordinates.items():
+                if room_vnum not in orig_child.rooms:
+                    all_coords_in_parent.setdefault(
+                        room_vnum, Coord3D(p_off.x + pt.x, p_off.y + pt.y, p_off.z + pt.z)
+                    )
+            for key, pt in p_sol.metadata.get("all_room_coordinates", {}).items():
+                if key not in orig_child.rooms:
+                    all_coords_in_parent.setdefault(
+                        key, Coord3D(p_off.x + pt.x, p_off.y + pt.y, p_off.z + pt.z)
+                    )
+            continue
+
         for room_vnum, pt in p_sol.local_coordinates.items():
             translated = Coord3D(p_off.x + pt.x, p_off.y + pt.y, p_off.z + pt.z)
             if room_vnum in orig_child.rooms:
@@ -382,12 +528,13 @@ def _resynthesize_split_child_solution(
         if not isinstance(contract, BridgeCut):
             continue
         a, b = contract.bridge_edge
-        if a in local_in_parent and b in local_in_parent:
+        pa = local_in_parent.get(a) or all_coords_in_parent.get(a)
+        pb = local_in_parent.get(b) or all_coords_in_parent.get(b)
+        if pa is not None and pb is not None:
             disp = _safe_displacement(contract.direction)
             if disp is None:
                 continue
             dx, dy, dz = disp
-            pa, pb = local_in_parent[a], local_in_parent[b]
             dist = abs(pb.x - pa.x) + abs(pb.y - pa.y) + abs(pb.z - pa.z)
             if (
                 dist > 1
@@ -536,6 +683,10 @@ class HierarchicalTreeSolver(TreeSolver):
                 options=options,
                 solver_name=self.solver_name,
             )
+            if wing_node.node_id in solutions:
+                return _expand_child(base_node, base_sol, g, depth + 1) + [
+                    (wing_node, solutions[wing_node.node_id])
+                ]
             wing_sol = solve_cluster(
                 node=wing_node,
                 child_solutions={

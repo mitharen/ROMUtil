@@ -33,6 +33,7 @@ from romutil.layout import (
 )
 from romutil.layout.milp.formulation import ClusterFormulation
 from romutil.layout.milp.inventory import (
+    ActiveEdge,
     ClusterInventory,
     GatewayCutHandler,
     InterChildBridgeHandler,
@@ -4143,3 +4144,116 @@ class TestClusterClearanceStateMachine:
                 total_cluster_budget=25.0,
             )
             assert ext2 is clean_ext
+
+    def test_phase2_resolves_compacted_crossing_under_low_budget(self) -> None:
+        """Compacted corridor crossings (min_length > 1) continue Phase 2 separation even below 15s remaining."""
+        from typing import Any
+
+        from romutil.layout.milp.clearance import ClearanceViolation
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+        from romutil.layout.milp.solver import SolvedClusterExtraction
+        from romutil.types import SolverStatus
+
+        node = SolveTreeNode(
+            node_id="compacted_cross_node",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({1, 2, 3, 4}),
+        )
+        ae_compacted = ActiveEdge(
+            edge_id="int_1_2",
+            src=1,
+            dst=2,
+            direction=(1, 0, 0),
+            min_length=2,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+        )
+        ae_unit_x = ActiveEdge(
+            edge_id="int_1_2_unit",
+            src=1,
+            dst=2,
+            direction=(1, 0, 0),
+            min_length=1,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+        )
+        ae_unit_y = ActiveEdge(
+            edge_id="int_3_4",
+            src=3,
+            dst=4,
+            direction=(0, 1, 0),
+            min_length=1,
+            associated_rooms=frozenset({3, 4}),
+            associated_children=frozenset(),
+        )
+
+        clean_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (2, 0, 0), 3: (4, 0, 0), 4: (4, 1, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        crossing_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 1, 0), 2: (2, 1, 0), 3: (1, 0, 0), 4: (1, 2, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.TIMEOUT,
+        )
+
+        # Case 1: Compacted corridor crossing (min_length=2) continues at remaining=5.0 (< 15.0)
+        form_comp = MagicMock()
+        form_comp.inventory.active_edges = (ae_compacted, ae_unit_y)
+        form_comp.clearance_builder.inject_clearance_cuts.return_value = 1
+        det_idx = 0
+
+        def mock_detect_comp(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal det_idx
+            det_idx += 1
+            if det_idx == 1:
+                return [ClearanceViolation(category="corridor_crossing", item_a=0, item_b=1)]
+            return []
+
+        solve_idx = 0
+
+        def mock_solve_comp(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal solve_idx
+            solve_idx += 1
+            return crossing_ext if solve_idx == 1 else clean_ext
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 5.0, 5.1, 6.0, 9.5]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_comp),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect_comp),
+        ):
+            ext = solve_cluster_with_cutting_planes(
+                formulation=form_comp,
+                node=node,
+                total_cluster_budget=10.0,
+            )
+            assert ext is clean_ext
+            assert solve_idx == 3
+
+        # Case 2: Non-compacted unit crossing (min_length=1) skips Phase 2 continuation at remaining=0.5 (< 15.0)
+        form_unit = MagicMock()
+        form_unit.inventory.active_edges = (ae_unit_x, ae_unit_y)
+        form_unit.clearance_builder.inject_clearance_cuts.return_value = 1
+        solve_unit_idx = 0
+
+        def mock_solve_unit(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal solve_unit_idx
+            solve_unit_idx += 1
+            return crossing_ext
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 9.5, 9.6]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_unit),
+            patch(
+                "romutil.layout.milp.cluster.detect_cluster_collisions",
+                return_value=[ClearanceViolation(category="corridor_crossing", item_a=0, item_b=1)],
+            ),
+        ):
+            ext_u = solve_cluster_with_cutting_planes(
+                formulation=form_unit,
+                node=node,
+                total_cluster_budget=10.0,
+            )
+            assert ext_u is crossing_ext
+            assert solve_unit_idx == 1

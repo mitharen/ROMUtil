@@ -181,12 +181,10 @@ class TestSpatialBoundResolution:
     def test_get_entity_spatial_bounds_typed_entities(self) -> None:
         """Typed clearance entity dataclasses resolve identically to raw index keys."""
         from romutil.layout.milp.clearance import (
-            BoundaryExitClearanceBox,
             ChildSubClearanceBox,
             CorridorClearanceBox,
             RoomClearanceBox,
         )
-        from romutil.layout.milp.inventory import BoundaryExit
 
         ae = ActiveEdge(
             edge_id="e1",
@@ -197,15 +195,8 @@ class TestSpatialBoundResolution:
             associated_rooms=frozenset({10, 20}),
             associated_children=frozenset(),
         )
-        be = BoundaryExit(
-            port=10,
-            direction=(0, 1, 0),
-            length=3,
-            target_vnum=999,
-        )
         mock_inv = MagicMock()
         mock_inv.active_edges = [ae]
-        mock_inv.boundary_exits = [be]
         mock_inv.child_sub_boxes = {
             "c_spqr": [BoundingBox3D(1, 4, -2, 5, 0, 0)]
         }
@@ -227,12 +218,6 @@ class TestSpatialBoundResolution:
         bounds_cor = get_entity_spatial_bounds(cor_box, "corridor_room", mock_inv, is_item_a=True)
         assert bounds_cor is not None
         assert bounds_cor[0] == SpatialBoundExpr(10, 1, 20, -1)
-
-        # BoundaryExitClearanceBox
-        bexit_box = BoundaryExitClearanceBox(exit_index=0, edge_id="be1")
-        bounds_bexit = get_entity_spatial_bounds(bexit_box, "corridor_room", mock_inv, is_item_a=True)
-        assert bounds_bexit is not None
-        assert bounds_bexit[1] == SpatialBoundExpr(10, 1, 10, 3)
 
 
 class TestCandidateDirectionFiltering:

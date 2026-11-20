@@ -2034,6 +2034,58 @@ class TestTransformHelpersAndEdgeCases:
         assert transformed.root.children[0].node_id == "s_loop"
         assert "severed_bridge_edges" not in transformed.root.metadata
 
+    def test_concentric_arch_severs_both_legs_despite_signed_cancellation(self) -> None:
+        """A concentric arch whose transverse steps cancel in net sum still severs both legs."""
+        # Parent has direct edge 1 -> 2 (North) and 2 -> 3 (North), fixing AXIS_X = 0.
+        # Child spine: 1 -> 4 (South) -> 5 (East) -> 6 (North) -> 7 (West) -> 2 (South, so 2 -> 7 is North).
+        # Signed X displacement is (+1) + (-1) = 0 (matching direct edge dx=0), but abs X excursion is 2 > 0.
+        # Pole 2 also requires +Y freedom via (5, 6), while neither pole covers X, so (4, 5), (5, 6), and (6, 7)
+        # sever into 4 sub-nodes.
+        graph = _make_graph(
+            rooms=[1, 2, 3, 4, 5, 6, 7],
+            edges=[
+                (1, 2, Direction.north),
+                (2, 3, Direction.north),
+                (1, 4, Direction.south),
+                (4, 5, Direction.east),
+                (5, 6, Direction.north),
+                (6, 7, Direction.west),
+                (7, 2, Direction.south),
+            ],
+        )
+        s_arch = SolveTreeNode(
+            node_id="s_arch",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({4, 5, 6, 7}),
+            children=(),
+            metadata={"poles": (1, 2), "cut_type": CutType.SPLIT_PAIR},
+        )
+        parent = SolveTreeNode(
+            node_id="parent",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3}),
+            children=(s_arch,),
+        )
+        tree = SolveTree(root=parent, components=(parent,), graph=graph)
+        transformed = TransverseSNodeSplitPass(graph).apply(tree)
+
+        assert [c.node_id for c in transformed.root.children] == [
+            "s_arch_a",
+            "s_arch_b",
+            "s_arch_c",
+            "s_arch_d",
+        ]
+        assert transformed.root.metadata.get("severed_bridge_edges") == (
+            (4, 5),
+            (5, 6),
+            (6, 7),
+        )
+        c_a, c_b, c_c, c_d = transformed.root.children
+        assert c_a.rooms == frozenset({4})
+        assert c_b.rooms == frozenset({5})
+        assert c_c.rooms == frozenset({6})
+        assert c_d.rooms == frozenset({7})
+
 
 class TestUnifiedHierarchicalPipeline:
     """Verify SolveTree.seed, decomposition passes, and unified pipeline tree construction."""
