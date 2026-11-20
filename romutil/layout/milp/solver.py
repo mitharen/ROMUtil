@@ -12,6 +12,10 @@ from romutil.layout.milp.formulation import ClusterFormulation
 from romutil.types import LayoutOptions, LayoutSolverError, SolverStatus
 
 
+class LayoutInfeasibleError(LayoutSolverError):
+    """Raised when the MILP solver proves a cluster formulation infeasible."""
+
+
 @dataclass(frozen=True)
 class SolvedClusterExtraction:
     """Solved unnormalized room coordinates and child offsets."""
@@ -131,8 +135,15 @@ def solve_and_extract(
         except Exception:
             if solver_name == "cbc" and solver.options.get("threads", 1) > 1:
                 solver.options["threads"] = 1
-                return solver.solve(formulation.model, tee=False)
-            raise
+                try:
+                    return solver.solve(formulation.model, tee=False)
+                except Exception:
+                    if use_warmstart or solver.options.get("feasibilityPump") == "off":
+                        raise
+            elif use_warmstart or solver_name != "cbc" or solver.options.get("feasibilityPump") == "off":
+                raise
+            solver.options["feasibilityPump"] = "off"
+            return solver.solve(formulation.model, tee=False)
 
     results = None
     if warmstart and supports_warmstart:
@@ -146,10 +157,18 @@ def solve_and_extract(
         results = _execute_solve(use_warmstart=False)
 
     if not _is_valid_solver_status(results):
-        raise LayoutSolverError(
+        solver_info = getattr(results, "solver", None)
+        term = getattr(solver_info, "termination_condition", None)
+        msg = (
             f"MILP solver returned non-optimal status: {results.solver.status}, "
-            f"termination condition: {results.solver.termination_condition} for cluster '{node.node_id}'."
+            f"termination condition: {term} for cluster '{node.node_id}'."
         )
+        if term in (
+            TerminationCondition.infeasible,
+            TerminationCondition.infeasibleOrUnbounded,
+        ):
+            raise LayoutInfeasibleError(msg)
+        raise LayoutSolverError(msg)
 
     raw_parent_coords: dict[int, tuple[int, int, int]] = {}
     for u in rooms:
@@ -215,6 +234,7 @@ def solve_and_extract(
 
 
 __all__ = [
+    "LayoutInfeasibleError",
     "SolvedClusterExtraction",
     "solve_and_extract",
 ]

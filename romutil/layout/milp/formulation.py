@@ -394,6 +394,28 @@ class ClusterFormulation:
         """Return 3D corridor bounding box enclosing any permitted transverse slack."""
         return self._get_corridor_box(ae, interior=interior, include_transverse_slack=True)
 
+    def has_transverse_slack(self) -> bool:
+        """Return True if the formulation declares any transverse shear slack variables."""
+        return (
+            hasattr(self.model, "s_transverse_p") and len(self.model.s_transverse_p) > 0
+        ) or (
+            hasattr(self.model, "s_transverse_m") and len(self.model.s_transverse_m) > 0
+        )
+
+    def lock_transverse_slack(self) -> None:
+        """Fix all transverse shear slack variables to zero."""
+        for attr in ("s_transverse_p", "s_transverse_m"):
+            if hasattr(self.model, attr):
+                for var_data in getattr(self.model, attr).values():
+                    var_data.fix(0)
+
+    def unlock_transverse_slack(self) -> None:
+        """Unfix all transverse shear slack variables so shear can be used if required."""
+        for attr in ("s_transverse_p", "s_transverse_m"):
+            if hasattr(self.model, attr):
+                for var_data in getattr(self.model, attr).values():
+                    var_data.unfix()
+
     def apply_clearances(self) -> None:
         """Enforce disjunctive Big-M geometric clearance and non-overlap constraints."""
         self.clearance_builder.build()

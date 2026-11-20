@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -31,7 +31,8 @@ from romutil.layout import (
     build_block_spqr_tree,
     solve_cluster,
 )
-from romutil.layout.milp.formulation import ClusterFormulation
+from romutil.layout.milp.clearance import ClearanceViolation
+from romutil.layout.milp.formulation import ClusterFormulation, formulate_cluster_model
 from romutil.layout.milp.inventory import (
     ActiveEdge,
     ClusterInventory,
@@ -42,7 +43,7 @@ from romutil.layout.milp.inventory import (
     get_child_boundary_ports,
     inventory_cluster,
 )
-from romutil.layout.milp.solver import solve_and_extract
+from romutil.layout.milp.solver import LayoutInfeasibleError, solve_and_extract
 from romutil.parser import parse_file
 from romutil.layout.geometry import (
     BoundingBox3D,
@@ -4257,3 +4258,193 @@ class TestClusterClearanceStateMachine:
             )
             assert ext_u is crossing_ext
             assert solve_unit_idx == 1
+
+    def test_zero_shear_first_locks_and_unlocks_cleanly(self) -> None:
+        """Locks transverse slack to zero while solving on-axis feasible clusters, unfixing on exit."""
+        import romutil.layout.milp.cluster as cluster_mod
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+
+        # Parent has 1 -North-> 2; split-pair child c1 connects 1 -East-> 10 -North-> 11 -West-> 2 (on-axis feasible).
+        graph = _make_graph(
+            [1, 2, 10, 11],
+            [
+                (1, 2, Direction.north, 1),
+                (1, 10, Direction.east, 1),
+                (10, 11, Direction.north, 1),
+                (11, 2, Direction.west, 1),
+            ],
+        )
+        c1 = SolveTreeNode(
+            node_id="c1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11}),
+            metadata={"cut_type": CutType.SPLIT_PAIR, "poles": (1, 2), "cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        parent = SolveTreeNode(
+            node_id="p_zero_shear",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(c1,),
+        )
+        c1_sol = NodeSolution(
+            node_id="c1",
+            local_coordinates={10: Coord3D(1, 0, 0), 11: Coord3D(1, 1, 0)},
+            port_coordinates={1: Coord3D(0, 0, 0), 2: Coord3D(0, 1, 0)},
+        )
+        inv = inventory_cluster(node=parent, child_solutions={"c1": c1_sol}, graph=graph)
+        formulation = formulate_cluster_model(inventory=inv)
+        assert formulation.has_transverse_slack()
+
+        observed_fixed_states: list[bool] = []
+        orig_solve = cluster_mod.solve_and_extract
+
+        def spy_solve(*args: Any, **kwargs: Any) -> Any:
+            observed_fixed_states.append(
+                all(v.fixed for v in formulation.model.s_transverse_p.values())
+                and all(v.fixed for v in formulation.model.s_transverse_m.values())
+            )
+            return orig_solve(*args, **kwargs)
+
+        with patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=spy_solve):
+            ext = solve_cluster_with_cutting_planes(
+                formulation=formulation,
+                node=parent,
+                total_cluster_budget=15.0,
+            )
+
+        assert observed_fixed_states and all(observed_fixed_states)
+        assert ext.solver_status == SolverStatus.OPTIMAL
+        assert not any(v.fixed for v in formulation.model.s_transverse_p.values())
+        assert not any(v.fixed for v in formulation.model.s_transverse_m.values())
+        assert all(
+            v.value == 0
+            for v in (*formulation.model.s_transverse_p.values(), *formulation.model.s_transverse_m.values())
+        )
+
+    def test_zero_shear_first_unlocks_on_infeasible_split_pair_geometry(self) -> None:
+        """Unlocks transverse slack when zero-shear alignment is geometrically infeasible."""
+        import romutil.layout.milp.cluster as cluster_mod
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+
+        # Parent has 1 -East-> 2 (forcing y2 == y1).
+        # Child c1 connects 1 -East-> 10, 10 -North-> 20, 20 -East-> 2 (forcing y20 == y10 + 1).
+        # With transverse slack locked to 0, y1 == y10 and y2 == y20 contradicts y2 == y1.
+        graph = _make_graph(
+            [1, 2, 10, 20],
+            [
+                (1, 2, Direction.east, 1),
+                (1, 10, Direction.east, 1),
+                (10, 20, Direction.north, 1),
+                (20, 2, Direction.east, 1),
+            ],
+        )
+        c1 = SolveTreeNode(
+            node_id="c1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 20}),
+            metadata={"cut_type": CutType.SPLIT_PAIR, "poles": (1, 2), "cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        parent = SolveTreeNode(
+            node_id="p_shear_req",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(c1,),
+        )
+        c1_sol = NodeSolution(
+            node_id="c1",
+            local_coordinates={10: Coord3D(1, 0, 0), 20: Coord3D(1, 1, 0)},
+            port_coordinates={1: Coord3D(0, 0, 0), 2: Coord3D(2, 1, 0)},
+        )
+        inv = inventory_cluster(node=parent, child_solutions={"c1": c1_sol}, graph=graph)
+        formulation = formulate_cluster_model(inventory=inv)
+        assert formulation.has_transverse_slack()
+
+        lock_states: list[bool] = []
+        orig_solve = cluster_mod.solve_and_extract
+
+        def spy_solve(*args: Any, **kwargs: Any) -> Any:
+            lock_states.append(all(v.fixed for v in formulation.model.s_transverse_p.values()))
+            return orig_solve(*args, **kwargs)
+
+        with patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=spy_solve):
+            ext = solve_cluster_with_cutting_planes(
+                formulation=formulation,
+                node=parent,
+                total_cluster_budget=15.0,
+            )
+
+        assert lock_states[0] is True
+        assert lock_states[1] is False
+        assert ext.solver_status == SolverStatus.OPTIMAL
+
+    def test_zero_shear_first_unlocks_when_iteration_gt_0_becomes_infeasible(self) -> None:
+        """Unlocks transverse slack if a cutting-plane pass (iteration > 0) hits LayoutInfeasibleError."""
+        import romutil.layout.milp.cluster as cluster_mod
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+
+        graph = _make_graph(
+            [1, 2, 10, 11],
+            [
+                (1, 2, Direction.north, 1),
+                (1, 10, Direction.east, 1),
+                (10, 11, Direction.north, 1),
+                (11, 2, Direction.west, 1),
+            ],
+        )
+        c1 = SolveTreeNode(
+            node_id="c1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11}),
+            metadata={"cut_type": CutType.SPLIT_PAIR, "poles": (1, 2), "cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        parent = SolveTreeNode(
+            node_id="p_iter1_inf",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(c1,),
+        )
+        c1_sol = NodeSolution(
+            node_id="c1",
+            local_coordinates={10: Coord3D(1, 0, 0), 11: Coord3D(1, 1, 0)},
+            port_coordinates={1: Coord3D(0, 0, 0), 2: Coord3D(0, 1, 0)},
+        )
+        inv = inventory_cluster(node=parent, child_solutions={"c1": c1_sol}, graph=graph)
+        formulation = formulate_cluster_model(inventory=inv)
+
+        dummy_ext = cluster_mod.SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (0, 1, 0)},
+            raw_child_offsets={"c1": (0, 0, 0)},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        call_states: list[bool] = []
+        orig_solve = cluster_mod.solve_and_extract
+
+        def mock_solve(*args: Any, **kwargs: Any) -> Any:
+            call_states.append(all(v.fixed for v in formulation.model.s_transverse_p.values()))
+            if len(call_states) == 1:
+                return dummy_ext
+            if len(call_states) == 2:
+                raise LayoutInfeasibleError("Locked after cut injection")
+            return orig_solve(*args, **kwargs)
+
+        det_calls = 0
+
+        def mock_detect(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal det_calls
+            det_calls += 1
+            if det_calls == 1:
+                return [ClearanceViolation(category="room_child", item_a=1, item_b=("c1", 0))]
+            return []
+
+        with (
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            ext = solve_cluster_with_cutting_planes(
+                formulation=formulation,
+                node=parent,
+                total_cluster_budget=15.0,
+            )
+
+        assert call_states[:3] == [True, True, False]
+        assert ext.solver_status == SolverStatus.OPTIMAL

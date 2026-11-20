@@ -13,6 +13,7 @@ from romutil.models import Direction, Room
 from romutil.layout.milp.formulation import formulate_cluster_model
 from romutil.layout.milp.inventory import inventory_cluster
 from romutil.layout.milp.solver import (
+    LayoutInfeasibleError,
     SolvedClusterExtraction,
     _is_valid_solver_status,
     solve_and_extract,
@@ -335,6 +336,72 @@ class TestSolveAndExtract:
                 assert ext.solver_status == SolverStatus.OPTIMAL
                 assert mock_solver.solve.call_count == 2
                 assert mock_solver.options["threads"] == 1
+
+    def test_solve_and_extract_infeasible_raises_layout_infeasible_error(self) -> None:
+        """Infeasible or infeasibleOrUnbounded termination conditions raise LayoutInfeasibleError."""
+        node = SolveTreeNode(node_id="n_inf", node_type="leaf", rooms=frozenset({1}))
+        graph = _make_graph([1], [])
+        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
+        formulation = formulate_cluster_model(inventory=inv)
+
+        for cond in (
+            TerminationCondition.infeasible,
+            TerminationCondition.infeasibleOrUnbounded,
+        ):
+            mock_solver = MagicMock()
+            mock_solver.available.return_value = True
+            mock_solver.options = {}
+            bad_res = MagicMock()
+            bad_res.solver.status = PyomoSolverStatus.warning
+            bad_res.solver.termination_condition = cond
+            mock_solver.solve.return_value = bad_res
+
+            with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
+                with pytest.raises(LayoutInfeasibleError, match="non-optimal status"):
+                    solve_and_extract(formulation=formulation, solver_name="cbc")
+
+    def test_solve_and_extract_cold_crash_at_single_thread_retries_without_fpump(self) -> None:
+        """Cold CBC crash at threads=1 disables feasibilityPump and retries once."""
+        node = SolveTreeNode(node_id="n_fp", node_type="leaf", rooms=frozenset({1}))
+        graph = _make_graph([1], [])
+        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
+        formulation = formulate_cluster_model(inventory=inv)
+
+        mock_solver = MagicMock()
+        mock_solver.available.return_value = True
+        mock_solver.options = {}
+        good_res = MagicMock()
+        good_res.solver.status = PyomoSolverStatus.ok
+        good_res.solver.termination_condition = TerminationCondition.optimal
+        mock_solver.solve.side_effect = [RuntimeError("CBC FPump segfault (-11)"), good_res]
+
+        with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
+            with patch("pyomo.environ.value", return_value=0):
+                ext = solve_and_extract(formulation=formulation, solver_name="cbc")
+                assert ext.solver_status == SolverStatus.OPTIMAL
+                assert mock_solver.solve.call_count == 2
+                assert mock_solver.options["feasibilityPump"] == "off"
+
+        # If threads=4 crashes twice (threaded AND single-threaded), retries once with feasibilityPump="off"
+        mock_solver_mt = MagicMock()
+        mock_solver_mt.available.return_value = True
+        mock_solver_mt.options = {}
+        mock_solver_mt.solve.side_effect = [
+            RuntimeError("Crash threads=4"),
+            RuntimeError("Crash threads=1"),
+            good_res,
+        ]
+        with patch("pyomo.environ.SolverFactory", return_value=mock_solver_mt):
+            with patch("pyomo.environ.value", return_value=0):
+                ext_mt = solve_and_extract(
+                    formulation=formulation,
+                    solver_name="cbc",
+                    solver_options={"threads": 4},
+                )
+                assert ext_mt.solver_status == SolverStatus.OPTIMAL
+                assert mock_solver_mt.solve.call_count == 3
+                assert mock_solver_mt.options["threads"] == 1
+                assert mock_solver_mt.options["feasibilityPump"] == "off"
 
 
 class TestStatusValidation:

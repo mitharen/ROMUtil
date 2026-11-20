@@ -41,6 +41,7 @@ from romutil.layout.milp.normalization import (
     pack_world_root_components,
 )
 from romutil.layout.milp.solver import (
+    LayoutInfeasibleError,
     SolvedClusterExtraction,
     solve_and_extract,
 )
@@ -61,6 +62,7 @@ __all__ = [
     "HierarchicalClusterSolver",
     "HierarchicalTreeSolver",
     "InterChildBridgeHandler",
+    "LayoutInfeasibleError",
     "LayoutSolverError",
     "RoomClearanceBox",
     "SolvedClusterExtraction",
