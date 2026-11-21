@@ -6,6 +6,7 @@ import ply.lex as lex
 import ply.yacc as yacc
 from romutil.models import (
     AreaData,
+    AreaDialect,
     AreaHeader,
     Exit,
     ExtraDescr,
@@ -18,9 +19,49 @@ from romutil.models import (
     Social,
     Special,
     merge_areas,
+    normalize_sector,
+    resolve_dialect,
 )
 
 log = logging.getLogger('AreaParser')
+
+
+def detect_dialect(buffer: str) -> AreaDialect:
+    """Detect the MUD area format dialect from raw file text before normalization."""
+    if not buffer or not buffer.strip():
+        return AreaDialect.ROM
+    if re.search(r'(?m)^#(?:FUSSAREA|AUTHORS?|RANGES|REPAIRS|RESETMSG)\b', buffer) or re.search(
+        r'(?m)^D(?:[6-9]|10)\b', buffer
+    ):
+        return AreaDialect.SMAUG
+    if '@@' in buffer and re.search(r'@@[A-Za-z]', buffer):
+        return AreaDialect.ACK
+    m_area = re.search(r'(?ms)^#AREA(?:[ \t]+[^\n~]*~)?[ \t]*\n(.*?)(?=\n#[A-Z$]|\Z)', buffer)
+    if m_area:
+        body = m_area.group(1)
+        tags = set(re.findall(r'(?m)^([A-Za-z])\s+', body))
+        ack_tags = {'K', 'V', 'Q', 'O', 'L', 'N', 'I', 'X', 'F', 'U', 'R', 'W', 'M', 'S'}
+        if len(tags & ack_tags) >= 2 and bool({'K', 'V', 'Q'} & tags):
+            return AreaDialect.ACK
+    if re.search(r'(?m)^#(?:RESETMESSAGE|FLAG)\b', buffer):
+        return AreaDialect.ANATOLIA
+    if re.search(r'(?m)^#(?:ROOMDATA|MOBDATA|OBJECTDATA|GAMES)\b', buffer):
+        return AreaDialect.ENVY
+    has_section = re.search(
+        r'(?m)^#(?:AREA|AREADATA|ROOMS|HELPS|SOCIALS|MOBILES|OBJECTS|RESETS|SHOPS|SPECIALS)\b',
+        buffer,
+    )
+    if not has_section and re.search(r'(?m)^#\d+\b', buffer):
+        if (
+            re.search(r'(?m)^\d+\s+\S+\s+-?\d+\s+-?\d+\s+-?\d+\s+-?\d+\s*$', buffer)
+            or re.search(r'(?m)^\d+\s+[a-z]+\s+-?\d+', buffer)
+            or (re.search(r'(?m)^\$~\s*$', buffer) and not re.search(r'(?m)^#99999\b', buffer))
+        ):
+            return AreaDialect.CIRCLE
+        return AreaDialect.DIKU
+    if re.search(r'(?m)^#AREA[ \t]+[^\n~]*~', buffer):
+        return AreaDialect.MERC
+    return AreaDialect.ROM
 
 
 def eval_flags(val: Any) -> Any:
@@ -619,6 +660,7 @@ class Parser:
                     exits=r.exits,
                     extras=r.extras,
                     area_name=r.area_name or header.name,
+                    terrain=r.terrain,
                 )
                 for r in rooms
             ]
@@ -635,6 +677,7 @@ class Parser:
             socials=tuple(socials),
             reset_message=reset_message,
             flag=flag,
+            dialect=self._active_dialect,
         )
 
     def p_sections(self, p):
@@ -871,6 +914,7 @@ class Parser:
             sector=p[11],
             exits=tuple(exits),
             extras=tuple(extras),
+            terrain=normalize_sector(p[11], self._active_dialect),
         )
         log.debug(f'Room: {p[4]}')
 
@@ -1034,10 +1078,16 @@ class Parser:
         self.tokens = Lexer.tokens
         self.lexer = Lexer().build()
         self.parser = yacc.yacc(module=self, write_tables=write_tables, debug=False)
+        self._active_dialect: AreaDialect = AreaDialect.ROM
 
-    def parse(self, buffer):
-        buffer = normalize_dialect_buffer(buffer)
-        return self.parser.parse(buffer, lexer=self.lexer, debug=False)
+    def parse(self, buffer: str, dialect: AreaDialect | str | None = None):
+        resolved = resolve_dialect(dialect) if dialect is not None else detect_dialect(buffer)
+        self._active_dialect = resolved
+        try:
+            normalized = normalize_dialect_buffer(buffer)
+            return self.parser.parse(normalized, lexer=self.lexer, debug=False)
+        finally:
+            self._active_dialect = AreaDialect.ROM
 
 
 def parse_circlemud_zone_file(file_path_or_content: str | Path) -> tuple[AreaHeader, tuple[Reset, ...]]:
@@ -1175,13 +1225,17 @@ def parse_circlemud_zone_file(file_path_or_content: str | Path) -> tuple[AreaHea
     return header, tuple(resets)
 
 
-def parse_circlemud_directory(directory_path: str | Path) -> AreaData:
+def parse_circlemud_directory(
+    directory_path: str | Path,
+    dialect: AreaDialect | str | None = AreaDialect.CIRCLE,
+) -> AreaData:
     """Parse a split-file CircleMUD 3.x or tbaMUD world directory.
 
     Discovers room definitions (*.wld) and zone metadata (*.zon) across
     flat directories or hierarchical lib/world/ trees, matching zones by
     filename prefix or VNUM range, and merges them into a cohesive AreaData model.
     """
+    resolved_dialect = resolve_dialect(dialect) if dialect is not None else AreaDialect.CIRCLE
     dir_path = Path(directory_path)
     if not dir_path.exists():
         raise FileNotFoundError(f"Directory not found: {directory_path}")
@@ -1257,7 +1311,7 @@ def parse_circlemud_directory(directory_path: str | Path) -> AreaData:
         with open(wf, "r", encoding="latin-1", errors="replace") as f:
             wld_content = f.read()
 
-        parsed_area = parser.parse(wld_content)
+        parsed_area = parser.parse(wld_content, dialect=resolved_dialect)
         rooms = list(parsed_area.rooms)
         if not rooms:
             continue
@@ -1337,6 +1391,7 @@ def parse_circlemud_directory(directory_path: str | Path) -> AreaData:
                 exits=r.exits,
                 extras=r.extras,
                 area_name=r.area_name or combined_header.name,
+                terrain=r.terrain,
             )
             for r in all_rooms
         ]
@@ -1345,8 +1400,9 @@ def parse_circlemud_directory(directory_path: str | Path) -> AreaData:
         header=combined_header,
         rooms=tuple(all_rooms),
         resets=tuple(all_resets),
+        dialect=resolved_dialect,
     )
 
-def parse_file(filepath):
+def parse_file(filepath: str | Path, dialect: AreaDialect | str | None = None):
     with open(filepath, 'r', encoding='latin-1', errors='replace') as f:
-        return Parser().parse(f.read())
+        return Parser().parse(f.read(), dialect=dialect)

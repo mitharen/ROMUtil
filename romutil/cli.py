@@ -17,7 +17,7 @@ from romutil.layout import (
     PipelineTreeBuilder,
     WarpSeverer,
 )
-from romutil.models import AreaData, AreaHeader, merge_areas
+from romutil.models import AreaData, AreaDialect, AreaHeader, merge_areas, resolve_dialect
 from romutil.parser import Parser, parse_circlemud_directory
 from romutil.renderers import RENDERERS, get_renderer
 from romutil.types import LayoutOptions, RenderOptions, WorldGraph
@@ -34,8 +34,10 @@ def main(
     circle_dir: Path | str | None = None,
     solver_timeout: int | None = None,
     debug_solve_dir: Path | str | None = None,
+    dialect: AreaDialect | str | None = None,
 ) -> WorldGraph:
     """Parse areas into a unified WorldGraph and optionally render without invoking the solver engine."""
+    resolved_dialect = resolve_dialect(dialect) if dialect is not None else None
     if isinstance(fmt, str):
         format_list = [f.strip().lower() for f in fmt.split(",") if f.strip()]
     elif isinstance(fmt, (list, tuple, set)):
@@ -64,7 +66,11 @@ def main(
 
     if circle_dir is not None:
         first_file_name = str(circle_dir)
-        area = parse_circlemud_directory(circle_dir)
+        area = (
+            parse_circlemud_directory(circle_dir, dialect=resolved_dialect)
+            if resolved_dialect is not None
+            else parse_circlemud_directory(circle_dir)
+        )
         if not isinstance(area, AreaData):
             raise TypeError(f"Expected AreaData from parser, got {type(area).__name__}")
         parsed_areas.append(area)
@@ -72,7 +78,11 @@ def main(
     for area_file in area_files:
         if isinstance(area_file, (str, Path)) and Path(area_file).is_dir():
             first_file_name = str(area_file)
-            area = parse_circlemud_directory(area_file)
+            area = (
+                parse_circlemud_directory(area_file, dialect=resolved_dialect)
+                if resolved_dialect is not None
+                else parse_circlemud_directory(area_file)
+            )
             if not isinstance(area, AreaData):
                 raise TypeError(f"Expected AreaData from parser, got {type(area).__name__}")
             parsed_areas.append(area)
@@ -88,7 +98,7 @@ def main(
 
         parser = Parser()
         try:
-            area = parser.parse(content)
+            area = parser.parse(content, dialect=resolved_dialect) if resolved_dialect is not None else parser.parse(content)
         except Exception as e:
             log.error(e)
             continue
@@ -130,6 +140,7 @@ def main(
             socials=composite_area.socials,
             reset_message=composite_area.reset_message,
             flag=composite_area.flag,
+            dialect=composite_area.dialect,
         )
 
     graph = WorldGraph.from_area_data(composite_area)
@@ -205,6 +216,12 @@ def cli() -> None:
         default=None,
         help="Directory to save cluster MILP solve debug SVG visualizations (defaults to 'debug_solves' when --debug-solve is set)",
     )
+    parser.add_argument(
+        "--dialect",
+        choices=[d.value for d in AreaDialect],
+        default=None,
+        help="Override auto-detected MUD area dialect for terrain normalization (default: auto-detect)",
+    )
     args = parser.parse_args()
 
     if not args.areas and not args.circle_dir:
@@ -241,6 +258,7 @@ def cli() -> None:
         circle_dir=args.circle_dir,
         solver_timeout=args.solver_timeout,
         debug_solve_dir=debug_solve_dir,
+        dialect=args.dialect,
     )
 
 

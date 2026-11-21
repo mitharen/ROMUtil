@@ -427,3 +427,30 @@ class TestCliCoverage:
         default_debug = Path("debug_solves")
         if default_debug.is_dir():
             shutil.rmtree(default_debug)
+
+    def test_cli_dialect_override_and_rejection(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        envy_file = DIALECTS_DIR / "envy20.are"
+        out = str(tmp_path / "envy_cli")
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["romutil", str(envy_file), "-outbase", out, "-f", "json", "--dialect", "rom"],
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli()
+        assert exc.value.code == 0
+
+        data = json.loads((tmp_path / "envy_cli.json").read_text(encoding="utf-8"))
+        by_vnum = {r["vnum"]: r for r in data["rooms"]}
+        # Explicit --dialect rom treats sector 9 as Air rather than Envy Underwater
+        assert by_vnum[300]["sector"] == 9
+        assert by_vnum[300]["terrain_type"] == "air"
+        assert by_vnum[300]["terrain"] == "Air"
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["romutil", str(envy_file), "--dialect", "bogus"],
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli()
+        assert exc.value.code != 0

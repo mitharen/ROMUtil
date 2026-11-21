@@ -12,9 +12,19 @@ import os
 from pathlib import Path
 import pytest
 
-from romutil.models import AreaData, AreaHeader, Room, Exit, Direction
-from romutil.parser import Parser, eval_flags, normalize_dialect_buffer, sanitize_ackmud_colour
+from romutil.models import AreaData, AreaDialect, AreaHeader, Direction, Exit, Room, TerrainType, merge_areas
+from romutil.parser import (
+    Parser,
+    detect_dialect,
+    eval_flags,
+    normalize_dialect_buffer,
+    parse_circlemud_directory,
+    parse_file,
+    sanitize_ackmud_colour,
+)
 from romutil.cli import cli, main
+from romutil.renderers import build_area_json, generate_html_viewer
+from romutil.types import Coord3D, SolvedLayout, WorldGraph
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "dialects"
@@ -141,6 +151,9 @@ class TestDialectParserPositive:
         # Extended Envy sector (9 = underwater, 10 = air)
         assert room_300.sector == 9
         assert vnum_map[301].sector == 10
+        assert room_300.terrain == TerrainType.UNDERWATER
+        assert vnum_map[301].terrain == TerrainType.AIR
+        assert area.dialect == AreaDialect.ENVY
 
         assert len(room_300.exits) == 2
         assert room_300.exits[0].dst_vnum == 301
@@ -1138,3 +1151,189 @@ S
         area = Parser().parse(raw_text)
         assert len(area.rooms) == 1
         assert area.rooms[0].vnum == 1100
+
+
+class TestImportTimeTerrainNormalization:
+    """Validate automatic dialect detection and import-time canonical terrain normalization."""
+
+    @pytest.mark.parametrize(
+        "fixture_path,expected_dialect",
+        [
+            (FIXTURES_DIR / "rom24.are", AreaDialect.ROM),
+            (FIXTURES_DIR / "merc22.are", AreaDialect.MERC),
+            (FIXTURES_DIR / "envy20.are", AreaDialect.ENVY),
+            (FIXTURES_DIR / "circlemud.are", AreaDialect.CIRCLE),
+            (FIXTURES_DIR / "circle_world" / "30.wld", AreaDialect.CIRCLE),
+            (FIXTURES_DIR / "dikumud_alfa.wld", AreaDialect.DIKU),
+            (FIXTURES_DIR / "smaug.are", AreaDialect.SMAUG),
+            (FIXTURES_DIR / "anatolia.are", AreaDialect.ANATOLIA),
+            (FIXTURES_DIR / "ackmud.are", AreaDialect.ACK),
+            (Path(__file__).parent / "fixtures" / "areas" / "midgaard.are", AreaDialect.ROM),
+            (Path(__file__).parent / "fixtures" / "areas" / "social.are", AreaDialect.ROM),
+        ],
+    )
+    def test_detect_dialect_on_fixtures(self, fixture_path: Path, expected_dialect: AreaDialect):
+        content = fixture_path.read_text(encoding="latin-1")
+        assert detect_dialect(content) == expected_dialect
+
+    def test_circlemud_and_tbamud_terrain_normalization(self, tmp_path: Path):
+        wld_text = """#400
+Sunken Vault~
+Deep underwater beneath the temple.~
+4 0 8 0 0 0
+S
+#401
+Sky Perch~
+High above the clouds.~
+4 0 9 0 0 0
+S
+#99999
+$~
+"""
+        area = Parser().parse(wld_text)
+        assert area.dialect == AreaDialect.CIRCLE
+        rooms = {r.vnum: r for r in area.rooms}
+        assert rooms[400].sector == 8 and rooms[400].terrain == TerrainType.UNDERWATER
+        assert rooms[401].sector == 9 and rooms[401].terrain == TerrainType.AIR
+
+        wld_file = tmp_path / "4.wld"
+        wld_file.write_text(wld_text, encoding="utf-8")
+        dir_area = parse_circlemud_directory(tmp_path)
+        dir_rooms = {r.vnum: r for r in dir_area.rooms}
+        assert dir_area.dialect == AreaDialect.CIRCLE
+        assert dir_rooms[400].terrain == TerrainType.UNDERWATER
+        assert dir_rooms[401].terrain == TerrainType.AIR
+
+    def test_smaug_extended_sector_normalization(self):
+        smaug_text = """#AREA Smaug Biomes~
+#AUTHOR Derek~
+#ROOMDATA
+#600
+Coral Grotto~
+Beneath the waves.~
+0 0 8
+S
+#601
+Abyssal Trench~
+Deep sea floor.~
+0 0 12
+S
+#602
+Dwarven Cavern~
+Subterranean gallery.~
+0 0 13
+S
+#603
+Caldera Rim~
+Molten rock.~
+0 0 14
+S
+#604
+Mire~
+Murky bog.~
+0 0 15
+S
+#605
+Glacier~
+Frozen spires.~
+0 0 16
+S
+#606
+Limbo Sector~
+Unknown zone.~
+0 0 11
+S
+#0
+#$
+"""
+        area = Parser().parse(smaug_text)
+        assert area.dialect == AreaDialect.SMAUG
+        rooms = {r.vnum: r for r in area.rooms}
+        assert rooms[600].sector == 8 and rooms[600].terrain == TerrainType.UNDERWATER
+        assert rooms[601].sector == 12 and rooms[601].terrain == TerrainType.OCEANFLOOR
+        assert rooms[602].sector == 13 and rooms[602].terrain == TerrainType.UNDERGROUND
+        assert rooms[603].sector == 14 and rooms[603].terrain == TerrainType.LAVA
+        assert rooms[604].sector == 15 and rooms[604].terrain == TerrainType.SWAMP
+        assert rooms[605].sector == 16 and rooms[605].terrain == TerrainType.ICE
+        assert rooms[606].sector == 11 and rooms[606].terrain == TerrainType.UNKNOWN
+
+    def test_explicit_dialect_override_and_parse_file(self, tmp_path: Path):
+        ambiguous = """#AREA
+ambig.are~
+Ambiguous Skies~
+{ 1 50 } Builder~
+900 901
+
+#ROOMS
+#900
+Room A~
+Sector 9 room.~
+0 0 9
+S
+#0
+#$
+"""
+        rom_area = Parser().parse(ambiguous)
+        assert rom_area.rooms[0].terrain == TerrainType.AIR
+
+        envy_area = Parser().parse(ambiguous, dialect="envy")
+        assert envy_area.dialect == AreaDialect.ENVY
+        assert envy_area.rooms[0].sector == 9
+        assert envy_area.rooms[0].terrain == TerrainType.UNDERWATER
+
+        tmp_are = tmp_path / "ambig.are"
+        tmp_are.write_text(ambiguous, encoding="utf-8")
+        file_envy = parse_file(tmp_are, dialect=AreaDialect.ENVY)
+        assert file_envy.rooms[0].terrain == TerrainType.UNDERWATER
+
+        with pytest.raises(ValueError, match="Unsupported area dialect"):
+            Parser().parse(ambiguous, dialect="invalid_dialect")
+
+    def test_multi_dialect_merge_preserves_normalized_terrains_end_to_end(self):
+        rom_text = """#AREA
+rom_sky.are~
+ROM Sky~
+{ 1 50 } Alander~
+100 100
+
+#ROOMS
+#100
+Midgaard Clouds~
+Drifting high above.~
+0 0 9
+S
+#0
+#$
+"""
+        envy_area = Parser().parse((FIXTURES_DIR / "envy20.are").read_text(encoding="utf-8"))
+        rom_area = Parser().parse(rom_text)
+        smaug_text = """#AREA Magma Keep~
+#AUTHOR Derek~
+#ROOMDATA
+#700
+Volcano Heart~
+Bubbling lava.~
+0 0 14
+S
+#0
+#$
+"""
+        smaug_area = Parser().parse(smaug_text)
+        merged = merge_areas([rom_area, envy_area, smaug_area], title="Multi-Dialect World")
+        graph = WorldGraph.from_area_data(merged)
+        layout = SolvedLayout(coordinates={v: Coord3D(i, 0, 0) for i, v in enumerate(sorted(graph.rooms))})
+
+        assert graph.rooms[100].sector == 9 and graph.rooms[100].terrain == TerrainType.AIR
+        assert graph.rooms[300].sector == 9 and graph.rooms[300].terrain == TerrainType.UNDERWATER
+        assert graph.rooms[700].sector == 14 and graph.rooms[700].terrain == TerrainType.LAVA
+
+        payload = build_area_json(graph, layout)
+        by_vnum = {r["vnum"]: r for r in payload["rooms"]}
+        assert by_vnum[100]["terrain_type"] == "air" and by_vnum[100]["terrain"] == "Air"
+        assert by_vnum[300]["terrain_type"] == "underwater" and by_vnum[300]["terrain"] == "Underwater"
+        assert by_vnum[700]["terrain_type"] == "lava" and by_vnum[700]["terrain"] == "Lava"
+
+        html = generate_html_viewer(payload)
+        assert '"terrain_type": "air"' in html
+        assert '"terrain_type": "underwater"' in html
+        assert '"terrain_type": "lava"' in html
