@@ -111,10 +111,14 @@ class CorridorSegment:
     end_vnum: int
     direction: int
     intermediate_vnums: Sequence[int] = field(default_factory=tuple)
+    step_lengths: tuple[int, ...] = ()
+    transverse_extent: tuple[int, int] = (0, 0)
 
     def __post_init__(self) -> None:
         if not isinstance(self.intermediate_vnums, tuple):
             object.__setattr__(self, "intermediate_vnums", tuple(self.intermediate_vnums))
+        if not isinstance(self.step_lengths, tuple):
+            object.__setattr__(self, "step_lengths", tuple(int(s) for s in self.step_lengths))
 
 
 @dataclass(frozen=True)

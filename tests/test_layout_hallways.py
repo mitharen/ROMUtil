@@ -22,7 +22,7 @@ from romutil.layout import (
     TreeSolver,
     expand_corridor_coordinates,
 )
-from romutil.models import AreaHeader, Exit, Room
+from romutil.models import AreaHeader, DEFAULT_TERRAIN_SCALES, Exit, Room, TerrainType, UNIFORM_TERRAIN_SCALES
 from romutil.types import (
     Coord3D,
     LayoutOptions,
@@ -554,3 +554,54 @@ class TestPipelineIntegration:
         result = assembler.assemble(tree, sol, simplified, LayoutOptions())
         assert 1 in result.coordinates
         assert 2 not in result.coordinates
+
+    def test_mixed_terrain_corridor_compaction_and_weighted_expansion(self) -> None:
+        """Mixed 1/2/4 terrain hallway computes exact footprint step lengths and non-overlapping centers."""
+        # 1 (Inside s=1) <-> 2 (City s=2) <-> 3 (Forest s=4) <-> 4 (Inside s=1) East
+        sectors = {1: 0, 2: 1, 3: 3, 4: 0}
+        rooms: dict[int, Room] = {}
+        edges: list[LayoutEdge] = []
+        vnums = [1, 2, 3, 4]
+        for i, vnum in enumerate(vnums):
+            exits: list[Exit] = []
+            if i > 0:
+                exits.append(Exit(direction=3, dst_vnum=vnums[i - 1]))
+                edges.append(LayoutEdge(src=vnum, dst=vnums[i - 1], direction=3, weight=1))
+            if i < len(vnums) - 1:
+                exits.append(Exit(direction=1, dst_vnum=vnums[i + 1]))
+                edges.append(LayoutEdge(src=vnum, dst=vnums[i + 1], direction=1, weight=1))
+            rooms[vnum] = Room(
+                vnum=vnum,
+                name=f"Room {vnum}",
+                description="",
+                sector=sectors[vnum],
+                exits=tuple(exits),
+            )
+
+        lg = LayoutGraph(rooms=rooms, edges=edges)
+        compactor = HallwayCompactor()
+
+        # Uniform scales reproduce exact 1-step weights
+        uniform_simp = compactor.simplify(lg, LayoutOptions(terrain_scales=UNIFORM_TERRAIN_SCALES))
+        assert uniform_simp.graph.edges[0].weight == 3
+        assert uniform_simp.corridors[0].step_lengths == (1, 1, 1)
+        assert uniform_simp.corridors[0].transverse_extent == (0, 0)
+
+        # Default 1/2/4 scales compute half-cell steps: (1+2)=3, (2+4)=6, (4+1)=5 -> sum=14
+        scaled_simp = compactor.simplify(lg, LayoutOptions(terrain_scales=DEFAULT_TERRAIN_SCALES))
+        corr = scaled_simp.corridors[0]
+        assert scaled_simp.graph.edges[0].weight == 14
+        assert scaled_simp.graph.edges[0].metadata.get("is_compacted") is True
+        assert corr.step_lengths == (3, 6, 5)
+        assert corr.transverse_extent == (4, 3)
+
+        # Exact min span expansion: 0 -> 3 -> 9 -> 14
+        exact_coords = expand_corridor_coordinates(corr, Coord3D(0, 0, 0), Coord3D(14, 0, 0))
+        assert exact_coords == {2: Coord3D(3, 0, 0), 3: Coord3D(9, 0, 0)}
+
+        # Stretched expansion (delta=16, slack=2 across 3 steps -> +1,+1,+0): gaps 4,7,5
+        stretched_coords = expand_corridor_coordinates(corr, Coord3D(0, 0, 0), Coord3D(16, 0, 0))
+        assert stretched_coords == {2: Coord3D(4, 0, 0), 3: Coord3D(11, 0, 0)}
+        assert stretched_coords[2].x - 0 >= 3
+        assert stretched_coords[3].x - stretched_coords[2].x >= 6
+        assert 16 - stretched_coords[3].x >= 5

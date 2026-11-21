@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import enum
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 
 class Direction(enum.IntEnum):
@@ -173,6 +173,76 @@ def get_terrain_label(terrain: TerrainType | str, sector: int | None = None) -> 
     if t_enum == TerrainType.UNKNOWN and sector is not None:
         return f"Unknown ({int(sector)})"
     return TERRAIN_LABELS.get(t_enum, "Unknown")
+
+
+DEFAULT_TERRAIN_SCALES: dict[TerrainType, int] = {
+    TerrainType.INSIDE: 1,
+    TerrainType.UNDERGROUND: 1,
+    TerrainType.UNUSED: 1,
+    TerrainType.UNKNOWN: 1,
+    TerrainType.CITY: 2,
+    TerrainType.WATER_SWIM: 2,
+    TerrainType.FIELD: 4,
+    TerrainType.FOREST: 4,
+    TerrainType.HILLS: 4,
+    TerrainType.MOUNTAIN: 4,
+    TerrainType.WATER_NOSWIM: 4,
+    TerrainType.UNDERWATER: 4,
+    TerrainType.OCEANFLOOR: 4,
+    TerrainType.AIR: 4,
+    TerrainType.DESERT: 4,
+    TerrainType.LAVA: 4,
+    TerrainType.SWAMP: 4,
+    TerrainType.ICE: 4,
+}
+
+UNIFORM_TERRAIN_SCALES: dict[TerrainType, int] = {t: 1 for t in TerrainType}
+
+
+def get_terrain_scale(
+    terrain: TerrainType | str | None,
+    scales: Mapping[TerrainType, int] | None = None,
+) -> int:
+    """Return the spatial footprint scale (>= 1) for a canonical terrain type."""
+    scale_map = DEFAULT_TERRAIN_SCALES if scales is None else scales
+    if terrain is None:
+        t_enum = TerrainType.INSIDE
+    elif isinstance(terrain, TerrainType):
+        t_enum = terrain
+    else:
+        try:
+            t_enum = TerrainType(str(terrain).strip().lower())
+        except ValueError:
+            t_enum = TerrainType.UNKNOWN
+    raw = scale_map.get(t_enum, DEFAULT_TERRAIN_SCALES.get(t_enum, 1))
+    return max(1, int(raw))
+
+
+def compute_room_footprints(
+    rooms: Mapping[int, Room],
+    terrain_scales: Mapping[TerrainType, int] | None = None,
+) -> tuple[int, dict[int, int], dict[int, tuple[int, int]]]:
+    """Compute grid unit and per-room discrete footprint extents across a room mapping.
+
+    When all present room scales are odd integers (including uniform 1s), ``coord_unit = 1``
+    and each room spans ``[x - lo, x + hi]`` with ``lo = hi = (scale - 1) // 2``. When any
+    present room scale is even (e.g. ``1 / 2 / 4``), ``coord_unit = 2`` half-cell coordinates
+    are used with ``lo = scale`` and ``hi = scale - 1`` so arbitrary scale pairs tile cleanly on
+    integer coordinates.
+    """
+    room_scales: dict[int, int] = {
+        vnum: get_terrain_scale(getattr(room, "terrain", None), terrain_scales)
+        for vnum, room in rooms.items()
+    }
+    coord_unit = 2 if any(s % 2 == 0 for s in room_scales.values()) else 1
+    room_extents: dict[int, tuple[int, int]] = {}
+    for vnum, scale in room_scales.items():
+        if coord_unit == 1:
+            half = (scale - 1) // 2
+            room_extents[vnum] = (half, half)
+        else:
+            room_extents[vnum] = (scale, scale - 1)
+    return coord_unit, room_scales, room_extents
 
 
 @dataclass(frozen=True)
@@ -500,6 +570,7 @@ __all__ = [
     "AreaData",
     "AreaDialect",
     "AreaHeader",
+    "DEFAULT_TERRAIN_SCALES",
     "DIALECT_SECTOR_TABLES",
     "Direction",
     "Exit",
@@ -514,7 +585,10 @@ __all__ = [
     "Special",
     "TERRAIN_LABELS",
     "TerrainType",
+    "UNIFORM_TERRAIN_SCALES",
+    "compute_room_footprints",
     "get_terrain_label",
+    "get_terrain_scale",
     "merge_areas",
     "normalize_sector",
     "resolve_dialect",
