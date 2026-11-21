@@ -8,7 +8,18 @@ from unittest.mock import patch
 import pytest
 
 import romutil
-from romutil.models import SECTOR_NAMES, AreaHeader, Direction, Exit, Room, SectorType, get_sector_name
+from romutil.models import (
+    DIALECT_SECTOR_TABLES,
+    TERRAIN_LABELS,
+    AreaDialect,
+    AreaHeader,
+    Direction,
+    Exit,
+    Room,
+    TerrainType,
+    get_terrain_label,
+    normalize_sector,
+)
 from romutil.renderers import (
     HTML_TEMPLATE,
     RENDERERS,
@@ -532,9 +543,12 @@ class TestPackageRootExports:
     """Verify renderer public API exports on the package root."""
 
     def test_package_root_exports(self):
-        assert romutil.SECTOR_NAMES is SECTOR_NAMES
-        assert romutil.SectorType is SectorType
-        assert romutil.get_sector_name is get_sector_name
+        assert romutil.AreaDialect is AreaDialect
+        assert romutil.TerrainType is TerrainType
+        assert romutil.TERRAIN_LABELS is TERRAIN_LABELS
+        assert romutil.DIALECT_SECTOR_TABLES is DIALECT_SECTOR_TABLES
+        assert romutil.normalize_sector is normalize_sector
+        assert romutil.get_terrain_label is get_terrain_label
         assert romutil.renderers.BaseRenderer is BaseRenderer
         assert romutil.BaseRenderer is romutil.interfaces.BaseRenderer
         assert romutil.SVGRenderer is SVGRenderer
@@ -1100,41 +1114,35 @@ class TestMultiAreaViewerUI:
 
 
 class TestTerrainColoringAndSerialization:
-    """Test canonical ROM sector/terrain serialization and interactive terrain coloring UI."""
+    """Test unified canonical terrain normalization, JSON serialization, and HTML terrain UI."""
 
-    def test_sector_type_enum_and_lookup_helpers(self):
-        expected = {
-            0: "Inside",
-            1: "City",
-            2: "Field",
-            3: "Forest",
-            4: "Hills",
-            5: "Mountain",
-            6: "Water (Swim)",
-            7: "Water (No Swim)",
-            8: "Unused",
-            9: "Air",
-            10: "Desert",
-        }
-        assert len(SECTOR_NAMES) == len(SectorType) == len(expected)
-        for code, label in expected.items():
-            assert SectorType(code).value == code
-            assert SECTOR_NAMES[code] == label
-            assert get_sector_name(code) == label
+    def test_terrain_type_enum_and_dialect_normalization_helpers(self):
+        assert len(TERRAIN_LABELS) == len(TerrainType)
+        for terrain in TerrainType:
+            assert terrain in TERRAIN_LABELS
+            assert get_terrain_label(terrain) == TERRAIN_LABELS[terrain]
 
-        assert get_sector_name(-1) == "Unknown (-1)"
-        assert get_sector_name(42) == "Unknown (42)"
+        assert normalize_sector(9, AreaDialect.ROM) == TerrainType.AIR
+        assert normalize_sector(9, AreaDialect.ENVY) == TerrainType.UNDERWATER
+        assert normalize_sector(10, AreaDialect.ENVY) == TerrainType.AIR
+        assert normalize_sector(8, AreaDialect.CIRCLE) == TerrainType.UNDERWATER
+        assert normalize_sector(8, AreaDialect.SMAUG) == TerrainType.UNDERWATER
+        assert normalize_sector(14, AreaDialect.SMAUG) == TerrainType.LAVA
+        assert normalize_sector(-1, AreaDialect.ROM) == TerrainType.UNKNOWN
+        assert get_terrain_label(TerrainType.UNKNOWN, sector=-1) == "Unknown (-1)"
+        assert get_terrain_label("unknown", sector=42) == "Unknown (42)"
 
-    def test_build_area_json_serializes_sector_and_terrain(self):
+    def test_build_area_json_serializes_canonical_terrain_types(self):
         rooms = {
             1: Room(vnum=1, name="Temple", description="Inside", sector=0),
             2: Room(vnum=2, name="Main Street", description="City", sector=1),
             3: Room(vnum=3, name="Pine Woods", description="Forest", sector=3),
             4: Room(vnum=4, name="Deep River", description="River", sector=7),
-            5: Room(vnum=5, name="Cloud Bank", description="Sky", sector=9),
-            6: Room(vnum=6, name="Dunes", description="Sand", sector=10),
-            7: Room(vnum=7, name="Weird Crossing", description="Negative", sector=-1),
-            8: Room(vnum=8, name="Custom Sector", description="Ext", sector=99),
+            5: Room(vnum=5, name="Cloud Bank", description="Sky", sector=9, terrain=TerrainType.AIR),
+            6: Room(vnum=6, name="Envy Cistern", description="Water", sector=9, terrain=TerrainType.UNDERWATER),
+            7: Room(vnum=7, name="Volcano Rim", description="Lava", sector=14, terrain=TerrainType.LAVA),
+            8: Room(vnum=8, name="Weird Crossing", description="Negative", sector=-1),
+            9: Room(vnum=9, name="Custom Sector", description="Ext", sector=99),
         }
         graph = WorldGraph(rooms=rooms, exits=(), header=None)
         layout = SolvedLayout(
@@ -1144,25 +1152,28 @@ class TestTerrainColoringAndSerialization:
         data = build_area_json(graph, layout)
         by_vnum = {r["vnum"]: r for r in data["rooms"]}
 
-        assert by_vnum[1]["sector"] == 0 and by_vnum[1]["terrain"] == "Inside"
-        assert by_vnum[2]["sector"] == 1 and by_vnum[2]["terrain"] == "City"
-        assert by_vnum[3]["sector"] == 3 and by_vnum[3]["terrain"] == "Forest"
-        assert by_vnum[4]["sector"] == 7 and by_vnum[4]["terrain"] == "Water (No Swim)"
-        assert by_vnum[5]["sector"] == 9 and by_vnum[5]["terrain"] == "Air"
-        assert by_vnum[6]["sector"] == 10 and by_vnum[6]["terrain"] == "Desert"
-        assert by_vnum[7]["sector"] == -1 and by_vnum[7]["terrain"] == "Unknown (-1)"
-        assert by_vnum[8]["sector"] == 99 and by_vnum[8]["terrain"] == "Unknown (99)"
+        assert by_vnum[1]["sector"] == 0 and by_vnum[1]["terrain_type"] == "inside" and by_vnum[1]["terrain"] == "Inside"
+        assert by_vnum[2]["sector"] == 1 and by_vnum[2]["terrain_type"] == "city" and by_vnum[2]["terrain"] == "City"
+        assert by_vnum[3]["sector"] == 3 and by_vnum[3]["terrain_type"] == "forest" and by_vnum[3]["terrain"] == "Forest"
+        assert by_vnum[4]["sector"] == 7 and by_vnum[4]["terrain_type"] == "water_noswim" and by_vnum[4]["terrain"] == "Water (No Swim)"
+        assert by_vnum[5]["sector"] == 9 and by_vnum[5]["terrain_type"] == "air" and by_vnum[5]["terrain"] == "Air"
+        assert by_vnum[6]["sector"] == 9 and by_vnum[6]["terrain_type"] == "underwater" and by_vnum[6]["terrain"] == "Underwater"
+        assert by_vnum[7]["sector"] == 14 and by_vnum[7]["terrain_type"] == "lava" and by_vnum[7]["terrain"] == "Lava"
+        assert by_vnum[8]["sector"] == -1 and by_vnum[8]["terrain_type"] == "unknown" and by_vnum[8]["terrain"] == "Unknown (-1)"
+        assert by_vnum[9]["sector"] == 99 and by_vnum[9]["terrain_type"] == "unknown" and by_vnum[9]["terrain"] == "Unknown (99)"
 
     def test_html_viewer_terrain_toggle_legend_and_inspector_markup(self):
         rooms = {
-            10: Room(vnum=10, name="Town Gate", description="Gate", sector=SectorType.CITY),
-            11: Room(vnum=11, name="Emerald Woods", description="Woods", sector=SectorType.FOREST),
-            12: Room(vnum=12, name="Strange Vortex", description="Weird", sector=-1),
+            10: Room(vnum=10, name="Town Gate", description="Gate", sector=1),
+            11: Room(vnum=11, name="Emerald Woods", description="Woods", sector=3),
+            12: Room(vnum=12, name="Envy Reef", description="Submerged", sector=9, terrain=TerrainType.UNDERWATER),
+            13: Room(vnum=13, name="Magma Core", description="Lava", sector=14, terrain=TerrainType.LAVA),
+            14: Room(vnum=14, name="Strange Vortex", description="Weird", sector=-1),
         }
-        header = AreaHeader(filename="terrain.are", name="Terrain Test", builder="Tester", vnum_min=10, vnum_max=12)
+        header = AreaHeader(filename="terrain.are", name="Terrain Test", builder="Tester", vnum_min=10, vnum_max=14)
         graph = WorldGraph(rooms=rooms, exits=(), header=header)
         layout = SolvedLayout(
-            coordinates={10: Coord3D(0, 0, 0), 11: Coord3D(1, 0, 0), 12: Coord3D(2, 0, 0)},
+            coordinates={v: Coord3D(v - 10, 0, 0) for v in rooms},
             diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
         )
         data = build_area_json(graph, layout)
@@ -1181,19 +1192,23 @@ class TestTerrainColoringAndSerialization:
         assert 'id="card-room-terrain-row"' in html
         assert 'id="card-room-terrain"' in html
 
-        # JavaScript terrain coloring & filtering logic
+        # JavaScript terrain coloring & filtering logic keyed off canonical terrain_type
         assert "const TERRAIN_DEFS =" in html
         assert "function getRoomSector(room)" in html
-        assert "function getTerrainName(sector, explicitLabel)" in html
-        assert "function getTerrainColor(sector)" in html
+        assert "function getRoomTerrainKey(room)" in html
+        assert "function getTerrainName(terrainKey, explicitLabel)" in html
+        assert "function getTerrainColor(terrainKey)" in html
         assert "function setColorMode(mode)" in html
-        assert "function toggleTerrain(sector)" in html
+        assert "function toggleTerrain(terrainKey)" in html
         assert "function toggleAllTerrains()" in html
-        assert "function highlightTerrain(sector)" in html
+        assert "function highlightTerrain(terrainKey)" in html
         assert "colorMode === 'terrain'" in html
         assert "g.setAttribute('data-sector', getRoomSector(r));" in html
+        assert "g.setAttribute('data-terrain', getRoomTerrainKey(r));" in html
 
-        # Embedded JSON carries terrain/sector values
-        assert '"terrain": "City"' in html
-        assert '"terrain": "Forest"' in html
+        # Embedded JSON carries normalized terrain_type and terrain labels
+        assert '"terrain_type": "underwater"' in html
+        assert '"terrain": "Underwater"' in html
+        assert '"terrain_type": "lava"' in html
+        assert '"terrain": "Lava"' in html
         assert '"terrain": "Unknown (-1)"' in html

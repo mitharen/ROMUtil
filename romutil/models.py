@@ -33,41 +33,146 @@ class Direction(enum.IntEnum):
         return inverses[self]
 
 
-class SectorType(enum.IntEnum):
-    """Canonical ROM 2.4 / Merc / Diku room sector (terrain) types."""
+class AreaDialect(str, enum.Enum):
+    """Supported Diku/Merc/ROM area file dialects."""
 
-    INSIDE = 0
-    CITY = 1
-    FIELD = 2
-    FOREST = 3
-    HILLS = 4
-    MOUNTAIN = 5
-    WATER_SWIM = 6
-    WATER_NOSWIM = 7
-    UNUSED = 8
-    AIR = 9
-    DESERT = 10
+    ROM = "rom"
+    MERC = "merc"
+    ENVY = "envy"
+    DIKU = "diku"
+    CIRCLE = "circle"
+    SMAUG = "smaug"
+    ANATOLIA = "anatolia"
+    ACK = "ack"
 
 
-SECTOR_NAMES: dict[int, str] = {
-    SectorType.INSIDE: "Inside",
-    SectorType.CITY: "City",
-    SectorType.FIELD: "Field",
-    SectorType.FOREST: "Forest",
-    SectorType.HILLS: "Hills",
-    SectorType.MOUNTAIN: "Mountain",
-    SectorType.WATER_SWIM: "Water (Swim)",
-    SectorType.WATER_NOSWIM: "Water (No Swim)",
-    SectorType.UNUSED: "Unused",
-    SectorType.AIR: "Air",
-    SectorType.DESERT: "Desert",
+class TerrainType(str, enum.Enum):
+    """Unified canonical terrain classification normalized across MUD dialects."""
+
+    INSIDE = "inside"
+    CITY = "city"
+    FIELD = "field"
+    FOREST = "forest"
+    HILLS = "hills"
+    MOUNTAIN = "mountain"
+    WATER_SWIM = "water_swim"
+    WATER_NOSWIM = "water_noswim"
+    UNDERWATER = "underwater"
+    AIR = "air"
+    DESERT = "desert"
+    OCEANFLOOR = "oceanfloor"
+    UNDERGROUND = "underground"
+    LAVA = "lava"
+    SWAMP = "swamp"
+    ICE = "ice"
+    UNUSED = "unused"
+    UNKNOWN = "unknown"
+
+
+TERRAIN_LABELS: dict[TerrainType, str] = {
+    TerrainType.INSIDE: "Inside",
+    TerrainType.CITY: "City",
+    TerrainType.FIELD: "Field",
+    TerrainType.FOREST: "Forest",
+    TerrainType.HILLS: "Hills",
+    TerrainType.MOUNTAIN: "Mountain",
+    TerrainType.WATER_SWIM: "Water (Swim)",
+    TerrainType.WATER_NOSWIM: "Water (No Swim)",
+    TerrainType.UNDERWATER: "Underwater",
+    TerrainType.AIR: "Air",
+    TerrainType.DESERT: "Desert",
+    TerrainType.OCEANFLOOR: "Oceanfloor",
+    TerrainType.UNDERGROUND: "Underground",
+    TerrainType.LAVA: "Lava",
+    TerrainType.SWAMP: "Swamp",
+    TerrainType.ICE: "Ice",
+    TerrainType.UNUSED: "Unused",
+    TerrainType.UNKNOWN: "Unknown",
+}
+
+_BASE_SECTORS: dict[int, TerrainType] = {
+    0: TerrainType.INSIDE,
+    1: TerrainType.CITY,
+    2: TerrainType.FIELD,
+    3: TerrainType.FOREST,
+    4: TerrainType.HILLS,
+    5: TerrainType.MOUNTAIN,
+    6: TerrainType.WATER_SWIM,
+    7: TerrainType.WATER_NOSWIM,
+}
+
+_ROM_SECTORS: dict[int, TerrainType] = {
+    **_BASE_SECTORS,
+    8: TerrainType.UNUSED,
+    9: TerrainType.AIR,
+    10: TerrainType.DESERT,
+}
+
+DIALECT_SECTOR_TABLES: dict[AreaDialect, dict[int, TerrainType]] = {
+    AreaDialect.ROM: _ROM_SECTORS,
+    AreaDialect.MERC: _ROM_SECTORS,
+    AreaDialect.ANATOLIA: _ROM_SECTORS,
+    AreaDialect.ACK: _ROM_SECTORS,
+    AreaDialect.DIKU: dict(_BASE_SECTORS),
+    AreaDialect.CIRCLE: {
+        **_BASE_SECTORS,
+        8: TerrainType.UNDERWATER,
+        9: TerrainType.AIR,
+    },
+    AreaDialect.ENVY: {
+        **_BASE_SECTORS,
+        8: TerrainType.UNUSED,
+        9: TerrainType.UNDERWATER,
+        10: TerrainType.AIR,
+    },
+    AreaDialect.SMAUG: {
+        **_BASE_SECTORS,
+        8: TerrainType.UNDERWATER,
+        9: TerrainType.AIR,
+        10: TerrainType.DESERT,
+        11: TerrainType.UNKNOWN,
+        12: TerrainType.OCEANFLOOR,
+        13: TerrainType.UNDERGROUND,
+        14: TerrainType.LAVA,
+        15: TerrainType.SWAMP,
+        16: TerrainType.ICE,
+    },
 }
 
 
-def get_sector_name(sector: int) -> str:
-    """Return the human-readable terrain label for a numeric room sector type."""
-    sector_int = int(sector)
-    return SECTOR_NAMES.get(sector_int, f"Unknown ({sector_int})")
+def resolve_dialect(dialect: AreaDialect | str) -> AreaDialect:
+    """Resolve an AreaDialect enum or string identifier into an AreaDialect."""
+    if isinstance(dialect, AreaDialect):
+        return dialect
+    if isinstance(dialect, str):
+        key = dialect.strip().lower()
+        try:
+            return AreaDialect(key)
+        except ValueError as exc:
+            supported = ", ".join(d.value for d in AreaDialect)
+            raise ValueError(f"Unsupported area dialect {dialect!r}. Supported: {supported}") from exc
+    raise TypeError(f"Expected AreaDialect or str, got {type(dialect).__name__}")
+
+
+def normalize_sector(sector: int, dialect: AreaDialect | str = AreaDialect.ROM) -> TerrainType:
+    """Map a dialect-specific numeric sector ID into a unified canonical TerrainType."""
+    resolved_dialect = resolve_dialect(dialect)
+    table = DIALECT_SECTOR_TABLES.get(resolved_dialect, _ROM_SECTORS)
+    return table.get(int(sector), TerrainType.UNKNOWN)
+
+
+def get_terrain_label(terrain: TerrainType | str, sector: int | None = None) -> str:
+    """Return the human-readable terrain label for a canonical TerrainType."""
+    if isinstance(terrain, TerrainType):
+        t_enum = terrain
+    else:
+        try:
+            t_enum = TerrainType(str(terrain).strip().lower())
+        except ValueError:
+            t_enum = TerrainType.UNKNOWN
+    if t_enum == TerrainType.UNKNOWN and sector is not None:
+        return f"Unknown ({int(sector)})"
+    return TERRAIN_LABELS.get(t_enum, "Unknown")
 
 
 @dataclass(frozen=True)
@@ -106,12 +211,17 @@ class Room:
     extras: tuple[Any, ...] = ()
     area_name: str | None = None
     area_file: str | None = None
+    terrain: TerrainType | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.exits, tuple):
             object.__setattr__(self, "exits", tuple(self.exits) if self.exits is not None else ())
         if not isinstance(self.extras, tuple):
             object.__setattr__(self, "extras", tuple(self.extras) if self.extras is not None else ())
+        if self.terrain is None:
+            object.__setattr__(self, "terrain", normalize_sector(self.sector))
+        elif not isinstance(self.terrain, TerrainType):
+            object.__setattr__(self, "terrain", TerrainType(str(self.terrain).lower()))
 
 
 @dataclass(frozen=True)
@@ -239,6 +349,7 @@ class AreaData:
     socials: tuple[Social, ...] = ()
     reset_message: str | None = None
     flag: str | None = None
+    dialect: AreaDialect = AreaDialect.ROM
 
     def __post_init__(self) -> None:
         for field_name in ("rooms", "mobiles", "objects", "resets", "shops", "specials", "helps", "socials"):
@@ -296,6 +407,7 @@ def merge_areas(areas: Sequence[AreaData], title: str | None = None) -> AreaData
                     extras=room.extras,
                     area_name=r_area,
                     area_file=r_file,
+                    terrain=room.terrain,
                 )
             merged_rooms.append(room)
 
@@ -365,6 +477,9 @@ def merge_areas(areas: Sequence[AreaData], title: str | None = None) -> AreaData
         vnum_max=v_max,
     )
 
+    dialects = {getattr(a, "dialect", AreaDialect.ROM) for a in areas}
+    merged_dialect = next(iter(dialects)) if len(dialects) == 1 else AreaDialect.ROM
+
     return AreaData(
         header=header,
         rooms=tuple(merged_rooms),
@@ -377,12 +492,15 @@ def merge_areas(areas: Sequence[AreaData], title: str | None = None) -> AreaData
         socials=tuple(merged_socials),
         reset_message=reset_message,
         flag=flag,
+        dialect=merged_dialect,
     )
 
 
 __all__ = [
     "AreaData",
+    "AreaDialect",
     "AreaHeader",
+    "DIALECT_SECTOR_TABLES",
     "Direction",
     "Exit",
     "ExtraDescr",
@@ -394,5 +512,10 @@ __all__ = [
     "Shop",
     "Social",
     "Special",
+    "TERRAIN_LABELS",
+    "TerrainType",
+    "get_terrain_label",
     "merge_areas",
+    "normalize_sector",
+    "resolve_dialect",
 ]

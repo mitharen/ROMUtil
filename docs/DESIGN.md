@@ -144,9 +144,9 @@ ROMUtil/
 The ingestion subsystem processes text-based area files into strongly-typed AST structures and constructs an immutable `WorldGraph`. It implements [`BaseParser`](../romutil/interfaces.py) and supports legacy and modern MUD dialects: ROM 2.4, Merc 2.1/2.2, Envy 1.0/2.0, CircleMUD / DikuMUD III, DikuMUD Alfa / Gamma, ACK!MUD / AckFUSS, and ANATOLIA 3.0.
 
 - **Data Contracts**:
-  - `Room`: Immutable room definition containing `vnum`, `name`, `description`, `room_flags`, `sector`, and `exits` tuple.
+  - `Room`: Immutable room definition containing `vnum`, `name`, `description`, `room_flags`, raw `sector` integer, normalized canonical `terrain` (`TerrainType`), and `exits` tuple.
   - `Exit`: Immutable directional exit definition containing `direction` integer, `dst_vnum` integer, `description`, `keyword`, `key_vnum`, and `flags`.
-  - `AreaData`: Immutable container holding top-level AST sections (`header`, `rooms`, `mobiles`, `objects`, `resets`, `shops`, `specials`, `helps`, `socials`, `reset_message`, `flag`).
+  - `AreaData`: Immutable container holding top-level AST sections (`header`, `rooms`, `mobiles`, `objects`, `resets`, `shops`, `specials`, `helps`, `socials`, `reset_message`, `flag`, `dialect`).
   - `WorldGraph`: Primary immutable graph representation holding `rooms` (`Mapping[int, Room]`), `exits` (`Sequence[Exit]`), and optional `header` (`AreaHeader`). Constructed via `WorldGraph.from_area_data(area)`.
 
 - **DikuMUD Alfa / Gamma Monolithic Ingestion & VNUM 0 ("The Void") Architecture**:
@@ -167,7 +167,9 @@ The ingestion subsystem processes text-based area files into strongly-typed AST 
   - Normalizes section boundaries within `normalize_dialect_buffer` to enforce canonical delimiter spacing without interfering with subsequent room blocks (`#ROOMS`) or resets (`#RESETS`).
   - PLY reductions in `Parser` map `#RESETMESSAGE` and `#FLAG` AST nodes into canonical `reset_message` and `flag` attributes on the `AreaData` domain model while maintaining full backward compatibility with standard ROM 2.4 and Merc-derived formats.
 
-- **Dialect Normalization Layer (`normalize_dialect_buffer`)**:
+- **Dialect Normalization Layer (`detect_dialect`, `normalize_dialect_buffer`, `normalize_sector`)**:
+  - Detects the area dialect (`AreaDialect`) from raw file markers prior to syntax normalization (or accepts an explicit override via `--dialect` / `dialect=...`).
+  - Normalizes dialect-specific numeric room sectors into canonical `TerrainType` values during import using `DIALECT_SECTOR_TABLES`, ensuring downstream graph merging, JSON serialization, and HTML visualization operate on a uniform terrain taxonomy even across mixed-dialect composite worlds while preserving raw `Room.sector` values.
   - Preprocesses input text buffers prior to lexical analysis to ensure deterministic state transitions in PLY's LALR(1) state machine without lookahead ambiguity.
   - Converts Envy `#AREADATA ... End` key-value blocks, ACK!MUD tagged `#AREA` blocks, and Merc single-line `#AREA { ... } ...~` headers into canonical 4-line `#AREA` metadata.
   - Evaluates piped bitmask expressions (e.g. `4|8|1024` evaluates to composite integer `1036`) while preserving alpha string flags.
@@ -303,9 +305,9 @@ Renderers consume immutable `(WorldGraph, SolvedLayout)` pairs and operate state
 - **[`HTMLRenderer`](../romutil/renderers/html.py)**:
   - Generates standalone, single-file interactive web map viewers (`.html`) requiring no external runtime dependencies or CDNs.
   - Serializes graph topology and solved coordinates into embedded JSON within [`templates/viewer.html`](../romutil/templates/viewer.html).
-  - Features interactive Pan/Zoom, room search, elevation level and zone filtering, multi-mode room coloring (elevation floor, zone provenance, and ROM terrain/sector type with interactive filtering legends), incoming/outgoing exit inspection, mob details, and visual edge highlighting.
+  - Features interactive Pan/Zoom, room search, elevation level and zone filtering, multi-mode room coloring (elevation floor, zone provenance, and normalized canonical terrain type with interactive filtering legends), incoming/outgoing exit inspection, mob details, and visual edge highlighting.
 - **[`JSONRenderer`](../romutil/renderers/json.py)**:
-  - Exports structured map datasets (`.json`) containing metadata, bounding boxes, room coordinates, room terrain/sector types, exits, and zone boundaries for external tooling and web frontends.
+  - Exports structured map datasets (`.json`) containing metadata, bounding boxes, room coordinates, normalized terrain types alongside raw sector IDs, exits, and zone boundaries for external tooling and web frontends.
 - **Format Registry & Dispatcher**:
   - `RENDERERS`: Registry dictionary mapping format strings (`"svg"`, `"json"`, `"html"`) to renderer classes.
   - `get_renderer(format_name)`: Factory returning the corresponding renderer instance.

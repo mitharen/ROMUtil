@@ -1165,21 +1165,33 @@ __JSON_DATA__
         return zoneColors.get(areaName) || '#64748b';
       }
 
-      // Canonical ROM 2.4 terrain / sector definitions and high-contrast dark-theme palette
+      // Canonical multi-dialect terrain definitions and high-contrast dark-theme palette
       const TERRAIN_DEFS = {
-        0:  { name: 'Inside',          color: '#6d28d9' },
-        1:  { name: 'City',            color: '#64748b' },
-        2:  { name: 'Field',           color: '#65a30d' },
-        3:  { name: 'Forest',          color: '#15803d' },
-        4:  { name: 'Hills',           color: '#a16207' },
-        5:  { name: 'Mountain',        color: '#9a3412' },
-        6:  { name: 'Water (Swim)',    color: '#0891b2' },
-        7:  { name: 'Water (No Swim)', color: '#1d4ed8' },
-        8:  { name: 'Unused',          color: '#475569' },
-        9:  { name: 'Air',             color: '#0ea5e9' },
-        10: { name: 'Desert',          color: '#d97706' },
+        inside:       { name: 'Inside',          color: '#6d28d9' },
+        city:         { name: 'City',            color: '#64748b' },
+        field:        { name: 'Field',           color: '#65a30d' },
+        forest:       { name: 'Forest',          color: '#15803d' },
+        hills:        { name: 'Hills',           color: '#a16207' },
+        mountain:     { name: 'Mountain',        color: '#9a3412' },
+        water_swim:   { name: 'Water (Swim)',    color: '#0891b2' },
+        water_noswim: { name: 'Water (No Swim)', color: '#1d4ed8' },
+        underwater:   { name: 'Underwater',      color: '#1e3a8a' },
+        oceanfloor:   { name: 'Oceanfloor',      color: '#115e59' },
+        air:          { name: 'Air',             color: '#0ea5e9' },
+        desert:       { name: 'Desert',          color: '#d97706' },
+        underground:  { name: 'Underground',     color: '#57534e' },
+        lava:         { name: 'Lava',            color: '#dc2626' },
+        swamp:        { name: 'Swamp',           color: '#3f6212' },
+        ice:          { name: 'Ice',             color: '#4f46e5' },
+        unused:       { name: 'Unused',          color: '#475569' },
+        unknown:      { name: 'Unknown',         color: '#be185d' },
       };
-      const UNKNOWN_TERRAIN_COLOR = '#be185d';
+      const TERRAIN_ORDER = Object.keys(TERRAIN_DEFS);
+      const DEFAULT_SECTOR_TO_TERRAIN = {
+        0: 'inside', 1: 'city', 2: 'field', 3: 'forest', 4: 'hills', 5: 'mountain',
+        6: 'water_swim', 7: 'water_noswim', 8: 'unused', 9: 'air', 10: 'desert',
+      };
+      const UNKNOWN_TERRAIN_COLOR = TERRAIN_DEFS.unknown.color;
 
       function getRoomSector(room) {
         if (!room || room.sector === undefined || room.sector === null) return 0;
@@ -1187,35 +1199,45 @@ __JSON_DATA__
         return Number.isFinite(parsed) ? parsed : 0;
       }
 
-      function getTerrainName(sector, explicitLabel) {
+      function getRoomTerrainKey(room) {
+        if (room && room.terrain_type && String(room.terrain_type).trim()) {
+          const normalized = String(room.terrain_type).trim().toLowerCase();
+          if (TERRAIN_DEFS[normalized]) {
+            return normalized;
+          }
+        }
+        return DEFAULT_SECTOR_TO_TERRAIN[getRoomSector(room)] || 'unknown';
+      }
+
+      function getTerrainName(terrainKey, explicitLabel) {
         if (explicitLabel && String(explicitLabel).trim()) {
           return String(explicitLabel).trim();
         }
-        const def = TERRAIN_DEFS[sector];
-        return def ? def.name : 'Unknown (' + sector + ')';
+        const def = TERRAIN_DEFS[terrainKey];
+        return def ? def.name : 'Unknown';
       }
 
-      function getTerrainColor(sector) {
-        const def = TERRAIN_DEFS[sector];
+      function getTerrainColor(terrainKey) {
+        const def = TERRAIN_DEFS[terrainKey];
         return def ? def.color : UNKNOWN_TERRAIN_COLOR;
       }
 
-      const sectorCounts = new Map();
-      const sectorLabels = new Map();
+      const terrainCounts = new Map();
       rooms.forEach(r => {
-        const sec = getRoomSector(r);
-        sectorCounts.set(sec, (sectorCounts.get(sec) || 0) + 1);
-        if (!sectorLabels.has(sec)) {
-          sectorLabels.set(sec, getTerrainName(sec, r.terrain));
-        }
+        const key = getRoomTerrainKey(r);
+        terrainCounts.set(key, (terrainCounts.get(key) || 0) + 1);
       });
-      const distinctSectors = Array.from(sectorCounts.keys()).sort((a, b) => a - b);
+      const distinctTerrains = Array.from(terrainCounts.keys()).sort((a, b) => {
+        const ia = TERRAIN_ORDER.indexOf(a);
+        const ib = TERRAIN_ORDER.indexOf(b);
+        return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+      });
 
       // Filter state: Set of active Z levels, active zones, and active terrains
       const zValues = Array.from(new Set(rooms.map(r => r.coords.z))).sort((a, b) => a - b);
       const activeFloors = new Set(zValues);
       const activeZones = new Set(distinctAreas);
-      const activeTerrains = new Set(distinctSectors);
+      const activeTerrains = new Set(distinctTerrains);
       let colorMode = 'floor'; // 'floor' | 'zone' | 'terrain'
       let highlightedZone = null;
       let highlightedTerrain = null;
@@ -1300,7 +1322,7 @@ __JSON_DATA__
         }
 
         if (mode !== 'terrain') {
-          distinctSectors.forEach(s => activeTerrains.add(s));
+          distinctTerrains.forEach(t => activeTerrains.add(t));
           clearTerrainHighlight();
         }
 
@@ -1316,21 +1338,21 @@ __JSON_DATA__
       }
 
       // Populate interactive terrain legend
-      distinctSectors.forEach(sec => {
-        const count = sectorCounts.get(sec) || 0;
-        const label = sectorLabels.get(sec) || getTerrainName(sec);
-        const color = getTerrainColor(sec);
+      distinctTerrains.forEach(terrainKey => {
+        const count = terrainCounts.get(terrainKey) || 0;
+        const label = getTerrainName(terrainKey);
+        const color = getTerrainColor(terrainKey);
 
         if (terrainLegendList) {
           const leg = document.createElement('div');
           leg.className = 'legend-item active';
-          leg.setAttribute('data-sector', sec);
+          leg.setAttribute('data-terrain', terrainKey);
           leg.title = 'Click to toggle ' + label + ' (' + count + ' rooms) | Hover to highlight';
           leg.innerHTML = '<span class="legend-swatch" style="background-color: ' + color + ';"></span>' +
             '<span style="flex:1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + escapeHtml(label) + '</span>' +
             '<span style="font-size: 0.72rem; color: var(--text-muted);">' + count + '</span>';
-          leg.addEventListener('click', () => toggleTerrain(sec));
-          leg.addEventListener('mouseenter', () => highlightTerrain(sec));
+          leg.addEventListener('click', () => toggleTerrain(terrainKey));
+          leg.addEventListener('mouseenter', () => highlightTerrain(terrainKey));
           leg.addEventListener('mouseleave', () => clearTerrainHighlight());
           terrainLegendList.appendChild(leg);
         }
@@ -1447,30 +1469,30 @@ __JSON_DATA__
         roomGroups.forEach(g => g.classList.remove('zone-highlighted'));
       }
 
-      function toggleTerrain(sector) {
-        if (activeTerrains.has(sector)) {
-          activeTerrains.delete(sector);
+      function toggleTerrain(terrainKey) {
+        if (activeTerrains.has(terrainKey)) {
+          activeTerrains.delete(terrainKey);
         } else {
-          activeTerrains.add(sector);
+          activeTerrains.add(terrainKey);
         }
         applyFloorFilter();
       }
 
       function toggleAllTerrains() {
-        if (activeTerrains.size === distinctSectors.length) {
+        if (activeTerrains.size === distinctTerrains.length) {
           activeTerrains.clear();
         } else {
-          distinctSectors.forEach(s => activeTerrains.add(s));
+          distinctTerrains.forEach(t => activeTerrains.add(t));
         }
         applyFloorFilter();
       }
 
-      function highlightTerrain(sector) {
-        highlightedTerrain = sector;
+      function highlightTerrain(terrainKey) {
+        highlightedTerrain = terrainKey;
         roomGroups.forEach((g, vnum) => {
           const r = roomMap.get(vnum);
           if (!r) return;
-          if (getRoomSector(r) === sector) {
+          if (getRoomTerrainKey(r) === terrainKey) {
             g.classList.add('terrain-highlighted');
           } else {
             g.classList.remove('terrain-highlighted');
@@ -1491,7 +1513,7 @@ __JSON_DATA__
           if (!rect) return;
 
           if (colorMode === 'terrain') {
-            rect.setAttribute('fill', getTerrainColor(getRoomSector(r)));
+            rect.setAttribute('fill', getTerrainColor(getRoomTerrainKey(r)));
             g.style.setProperty('--zone-color', isMultiArea ? getZoneColor(r.area_name) : '#0f172a');
           } else if (isMultiArea) {
             const zColor = getZoneColor(r.area_name);
@@ -1552,9 +1574,9 @@ __JSON_DATA__
           item.classList.toggle('dimmed', !isActive);
         });
 
-        document.querySelectorAll('#terrain-legend-list .legend-item[data-sector]').forEach(item => {
-          const sec = Number(item.getAttribute('data-sector'));
-          const isActive = activeTerrains.has(sec);
+        document.querySelectorAll('#terrain-legend-list .legend-item[data-terrain]').forEach(item => {
+          const terrainKey = item.getAttribute('data-terrain');
+          const isActive = activeTerrains.has(terrainKey);
           item.classList.toggle('active', isActive);
           item.classList.toggle('dimmed', !isActive);
         });
@@ -1569,7 +1591,7 @@ __JSON_DATA__
           const r = roomMap.get(vnum);
           const floorVis = activeFloors.has(z);
           const zoneVis = !isMultiArea || (r && activeZones.has(r.area_name));
-          const terrainVis = colorMode !== 'terrain' || (r && activeTerrains.has(getRoomSector(r)));
+          const terrainVis = colorMode !== 'terrain' || (r && activeTerrains.has(getRoomTerrainKey(r)));
           const isVisible = floorVis && zoneVis && terrainVis;
           g.classList.toggle('dimmed', !isVisible);
         });
@@ -1585,8 +1607,8 @@ __JSON_DATA__
 
           const srcZoneVis = !isMultiArea || (srcRoom && activeZones.has(srcRoom.area_name));
           const dstZoneVis = !isMultiArea || (dstRoom && activeZones.has(dstRoom.area_name));
-          const srcTerrainVis = colorMode !== 'terrain' || (srcRoom && activeTerrains.has(getRoomSector(srcRoom)));
-          const dstTerrainVis = colorMode !== 'terrain' || (dstRoom && activeTerrains.has(getRoomSector(dstRoom)));
+          const srcTerrainVis = colorMode !== 'terrain' || (srcRoom && activeTerrains.has(getRoomTerrainKey(srcRoom)));
+          const dstTerrainVis = colorMode !== 'terrain' || (dstRoom && activeTerrains.has(getRoomTerrainKey(dstRoom)));
           const isVisible = (activeFloors.has(srcZ) || activeFloors.has(dstZ)) && (srcZoneVis || dstZoneVis) && (srcTerrainVis || dstTerrainVis);
           line.classList.toggle('dimmed', !isVisible);
         });
@@ -1866,6 +1888,7 @@ __JSON_DATA__
         g.setAttribute('data-vnum', r.vnum);
         g.setAttribute('data-z', r.coords.z);
         g.setAttribute('data-sector', getRoomSector(r));
+        g.setAttribute('data-terrain', getRoomTerrainKey(r));
         if (r.area_name) {
           g.setAttribute('data-area', r.area_name);
         }
@@ -1971,8 +1994,8 @@ __JSON_DATA__
           ttTitle += ' | Area: ' + room.area_name;
         }
         document.getElementById('tt-name').textContent = ttTitle;
-        const ttSector = getRoomSector(room);
-        const ttTerrain = getTerrainName(ttSector, room.terrain);
+        const ttTerrainKey = getRoomTerrainKey(room);
+        const ttTerrain = getTerrainName(ttTerrainKey, room.terrain);
         document.getElementById('tt-meta').textContent = 'Floor Z: ' + room.coords.z + ' | Terrain: ' + ttTerrain + ' | Coords: (' + room.coords.x + ', ' + room.coords.y + ', ' + room.coords.z + ')';
 
         const exitItems = (room.exits || []).map(ex => {
@@ -2261,10 +2284,12 @@ __JSON_DATA__
         const terrainElem = document.getElementById('card-room-terrain');
         if (terrainRow && terrainElem) {
           const sec = getRoomSector(room);
-          const terrainLabel = getTerrainName(sec, room.terrain);
-          const terrainColor = getTerrainColor(sec);
+          const terrainKey = getRoomTerrainKey(room);
+          const terrainLabel = getTerrainName(terrainKey, room.terrain);
+          const terrainColor = getTerrainColor(terrainKey);
+          const displayLabel = terrainKey === 'unknown' ? terrainLabel : (terrainLabel + ' (sector ' + sec + ')');
           terrainElem.innerHTML = '<span class="legend-swatch" style="width:10px; height:10px; border-radius:2px; background-color:' + terrainColor + ';"></span>' +
-            '<span>' + escapeHtml(terrainLabel) + ' (' + sec + ')</span>';
+            '<span>' + escapeHtml(displayLabel) + '</span>';
           terrainRow.style.display = 'block';
         }
 
@@ -2977,11 +3002,11 @@ __JSON_DATA__
           const my = padding + pt.py * scale;
           const isFloorActive = activeFloors.has(r.coords.z);
           const isZoneActive = !isMultiArea || activeZones.has(r.area_name);
-          const isTerrainActive = colorMode !== 'terrain' || activeTerrains.has(getRoomSector(r));
+          const isTerrainActive = colorMode !== 'terrain' || activeTerrains.has(getRoomTerrainKey(r));
           const isActive = isFloorActive && isZoneActive && isTerrainActive;
           if (isActive) {
             if (colorMode === 'terrain') {
-              miniCtx.fillStyle = getTerrainColor(getRoomSector(r));
+              miniCtx.fillStyle = getTerrainColor(getRoomTerrainKey(r));
             } else {
               miniCtx.fillStyle = (isMultiArea && colorMode === 'zone') ? getZoneColor(r.area_name) : getRoomColor(r.coords.z);
             }
