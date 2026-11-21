@@ -303,9 +303,9 @@ Renderers consume immutable `(WorldGraph, SolvedLayout)` pairs and operate state
 - **[`HTMLRenderer`](../romutil/renderers/html.py)**:
   - Generates standalone, single-file interactive web map viewers (`.html`) requiring no external runtime dependencies or CDNs.
   - Serializes graph topology and solved coordinates into embedded JSON within [`templates/viewer.html`](../romutil/templates/viewer.html).
-  - Features interactive Pan/Zoom, room search, elevation level filtering, incoming/outgoing exit inspection, and visual edge highlighting.
+  - Features interactive Pan/Zoom, room search, elevation level and zone filtering, multi-mode room coloring (elevation floor, zone provenance, and ROM terrain/sector type with interactive filtering legends), incoming/outgoing exit inspection, mob details, and visual edge highlighting.
 - **[`JSONRenderer`](../romutil/renderers/json.py)**:
-  - Exports structured map datasets (`.json`) containing metadata, bounding boxes, room coordinates, exits, and zone boundaries for external tooling and web frontends.
+  - Exports structured map datasets (`.json`) containing metadata, bounding boxes, room coordinates, room terrain/sector types, exits, and zone boundaries for external tooling and web frontends.
 - **Format Registry & Dispatcher**:
   - `RENDERERS`: Registry dictionary mapping format strings (`"svg"`, `"json"`, `"html"`) to renderer classes.
   - `get_renderer(format_name)`: Factory returning the corresponding renderer instance.

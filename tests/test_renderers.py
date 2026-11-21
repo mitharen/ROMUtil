@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import romutil
-from romutil.models import AreaHeader, Direction, Exit, Room
+from romutil.models import SECTOR_NAMES, AreaHeader, Direction, Exit, Room, SectorType, get_sector_name
 from romutil.renderers import (
     HTML_TEMPLATE,
     RENDERERS,
@@ -532,6 +532,9 @@ class TestPackageRootExports:
     """Verify renderer public API exports on the package root."""
 
     def test_package_root_exports(self):
+        assert romutil.SECTOR_NAMES is SECTOR_NAMES
+        assert romutil.SectorType is SectorType
+        assert romutil.get_sector_name is get_sector_name
         assert romutil.renderers.BaseRenderer is BaseRenderer
         assert romutil.BaseRenderer is romutil.interfaces.BaseRenderer
         assert romutil.SVGRenderer is SVGRenderer
@@ -1094,3 +1097,103 @@ class TestMultiAreaViewerUI:
         assert "g.setAttribute('data-area', r.area_name);" in html
         assert "colorMode === 'zone'" in html
         assert "getZoneColor(r.area_name)" in html
+
+
+class TestTerrainColoringAndSerialization:
+    """Test canonical ROM sector/terrain serialization and interactive terrain coloring UI."""
+
+    def test_sector_type_enum_and_lookup_helpers(self):
+        expected = {
+            0: "Inside",
+            1: "City",
+            2: "Field",
+            3: "Forest",
+            4: "Hills",
+            5: "Mountain",
+            6: "Water (Swim)",
+            7: "Water (No Swim)",
+            8: "Unused",
+            9: "Air",
+            10: "Desert",
+        }
+        assert len(SECTOR_NAMES) == len(SectorType) == len(expected)
+        for code, label in expected.items():
+            assert SectorType(code).value == code
+            assert SECTOR_NAMES[code] == label
+            assert get_sector_name(code) == label
+
+        assert get_sector_name(-1) == "Unknown (-1)"
+        assert get_sector_name(42) == "Unknown (42)"
+
+    def test_build_area_json_serializes_sector_and_terrain(self):
+        rooms = {
+            1: Room(vnum=1, name="Temple", description="Inside", sector=0),
+            2: Room(vnum=2, name="Main Street", description="City", sector=1),
+            3: Room(vnum=3, name="Pine Woods", description="Forest", sector=3),
+            4: Room(vnum=4, name="Deep River", description="River", sector=7),
+            5: Room(vnum=5, name="Cloud Bank", description="Sky", sector=9),
+            6: Room(vnum=6, name="Dunes", description="Sand", sector=10),
+            7: Room(vnum=7, name="Weird Crossing", description="Negative", sector=-1),
+            8: Room(vnum=8, name="Custom Sector", description="Ext", sector=99),
+        }
+        graph = WorldGraph(rooms=rooms, exits=(), header=None)
+        layout = SolvedLayout(
+            coordinates={v: Coord3D(v, 0, 0) for v in rooms},
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.01),
+        )
+        data = build_area_json(graph, layout)
+        by_vnum = {r["vnum"]: r for r in data["rooms"]}
+
+        assert by_vnum[1]["sector"] == 0 and by_vnum[1]["terrain"] == "Inside"
+        assert by_vnum[2]["sector"] == 1 and by_vnum[2]["terrain"] == "City"
+        assert by_vnum[3]["sector"] == 3 and by_vnum[3]["terrain"] == "Forest"
+        assert by_vnum[4]["sector"] == 7 and by_vnum[4]["terrain"] == "Water (No Swim)"
+        assert by_vnum[5]["sector"] == 9 and by_vnum[5]["terrain"] == "Air"
+        assert by_vnum[6]["sector"] == 10 and by_vnum[6]["terrain"] == "Desert"
+        assert by_vnum[7]["sector"] == -1 and by_vnum[7]["terrain"] == "Unknown (-1)"
+        assert by_vnum[8]["sector"] == 99 and by_vnum[8]["terrain"] == "Unknown (99)"
+
+    def test_html_viewer_terrain_toggle_legend_and_inspector_markup(self):
+        rooms = {
+            10: Room(vnum=10, name="Town Gate", description="Gate", sector=SectorType.CITY),
+            11: Room(vnum=11, name="Emerald Woods", description="Woods", sector=SectorType.FOREST),
+            12: Room(vnum=12, name="Strange Vortex", description="Weird", sector=-1),
+        }
+        header = AreaHeader(filename="terrain.are", name="Terrain Test", builder="Tester", vnum_min=10, vnum_max=12)
+        graph = WorldGraph(rooms=rooms, exits=(), header=header)
+        layout = SolvedLayout(
+            coordinates={10: Coord3D(0, 0, 0), 11: Coord3D(1, 0, 0), 12: Coord3D(2, 0, 0)},
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
+        )
+        data = build_area_json(graph, layout)
+        html = generate_html_viewer(data)
+
+        # Toolbar controls & mode toggle pills
+        assert 'id="color-selector"' in html
+        assert 'id="btn-color-floor"' in html
+        assert 'id="btn-color-mode"' in html
+        assert 'id="btn-color-terrain"' in html
+
+        # Sidebar terrain legend & inspector fields
+        assert 'id="card-terrain-legend"' in html
+        assert 'id="terrain-legend-list"' in html
+        assert 'id="btn-terrain-legend-all"' in html
+        assert 'id="card-room-terrain-row"' in html
+        assert 'id="card-room-terrain"' in html
+
+        # JavaScript terrain coloring & filtering logic
+        assert "const TERRAIN_DEFS =" in html
+        assert "function getRoomSector(room)" in html
+        assert "function getTerrainName(sector, explicitLabel)" in html
+        assert "function getTerrainColor(sector)" in html
+        assert "function setColorMode(mode)" in html
+        assert "function toggleTerrain(sector)" in html
+        assert "function toggleAllTerrains()" in html
+        assert "function highlightTerrain(sector)" in html
+        assert "colorMode === 'terrain'" in html
+        assert "g.setAttribute('data-sector', getRoomSector(r));" in html
+
+        # Embedded JSON carries terrain/sector values
+        assert '"terrain": "City"' in html
+        assert '"terrain": "Forest"' in html
+        assert '"terrain": "Unknown (-1)"' in html

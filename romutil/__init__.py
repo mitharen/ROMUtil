@@ -1,4 +1,5 @@
 from romutil.models import (
+    SECTOR_NAMES,
     AreaData,
     AreaHeader,
     Direction,
@@ -9,9 +10,11 @@ from romutil.models import (
     Object,
     Reset,
     Room,
+    SectorType,
     Shop,
     Social,
     Special,
+    get_sector_name,
     merge_areas,
 )
 from romutil.parser import (
@@ -62,6 +65,9 @@ __all__ = [
     'Object',
     'Reset',
     'Room',
+    'SectorType',
+    'SECTOR_NAMES',
+    'get_sector_name',
     'Shop',
     'Social',
     'Special',
