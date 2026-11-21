@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from romutil.models import Direction
+from romutil.models import Direction, get_sector_name
 from romutil.renderers.base import BaseRenderer
 from romutil.types import RenderOptions, SolvedLayout, WorldGraph
 
@@ -251,11 +251,15 @@ def build_area_json(
                 exit_dict["target_vnum"] = int(target)
             exits_data.append(exit_dict)
 
+        raw_sector = getattr(r, "sector", 0)
+        sector_val = int(raw_sector) if raw_sector is not None else 0
         room_dict: dict[str, Any] = {
             "vnum": vnum,
             "name": str(r.name),
             "description": str(r.description),
             "desc": str(r.description),
+            "sector": sector_val,
+            "terrain": get_sector_name(sector_val),
             "coords": {
                 "x": x_val,
                 "y": y_val,

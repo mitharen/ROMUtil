@@ -423,6 +423,32 @@ class TestGalleryAssetsGeneration:
         assert "getZoneColor" in html_content
         assert "toggleZone" in html_content
 
+    def test_viewer_terrain_coloring_data_and_controls_e2e(self, tmp_path):
+        """Verify real-area HTML output embeds terrain metadata and interactive terrain toggle controls."""
+        from scripts.build_pages import render_area
+
+        midgaard_path = REPO_ROOT / "tests" / "fixtures" / "areas" / "midgaard.are"
+        render_area("test_terrain_midgaard", midgaard_path, is_dir=False, outdir=tmp_path, solver_timeout=15)
+
+        html_path = tmp_path / "test_terrain_midgaard.html"
+        assert html_path.exists()
+        html_content = html_path.read_text(encoding="utf-8")
+        html_data = validate_html_viewer_content(html_content)
+
+        rooms = html_data["rooms"]
+        assert len(rooms) > 0
+        terrains = {r.get("terrain") for r in rooms}
+        sectors = {r.get("sector") for r in rooms}
+        assert {"Inside", "City", "Field", "Forest", "Water (Swim)", "Water (No Swim)", "Air"}.issubset(terrains)
+        assert {0, 1, 2, 3, 6, 7, 9}.issubset(sectors)
+
+        assert 'id="color-selector"' in html_content
+        assert 'id="btn-color-terrain"' in html_content
+        assert 'id="card-terrain-legend"' in html_content
+        assert 'id="card-room-terrain-row"' in html_content
+        assert "getTerrainColor" in html_content
+        assert "setColorMode" in html_content
+
     def test_build_pages_composite_area_e2e(self, tmp_path):
         from scripts.build_pages import main
 

@@ -33,6 +33,41 @@ class Direction(enum.IntEnum):
         return inverses[self]
 
 
+class SectorType(enum.IntEnum):
+    """Canonical ROM 2.4 / Merc / Diku room sector (terrain) types."""
+
+    INSIDE = 0
+    CITY = 1
+    FIELD = 2
+    FOREST = 3
+    HILLS = 4
+    MOUNTAIN = 5
+    WATER_SWIM = 6
+    WATER_NOSWIM = 7
+    UNUSED = 8
+    AIR = 9
+    DESERT = 10
+
+
+SECTOR_NAMES: dict[int, str] = {
+    SectorType.INSIDE: "Inside",
+    SectorType.CITY: "City",
+    SectorType.FIELD: "Field",
+    SectorType.FOREST: "Forest",
+    SectorType.HILLS: "Hills",
+    SectorType.MOUNTAIN: "Mountain",
+    SectorType.WATER_SWIM: "Water (Swim)",
+    SectorType.WATER_NOSWIM: "Water (No Swim)",
+    SectorType.UNUSED: "Unused",
+    SectorType.AIR: "Air",
+    SectorType.DESERT: "Desert",
+}
+
+
+def get_sector_name(sector: int) -> str:
+    """Return the human-readable terrain label for a numeric room sector type."""
+    sector_int = int(sector)
+    return SECTOR_NAMES.get(sector_int, f"Unknown ({sector_int})")
 
 
 @dataclass(frozen=True)

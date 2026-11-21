@@ -277,6 +277,64 @@
       filter: drop-shadow(0 0 10px #38bdf8) !important;
     }
 
+    .color-selector {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background-color: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 3px 6px;
+    }
+
+    .color-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      user-select: none;
+    }
+
+    .color-pill-list {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .color-pill {
+      background-color: var(--bg-card);
+      color: var(--text-muted);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .color-pill:hover {
+      border-color: var(--accent);
+      color: var(--text-main);
+    }
+
+    .color-pill.active {
+      background-color: var(--accent);
+      color: var(--bg-primary);
+      border-color: var(--accent);
+      font-weight: 700;
+    }
+
+    .room-group.terrain-highlighted .room-box {
+      stroke: #38bdf8 !important;
+      stroke-width: 3.5px !important;
+      filter: drop-shadow(0 0 10px #38bdf8) !important;
+    }
+
     .legend-item {
       display: flex;
       align-items: center;
@@ -816,7 +874,14 @@
         <select id="floor-filter" style="display: none;">
           <option value="all">All Floors (Z)</option>
         </select>
-        <button id="btn-color-mode" title="Toggle coloring between Floor Z and Zone Area" style="display: none;">Color: Floor</button>
+        <div class="color-selector" id="color-selector" role="group" aria-label="Room coloring mode">
+          <span class="color-label">Color:</span>
+          <div class="color-pill-list" id="color-pill-list">
+            <button type="button" class="color-pill active" id="btn-color-floor" data-color-mode="floor" aria-pressed="true" title="Color rooms by elevation floor (Z)">Floor</button>
+            <button type="button" class="color-pill" id="btn-color-mode" data-color-mode="zone" aria-pressed="false" title="Color rooms by zone / area" style="display: none;">Zone</button>
+            <button type="button" class="color-pill" id="btn-color-terrain" data-color-mode="terrain" aria-pressed="false" title="Color rooms by terrain / sector type">Terrain</button>
+          </div>
+        </div>
         <button id="btn-toggle-mobs" class="btn-active" title="Toggle Mob Overlay">Mobs</button>
         <button id="btn-zoom-in" title="Zoom In">+</button>
         <button id="btn-zoom-out" title="Zoom Out">&minus;</button>
@@ -860,6 +925,10 @@
           <div id="card-room-area-row" style="display: none; margin-top: 6px; font-size: 0.8rem;">
             <span style="color: var(--text-muted); font-weight: 600; text-transform: uppercase; font-size: 0.75rem;">Area / Zone:</span>
             <span id="card-room-area" style="font-weight: 600; margin-left: 4px; color: var(--text-main);">-</span>
+          </div>
+          <div id="card-room-terrain-row" style="display: none; margin-top: 6px; font-size: 0.8rem;">
+            <span style="color: var(--text-muted); font-weight: 600; text-transform: uppercase; font-size: 0.75rem;">Terrain / Sector:</span>
+            <span id="card-room-terrain" style="display: inline-flex; align-items: center; gap: 6px; font-weight: 600; margin-left: 4px; color: var(--text-main);">-</span>
           </div>
           <div id="card-room-desc" class="room-desc" style="display:none;"></div>
           <div style="margin-top: 10px;">
@@ -964,6 +1033,17 @@
             </div>
           </div>
           <div class="path-step-list" id="path-steps"></div>
+        </div>
+
+        <div class="card" id="card-terrain-legend" style="display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <h3 style="margin: 0;">Terrain Legend</h3>
+            <button id="btn-terrain-legend-all" style="padding: 2px 8px; font-size: 0.75rem;">Toggle All</button>
+          </div>
+          <div class="legend-help" style="font-size: 0.72rem; color: var(--text-muted); margin-bottom: 6px;">
+            Click any terrain to toggle visibility &bull; Hover to highlight
+          </div>
+          <div id="terrain-legend-list" style="display: flex; flex-direction: column; gap: 6px; margin-top: 6px;"></div>
         </div>
 
         <div class="card" id="card-zone-legend" style="display: none;">
@@ -1085,12 +1165,60 @@ __JSON_DATA__
         return zoneColors.get(areaName) || '#64748b';
       }
 
-      // Filter state: Set of active Z levels and active zones
+      // Canonical ROM 2.4 terrain / sector definitions and high-contrast dark-theme palette
+      const TERRAIN_DEFS = {
+        0:  { name: 'Inside',          color: '#6d28d9' },
+        1:  { name: 'City',            color: '#64748b' },
+        2:  { name: 'Field',           color: '#65a30d' },
+        3:  { name: 'Forest',          color: '#15803d' },
+        4:  { name: 'Hills',           color: '#a16207' },
+        5:  { name: 'Mountain',        color: '#9a3412' },
+        6:  { name: 'Water (Swim)',    color: '#0891b2' },
+        7:  { name: 'Water (No Swim)', color: '#1d4ed8' },
+        8:  { name: 'Unused',          color: '#475569' },
+        9:  { name: 'Air',             color: '#0ea5e9' },
+        10: { name: 'Desert',          color: '#d97706' },
+      };
+      const UNKNOWN_TERRAIN_COLOR = '#be185d';
+
+      function getRoomSector(room) {
+        if (!room || room.sector === undefined || room.sector === null) return 0;
+        const parsed = Number(room.sector);
+        return Number.isFinite(parsed) ? parsed : 0;
+      }
+
+      function getTerrainName(sector, explicitLabel) {
+        if (explicitLabel && String(explicitLabel).trim()) {
+          return String(explicitLabel).trim();
+        }
+        const def = TERRAIN_DEFS[sector];
+        return def ? def.name : 'Unknown (' + sector + ')';
+      }
+
+      function getTerrainColor(sector) {
+        const def = TERRAIN_DEFS[sector];
+        return def ? def.color : UNKNOWN_TERRAIN_COLOR;
+      }
+
+      const sectorCounts = new Map();
+      const sectorLabels = new Map();
+      rooms.forEach(r => {
+        const sec = getRoomSector(r);
+        sectorCounts.set(sec, (sectorCounts.get(sec) || 0) + 1);
+        if (!sectorLabels.has(sec)) {
+          sectorLabels.set(sec, getTerrainName(sec, r.terrain));
+        }
+      });
+      const distinctSectors = Array.from(sectorCounts.keys()).sort((a, b) => a - b);
+
+      // Filter state: Set of active Z levels, active zones, and active terrains
       const zValues = Array.from(new Set(rooms.map(r => r.coords.z))).sort((a, b) => a - b);
       const activeFloors = new Set(zValues);
       const activeZones = new Set(distinctAreas);
-      let colorMode = 'floor'; // 'floor' | 'zone'
+      const activeTerrains = new Set(distinctSectors);
+      let colorMode = 'floor'; // 'floor' | 'zone' | 'terrain'
       let highlightedZone = null;
+      let highlightedTerrain = null;
 
       const floorPillList = document.getElementById('floor-pill-list');
       const btnFloorAll = document.getElementById('btn-floor-all');
@@ -1103,7 +1231,13 @@ __JSON_DATA__
       const cardZoneLegend = document.getElementById('card-zone-legend');
       const zoneLegendList = document.getElementById('zone-legend-list');
       const btnZoneLegendAll = document.getElementById('btn-zone-legend-all');
+
+      const btnColorFloor = document.getElementById('btn-color-floor');
       const btnColorMode = document.getElementById('btn-color-mode');
+      const btnColorTerrain = document.getElementById('btn-color-terrain');
+      const cardTerrainLegend = document.getElementById('card-terrain-legend');
+      const terrainLegendList = document.getElementById('terrain-legend-list');
+      const btnTerrainLegendAll = document.getElementById('btn-terrain-legend-all');
 
       // Populate floor pills and interactive elevation legend
       zValues.forEach(z => {
@@ -1140,17 +1274,79 @@ __JSON_DATA__
         btnFloorAll.addEventListener('click', toggleAllFloors);
       }
 
+      function setColorMode(mode) {
+        if (mode === 'zone' && !isMultiArea) {
+          mode = 'floor';
+        }
+        colorMode = mode;
+
+        if (btnColorFloor) {
+          const isFloor = mode === 'floor';
+          btnColorFloor.classList.toggle('active', isFloor);
+          btnColorFloor.setAttribute('aria-pressed', String(isFloor));
+        }
+        if (btnColorMode) {
+          const isZone = mode === 'zone';
+          btnColorMode.classList.toggle('active', isZone);
+          btnColorMode.setAttribute('aria-pressed', String(isZone));
+        }
+        if (btnColorTerrain) {
+          const isTerrain = mode === 'terrain';
+          btnColorTerrain.classList.toggle('active', isTerrain);
+          btnColorTerrain.setAttribute('aria-pressed', String(isTerrain));
+        }
+        if (cardTerrainLegend) {
+          cardTerrainLegend.style.display = mode === 'terrain' ? 'block' : 'none';
+        }
+
+        if (mode !== 'terrain') {
+          distinctSectors.forEach(s => activeTerrains.add(s));
+          clearTerrainHighlight();
+        }
+
+        updateRoomVisualStyles();
+        applyFloorFilter();
+      }
+
+      if (btnColorFloor) {
+        btnColorFloor.addEventListener('click', () => setColorMode('floor'));
+      }
+      if (btnColorTerrain) {
+        btnColorTerrain.addEventListener('click', () => setColorMode('terrain'));
+      }
+
+      // Populate interactive terrain legend
+      distinctSectors.forEach(sec => {
+        const count = sectorCounts.get(sec) || 0;
+        const label = sectorLabels.get(sec) || getTerrainName(sec);
+        const color = getTerrainColor(sec);
+
+        if (terrainLegendList) {
+          const leg = document.createElement('div');
+          leg.className = 'legend-item active';
+          leg.setAttribute('data-sector', sec);
+          leg.title = 'Click to toggle ' + label + ' (' + count + ' rooms) | Hover to highlight';
+          leg.innerHTML = '<span class="legend-swatch" style="background-color: ' + color + ';"></span>' +
+            '<span style="flex:1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + escapeHtml(label) + '</span>' +
+            '<span style="font-size: 0.72rem; color: var(--text-muted);">' + count + '</span>';
+          leg.addEventListener('click', () => toggleTerrain(sec));
+          leg.addEventListener('mouseenter', () => highlightTerrain(sec));
+          leg.addEventListener('mouseleave', () => clearTerrainHighlight());
+          terrainLegendList.appendChild(leg);
+        }
+      });
+
+      if (btnTerrainLegendAll) {
+        btnTerrainLegendAll.addEventListener('click', toggleAllTerrains);
+      }
+
       // Initialize zone UI when multiple distinct areas exist
       if (isMultiArea) {
         if (zoneSelector) zoneSelector.style.display = 'inline-flex';
         if (cardZoneLegend) cardZoneLegend.style.display = 'block';
         if (btnColorMode) {
-          btnColorMode.style.display = 'inline-block';
-          btnColorMode.addEventListener('click', () => {
-            colorMode = colorMode === 'floor' ? 'zone' : 'floor';
-            btnColorMode.textContent = colorMode === 'floor' ? 'Color: Floor' : 'Color: Zone';
-            updateRoomVisualStyles();
-          });
+          btnColorMode.style.display = 'inline-flex';
+          btnColorMode.addEventListener('click', () => setColorMode('zone'));
         }
 
         const areaCounts = new Map();
@@ -1251,6 +1447,42 @@ __JSON_DATA__
         roomGroups.forEach(g => g.classList.remove('zone-highlighted'));
       }
 
+      function toggleTerrain(sector) {
+        if (activeTerrains.has(sector)) {
+          activeTerrains.delete(sector);
+        } else {
+          activeTerrains.add(sector);
+        }
+        applyFloorFilter();
+      }
+
+      function toggleAllTerrains() {
+        if (activeTerrains.size === distinctSectors.length) {
+          activeTerrains.clear();
+        } else {
+          distinctSectors.forEach(s => activeTerrains.add(s));
+        }
+        applyFloorFilter();
+      }
+
+      function highlightTerrain(sector) {
+        highlightedTerrain = sector;
+        roomGroups.forEach((g, vnum) => {
+          const r = roomMap.get(vnum);
+          if (!r) return;
+          if (getRoomSector(r) === sector) {
+            g.classList.add('terrain-highlighted');
+          } else {
+            g.classList.remove('terrain-highlighted');
+          }
+        });
+      }
+
+      function clearTerrainHighlight() {
+        highlightedTerrain = null;
+        roomGroups.forEach(g => g.classList.remove('terrain-highlighted'));
+      }
+
       function updateRoomVisualStyles() {
         roomGroups.forEach((g, vnum) => {
           const r = roomMap.get(vnum);
@@ -1258,7 +1490,10 @@ __JSON_DATA__
           const rect = g.querySelector('.room-box');
           if (!rect) return;
 
-          if (isMultiArea) {
+          if (colorMode === 'terrain') {
+            rect.setAttribute('fill', getTerrainColor(getRoomSector(r)));
+            g.style.setProperty('--zone-color', isMultiArea ? getZoneColor(r.area_name) : '#0f172a');
+          } else if (isMultiArea) {
             const zColor = getZoneColor(r.area_name);
             const fColor = getRoomColor(r.coords.z);
             if (colorMode === 'zone') {
@@ -1270,6 +1505,11 @@ __JSON_DATA__
             }
           } else {
             rect.setAttribute('fill', getRoomColor(r.coords.z));
+            if (r.area_name) {
+              g.style.setProperty('--zone-color', getZoneColor(r.area_name));
+            } else {
+              g.style.removeProperty('--zone-color');
+            }
           }
         });
         renderMinimap();
@@ -1312,6 +1552,13 @@ __JSON_DATA__
           item.classList.toggle('dimmed', !isActive);
         });
 
+        document.querySelectorAll('#terrain-legend-list .legend-item[data-sector]').forEach(item => {
+          const sec = Number(item.getAttribute('data-sector'));
+          const isActive = activeTerrains.has(sec);
+          item.classList.toggle('active', isActive);
+          item.classList.toggle('dimmed', !isActive);
+        });
+
         elevationLayers.forEach(({ layer }, z) => {
           const isVisible = activeFloors.has(z);
           layer.classList.toggle('dimmed', !isVisible);
@@ -1322,7 +1569,8 @@ __JSON_DATA__
           const r = roomMap.get(vnum);
           const floorVis = activeFloors.has(z);
           const zoneVis = !isMultiArea || (r && activeZones.has(r.area_name));
-          const isVisible = floorVis && zoneVis;
+          const terrainVis = colorMode !== 'terrain' || (r && activeTerrains.has(getRoomSector(r)));
+          const isVisible = floorVis && zoneVis && terrainVis;
           g.classList.toggle('dimmed', !isVisible);
         });
 
@@ -1337,7 +1585,9 @@ __JSON_DATA__
 
           const srcZoneVis = !isMultiArea || (srcRoom && activeZones.has(srcRoom.area_name));
           const dstZoneVis = !isMultiArea || (dstRoom && activeZones.has(dstRoom.area_name));
-          const isVisible = (activeFloors.has(srcZ) || activeFloors.has(dstZ)) && (srcZoneVis || dstZoneVis);
+          const srcTerrainVis = colorMode !== 'terrain' || (srcRoom && activeTerrains.has(getRoomSector(srcRoom)));
+          const dstTerrainVis = colorMode !== 'terrain' || (dstRoom && activeTerrains.has(getRoomSector(dstRoom)));
+          const isVisible = (activeFloors.has(srcZ) || activeFloors.has(dstZ)) && (srcZoneVis || dstZoneVis) && (srcTerrainVis || dstTerrainVis);
           line.classList.toggle('dimmed', !isVisible);
         });
 
@@ -1615,6 +1865,7 @@ __JSON_DATA__
         g.setAttribute('class', 'room-group');
         g.setAttribute('data-vnum', r.vnum);
         g.setAttribute('data-z', r.coords.z);
+        g.setAttribute('data-sector', getRoomSector(r));
         if (r.area_name) {
           g.setAttribute('data-area', r.area_name);
         }
@@ -1720,7 +1971,9 @@ __JSON_DATA__
           ttTitle += ' | Area: ' + room.area_name;
         }
         document.getElementById('tt-name').textContent = ttTitle;
-        document.getElementById('tt-meta').textContent = 'Floor Z: ' + room.coords.z + ' | Coords: (' + room.coords.x + ', ' + room.coords.y + ', ' + room.coords.z + ')';
+        const ttSector = getRoomSector(room);
+        const ttTerrain = getTerrainName(ttSector, room.terrain);
+        document.getElementById('tt-meta').textContent = 'Floor Z: ' + room.coords.z + ' | Terrain: ' + ttTerrain + ' | Coords: (' + room.coords.x + ', ' + room.coords.y + ', ' + room.coords.z + ')';
 
         const exitItems = (room.exits || []).map(ex => {
           const isStub = !roomMap.has(ex.dst);
@@ -2002,6 +2255,17 @@ __JSON_DATA__
           } else {
             areaRow.style.display = 'none';
           }
+        }
+
+        const terrainRow = document.getElementById('card-room-terrain-row');
+        const terrainElem = document.getElementById('card-room-terrain');
+        if (terrainRow && terrainElem) {
+          const sec = getRoomSector(room);
+          const terrainLabel = getTerrainName(sec, room.terrain);
+          const terrainColor = getTerrainColor(sec);
+          terrainElem.innerHTML = '<span class="legend-swatch" style="width:10px; height:10px; border-radius:2px; background-color:' + terrainColor + ';"></span>' +
+            '<span>' + escapeHtml(terrainLabel) + ' (' + sec + ')</span>';
+          terrainRow.style.display = 'block';
         }
 
         const descElem = document.getElementById('card-room-desc');
@@ -2399,6 +2663,10 @@ __JSON_DATA__
 
         document.getElementById('card-room-name').textContent = 'Select a Room';
         document.getElementById('card-room-meta').textContent = 'Click any room on the map to inspect details.';
+        const areaRow = document.getElementById('card-room-area-row');
+        if (areaRow) areaRow.style.display = 'none';
+        const terrainRow = document.getElementById('card-room-terrain-row');
+        if (terrainRow) terrainRow.style.display = 'none';
         const descElem = document.getElementById('card-room-desc');
         if (descElem) {
           descElem.style.display = 'none';
@@ -2709,9 +2977,14 @@ __JSON_DATA__
           const my = padding + pt.py * scale;
           const isFloorActive = activeFloors.has(r.coords.z);
           const isZoneActive = !isMultiArea || activeZones.has(r.area_name);
-          const isActive = isFloorActive && isZoneActive;
+          const isTerrainActive = colorMode !== 'terrain' || activeTerrains.has(getRoomSector(r));
+          const isActive = isFloorActive && isZoneActive && isTerrainActive;
           if (isActive) {
-            miniCtx.fillStyle = (isMultiArea && colorMode === 'zone') ? getZoneColor(r.area_name) : getRoomColor(r.coords.z);
+            if (colorMode === 'terrain') {
+              miniCtx.fillStyle = getTerrainColor(getRoomSector(r));
+            } else {
+              miniCtx.fillStyle = (isMultiArea && colorMode === 'zone') ? getZoneColor(r.area_name) : getRoomColor(r.coords.z);
+            }
           } else {
             miniCtx.fillStyle = '#334155';
           }
