@@ -44,6 +44,7 @@ COMPOSITE_SHOWCASE_AREAS = (
             "midennir.are",
             "haon.are",
             "shire.are",
+            "sewer.are",
         ),
     ),
 )

@@ -4448,3 +4448,135 @@ class TestClusterClearanceStateMachine:
 
         assert call_states[:3] == [True, True, False]
         assert ext.solver_status == SolverStatus.OPTIMAL
+
+    def test_phase2_resolves_compacted_crossings_before_unit_crossings(self) -> None:
+        """When compacted and unit crossings coexist, Phase 2 injects only compacted crossings first."""
+        from romutil.layout.milp.cluster import SolvedClusterExtraction, solve_cluster_with_cutting_planes
+
+        node = SolveTreeNode(node_id="p_prio", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2, 3, 4, 5, 6}))
+        ae_comp = ActiveEdge("c_1_2", 1, 2, (1, 0, 0), min_length=2, associated_rooms=frozenset({1, 2}), associated_children=frozenset())
+        ae_unit_y = ActiveEdge("u_3_4", 3, 4, (0, 1, 0), min_length=1, associated_rooms=frozenset({3, 4}), associated_children=frozenset())
+        ae_unit_x = ActiveEdge("u_5_6", 5, 6, (1, 0, 0), min_length=1, associated_rooms=frozenset({5, 6}), associated_children=frozenset())
+
+        clean_ext = SolvedClusterExtraction({1: (0, 0, 0), 2: (2, 0, 0), 3: (4, 0, 0), 4: (4, 1, 0), 5: (6, 0, 0), 6: (7, 0, 0)}, {}, SolverStatus.OPTIMAL)
+        mixed_ext = SolvedClusterExtraction({1: (0, 1, 0), 2: (2, 1, 0), 3: (1, 0, 0), 4: (1, 2, 0), 5: (0, 2, 0), 6: (2, 2, 0)}, {}, SolverStatus.OPTIMAL)
+
+        injected_batches: list[list[ClearanceViolation]] = []
+        form = MagicMock()
+        form.inventory.active_edges = (ae_comp, ae_unit_y, ae_unit_x)
+
+        def record_inject(viols: list[ClearanceViolation], **kwargs: Any) -> int:
+            injected_batches.append(list(viols))
+            return len(viols)
+
+        form.clearance_builder.inject_clearance_cuts.side_effect = record_inject
+
+        comp_viol = ClearanceViolation(category="corridor_crossing", item_a=0, item_b=1)
+        unit_viol = ClearanceViolation(category="corridor_crossing", item_a=2, item_b=1)
+
+        det_calls = 0
+
+        def mock_detect(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal det_calls
+            det_calls += 1
+            if det_calls == 1:
+                return [unit_viol, comp_viol]
+            if det_calls == 2:
+                return [unit_viol]
+            return []
+
+        solve_calls = 0
+
+        def mock_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal solve_calls
+            solve_calls += 1
+            return mixed_ext if solve_calls < 3 else clean_ext
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 1.0, 2.0, 3.0, 4.0]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            ext = solve_cluster_with_cutting_planes(formulation=form, node=node, total_cluster_budget=60.0)
+
+        assert ext is clean_ext
+        assert injected_batches[0] == [comp_viol]
+        assert injected_batches[1] == [unit_viol]
+
+    def test_unit_crossing_infeasibility_preserves_zero_shear_physical_layout(self) -> None:
+        """If unit-edge crossing cuts fail at zero shear, reverts to zero-shear physical layout without unlocking shear."""
+        from romutil.layout.milp.cluster import SolvedClusterExtraction, solve_cluster_with_cutting_planes
+
+        # Build a ClusterFormulation with transverse slack where zero shear is physically clean
+        # on iteration 1, unit crossing cuts fail on iteration 2 without unlocking shear.
+        graph = _make_graph(
+            [1, 2, 10, 11],
+            [
+                (1, 2, Direction.north, 1),
+                (1, 10, Direction.east, 1),
+                (10, 11, Direction.north, 1),
+                (11, 2, Direction.west, 1),
+            ],
+        )
+        c1 = SolveTreeNode(
+            node_id="c1",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({10, 11}),
+            metadata={"cut_type": CutType.SPLIT_PAIR, "poles": (1, 2), "cut_contract": SplitPairCut(poles=(1, 2))},
+        )
+        parent = SolveTreeNode(
+            node_id="p_unit_cross_preserve",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+            children=(c1,),
+        )
+        c1_sol = NodeSolution(
+            node_id="c1",
+            local_coordinates={10: Coord3D(1, 0, 0), 11: Coord3D(1, 1, 0)},
+            port_coordinates={1: Coord3D(0, 0, 0), 2: Coord3D(0, 1, 0)},
+        )
+        inv = inventory_cluster(node=parent, child_solutions={"c1": c1_sol}, graph=graph)
+
+        for exc in (LayoutInfeasibleError("Non-planar unit crossing"), LayoutSolverError("Timeout non-integer")):
+            formulation = formulate_cluster_model(inventory=inv)
+            assert formulation.has_transverse_slack()
+            zero_shear_ext = SolvedClusterExtraction(
+                raw_parent_coords={1: (0, 0, 0), 2: (0, 1, 0)},
+                raw_child_offsets={"c1": (0, 0, 0)},
+                solver_status=SolverStatus.OPTIMAL,
+            )
+            unlock_calls = 0
+            orig_unlock = formulation.unlock_transverse_slack
+
+            def count_unlock(*args: Any, **kwargs: Any) -> None:
+                nonlocal unlock_calls
+                unlock_calls += 1
+                orig_unlock(*args, **kwargs)
+
+            solve_attempt = 0
+
+            def mock_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+                nonlocal solve_attempt
+                solve_attempt += 1
+                if solve_attempt == 1:
+                    return zero_shear_ext
+                raise exc
+
+            # Pretend iteration 1 has a unit-edge crossing on index 0 & 1 (both min_length=1)
+            unit_cross = ClearanceViolation(category="corridor_crossing", item_a=0, item_b=1)
+
+            with (
+                patch("time.monotonic", side_effect=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]),
+                patch.object(formulation, "unlock_transverse_slack", side_effect=count_unlock),
+                patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+                patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[unit_cross]),
+            ):
+                ext = solve_cluster_with_cutting_planes(
+                    formulation=formulation,
+                    node=parent,
+                    total_cluster_budget=60.0,
+                )
+
+            assert ext is zero_shear_ext
+            # Only the finally-block cleanup unlock ran (zero mid-solve shear unlock!)
+            assert unlock_calls == 1
