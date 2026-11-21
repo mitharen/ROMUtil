@@ -87,16 +87,29 @@ def _has_populated_warmstart_coordinates(formulation: ClusterFormulation) -> boo
     return True
 
 
+def _compacted_crossings(
+    crossings: Sequence[ClearanceViolation],
+    active_edges: Sequence[ActiveEdge],
+) -> list[ClearanceViolation]:
+    """Return crossing violations involving at least one compacted multi-room hallway (min_length > 1)."""
+    return [
+        viol
+        for viol in crossings
+        if any(
+            isinstance(idx, int)
+            and 0 <= idx < len(active_edges)
+            and active_edges[idx].min_length > 1
+            for idx in (viol.item_a, viol.item_b)
+        )
+    ]
+
+
 def _has_compacted_crossing(
     crossings: Sequence[ClearanceViolation],
     active_edges: Sequence[ActiveEdge],
 ) -> bool:
     """Return True if any crossing violation involves a compacted multi-room hallway (min_length > 1)."""
-    return any(
-        isinstance(idx, int) and 0 <= idx < len(active_edges) and active_edges[idx].min_length > 1
-        for viol in crossings
-        for idx in (viol.item_a, viol.item_b)
-    )
+    return bool(_compacted_crossings(crossings, active_edges))
 
 
 def solve_cluster_with_cutting_planes(
@@ -174,6 +187,7 @@ def solve_cluster_with_cutting_planes(
     extraction: SolvedClusterExtraction | None = None
     best_physical_extraction: SolvedClusterExtraction | None = None
     best_clean_extraction: SolvedClusterExtraction | None = None
+    unit_crossing_cuts_injected = False
 
     transverse_slack_locked = False
     if isinstance(formulation, ClusterFormulation) and formulation.has_transverse_slack():
@@ -216,6 +230,7 @@ def solve_cluster_with_cutting_planes(
                 pass_max_sol = None
                 use_warmstart = False
 
+            aborted_unit_crossings = False
             while True:
                 pass_options = (
                     replace(options, timeout_seconds=pass_timeout)
@@ -233,12 +248,26 @@ def solve_cluster_with_cutting_planes(
                     )
                     break
                 except LayoutInfeasibleError:
+                    if unit_crossing_cuts_injected and best_physical_extraction is not None:
+                        extraction = best_physical_extraction
+                        aborted_unit_crossings = True
+                        phase = ClusterSolvePhase.DONE
+                        break
                     if transverse_slack_locked:
                         formulation.unlock_transverse_slack()
                         transverse_slack_locked = False
                         continue
                     raise
                 except LayoutSolverError:
+                    if unit_crossing_cuts_injected and best_physical_extraction is not None:
+                        rem = total_cluster_budget - (time.monotonic() - t_start)
+                        if rem <= 2.0 or pass_timeout >= 20 or pass_timeout >= int(round(rem)):
+                            extraction = best_physical_extraction
+                            aborted_unit_crossings = True
+                            phase = ClusterSolvePhase.DONE
+                            break
+                        pass_timeout = min(max(1, int(round(rem))), max(pass_timeout * 2, 20))
+                        continue
                     if iteration == 0:
                         if transverse_slack_locked:
                             formulation.unlock_transverse_slack()
@@ -258,6 +287,9 @@ def solve_cluster_with_cutting_planes(
                         raise
                     pass_timeout = next_timeout
 
+            if aborted_unit_crossings:
+                break
+
             violations = detect_cluster_collisions(
                 formulation=formulation,
                 extraction=extraction,
@@ -265,9 +297,10 @@ def solve_cluster_with_cutting_planes(
 
             physical_collisions = [v for v in violations if v.category != "corridor_crossing"]
             corridor_crossings = [v for v in violations if v.category == "corridor_crossing"]
-            has_compacted_crossing = _has_compacted_crossing(
+            compacted_crossings = _compacted_crossings(
                 corridor_crossings, formulation.inventory.active_edges
             )
+            has_compacted_crossing = bool(compacted_crossings)
 
             if not physical_collisions and not corridor_crossings:
                 best_clean_extraction = extraction
@@ -284,6 +317,10 @@ def solve_cluster_with_cutting_planes(
                     physical_collisions, extraction=extraction
                 )
                 if new_cuts == 0:
+                    if unit_crossing_cuts_injected and best_physical_extraction is not None:
+                        extraction = best_physical_extraction
+                        phase = ClusterSolvePhase.DONE
+                        break
                     if transverse_slack_locked:
                         formulation.unlock_transverse_slack()
                         transverse_slack_locked = False
@@ -301,12 +338,12 @@ def solve_cluster_with_cutting_planes(
                 max_crossing_cuts = (
                     getattr(options, "max_cuts_per_pass", 20) if options else 20
                 )
-                new_cuts = formulation.clearance_builder.inject_clearance_cuts(
-                    corridor_crossings, max_cuts_per_pass=max_crossing_cuts
-                )
-                if new_cuts > 0 and (has_compacted_crossing or remaining_budget >= 15.0):
-                    continue
-                if has_compacted_crossing:
+                if compacted_crossings:
+                    new_cuts = formulation.clearance_builder.inject_clearance_cuts(
+                        compacted_crossings, max_cuts_per_pass=max_crossing_cuts
+                    )
+                    if new_cuts > 0:
+                        continue
                     if best_clean_extraction is not None:
                         extraction = best_clean_extraction
                         phase = ClusterSolvePhase.DONE
@@ -315,6 +352,13 @@ def solve_cluster_with_cutting_planes(
                         extraction = best_physical_extraction
                         phase = ClusterSolvePhase.DONE
                         break
+                else:
+                    new_cuts = formulation.clearance_builder.inject_clearance_cuts(
+                        corridor_crossings, max_cuts_per_pass=max_crossing_cuts
+                    )
+                    if new_cuts > 0 and remaining_budget >= 15.0:
+                        unit_crossing_cuts_injected = True
+                        continue
 
             # Both physical collisions and corridor crossings are zero.
             if (
@@ -384,21 +428,29 @@ def solve_cluster_with_cutting_planes(
                     elif final_crossings:
                         phase = ClusterSolvePhase.CROSSING_CLEARANCE
                         extraction = final_extraction
-                        final_has_compacted = _has_compacted_crossing(
+                        final_compacted = _compacted_crossings(
                             final_crossings, formulation.inventory.active_edges
                         )
                         max_crossing_cuts = (
                             getattr(options, "max_cuts_per_pass", 20) if options else 20
                         )
-                        new_cuts = formulation.clearance_builder.inject_clearance_cuts(
-                            final_crossings, max_cuts_per_pass=max_crossing_cuts
-                        )
                         remaining_budget = total_cluster_budget - (time.monotonic() - t_start)
-                        if new_cuts > 0 and (final_has_compacted or remaining_budget >= 15.0):
-                            continue
+                        if final_compacted:
+                            new_cuts = formulation.clearance_builder.inject_clearance_cuts(
+                                final_compacted, max_cuts_per_pass=max_crossing_cuts
+                            )
+                            if new_cuts > 0:
+                                continue
+                        else:
+                            new_cuts = formulation.clearance_builder.inject_clearance_cuts(
+                                final_crossings, max_cuts_per_pass=max_crossing_cuts
+                            )
+                            if new_cuts > 0 and remaining_budget >= 15.0:
+                                unit_crossing_cuts_injected = True
+                                continue
                         if best_clean_extraction is not None:
                             extraction = best_clean_extraction
-                        elif final_has_compacted and best_physical_extraction is not None:
+                        elif final_compacted and best_physical_extraction is not None:
                             extraction = best_physical_extraction
                         phase = ClusterSolvePhase.DONE
                         break

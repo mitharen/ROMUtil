@@ -424,6 +424,30 @@ class TestStatusValidation:
         mock_res.solver.termination_condition = TerminationCondition.maxTimeLimit
         assert _is_valid_solver_status(mock_res) is True
 
+        mock_res.solver.termination_condition = TerminationCondition.intermediateNonInteger
+        assert _is_valid_solver_status(mock_res) is False
+        mock_res.solver.status = PyomoSolverStatus.ok
+        assert _is_valid_solver_status(mock_res) is False
+
         mock_res.solver.status = PyomoSolverStatus.error
         mock_res.solver.termination_condition = TerminationCondition.infeasible
         assert _is_valid_solver_status(mock_res) is False
+
+    def test_solve_and_extract_rejects_intermediate_non_integer(self) -> None:
+        """intermediateNonInteger LP relaxations raise LayoutSolverError rather than returning bogus coords."""
+        node = SolveTreeNode(node_id="n_nonint", node_type="leaf", rooms=frozenset({1}))
+        graph = _make_graph([1], [])
+        inv = inventory_cluster(node=node, child_solutions={}, graph=graph)
+        formulation = formulate_cluster_model(inventory=inv)
+
+        mock_solver = MagicMock()
+        mock_solver.available.return_value = True
+        mock_solver.options = {}
+        nonint_res = MagicMock()
+        nonint_res.solver.status = PyomoSolverStatus.aborted
+        nonint_res.solver.termination_condition = TerminationCondition.intermediateNonInteger
+        mock_solver.solve.return_value = nonint_res
+
+        with patch("pyomo.environ.SolverFactory", return_value=mock_solver):
+            with pytest.raises(LayoutSolverError, match="non-optimal status"):
+                solve_and_extract(formulation=formulation, solver_name="cbc")

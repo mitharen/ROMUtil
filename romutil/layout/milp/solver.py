@@ -43,7 +43,6 @@ def _is_valid_solver_status(results: Any) -> bool:
             results.solver.termination_condition
             in (
                 TerminationCondition.maxTimeLimit,
-                TerminationCondition.intermediateNonInteger,
                 TerminationCondition.other,
             )
             and results.solver.status
@@ -209,11 +208,7 @@ def solve_and_extract(
     if results.solver.termination_condition == TerminationCondition.optimal:
         solver_status = SolverStatus.OPTIMAL
     elif (
-        results.solver.termination_condition
-        in (
-            TerminationCondition.maxTimeLimit,
-            TerminationCondition.intermediateNonInteger,
-        )
+        results.solver.termination_condition == TerminationCondition.maxTimeLimit
         or (
             results.solver.status in (PyomoSolverStatus.aborted, PyomoSolverStatus.warning)
             and max_solutions is None
