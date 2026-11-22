@@ -67,6 +67,11 @@ class SVGRenderer:
             hue = round((z_int * 37) % 360, 1)
         return f"hsl({hue}, 75%, 50%)"
 
+    def _unit_step(self) -> float:
+        """Return SVG coordinate spacing per solver lattice unit."""
+        coord_unit = max(1, int(getattr(self.layout, "coord_unit", 1)))
+        return 1.0 / coord_unit
+
     def proj_room(self, room: Any) -> Optional[tuple[float, float]]:
         coord: Coord3D | None = None
         if isinstance(room, Coord3D):
@@ -79,9 +84,10 @@ class SVGRenderer:
 
         if coord is None:
             return None
+        u = self._unit_step()
         return (
-            2.0 + coord.x + self.lift * coord.z,
-            2.0 + self.lift * self.z_max + (self.y_max - coord.y) - self.lift * coord.z,
+            2.0 + coord.x * u + self.lift * coord.z,
+            2.0 + self.lift * self.z_max + (self.y_max - coord.y) * u - self.lift * coord.z,
         )
 
     def proj_exit(
@@ -94,10 +100,11 @@ class SVGRenderer:
         if src_vnum is None or self.layout is None or src_vnum not in self.layout.coordinates:
             return None
 
+        u = self._unit_step()
         src_coord = self.layout.coordinates[src_vnum]
         start = (
-            2.0 + src_coord.x + 0.25 + self.lift * src_coord.z,
-            2.0 + self.lift * self.z_max + (self.y_max - src_coord.y) + 0.25 - self.lift * src_coord.z,
+            2.0 + src_coord.x * u + 0.25 + self.lift * src_coord.z,
+            2.0 + self.lift * self.z_max + (self.y_max - src_coord.y) * u + 0.25 - self.lift * src_coord.z,
         )
 
         target = getattr(ex, "target_vnum", None)
@@ -110,8 +117,8 @@ class SVGRenderer:
         if dst_vnum is not None and dst_vnum in self.layout.coordinates:
             dst_coord = self.layout.coordinates[dst_vnum]
             end = (
-                2.0 + dst_coord.x + 0.25 + self.lift * dst_coord.z,
-                2.0 + self.lift * self.z_max + (self.y_max - dst_coord.y) + 0.25 - self.lift * dst_coord.z,
+                2.0 + dst_coord.x * u + 0.25 + self.lift * dst_coord.z,
+                2.0 + self.lift * self.z_max + (self.y_max - dst_coord.y) * u + 0.25 - self.lift * dst_coord.z,
             )
         else:
             dir_attr = getattr(ex, "direction", 0)
@@ -243,9 +250,15 @@ function toggleElevation(z) {
         else:
             plot_zs = sorted(all_unique_zs)
 
+        u = self._unit_step()
+        max_scale = max(
+            (int(s) for s in getattr(self.layout, "room_scales", {}).values()),
+            default=1,
+        )
+        pad_extra = max(0.0, (max_scale - 1) * 0.5)
         needed_width = 4.5 + len(plot_zs) * 2.0
-        svg_width = max(self.x_max + 4 + 11 + z_space, needed_width)
-        svg_height = self.y_max + 4 + 4 + z_space
+        svg_width = max(self.x_max * u + 4 + 11 + z_space + pad_extra, needed_width)
+        svg_height = self.y_max * u + 4 + 4 + z_space + pad_extra
 
         Path(self.name).parent.mkdir(parents=True, exist_ok=True)
         dwg = svgwrite.Drawing(
@@ -391,10 +404,17 @@ function toggleElevation(z) {
                     text.add(dwg.tspan(line, x=[room_pos[0] + 0.7], dy=["1.4em"]))
                 g.add(text)
 
+                room_scale = max(
+                    1,
+                    int(getattr(self.layout, "room_scales", {}).get(room.vnum, 1)),
+                )
+                room_side = room_scale - 0.5
+                half_diff = (room_side - 0.5) / 2.0
+                rect_pos = (room_pos[0] - half_diff, room_pos[1] - half_diff)
                 room_z = int(self.layout.coordinates[room.vnum].z)
                 r_elem = dwg.rect(
-                    insert=room_pos,
-                    size=(0.5, 0.5),
+                    insert=rect_pos,
+                    size=(room_side, room_side),
                     fill=self.get_color(room_z),
                     stroke="black",
                     stroke_width=0.025,

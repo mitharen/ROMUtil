@@ -180,6 +180,8 @@ def build_area_json(
 
     # Sort rooms deterministically by VNUM
     sorted_rooms = sorted(graph.rooms.values(), key=lambda r: int(r.vnum))
+    coord_unit = int(getattr(layout, "coord_unit", 1))
+    room_scales = getattr(layout, "room_scales", {}) or {}
 
     rooms_data = []
     for r in sorted_rooms:
@@ -272,6 +274,7 @@ def build_area_json(
             "sector": sector_val,
             "terrain_type": terrain_type.value,
             "terrain": get_terrain_label(terrain_type, sector=sector_val),
+            "size": int(room_scales.get(vnum, 1)),
             "coords": {
                 "x": x_val,
                 "y": y_val,
@@ -369,6 +372,7 @@ def build_area_json(
             "name": area_name,
             "file": area_file,
         },
+        "coord_unit": coord_unit,
         "bounds": computed_bounds,
         "rooms": rooms_data,
         "mobiles": mobiles_data,

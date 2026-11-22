@@ -17,7 +17,14 @@ from romutil.layout import (
     PipelineTreeBuilder,
     WarpSeverer,
 )
-from romutil.models import AreaData, AreaDialect, AreaHeader, merge_areas, resolve_dialect
+from romutil.models import (
+    UNIFORM_TERRAIN_SCALES,
+    AreaData,
+    AreaDialect,
+    AreaHeader,
+    merge_areas,
+    resolve_dialect,
+)
 from romutil.parser import Parser, parse_circlemud_directory
 from romutil.renderers import RENDERERS, get_renderer
 from romutil.types import LayoutOptions, RenderOptions, WorldGraph
@@ -35,6 +42,7 @@ def main(
     solver_timeout: int | None = None,
     debug_solve_dir: Path | str | None = None,
     dialect: AreaDialect | str | None = None,
+    uniform_rooms: bool = False,
 ) -> WorldGraph:
     """Parse areas into a unified WorldGraph and optionally render without invoking the solver engine."""
     resolved_dialect = resolve_dialect(dialect) if dialect is not None else None
@@ -163,6 +171,7 @@ def main(
         layout_opts = LayoutOptions(
             timeout_seconds=solver_timeout or 60,
             debug_solve_dir=Path(debug_solve_dir) if debug_solve_dir is not None else None,
+            terrain_scales=UNIFORM_TERRAIN_SCALES if uniform_rooms else None,
         )
         layout = solver.solve(graph, layout_opts)
 
@@ -222,6 +231,11 @@ def cli() -> None:
         default=None,
         help="Override auto-detected MUD area dialect for terrain normalization (default: auto-detect)",
     )
+    parser.add_argument(
+        "--uniform-rooms",
+        action="store_true",
+        help="Use uniform 1x1 unit room footprints instead of terrain-based room scaling",
+    )
     args = parser.parse_args()
 
     if not args.areas and not args.circle_dir:
@@ -259,6 +273,7 @@ def cli() -> None:
         solver_timeout=args.solver_timeout,
         debug_solve_dir=debug_solve_dir,
         dialect=args.dialect,
+        uniform_rooms=args.uniform_rooms,
     )
 
 
