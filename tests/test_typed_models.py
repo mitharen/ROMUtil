@@ -376,3 +376,20 @@ class TestModelEdgeCases:
         merged = merge_areas([area], title="Super World")
         assert merged.header is not None
         assert merged.header.name == "Super World"
+
+
+def test_indoor_flag_normalizes_terrain_to_inside():
+    from romutil.models import Room, TerrainType
+
+    out = Room(vnum=1, name="a", description="", room_flags=0, sector=3)
+    inn = Room(vnum=2, name="b", description="", room_flags=8, sector=3)
+    ascii_inn = Room(vnum=3, name="c", description="", room_flags="AD", sector=3)
+    piped_inn = Room(vnum=4, name="d", description="", room_flags="8|16", sector=3)
+    ascii_out = Room(vnum=5, name="e", description="", room_flags="AC", sector=3)
+    assert out.terrain == TerrainType.FOREST
+    assert inn.terrain == TerrainType.INSIDE
+    assert ascii_inn.terrain == TerrainType.INSIDE
+    assert piped_inn.terrain == TerrainType.INSIDE
+    assert ascii_out.terrain == TerrainType.FOREST
+    assert inn.sector == 3
+    assert ascii_inn.sector == 3

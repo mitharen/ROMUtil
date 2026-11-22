@@ -10,6 +10,7 @@ from romutil.layout.ir import (
     ArticulationPointCut,
     BridgeCut,
     CutType,
+    LayoutEdge,
     LayoutGraph,
     NodeSolution,
     SolveTreeNode,
@@ -17,6 +18,7 @@ from romutil.layout.ir import (
     TreeNodeType,
 )
 from romutil.layout.simplification.warps import direction_to_displacement
+from romutil.models import compute_room_footprints, scale_to_extent
 from romutil.types import Coord3D, LayoutOptions
 
 EndpointRef = int | tuple[str, int]
@@ -34,6 +36,10 @@ class ActiveEdge:
     associated_rooms: frozenset[int]
     associated_children: frozenset[str]
     allow_transverse_slack: bool = False
+    is_compacted: bool | None = None
+    src_extent: tuple[int, int] = (0, 0)
+    dst_extent: tuple[int, int] = (0, 0)
+    transverse_extent: tuple[int, int] = (0, 0)
 
 
 def get_child_coordinate(c_sol: NodeSolution, vnum: int) -> Coord3D | None:
@@ -122,6 +128,9 @@ class ClusterInventory:
     equated_children: frozenset[frozenset[str]]
     child_sub_boxes: Mapping[str, tuple[BoundingBox3D, ...]] = field(default_factory=dict)
     graph: LayoutGraph | None = None
+    coord_unit: int = 1
+    room_scales: Mapping[int, int] = field(default_factory=dict)
+    room_extents: Mapping[int, tuple[int, int]] = field(default_factory=dict)
 
 
 def get_child_boundary_ports(child: SolveTreeNode) -> set[int]:
@@ -207,10 +216,26 @@ def get_child_strictly_interior_rooms(
 
 
 
+def _expand_room_cells(
+    coord: Coord3D,
+    extent: tuple[int, int],
+) -> set[Coord3D]:
+    """Expand a room center coordinate into its closed 3D integer footprint cells."""
+    lo, hi = extent
+    if lo == 0 and hi == 0:
+        return {coord}
+    return {
+        Coord3D(x, y, coord.z)
+        for x in range(coord.x - lo, coord.x + hi + 1)
+        for y in range(coord.y - lo, coord.y + hi + 1)
+    }
+
+
 def derive_child_sub_boxes(
     child: SolveTreeNode,
     child_solution: NodeSolution,
     boundary_ports: frozenset[int] | None = None,
+    room_extents: Mapping[int, tuple[int, int]] | None = None,
 ) -> tuple[BoundingBox3D, ...]:
     """Derive orthogonal keep-out sub-boxes for a child component within parent context.
 
@@ -221,27 +246,28 @@ def derive_child_sub_boxes(
         child: SolveTreeNode representing the child cluster.
         child_solution: Solved NodeSolution for the child cluster.
         boundary_ports: Optional boundary port room IDs to exclude if present.
+        room_extents: Optional mapping of room vnum to (lo, hi) footprint half-extents.
 
     Returns:
         Tuple of disjoint BoundingBox3D instances representing keep-out obstacles.
     """
     if boundary_ports is None:
         boundary_ports = frozenset(get_child_boundary_ports(child))
+    extents = room_extents or {}
 
-    boundary_port_coords: set[Coord3D] = {
-        coord
-        for u, coord in child_solution.local_coordinates.items()
-        if u in boundary_ports
-    }
+    boundary_port_coords: set[Coord3D] = set()
+    for u, coord in child_solution.local_coordinates.items():
+        if u in boundary_ports:
+            boundary_port_coords.update(_expand_room_cells(coord, extents.get(u, (0, 0))))
     if hasattr(child_solution, "port_coordinates"):
         for u, coord in child_solution.port_coordinates.items():
             if u in boundary_ports:
-                boundary_port_coords.add(coord)
+                boundary_port_coords.update(_expand_room_cells(coord, extents.get(u, (0, 0))))
     if "all_room_coordinates" in child_solution.metadata:
         all_rooms = child_solution.metadata["all_room_coordinates"]
         for u in boundary_ports:
             if u in all_rooms:
-                boundary_port_coords.add(all_rooms[u])
+                boundary_port_coords.update(_expand_room_cells(all_rooms[u], extents.get(u, (0, 0))))
 
     # If the child solution has pre-computed sub-boxes (e.g. from normalization or explicit test fixture)
     if child_solution.sub_boxes:
@@ -270,17 +296,19 @@ def derive_child_sub_boxes(
 
     # For leaf children without pre-computed sub-boxes
     if not child.children:
-        interior_cells = {
-            coord
-            for u, coord in child_solution.local_coordinates.items()
-            if isinstance(u, int)
-            and u not in boundary_ports
-            and coord not in boundary_port_coords
-        }
+        interior_cells = set()
+        for u, coord in child_solution.local_coordinates.items():
+            if isinstance(u, int) and u not in boundary_ports:
+                for cell in _expand_room_cells(coord, extents.get(u, (0, 0))):
+                    if cell not in boundary_port_coords:
+                        interior_cells.add(cell)
         if "all_room_coordinates" in child_solution.metadata:
             for u, coord in child_solution.metadata["all_room_coordinates"].items():
-                if u not in boundary_ports and coord not in boundary_port_coords:
-                    interior_cells.add(coord)
+                if u not in boundary_ports:
+                    ext = extents.get(u, (0, 0)) if isinstance(u, int) else (0, 0)
+                    for cell in _expand_room_cells(coord, ext):
+                        if cell not in boundary_port_coords:
+                            interior_cells.add(cell)
         if not interior_cells:
             return ()
         return decompose_into_orthogonal_sub_boxes(interior_cells)
@@ -289,12 +317,18 @@ def derive_child_sub_boxes(
     occupied_cells: set[Coord3D] = set()
     if "all_room_coordinates" in child_solution.metadata:
         for u, coord in child_solution.metadata["all_room_coordinates"].items():
-            if u not in boundary_ports and coord not in boundary_port_coords:
-                occupied_cells.add(coord)
+            if u not in boundary_ports:
+                ext = extents.get(u, (0, 0)) if isinstance(u, int) else (0, 0)
+                for cell in _expand_room_cells(coord, ext):
+                    if cell not in boundary_port_coords:
+                        occupied_cells.add(cell)
     else:
         for u, coord in child_solution.local_coordinates.items():
-            if u not in boundary_ports and coord not in boundary_port_coords:
-                occupied_cells.add(coord)
+            if u not in boundary_ports:
+                ext = extents.get(u, (0, 0)) if isinstance(u, int) else (0, 0)
+                for cell in _expand_room_cells(coord, ext):
+                    if cell not in boundary_port_coords:
+                        occupied_cells.add(cell)
 
     child_offsets = child_solution.metadata.get("child_offsets", {})
     child_sub_boxes_map = child_solution.metadata.get("child_sub_boxes", {})
@@ -1381,6 +1415,124 @@ def _build_internal_room_edges(
     return active_edges
 
 
+def _collect_extended_footprints(
+    graph: LayoutGraph,
+    options: LayoutOptions | None,
+) -> tuple[int, dict[int, int], dict[int, tuple[int, int]]]:
+    """Compute world-coherent footprints including compacted corridor intermediate rooms."""
+    terrain_scales = options.terrain_scales if options is not None else None
+    corridor_scales: dict[int, int] = {}
+    for edge in graph.edges:
+        corr = edge.metadata.get("corridor") if edge.metadata else None
+        if corr is not None and corr.intermediate_vnums and corr.intermediate_scales:
+            for vnum, scale in zip(corr.intermediate_vnums, corr.intermediate_scales):
+                corridor_scales[vnum] = int(scale)
+
+    resolved_unit = graph.coord_unit
+    coord_unit, room_scales, room_extents = compute_room_footprints(
+        graph.rooms,
+        terrain_scales=terrain_scales,
+        coord_unit=resolved_unit,
+    )
+    if resolved_unit is None and any(s % 2 == 0 for s in corridor_scales.values()) and coord_unit == 1:
+        coord_unit, room_scales, room_extents = compute_room_footprints(
+            graph.rooms,
+            terrain_scales=terrain_scales,
+            coord_unit=2,
+        )
+
+    for vnum, scale in corridor_scales.items():
+        room_scales.setdefault(vnum, scale)
+        room_extents.setdefault(vnum, scale_to_extent(scale, coord_unit))
+    return coord_unit, room_scales, room_extents
+
+
+def _finalize_active_edges(
+    active_edges: Sequence[ActiveEdge],
+    graph: LayoutGraph,
+    room_extents: Mapping[int, tuple[int, int]],
+) -> tuple[ActiveEdge, ...]:
+    """Populate endpoint footprints, corridor transverse extents, and terrain-scaled min lengths."""
+    from dataclasses import replace
+
+    exact_map: dict[tuple[int, int, tuple[int, int, int]], LayoutEdge] = {}
+    dir_map: dict[tuple[int, int], LayoutEdge] = {}
+    undir_map: dict[frozenset[int], LayoutEdge] = {}
+    for edge in graph.edges:
+        if edge.cut:
+            continue
+        try:
+            disp = direction_to_displacement(edge.direction)
+        except ValueError:
+            disp = (0, 0, 0)
+        exact_map.setdefault((edge.src, edge.dst, disp), edge)
+        dir_map.setdefault((edge.src, edge.dst), edge)
+        undir_map.setdefault(frozenset({edge.src, edge.dst}), edge)
+
+    finalized: list[ActiveEdge] = []
+    for ae in active_edges:
+        src_vnum = ae.src[1] if isinstance(ae.src, tuple) else ae.src
+        dst_vnum = ae.dst[1] if isinstance(ae.dst, tuple) else ae.dst
+        src_ext = room_extents.get(src_vnum, (0, 0)) if isinstance(src_vnum, int) else (0, 0)
+        dst_ext = room_extents.get(dst_vnum, (0, 0)) if isinstance(dst_vnum, int) else (0, 0)
+
+        if ae.edge_id.startswith("sp_port_"):
+            finalized.append(
+                replace(
+                    ae,
+                    is_compacted=False,
+                    src_extent=(0, 0),
+                    dst_extent=(0, 0),
+                    transverse_extent=(0, 0),
+                )
+            )
+            continue
+
+        if ae.edge_id.startswith("sp_span_"):
+            finalized.append(
+                replace(
+                    ae,
+                    is_compacted=False,
+                    src_extent=src_ext,
+                    dst_extent=dst_ext,
+                    transverse_extent=(0, 0),
+                )
+            )
+            continue
+
+        le = None
+        if isinstance(src_vnum, int) and isinstance(dst_vnum, int):
+            le = (
+                exact_map.get((src_vnum, dst_vnum, ae.direction))
+                or dir_map.get((src_vnum, dst_vnum))
+                or undir_map.get(frozenset({src_vnum, dst_vnum}))
+            )
+
+        is_compacted = bool(le is not None and le.metadata and le.metadata.get("is_compacted"))
+        corridor = le.metadata.get("corridor") if (le is not None and le.metadata) else None
+        t_ext = corridor.transverse_extent if corridor is not None else (0, 0)
+
+        dx, dy, dz = ae.direction
+        if dx != 0 or dy != 0:
+            min_len = max(ae.min_length, src_ext[1] + dst_ext[0] + 1)
+        elif dz != 0:
+            min_len = max(ae.min_length, 1)
+        else:
+            min_len = ae.min_length
+
+        finalized.append(
+            replace(
+                ae,
+                min_length=min_len,
+                is_compacted=is_compacted,
+                src_extent=src_ext,
+                dst_extent=dst_ext,
+                transverse_extent=t_ext,
+            )
+        )
+    return tuple(finalized)
+
+
 def inventory_cluster(
     node: SolveTreeNode,
     child_solutions: Mapping[str, NodeSolution],
@@ -1410,6 +1562,8 @@ def inventory_cluster(
     child_ids = [c.node_id for c in children]
     if boundary_ports is None:
         boundary_ports = frozenset(get_child_boundary_ports(node))
+
+    coord_unit, room_scales, room_extents = _collect_extended_footprints(graph, options)
 
     aligned_children: set[str] = set()
     if not rooms and child_ids:
@@ -1501,6 +1655,7 @@ def inventory_cluster(
                 child=child,
                 child_solution=child_solutions[child.node_id],
                 boundary_ports=frozenset(child_ports),
+                room_extents=room_extents,
             )
         else:
             child_sub_boxes[child.node_id] = ()
@@ -1512,13 +1667,14 @@ def inventory_cluster(
         seen_edges=seen_edges,
     )
 
-    # Combine active edges in deterministic order
-    active_edges: list[ActiveEdge] = [
+    # Combine active edges in deterministic order and attach footprint extents
+    raw_active_edges: list[ActiveEdge] = [
         *split_res.active_edges,
         *gw_res.active_edges,
         *bridge_res.active_edges,
         *direct_edges,
     ]
+    active_edges = _finalize_active_edges(raw_active_edges, graph, room_extents)
 
     return ClusterInventory(
         node=node,
@@ -1526,13 +1682,16 @@ def inventory_cluster(
         children=children,
         child_solutions=child_solutions,
         boundary_ports=boundary_ports,
-        active_edges=tuple(active_edges),
+        active_edges=active_edges,
         child_alignments=split_res.child_alignments,
         gateway_anchors={k: frozenset(v) for k, v in gateway_anchors.items()},
         aligned_children=frozenset(aligned_children),
         equated_children=frozenset(equated_children),
         child_sub_boxes=child_sub_boxes,
         graph=graph,
+        coord_unit=coord_unit,
+        room_scales=room_scales,
+        room_extents=room_extents,
     )
 
 

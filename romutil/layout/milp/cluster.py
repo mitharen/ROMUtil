@@ -87,18 +87,26 @@ def _has_populated_warmstart_coordinates(formulation: ClusterFormulation) -> boo
     return True
 
 
+def _is_compacted_active_edge(ae: ActiveEdge) -> bool:
+    """Return True if ae represents a compacted multi-room hallway."""
+    flag = getattr(ae, "is_compacted", None)
+    if flag is not None:
+        return bool(flag)
+    return ae.min_length > 1
+
+
 def _compacted_crossings(
     crossings: Sequence[ClearanceViolation],
     active_edges: Sequence[ActiveEdge],
 ) -> list[ClearanceViolation]:
-    """Return crossing violations involving at least one compacted multi-room hallway (min_length > 1)."""
+    """Return crossing violations involving at least one compacted multi-room hallway."""
     return [
         viol
         for viol in crossings
         if any(
             isinstance(idx, int)
             and 0 <= idx < len(active_edges)
-            and active_edges[idx].min_length > 1
+            and _is_compacted_active_edge(active_edges[idx])
             for idx in (viol.item_a, viol.item_b)
         )
     ]
@@ -108,7 +116,7 @@ def _has_compacted_crossing(
     crossings: Sequence[ClearanceViolation],
     active_edges: Sequence[ActiveEdge],
 ) -> bool:
-    """Return True if any crossing violation involves a compacted multi-room hallway (min_length > 1)."""
+    """Return True if any crossing violation involves a compacted multi-room hallway."""
     return bool(_compacted_crossings(crossings, active_edges))
 
 
@@ -539,10 +547,15 @@ def solve_cluster(
         return normalize_empty_cluster(node)
 
     if node.node_type == TreeNodeType.WORLD_ROOT:
+        from romutil.layout.milp.inventory import _collect_extended_footprints
+
+        coord_unit, _room_scales, room_extents = _collect_extended_footprints(graph, options)
         return pack_world_root_components(
             node=node,
             child_solutions=child_solutions,
             options=options,
+            coord_unit=coord_unit,
+            room_extents=room_extents,
         )
 
     if len(rooms) == 1 and not children and not boundary_ports:
@@ -610,6 +623,7 @@ def solve_cluster(
             child_sub_boxes=inventory.child_sub_boxes,
             active_edges=inventory.active_edges,
             graph=graph,
+            room_extents=inventory.room_extents,
         )
     except LayoutSolverError:
         raise

@@ -2235,15 +2235,26 @@ class TestSplitPairBoundaryPortAlignment:
         market_coords = [layout.coordinates[r] for r in market_watchtower_rooms if r in layout.coordinates]
         assert len(market_coords) == len(set(market_coords))
 
-        # Split-pair container rooms 5250 and 5205 solve coplanar at z=2, 1 step west of 5203 and 5204
+        # Split-pair container rooms 5250 and 5205 solve coplanar at z=2, directly west of 5203 and 5204
         assert 5203 in layout.coordinates
         assert 5204 in layout.coordinates
         assert 5205 in layout.coordinates
         assert 5250 in layout.coordinates
-        assert layout.coordinates[5203] in (Coord3D(3, 7, 2), Coord3D(3, 6, 2))
-        assert layout.coordinates[5204] in (Coord3D(3, 8, 2), Coord3D(3, 7, 2))
-        assert layout.coordinates[5250] in (Coord3D(2, 7, 2), Coord3D(2, 6, 2))
-        assert layout.coordinates[5205] in (Coord3D(2, 8, 2), Coord3D(2, 7, 2))
+        c5203 = layout.coordinates[5203]
+        c5204 = layout.coordinates[5204]
+        c5205 = layout.coordinates[5205]
+        c5250 = layout.coordinates[5250]
+        assert c5203.z == c5204.z == c5205.z == c5250.z == 2
+        assert c5203.x == c5204.x
+        assert c5250.x == c5205.x
+        assert c5250.y == c5203.y
+        assert c5205.y == c5204.y
+        assert c5203.x > c5250.x
+        assert c5204.y > c5203.y
+        assert c5203 in (Coord3D(3, 7, 2), Coord3D(3, 6, 2), Coord3D(10, 22, 2))
+        assert c5204 in (Coord3D(3, 8, 2), Coord3D(3, 7, 2), Coord3D(10, 26, 2))
+        assert c5250 in (Coord3D(2, 7, 2), Coord3D(2, 6, 2), Coord3D(6, 22, 2))
+        assert c5205 in (Coord3D(2, 8, 2), Coord3D(2, 7, 2), Coord3D(6, 26, 2))
 
     def test_midgaard_transverse_gate_corridors_strictly_on_axis(self) -> None:
         """West Gate 3040 -> 3258 and East Gate 3041 -> 3266 in Midgaard solve strictly on-axis with zero transverse shear."""

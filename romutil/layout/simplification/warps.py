@@ -366,6 +366,7 @@ class WarpSeverer:
         simplified_graph = LayoutGraph(
             rooms=dict(graph.rooms),
             edges=tuple(active_edges),
+            coord_unit=graph.coord_unit,
         )
         return SimplifiedGraph(
             graph=simplified_graph,

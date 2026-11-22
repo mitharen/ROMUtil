@@ -19,6 +19,7 @@ from romutil.layout.milp.spatial_dag import (
     EntitySpatialBounds,
     SpatialBoundExpr,
     _get_corridor_bounds,
+    _room_spatial_bounds,
     resolve_endpoint_node_offset,
 )
 from romutil.layout.positional_dag import NodeRef
@@ -266,10 +267,17 @@ def max_box_3d_containing(
 
 def compute_planar_component_sizes(inventory: ClusterInventory) -> dict[int | str, int]:
     """Compute conservative cell-count lower bounds for strictly planar (dz == 0) components."""
+    room_extents = getattr(inventory, "room_extents", {})
+
+    def _room_weight(vnum: int) -> int:
+        lo, hi = room_extents.get(vnum, (0, 0)) if isinstance(room_extents, Mapping) else (0, 0)
+        side = lo + hi + 1
+        return side * side
+
     adj: dict[int | str, set[int | str]] = collections.defaultdict(set)
-    node_weight: dict[int | str, int] = {r: 1 for r in inventory.rooms}
+    node_weight: dict[int | str, int] = {r: _room_weight(r) for r in inventory.rooms}
     for bp in inventory.boundary_ports:
-        node_weight.setdefault(bp, 1)
+        node_weight.setdefault(bp, _room_weight(bp))
 
     for child in inventory.children:
         cid = child.node_id
@@ -456,12 +464,16 @@ class ExactCollisionCutGrower:
         z_slice: int,
         max_hole_size: int,
     ) -> set[tuple[int, int]]:
-        key = (cid, z_slice, max_hole_size)
+        effective_max_hole = min(max_hole_size, 400)
+        key = (cid, z_slice, effective_max_hole)
         cached = self._hole_filled_cache.get(key)
         if cached is not None:
             return cached
         raw_slice = self._child_cells_by_z.get(cid, {}).get(z_slice, set())
-        filled = fill_enclosed_2d_holes(raw_slice, max_hole_size)
+        if len(raw_slice) > 400:
+            self._hole_filled_cache[key] = raw_slice
+            return raw_slice
+        filled = fill_enclosed_2d_holes(raw_slice, effective_max_hole)
         self._hole_filled_cache[key] = filled
         return filled
 
@@ -502,6 +514,7 @@ class ExactCollisionCutGrower:
         if (
             not o1
             or not o2
+            or len(o1) * len(o2) > 25_000
             or c1 not in extraction.raw_child_offsets
             or c2 not in extraction.raw_child_offsets
         ):
@@ -625,17 +638,29 @@ class ExactCollisionCutGrower:
             return None
 
         cx, cy, _cz = extraction.raw_child_offsets[cid]
-        if ae.direction[0] != 0:
-            c_x0 = min(p1[0], p2[0]) + 1 - cx
-            c_x1 = max(p1[0], p2[0]) - 1 - cx
-            c_y0 = min(p1[1], p2[1]) - cy
-            c_y1 = max(p1[1], p2[1]) - cy
+        src_lo, src_hi = getattr(ae, "src_extent", (0, 0))
+        dst_lo, dst_hi = getattr(ae, "dst_extent", (0, 0))
+        t_lo, t_hi = getattr(ae, "transverse_extent", (0, 0))
+        dx, dy, _dz = ae.direction
+        if dx != 0:
+            if dx > 0:
+                c_x0 = p1[0] + src_hi + 1 - cx
+                c_x1 = p2[0] - dst_lo - 1 - cx
+            else:
+                c_x0 = p2[0] + dst_hi + 1 - cx
+                c_x1 = p1[0] - src_lo - 1 - cx
+            c_y0 = p1[1] - t_lo - cy
+            c_y1 = p1[1] + t_hi - cy
             axis = "x"
         else:
-            c_x0 = min(p1[0], p2[0]) - cx
-            c_x1 = max(p1[0], p2[0]) - cx
-            c_y0 = min(p1[1], p2[1]) + 1 - cy
-            c_y1 = max(p1[1], p2[1]) - 1 - cy
+            if dy > 0:
+                c_y0 = p1[1] + src_hi + 1 - cy
+                c_y1 = p2[1] - dst_lo - 1 - cy
+            else:
+                c_y0 = p2[1] + dst_hi + 1 - cy
+                c_y1 = p1[1] - src_lo - 1 - cy
+            c_x0 = p1[0] - t_lo - cx
+            c_x1 = p1[0] + t_hi - cx
             axis = "y"
 
         ov_x0, ov_x1 = max(sb.min_x, c_x0), min(sb.max_x, c_x1)
@@ -647,16 +672,18 @@ class ExactCollisionCutGrower:
         p_size = self._planar_comp_sizes.get(src_node, ae.min_length + 1)
         max_hole = max(0, p_size - 1)
         oc_f = self._get_hole_filled_slice(cid, dz_locked, max_hole)
-        if not ae.allow_transverse_slack:
-            # Neither endpoint of a non-incident orthogonal corridor can occupy O_C,
-            # so any point within +-1 along the travel axis cannot be a corridor interior cell.
-            oc_f = dilate_2d_along_axis(oc_f, axis, 1, 1)
-            oc_f = fill_narrow_gaps_along_axis(oc_f, axis, max(1, ae.min_length - 1))
-        else:
-            # For transverse-slack corridors aligned to src's transverse coordinate, any non-empty
-            # interior cell inside a 1-cell travel-axis gap requires |c_src - c_dst| >= 2, placing
-            # src in O_C or stretching the interior across O_C; pass min_clear_span=2 (fills gap == 1).
-            oc_f = fill_narrow_gaps_along_axis(oc_f, axis, 2)
+        has_scaled_extents = any((src_lo, src_hi, dst_lo, dst_hi, t_lo, t_hi))
+        if not has_scaled_extents:
+            if not ae.allow_transverse_slack:
+                # Neither endpoint of a non-incident orthogonal corridor can occupy O_C,
+                # so any point within +-1 along the travel axis cannot be a corridor interior cell.
+                oc_f = dilate_2d_along_axis(oc_f, axis, 1, 1)
+                oc_f = fill_narrow_gaps_along_axis(oc_f, axis, max(1, ae.min_length - 1))
+            else:
+                # For transverse-slack corridors aligned to src's transverse coordinate, any non-empty
+                # interior cell inside a 1-cell travel-axis gap requires |c_src - c_dst| >= 2, placing
+                # src in O_C or stretching the interior across O_C; pass min_clear_span=2 (fills gap == 1).
+                oc_f = fill_narrow_gaps_along_axis(oc_f, axis, 2)
 
         if (sx, sy) not in oc_f:
             return None
@@ -712,18 +739,30 @@ class ExactCollisionCutGrower:
             return None
         ux, uy, _uz = u_coord
         cx, cy, _cz = extraction.raw_child_offsets[cid]
-        sx, sy = ux - cx, uy - cy
+        room_extents = getattr(self.inventory, "room_extents", {})
+        lo, hi = room_extents.get(u, (0, 0)) if isinstance(room_extents, Mapping) else (0, 0)
 
         p_size = self._planar_comp_sizes.get(u, 1)
         oc_f = self._get_hole_filled_slice(cid, dz_locked, max(0, p_size - 1))
+        sx, sy = ux - cx, uy - cy
         if (sx, sy) not in oc_f:
-            return None
+            found_seed: tuple[int, int] | None = None
+            for tx in range(ux - lo - cx, ux + hi - cx + 1):
+                for ty in range(uy - lo - cy, uy + hi - cy + 1):
+                    if (tx, ty) in oc_f:
+                        found_seed = (tx, ty)
+                        break
+                if found_seed is not None:
+                    break
+            if found_seed is None:
+                return None
+            sx, sy = found_seed
         rx0, rx1, ry0, ry1 = max_rect_2d_containing(oc_f, sx, sy)
         box = BoundingBox3D(rx0, rx1, ry0, ry1, dz_locked, dz_locked)
 
         valid_dirs = filter_box_directions(
             self.spatial_dag,
-            _point_node_bounds(u),
+            _room_spatial_bounds(u, self.inventory),
             _child_offset_bounds(cid, box),
             _PLANAR_DIRS,
         )

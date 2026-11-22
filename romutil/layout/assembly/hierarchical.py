@@ -12,6 +12,7 @@ from romutil.layout.ir import (
 )
 from romutil.layout.protocols import LayoutAssembler
 from romutil.layout.simplification.hallways import expand_corridor_coordinates
+from romutil.models import compute_room_footprints, scale_to_extent
 from romutil.types import (
     Coord3D,
     LayoutDiagnostics,
@@ -134,6 +135,45 @@ class HierarchicalLayoutAssembler(LayoutAssembler):
                 ),
             )
 
+        base_graph = tree.graph if tree.graph is not None else simplified.graph
+        if base_graph is not None:
+            coord_unit, room_scales, room_extents = compute_room_footprints(
+                base_graph.rooms,
+                opts.terrain_scales,
+                coord_unit=base_graph.coord_unit,
+            )
+        else:
+            coord_unit, room_scales, room_extents = 1, {}, {}
+
+        corridor_scales: dict[int, int] = {}
+        for corridor in simplified.corridors:
+            if corridor.intermediate_scales and len(corridor.intermediate_scales) == len(
+                corridor.intermediate_vnums
+            ):
+                for vnum, scale in zip(
+                    corridor.intermediate_vnums, corridor.intermediate_scales
+                ):
+                    corridor_scales[vnum] = int(scale)
+            else:
+                for vnum in corridor.intermediate_vnums:
+                    corridor_scales.setdefault(vnum, room_scales.get(vnum, 1))
+
+        if (
+            base_graph is not None
+            and base_graph.coord_unit is None
+            and coord_unit == 1
+            and any(s % 2 == 0 for s in corridor_scales.values())
+        ):
+            coord_unit, room_scales, room_extents = compute_room_footprints(
+                base_graph.rooms,
+                opts.terrain_scales,
+                coord_unit=2,
+            )
+
+        for vnum, scale in corridor_scales.items():
+            room_scales[vnum] = scale
+            room_extents[vnum] = scale_to_extent(scale, coord_unit)
+
         visited_nodes: set[str] = set()
         global_coords: dict[int, Coord3D] = {}
 
@@ -164,18 +204,25 @@ class HierarchicalLayoutAssembler(LayoutAssembler):
         _traverse_node(tree.root, Coord3D(0, 0, 0))
 
         # 2. Check tree.components: traverse unvisited components and offset along X-axis
-        padding = opts.component_padding
+        padding = opts.component_padding * max(1, coord_unit)
         for comp in tree.components:
             if comp.node_id not in visited_nodes:
                 node_sol = solution.node_solutions.get(comp.node_id)
-                if node_sol and node_sol.bounding_box is not None:
+                local_coords = _collect_subtree_local_coords(comp, solution, Coord3D(0, 0, 0))
+                if local_coords:
+                    min_x = min(c.x - room_extents.get(u, (0, 0))[0] for u, c in local_coords.items())
+                    if node_sol and node_sol.bounding_box is not None:
+                        min_x = min(min_x, node_sol.bounding_box.min_x)
+                elif node_sol and node_sol.bounding_box is not None:
                     min_x = node_sol.bounding_box.min_x
                 else:
-                    local_coords = _collect_subtree_local_coords(comp, solution, Coord3D(0, 0, 0))
-                    min_x = min((c.x for c in local_coords.values()), default=0)
+                    min_x = 0
 
                 if global_coords:
-                    prev_max_x = max(c.x for c in global_coords.values())
+                    prev_max_x = max(
+                        c.x + room_extents.get(u, (0, 0))[1]
+                        for u, c in global_coords.items()
+                    )
                     comp_origin_x = prev_max_x + padding - min_x
                 else:
                     comp_origin_x = -min_x
@@ -188,13 +235,18 @@ class HierarchicalLayoutAssembler(LayoutAssembler):
                 visited_nodes.add(node_id)
                 if not node_sol.local_coordinates:
                     continue
+                min_x = min(
+                    c.x - room_extents.get(u, (0, 0))[0]
+                    for u, c in node_sol.local_coordinates.items()
+                )
                 if node_sol.bounding_box is not None:
-                    min_x = node_sol.bounding_box.min_x
-                else:
-                    min_x = min(c.x for c in node_sol.local_coordinates.values())
+                    min_x = min(min_x, node_sol.bounding_box.min_x)
 
                 if global_coords:
-                    prev_max_x = max(c.x for c in global_coords.values())
+                    prev_max_x = max(
+                        c.x + room_extents.get(u, (0, 0))[1]
+                        for u, c in global_coords.items()
+                    )
                     offset_x = prev_max_x + padding - min_x
                 else:
                     offset_x = -min_x
@@ -232,4 +284,6 @@ class HierarchicalLayoutAssembler(LayoutAssembler):
                 status=status,
                 duration_seconds=0.0,
             ),
+            room_scales=room_scales,
+            coord_unit=coord_unit,
         )

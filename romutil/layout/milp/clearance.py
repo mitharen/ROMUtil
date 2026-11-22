@@ -723,6 +723,44 @@ def _extract_child_sub_box_bounds(
     )
 
 
+def _corridor_interior_aabb(
+    ae: ActiveEdge,
+    p1: tuple[int, int, int],
+    p2: tuple[int, int, int],
+) -> tuple[int, int, int, int, int, int]:
+    """Compute the axis-aligned interior box of corridor ae excluding endpoint footprints."""
+    dx, dy, dz = ae.direction
+    src_lo, src_hi = getattr(ae, "src_extent", (0, 0))
+    dst_lo, dst_hi = getattr(ae, "dst_extent", (0, 0))
+    t_lo, t_hi = getattr(ae, "transverse_extent", (0, 0))
+    if dx > 0:
+        return (p1[0] + src_hi + 1, p2[0] - dst_lo - 1, p1[1] - t_lo, p1[1] + t_hi, p1[2], p1[2])
+    if dx < 0:
+        return (p2[0] + dst_hi + 1, p1[0] - src_lo - 1, p1[1] - t_lo, p1[1] + t_hi, p1[2], p1[2])
+    if dy > 0:
+        return (p1[0] - t_lo, p1[0] + t_hi, p1[1] + src_hi + 1, p2[1] - dst_lo - 1, p1[2], p1[2])
+    if dy < 0:
+        return (p1[0] - t_lo, p1[0] + t_hi, p2[1] + dst_hi + 1, p1[1] - src_lo - 1, p1[2], p1[2])
+    if dz > 0:
+        return (p1[0] - t_lo, p1[0] + t_hi, p1[1] - t_lo, p1[1] + t_hi, p1[2] + 1, p2[2] - 1)
+    return (p1[0] - t_lo, p1[0] + t_hi, p1[1] - t_lo, p1[1] + t_hi, p2[2] + 1, p1[2] - 1)
+
+
+def _corridor_full_aabb(
+    ae: ActiveEdge,
+    p1: tuple[int, int, int],
+    p2: tuple[int, int, int],
+) -> tuple[int, int, int, int, int, int]:
+    """Compute the axis-aligned full box of corridor ae (endpoints + transverse extent)."""
+    dx, dy, dz = ae.direction
+    t_lo, t_hi = getattr(ae, "transverse_extent", (0, 0))
+    if dx != 0:
+        return (min(p1[0], p2[0]), max(p1[0], p2[0]), p1[1] - t_lo, p1[1] + t_hi, p1[2], p1[2])
+    if dy != 0:
+        return (p1[0] - t_lo, p1[0] + t_hi, min(p1[1], p2[1]), max(p1[1], p2[1]), p1[2], p1[2])
+    return (p1[0] - t_lo, p1[0] + t_hi, p1[1] - t_lo, p1[1] + t_hi, min(p1[2], p2[2]), max(p1[2], p2[2]))
+
+
 def detect_cluster_collisions(
     formulation: ClusterFormulation,
     extraction: SolvedClusterExtraction,
@@ -730,11 +768,11 @@ def detect_cluster_collisions(
     """Detect geometric collisions across all clearance categories from solved cluster coordinates.
 
     Evaluates exact coordinates and child offsets to identify active collisions across
-    all seven clearance categories:
-      1. Room–Room: Coordinate equality between parent rooms and boundary ports.
-      2. Room–Child: Parent room coordinate penetrating a child keep-out sub-box.
+    all six clearance categories:
+      1. Room–Room: 3D footprint overlap between parent rooms and boundary ports.
+      2. Room–Child: Parent room footprint penetrating a child keep-out sub-box.
       3. Child–Child: 3D AABB intersection between non-shared child keep-out sub-boxes.
-      4. Corridor–Room: Corridor interior points penetrating a third-party parent room.
+      4. Corridor–Room: Corridor interior overlapping a third-party parent room footprint.
       5. Corridor–Child: Corridor interior segment penetrating a sibling child keep-out sub-box.
       6. Corridor–Corridor: Non-incident orthogonal corridor segments crossing in 3D.
 
@@ -754,12 +792,11 @@ def detect_cluster_collisions(
     parent_coords.update(extraction.raw_parent_coords)
     parent_coords.update(extraction.raw_port_coords)
 
+    room_extents = getattr(inventory, "room_extents", {})
     children = inventory.children
     child_solutions = inventory.child_solutions
     child_sub_boxes = inventory.child_sub_boxes
-    gateway_anchors = inventory.gateway_anchors
     active_edges = inventory.active_edges
-    b_ports = inventory.boundary_ports
 
     # Category 1: Room-Room Collisions
     for i in range(len(rooms)):
@@ -767,20 +804,29 @@ def detect_cluster_collisions(
         coord_u = parent_coords.get(u)
         if coord_u is None:
             continue
+        u_lo, u_hi = room_extents.get(u, (0, 0))
+        u_x0, u_x1 = coord_u[0] - u_lo, coord_u[0] + u_hi
+        u_y0, u_y1 = coord_u[1] - u_lo, coord_u[1] + u_hi
         for j in range(i + 1, len(rooms)):
             v = rooms[j]
             coord_v = parent_coords.get(v)
-            if coord_v is None:
+            if coord_v is None or coord_u[2] != coord_v[2]:
                 continue
-            if coord_u == coord_v:
+            v_lo, v_hi = room_extents.get(v, (0, 0))
+            v_x0, v_x1 = coord_v[0] - v_lo, coord_v[0] + v_hi
+            v_y0, v_y1 = coord_v[1] - v_lo, coord_v[1] + v_hi
+            if max(u_x0, v_x0) <= min(u_x1, v_x1) and max(u_y0, v_y0) <= min(u_y1, v_y1):
+                ov_x = min(u_x1, v_x1) - max(u_x0, v_x0) + 1
+                ov_y = min(u_y1, v_y1) - max(u_y0, v_y0) + 1
                 violations.append(
                     ClearanceViolation(
                         category="parent_room",
                         item_a=u,
                         item_b=v,
                         description=(
-                            f"Parent room/port {u} and {v} collide at coordinate {coord_u}."
+                            f"Parent room/port {u} at {coord_u} and {v} at {coord_v} overlap."
                         ),
+                        overlap_volume=ov_x * ov_y,
                     )
                 )
 
@@ -798,12 +844,21 @@ def detect_cluster_collisions(
             if u_coord is None:
                 continue
             ux, uy, uz = u_coord
+            u_lo, u_hi = room_extents.get(u, (0, 0))
+            u_x0, u_x1 = ux - u_lo, ux + u_hi
+            u_y0, u_y1 = uy - u_lo, uy + u_hi
             for k in range(len(sb)):
                 min_x, max_x, min_y, max_y, min_z, max_z = _extract_child_sub_box_bounds(
                     (cid, k), extraction, inventory
                 )
-                if min_x <= ux <= max_x and min_y <= uy <= max_y and min_z <= uz <= max_z:
-                    vol = (max_x - min_x + 1) * (max_y - min_y + 1) * (max_z - min_z + 1)
+                if (
+                    max(u_x0, min_x) <= min(u_x1, max_x)
+                    and max(u_y0, min_y) <= min(u_y1, max_y)
+                    and min_z <= uz <= max_z
+                ):
+                    ov_x = min(u_x1, max_x) - max(u_x0, min_x) + 1
+                    ov_y = min(u_y1, max_y) - max(u_y0, min_y) + 1
+                    vol = ov_x * ov_y
                     violations.append(
                         ClearanceViolation(
                             category="room_child",
@@ -875,7 +930,15 @@ def detect_cluster_collisions(
             p2 = _extract_entity_coord(ae.dst, extraction, inventory)
         except KeyError:
             continue
-        seg = Segment3D(Coord3D(*p1), Coord3D(*p2))
+        dx, dy, dz = ae.direction
+        is_aligned = (
+            (dx != 0 and p1[1] == p2[1] and p1[2] == p2[2])
+            or (dy != 0 and p1[0] == p2[0] and p1[2] == p2[2])
+            or (dz != 0 and p1[0] == p2[0] and p1[1] == p2[1])
+        )
+        c_box = _corridor_interior_aabb(ae, p1, p2) if is_aligned else None
+        seg = None if is_aligned else Segment3D(Coord3D(*p1), Coord3D(*p2))
+
         for w in parent_rooms:
             if w in ae.associated_rooms:
                 continue
@@ -889,17 +952,43 @@ def detect_cluster_collisions(
             w_coord = parent_coords.get(w)
             if w_coord is None:
                 continue
-            if segment_room_penetration(seg, Coord3D(*w_coord)):
-                violations.append(
-                    ClearanceViolation(
-                        category="corridor_room",
-                        item_a=i,
-                        item_b=w,
-                        description=(
-                            f"Corridor '{ae.edge_id}' interior overlaps parent room {w} at {w_coord}."
-                        ),
+            wx, wy, wz = w_coord
+            w_lo, w_hi = room_extents.get(w, (0, 0))
+            if c_box is not None:
+                c_min_x, c_max_x, c_min_y, c_max_y, c_min_z, c_max_z = c_box
+                if c_min_x > c_max_x or c_min_y > c_max_y or c_min_z > c_max_z:
+                    continue
+                if (
+                    c_min_z <= wz <= c_max_z
+                    and max(c_min_x, wx - w_lo) <= min(c_max_x, wx + w_hi)
+                    and max(c_min_y, wy - w_lo) <= min(c_max_y, wy + w_hi)
+                ):
+                    violations.append(
+                        ClearanceViolation(
+                            category="corridor_room",
+                            item_a=i,
+                            item_b=w,
+                            description=(
+                                f"Corridor '{ae.edge_id}' interior overlaps parent room {w} at {w_coord}."
+                            ),
+                        )
                     )
-                )
+            elif seg is not None:
+                if any(
+                    segment_room_penetration(seg, Coord3D(rx, ry, wz))
+                    for rx in range(wx - w_lo, wx + w_hi + 1)
+                    for ry in range(wy - w_lo, wy + w_hi + 1)
+                ):
+                    violations.append(
+                        ClearanceViolation(
+                            category="corridor_room",
+                            item_a=i,
+                            item_b=w,
+                            description=(
+                                f"Corridor '{ae.edge_id}' interior overlaps parent room {w} at {w_coord}."
+                            ),
+                        )
+                    )
 
     # Category 5: Corridor-Child Collisions
     for i, ae in enumerate(active_edges):
@@ -912,31 +1001,7 @@ def detect_cluster_collisions(
             p2 = _extract_entity_coord(ae.dst, extraction, inventory)
         except KeyError:
             continue
-        dx, dy, dz = ae.direction
-        if dx > 0:
-            c_min_x, c_max_x = p1[0] + 1, p2[0] - 1
-            c_min_y, c_max_y = p1[1], p1[1]
-            c_min_z, c_max_z = p1[2], p1[2]
-        elif dx < 0:
-            c_min_x, c_max_x = p2[0] + 1, p1[0] - 1
-            c_min_y, c_max_y = p1[1], p1[1]
-            c_min_z, c_max_z = p1[2], p1[2]
-        elif dy > 0:
-            c_min_x, c_max_x = p1[0], p1[0]
-            c_min_y, c_max_y = p1[1] + 1, p2[1] - 1
-            c_min_z, c_max_z = p1[2], p1[2]
-        elif dy < 0:
-            c_min_x, c_max_x = p1[0], p1[0]
-            c_min_y, c_max_y = p2[1] + 1, p1[1] - 1
-            c_min_z, c_max_z = p1[2], p1[2]
-        elif dz > 0:
-            c_min_x, c_max_x = p1[0], p1[0]
-            c_min_y, c_max_y = p1[1], p1[1]
-            c_min_z, c_max_z = p1[2] + 1, p2[2] - 1
-        else:
-            c_min_x, c_max_x = p1[0], p1[0]
-            c_min_y, c_max_y = p1[1], p1[1]
-            c_min_z, c_max_z = p2[2] + 1, p1[2] - 1
+        c_min_x, c_max_x, c_min_y, c_max_y, c_min_z, c_max_z = _corridor_interior_aabb(ae, p1, p2)
 
         if c_min_x > c_max_x or c_min_y > c_max_y or c_min_z > c_max_z:
             continue
@@ -989,6 +1054,8 @@ def detect_cluster_collisions(
         except KeyError:
             continue
         seg1 = Segment3D(Coord3D(*p1_a), Coord3D(*p1_b))
+        t1 = getattr(ae1, "transverse_extent", (0, 0))
+        corr_box1 = _corridor_full_aabb(ae1, p1_a, p1_b) if seg1.is_axis_aligned() else None
 
         for i2 in range(i1 + 1, len(active_edges)):
             ae2 = active_edges[i2]
@@ -1014,7 +1081,20 @@ def detect_cluster_collisions(
             except KeyError:
                 continue
             seg2 = Segment3D(Coord3D(*p2_a), Coord3D(*p2_b))
-            if segments_intersect_3d(seg1, seg2):
+            crosses = segments_intersect_3d(seg1, seg2)
+            if (
+                not crosses
+                and corr_box1 is not None
+                and seg2.is_axis_aligned()
+                and (t1 != (0, 0) or getattr(ae2, "transverse_extent", (0, 0)) != (0, 0))
+            ):
+                corr_box2 = _corridor_full_aabb(ae2, p2_a, p2_b)
+                crosses = (
+                    max(corr_box1[0], corr_box2[0]) <= min(corr_box1[1], corr_box2[1])
+                    and max(corr_box1[2], corr_box2[2]) <= min(corr_box1[3], corr_box2[3])
+                    and max(corr_box1[4], corr_box2[4]) <= min(corr_box1[5], corr_box2[5])
+                )
+            if crosses:
                 violations.append(
                     ClearanceViolation(
                         category="corridor_crossing",

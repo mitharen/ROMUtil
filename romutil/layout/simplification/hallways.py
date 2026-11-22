@@ -139,6 +139,13 @@ class HallwayCompactor:
         for edge in graph.edges:
             g.add_edge(edge.src, edge.dst)
 
+        terrain_scales = options.terrain_scales if options is not None else None
+        coord_unit, room_scales, room_extents = compute_room_footprints(
+            graph.rooms,
+            terrain_scales=terrain_scales,
+            coord_unit=graph.coord_unit,
+        )
+
         # Identify collinear degree-2 rooms
         collinear_candidates: set[int] = set()
         for v in graph.rooms:
@@ -185,13 +192,12 @@ class HallwayCompactor:
             collinear_candidates.add(v)
 
         if not collinear_candidates:
-            return SimplifiedGraph(graph=graph)
-
-        terrain_scales = options.terrain_scales if options is not None else None
-        _coord_unit, _room_scales, room_extents = compute_room_footprints(
-            graph.rooms,
-            terrain_scales=terrain_scales,
-        )
+            resolved_graph = (
+                graph
+                if graph.coord_unit == coord_unit
+                else LayoutGraph(rooms=graph.rooms, edges=graph.edges, coord_unit=coord_unit)
+            )
+            return SimplifiedGraph(graph=resolved_graph)
 
         # Find maximal chains in the induced subgraph of collinear candidates
         sub_g = g.subgraph(collinear_candidates)
@@ -215,6 +221,15 @@ class HallwayCompactor:
                 chain_nodes = list(nx.shortest_path(sub_g, p1, p2))
                 u = next(n for n in g.neighbors(p1) if n not in comp)
                 w = next(n for n in g.neighbors(p2) if n not in comp)
+
+            # Peel scale step-ups at narrower endpoints so compacted transverse extents
+            # never overhang adjacent rooms owned by endpoint clusters.
+            while chain_nodes and max(room_scales.get(v, 1) for v in chain_nodes) > room_scales.get(u, 1):
+                u = chain_nodes.pop(0)
+            while chain_nodes and max(room_scales.get(v, 1) for v in chain_nodes) > room_scales.get(w, 1):
+                w = chain_nodes.pop()
+            if not chain_nodes:
+                continue
 
             first_node = chain_nodes[0]
             edge_u_first = edge_map[(u, first_node)][0]
@@ -262,6 +277,7 @@ class HallwayCompactor:
                 intermediate_vnums=tuple(intermediate),
                 step_lengths=step_lengths,
                 transverse_extent=transverse_extent,
+                intermediate_scales=tuple(room_scales.get(v, 1) for v in intermediate),
             )
             corridors.append(corridor)
             macro_edges.append(
@@ -294,6 +310,7 @@ class HallwayCompactor:
         compacted_graph = LayoutGraph(
             rooms=compacted_rooms,
             edges=tuple(compacted_edges),
+            coord_unit=coord_unit,
         )
         return SimplifiedGraph(
             graph=compacted_graph,

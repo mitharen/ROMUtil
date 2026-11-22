@@ -374,3 +374,47 @@ class TestLayoutEngine:
         assert result.coordinates == {42: Coord3D(1, 1, 1)}
         assert result.diagnostics.status == SolverStatus.OPTIMAL
         assert result.diagnostics.duration_seconds >= 0.0
+
+
+class TestTerrainRoomScalingPipeline:
+    """Verify end-to-end terrain room scaling (1/2/4 vs uniform 1s)."""
+
+    def test_mixed_terrain_scaling_and_uniform_mode(self) -> None:
+        from romutil.models import (
+            DEFAULT_TERRAIN_SCALES,
+            Exit,
+            UNIFORM_TERRAIN_SCALES,
+        )
+        from tests.regressions.invariants import (
+            assert_corridor_non_penetration,
+            assert_zero_coordinate_collisions,
+        )
+
+        # 1 (Inside s=1) -E-> 2 (City s=2) -S-> 3 (Forest s=4) -W-> 4 (Inside s=1) -N-> 1
+        rooms = {
+            1: Room(vnum=1, name="Lobby", description="", sector=0, exits=(Exit(1, 2), Exit(2, 4))),
+            2: Room(vnum=2, name="Plaza", description="", sector=1, exits=(Exit(3, 1), Exit(2, 3))),
+            3: Room(vnum=3, name="Woods", description="", sector=3, exits=(Exit(0, 2), Exit(3, 4))),
+            4: Room(vnum=4, name="Cellar", description="", sector=0, exits=(Exit(1, 3), Exit(0, 1))),
+        }
+        exits = [(u, ex.dst_vnum, ex) for u, r in rooms.items() for ex in r.exits]
+        wg = WorldGraph(rooms=rooms, exits=exits)
+
+        solver = HierarchicalLayoutSolver.production()
+        scaled = solver.solve(wg, LayoutOptions(terrain_scales=DEFAULT_TERRAIN_SCALES))
+        assert scaled.coord_unit == 2
+        assert scaled.room_scales == {1: 1, 2: 2, 3: 4, 4: 1}
+        assert_zero_coordinate_collisions(scaled)
+        assert_corridor_non_penetration(scaled, wg)
+        # 1 <-> 3 cycle closes at Forest-width horizontal/vertical span: >= 5 half-cells each way
+        assert scaled.coordinates[2].x - scaled.coordinates[1].x >= 3
+        assert scaled.coordinates[2].y - scaled.coordinates[3].y >= 6
+        assert scaled.coordinates[3].x - scaled.coordinates[4].x >= 5
+
+        uniform = solver.solve(wg, LayoutOptions(terrain_scales=UNIFORM_TERRAIN_SCALES))
+        assert uniform.coord_unit == 1
+        assert uniform.room_scales == {1: 1, 2: 1, 3: 1, 4: 1}
+        assert_zero_coordinate_collisions(uniform)
+        assert_corridor_non_penetration(uniform, wg)
+        assert uniform.coordinates[2].x - uniform.coordinates[1].x == 1
+        assert uniform.coordinates[2].y - uniform.coordinates[3].y == 1

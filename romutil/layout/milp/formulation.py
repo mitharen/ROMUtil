@@ -105,8 +105,9 @@ def calculate_dynamic_bounds(inventory: ClusterInventory) -> int:
     # Multiplier accounts for corridor stretching and detour clearances around obstacles
     edge_scale = max(2 * edge_min_sum, 2 * max_edge_min)
 
-    # 3. Parent room scale proportional to room count
-    room_scale = max(len(inventory.rooms), len(inventory.boundary_ports)) * 10
+    # 3. Parent room scale proportional to room count and grid resolution
+    coord_unit = max(1, int(getattr(inventory, "coord_unit", 1)))
+    room_scale = max(len(inventory.rooms), len(inventory.boundary_ports)) * 10 * coord_unit
 
     total_scale = child_spans + edge_scale + room_scale
     return max(baseline_floor, total_scale)
@@ -268,8 +269,9 @@ class ClusterFormulation:
         # 1. Piecewise-linear convex stretch penalties
         stretch_expr = 0
         if edge_indices:
-            model.s_stretch_1 = pyo.Var(edge_indices, domain=pyo.NonNegativeReals, bounds=(0, 2))
-            model.s_stretch_2 = pyo.Var(edge_indices, domain=pyo.NonNegativeReals, bounds=(0, 4))
+            coord_unit = max(1, int(getattr(inventory, "coord_unit", 1)))
+            model.s_stretch_1 = pyo.Var(edge_indices, domain=pyo.NonNegativeReals, bounds=(0, 2 * coord_unit))
+            model.s_stretch_2 = pyo.Var(edge_indices, domain=pyo.NonNegativeReals, bounds=(0, 4 * coord_unit))
             model.s_stretch_3 = pyo.Var(edge_indices, domain=pyo.NonNegativeReals, bounds=(0, None))
             model.stretch_decompose = pyo.ConstraintList()
 
@@ -325,7 +327,12 @@ class ClusterFormulation:
         """Return 3D bounding box (min_x, max_x, min_y, max_y, min_z, max_z) for a parent room."""
         vnum = u.vnum if hasattr(u, "vnum") else u
         px, py, pz = self.get_point(vnum)
-        return (px, px, py, py, pz, pz)
+        lo, hi = (
+            getattr(self.inventory, "room_extents", {}).get(vnum, (0, 0))
+            if isinstance(vnum, int)
+            else (0, 0)
+        )
+        return (px - lo, px + hi, py - lo, py + hi, pz, pz)
 
     def get_child_sub_box(self, key: tuple[str, int] | Any) -> tuple[Any, Any, Any, Any, Any, Any]:
         """Return 3D bounding box for a child sub-box indexed by (child_id, index)."""
@@ -359,7 +366,9 @@ class ClusterFormulation:
         x1, y1, z1 = self.get_point(ae.src)
         x2, y2, z2 = self.get_point(ae.dst)
         dx, dy, dz = ae.direction
-        margin = 1 if interior else 0
+        src_lo, src_hi = getattr(ae, "src_extent", (0, 0))
+        dst_lo, dst_hi = getattr(ae, "dst_extent", (0, 0))
+        t_lo, t_hi = getattr(ae, "transverse_extent", (0, 0))
         slack = (
             self._edge_transverse_slack.get(ae.edge_id)
             if include_transverse_slack and ae.allow_transverse_slack
@@ -367,15 +376,32 @@ class ClusterFormulation:
         )
 
         if dx != 0:
-            x_min, x_max = (x1 + margin, x2 - margin) if dx > 0 else (x2 + margin, x1 - margin)
-            y_min, y_max = (y1 - slack[1], y1 + slack[0]) if slack is not None else (y1, y1)
+            if interior:
+                x_min, x_max = (
+                    (x1 + src_hi + 1, x2 - dst_lo - 1)
+                    if dx > 0
+                    else (x2 + dst_hi + 1, x1 - src_lo - 1)
+                )
+            else:
+                x_min, x_max = (x1, x2) if dx > 0 else (x2, x1)
+            y_min = y1 - t_lo - slack[1] if slack is not None else y1 - t_lo
+            y_max = y1 + t_hi + slack[0] if slack is not None else y1 + t_hi
             return (x_min, x_max, y_min, y_max, z1, z1)
         if dy != 0:
-            y_min, y_max = (y1 + margin, y2 - margin) if dy > 0 else (y2 + margin, y1 - margin)
-            x_min, x_max = (x1 - slack[1], x1 + slack[0]) if slack is not None else (x1, x1)
+            if interior:
+                y_min, y_max = (
+                    (y1 + src_hi + 1, y2 - dst_lo - 1)
+                    if dy > 0
+                    else (y2 + dst_hi + 1, y1 - src_lo - 1)
+                )
+            else:
+                y_min, y_max = (y1, y2) if dy > 0 else (y2, y1)
+            x_min = x1 - t_lo - slack[1] if slack is not None else x1 - t_lo
+            x_max = x1 + t_hi + slack[0] if slack is not None else x1 + t_hi
             return (x_min, x_max, y_min, y_max, z1, z1)
+        margin = 1 if interior else 0
         z_min, z_max = (z1 + margin, z2 - margin) if dz > 0 else (z2 + margin, z1 - margin)
-        return (x1, x1, y1, y1, z_min, z_max)
+        return (x1 - t_lo, x1 + t_hi, y1 - t_lo, y1 + t_hi, z_min, z_max)
 
     def get_corridor_interior_box(self, ae: ActiveEdge) -> tuple[Any, Any, Any, Any, Any, Any]:
         """Return 3D bounding box for a corridor's interior (excluding endpoints)."""
