@@ -1212,3 +1212,35 @@ class TestTerrainColoringAndSerialization:
         assert '"terrain_type": "lava"' in html
         assert '"terrain": "Lava"' in html
         assert '"terrain": "Unknown (-1)"' in html
+
+    def test_scaled_room_sizes_exported_to_json_html_and_svg(self, tmp_path):
+        rooms = {
+            1: Room(vnum=1, name="Cell", description="", sector=0),
+            2: Room(vnum=2, name="Plains", description="", sector=2),
+        }
+        header = AreaHeader(filename="scaled.are", name="Scaled", builder="Tester", vnum_min=1, vnum_max=2)
+        graph = WorldGraph(rooms=rooms, exits=(), header=header)
+        layout = SolvedLayout(
+            coordinates={1: Coord3D(0, 0, 0), 2: Coord3D(5, 0, 0)},
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.0),
+            room_scales={1: 1, 2: 4},
+            coord_unit=2,
+        )
+
+        data = build_area_json(graph, layout)
+        assert data["coord_unit"] == 2
+        by_vnum = {r["vnum"]: r for r in data["rooms"]}
+        assert by_vnum[1]["size"] == 1
+        assert by_vnum[2]["size"] == 4
+
+        html = generate_html_viewer(data)
+        assert "const coordUnit = Number(mapData.coord_unit) || 1;" in html
+        assert "function getRoomSizePx(room)" in html
+        assert "const rSize = getRoomSizePx(r);" in html
+        assert '"coord_unit": 2' in html
+
+        svg_path = tmp_path / "scaled.svg"
+        SVGRenderer().render(graph, layout, svg_path)
+        svg_text = svg_path.read_text(encoding="utf-8")
+        assert 'width="0.5"' in svg_text
+        assert 'width="3.5"' in svg_text

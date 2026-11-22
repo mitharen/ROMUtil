@@ -22,7 +22,7 @@ from romutil.layout import (
     TreeSolver,
     expand_corridor_coordinates,
 )
-from romutil.models import AreaHeader, Exit, Room
+from romutil.models import AreaHeader, DEFAULT_TERRAIN_SCALES, Exit, Room, TerrainType, UNIFORM_TERRAIN_SCALES
 from romutil.types import (
     Coord3D,
     LayoutOptions,
@@ -554,3 +554,57 @@ class TestPipelineIntegration:
         result = assembler.assemble(tree, sol, simplified, LayoutOptions())
         assert 1 in result.coordinates
         assert 2 not in result.coordinates
+
+    def test_mixed_terrain_corridor_compaction_and_weighted_expansion(self) -> None:
+        """Mixed 1/2/4 terrain hallway computes exact footprint step lengths, peels step-ups, and expands."""
+        # 1 (Forest s=4) <-> 2 (City s=2) <-> 3 (City s=2) <-> 4 (Forest s=4) <-> 5 (Inside s=1) East
+        # Endpoint 5 (s=1) is narrower than intermediate 3 (s=2), so step-ups peel leaving 1 <-> [2, 3] <-> 4.
+        sectors = {1: 3, 2: 1, 3: 1, 4: 3, 5: 0}
+        rooms: dict[int, Room] = {}
+        edges: list[LayoutEdge] = []
+        vnums = [1, 2, 3, 4, 5]
+        for i, vnum in enumerate(vnums):
+            exits: list[Exit] = []
+            if i > 0:
+                exits.append(Exit(direction=3, dst_vnum=vnums[i - 1]))
+                edges.append(LayoutEdge(src=vnum, dst=vnums[i - 1], direction=3, weight=1))
+            if i < len(vnums) - 1:
+                exits.append(Exit(direction=1, dst_vnum=vnums[i + 1]))
+                edges.append(LayoutEdge(src=vnum, dst=vnums[i + 1], direction=1, weight=1))
+            rooms[vnum] = Room(
+                vnum=vnum,
+                name=f"Room {vnum}",
+                description="",
+                sector=sectors[vnum],
+                exits=tuple(exits),
+            )
+
+        lg = LayoutGraph(rooms=rooms, edges=edges)
+        compactor = HallwayCompactor()
+
+        # Uniform scales compact full chain 1 <-> [2, 3, 4] <-> 5 with 1-step weights
+        uniform_simp = compactor.simplify(lg, LayoutOptions(terrain_scales=UNIFORM_TERRAIN_SCALES))
+        assert uniform_simp.graph.edges[0].weight == 4
+        assert uniform_simp.corridors[0].step_lengths == (1, 1, 1, 1)
+        assert uniform_simp.corridors[0].transverse_extent == (0, 0)
+
+        # Default 1/2/4 scales peel narrower end room 5 (s=1) -> compact 1 <-> [2, 3] <-> 4 (steps: 6, 4, 6 -> sum=16)
+        scaled_simp = compactor.simplify(lg, LayoutOptions(terrain_scales=DEFAULT_TERRAIN_SCALES))
+        corr = scaled_simp.corridors[0]
+        assert corr.start_vnum == 1 and corr.end_vnum == 4
+        assert corr.intermediate_vnums == (2, 3)
+        macro_edge = next(e for e in scaled_simp.graph.edges if e.metadata.get("is_compacted"))
+        assert macro_edge.weight == 16
+        assert corr.step_lengths == (6, 4, 6)
+        assert corr.transverse_extent == (2, 1)
+
+        # Exact min span expansion: 0 -> 6 -> 10 -> 16
+        exact_coords = expand_corridor_coordinates(corr, Coord3D(0, 0, 0), Coord3D(16, 0, 0))
+        assert exact_coords == {2: Coord3D(6, 0, 0), 3: Coord3D(10, 0, 0)}
+
+        # Stretched expansion (delta=18, slack=2 across 3 steps -> +1,+1,+0): gaps 7,5,6
+        stretched_coords = expand_corridor_coordinates(corr, Coord3D(0, 0, 0), Coord3D(18, 0, 0))
+        assert stretched_coords == {2: Coord3D(7, 0, 0), 3: Coord3D(12, 0, 0)}
+        assert stretched_coords[2].x - 0 >= 6
+        assert stretched_coords[3].x - stretched_coords[2].x >= 4
+        assert 18 - stretched_coords[3].x >= 6

@@ -82,6 +82,7 @@ class LayoutGraph:
 
     rooms: Mapping[int, Room]
     edges: Sequence[LayoutEdge]
+    coord_unit: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.edges, tuple):
@@ -111,10 +112,17 @@ class CorridorSegment:
     end_vnum: int
     direction: int
     intermediate_vnums: Sequence[int] = field(default_factory=tuple)
+    step_lengths: tuple[int, ...] = ()
+    transverse_extent: tuple[int, int] = (0, 0)
+    intermediate_scales: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.intermediate_vnums, tuple):
             object.__setattr__(self, "intermediate_vnums", tuple(self.intermediate_vnums))
+        if not isinstance(self.step_lengths, tuple):
+            object.__setattr__(self, "step_lengths", tuple(int(s) for s in self.step_lengths))
+        if not isinstance(self.intermediate_scales, tuple):
+            object.__setattr__(self, "intermediate_scales", tuple(int(s) for s in self.intermediate_scales))
 
 
 @dataclass(frozen=True)

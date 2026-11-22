@@ -17,6 +17,7 @@ from romutil.models import (
     Room,
     Shop,
     Special,
+    TerrainType,
 )
 
 
@@ -57,6 +58,8 @@ class SolvedLayout:
     """Solved 3D spatial layout associating room vnums to Coord3D positions."""
 
     coordinates: Mapping[int, Coord3D]
+    room_scales: Mapping[int, int] = field(default_factory=dict)
+    coord_unit: int = 1
     diagnostics: LayoutDiagnostics = field(
         default_factory=lambda: LayoutDiagnostics(
             status=SolverStatus.OPTIMAL, duration_seconds=0.0
@@ -77,6 +80,7 @@ class LayoutOptions:
     intermediate_ratio_gap: float | None = None
     max_solutions: int | None = None
     warmstart: bool = False
+    terrain_scales: Mapping[TerrainType, int] | None = None
 
 
 @dataclass(frozen=True)

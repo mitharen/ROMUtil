@@ -1620,13 +1620,20 @@ __JSON_DATA__
       const lift = 0.28;
       const roomSize = 34;
       const gridScale = 72;
+      const coordUnit = Number(mapData.coord_unit) || 1;
+      const cellScale = gridScale / coordUnit;
       const max_y = bounds.max_y;
       const min_x = bounds.min_x;
       const min_y = bounds.min_y;
 
+      function getRoomSizePx(room) {
+        const s = (room && Number(room.size)) || 1;
+        return s * gridScale - (gridScale - roomSize);
+      }
+
       function project(x, y, z) {
-        const px = (x - min_x + z * lift) * gridScale + 80;
-        const py = ((max_y - y) - z * lift) * gridScale + 80;
+        const px = (x - min_x) * cellScale + z * lift * gridScale + 80;
+        const py = (max_y - y) * cellScale - z * lift * gridScale + 80;
         return { px, py };
       }
 
@@ -1894,11 +1901,12 @@ __JSON_DATA__
         }
         g.setAttribute('transform', 'translate(' + pt.px + ',' + pt.py + ')');
 
+        const rSize = getRoomSizePx(r);
         const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-        rect.setAttribute('x', -roomSize / 2);
-        rect.setAttribute('y', -roomSize / 2);
-        rect.setAttribute('width', roomSize);
-        rect.setAttribute('height', roomSize);
+        rect.setAttribute('x', -rSize / 2);
+        rect.setAttribute('y', -rSize / 2);
+        rect.setAttribute('width', rSize);
+        rect.setAttribute('height', rSize);
         rect.setAttribute('fill', getRoomColor(r.coords.z));
         rect.setAttribute('class', 'room-box');
         if (r.area_name) {
@@ -1907,6 +1915,9 @@ __JSON_DATA__
 
         const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
         label.setAttribute('class', 'room-label');
+        if (rSize > roomSize) {
+          label.style.fontSize = (Number(r.size) >= 4 ? '14px' : '12px');
+        }
         label.textContent = r.vnum;
 
         g.appendChild(rect);
@@ -1921,8 +1932,8 @@ __JSON_DATA__
           if (!showMobs) {
             mobBadgeGroup.style.display = 'none';
           }
-          const badgeCx = 11;
-          const badgeCy = -11;
+          const badgeCx = rSize / 2 - 6;
+          const badgeCy = -(rSize / 2 - 6);
           const badgeR = mobTotalCount > 9 ? 8.5 : 7;
 
           const badgeCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
@@ -2865,10 +2876,11 @@ __JSON_DATA__
         let minPy = Infinity, maxPy = -Infinity;
         rooms.forEach(r => {
           const pt = project(r.coords.x, r.coords.y, r.coords.z);
-          minPx = Math.min(minPx, pt.px - roomSize / 2);
-          maxPx = Math.max(maxPx, pt.px + roomSize / 2);
-          minPy = Math.min(minPy, pt.py - roomSize / 2);
-          maxPy = Math.max(maxPy, pt.py + roomSize / 2);
+          const half = getRoomSizePx(r) / 2;
+          minPx = Math.min(minPx, pt.px - half);
+          maxPx = Math.max(maxPx, pt.px + half);
+          minPy = Math.min(minPy, pt.py - half);
+          maxPy = Math.max(maxPy, pt.py + half);
         });
         const boxW = maxPx - minPx;
         const boxH = maxPy - minPy;
@@ -2988,8 +3000,8 @@ __JSON_DATA__
         const h = minimap.height;
         const padding = 10;
 
-        const totalWidth = (bounds.max_x - min_x + 1) * gridScale + 160;
-        const totalHeight = (bounds.max_y - min_y + 1) * gridScale + 160;
+        const totalWidth = (bounds.max_x - min_x) * cellScale + gridScale + 160;
+        const totalHeight = (bounds.max_y - min_y) * cellScale + gridScale + 160;
 
         const sx = (w - padding * 2) / totalWidth;
         const sy = (h - padding * 2) / totalHeight;
@@ -3013,7 +3025,8 @@ __JSON_DATA__
           } else {
             miniCtx.fillStyle = '#334155';
           }
-          miniCtx.fillRect(mx - 1.5, my - 1.5, 3, 3);
+          const miniSize = Math.max(3, getRoomSizePx(r) * scale);
+          miniCtx.fillRect(mx - miniSize / 2, my - miniSize / 2, miniSize, miniSize);
         });
 
         // Draw viewport bounds
@@ -3042,8 +3055,8 @@ __JSON_DATA__
         const w = minimap.width;
         const h = minimap.height;
         const padding = 10;
-        const totalWidth = (bounds.max_x - min_x + 1) * gridScale + 160;
-        const totalHeight = (bounds.max_y - min_y + 1) * gridScale + 160;
+        const totalWidth = (bounds.max_x - min_x) * cellScale + gridScale + 160;
+        const totalHeight = (bounds.max_y - min_y) * cellScale + gridScale + 160;
         const sx = (w - padding * 2) / totalWidth;
         const sy = (h - padding * 2) / totalHeight;
         const scale = Math.min(sx, sy);

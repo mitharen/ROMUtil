@@ -19,7 +19,7 @@ from romutil.models import (
     Social,
     Special,
     merge_areas,
-    normalize_sector,
+    normalize_room_terrain,
     resolve_dialect,
 )
 
@@ -914,7 +914,7 @@ class Parser:
             sector=p[11],
             exits=tuple(exits),
             extras=tuple(extras),
-            terrain=normalize_sector(p[11], self._active_dialect),
+            terrain=normalize_room_terrain(p[11], p[10], self._active_dialect),
         )
         log.debug(f'Room: {p[4]}')
 

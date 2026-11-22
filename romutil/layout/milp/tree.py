@@ -19,7 +19,12 @@ from romutil.layout.ir import (
     TreeSolution,
 )
 from romutil.layout.milp.cluster import solve_cluster
-from romutil.layout.milp.inventory import get_child_boundary_ports, get_child_coordinate
+from romutil.layout.milp.inventory import (
+    _collect_extended_footprints,
+    _expand_room_cells,
+    get_child_boundary_ports,
+    get_child_coordinate,
+)
 from romutil.layout.protocols import TreeSolver
 from romutil.layout.simplification.warps import direction_to_displacement
 from romutil.models import Direction, Room
@@ -467,6 +472,7 @@ def _resynthesize_split_child_solution(
     pieces: Sequence[tuple[SolveTreeNode, NodeSolution]],
     parent_sol: NodeSolution,
     solutions: Mapping[str, NodeSolution],
+    room_extents: Mapping[int, tuple[int, int]] | None = None,
 ) -> tuple[NodeSolution, Coord3D, tuple[BoundingBox3D, ...]]:
     """Recombine dynamically split sub-pieces back into orig_child's normalized NodeSolution."""
     parent_offsets = parent_sol.metadata.get("child_offsets", {})
@@ -542,7 +548,15 @@ def _resynthesize_split_child_solution(
                 and pb.y - pa.y == dist * dy
                 and pb.z - pa.z == dist * dz
             ):
-                for step in range(1, dist):
+                if dz == 0:
+                    ext_a = (room_extents or {}).get(a, (0, 0))
+                    ext_b = (room_extents or {}).get(b, (0, 0))
+                    pos_dir = (dx > 0) or (dy > 0)
+                    t_start = (ext_a[1] + 1) if pos_dir else (ext_a[0] + 1)
+                    t_stop = dist - (ext_b[0] if pos_dir else ext_b[1])
+                else:
+                    t_start, t_stop = 1, dist
+                for step in range(t_start, t_stop):
                     all_coords_in_parent[f"corridor_{a}_{b}_{step}"] = Coord3D(
                         pa.x + step * dx,
                         pa.y + step * dy,
@@ -585,12 +599,19 @@ def _resynthesize_split_child_solution(
         if raw_pt is not None:
             merged_port_coords[bp] = _shift(raw_pt)
 
-    bp_coord_set = set(merged_port_coords.values())
-    interior_cells = {
-        pt
-        for key, pt in merged_all_coords.items()
-        if key not in merged_port_coords and pt not in bp_coord_set
-    }
+    extents = room_extents or {}
+    bp_coord_set: set[Coord3D] = set()
+    for bp, pt in merged_port_coords.items():
+        bp_coord_set.update(_expand_room_cells(pt, extents.get(bp, (0, 0))))
+
+    interior_cells: set[Coord3D] = set()
+    for key, pt in merged_all_coords.items():
+        if key in merged_port_coords:
+            continue
+        ext = extents.get(key, (0, 0)) if isinstance(key, int) else (0, 0)
+        for cell in _expand_room_cells(pt, ext):
+            if cell not in bp_coord_set:
+                interior_cells.add(cell)
     if interior_cells:
         orig_sub_boxes = decompose_into_orthogonal_sub_boxes(interior_cells)
     elif merged_all_coords:
@@ -657,6 +678,10 @@ class HierarchicalTreeSolver(TreeSolver):
                 rooms={v: Room(vnum=v, name=f"Room {v}", description="", exits=()) for v in all_rooms},
                 edges=(),
             )
+        if layout_graph.coord_unit is None and layout_graph.rooms:
+            resolved_unit, _scales, _extents = _collect_extended_footprints(layout_graph, options)
+            layout_graph = replace(layout_graph, coord_unit=resolved_unit)
+        _cu, _rs, resolved_extents = _collect_extended_footprints(layout_graph, options)
 
         solutions: dict[str, NodeSolution] = {}
 
@@ -765,6 +790,7 @@ class HierarchicalTreeSolver(TreeSolver):
                     pieces=pieces,
                     parent_sol=cluster_sol,
                     solutions=solutions,
+                    room_extents=resolved_extents,
                 )
                 solutions[orig_cid] = merged_sol
                 for p_node, _p_sol in pieces:

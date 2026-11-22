@@ -13,8 +13,37 @@ from romutil.layout.ir import (
     LayoutGraph,
     SimplifiedGraph,
 )
-from romutil.models import Direction
+from romutil.models import Direction, compute_room_footprints
 from romutil.types import Coord3D, LayoutOptions
+
+
+def _distribute_axis_positions(
+    step_lengths: tuple[int, ...],
+    delta: int,
+) -> list[int]:
+    """Return strictly monotonic cumulative offsets along an axis summing to delta."""
+    n_steps = len(step_lengths)
+    total_min = sum(step_lengths)
+    if total_min <= 0:
+        return [round(i * delta / n_steps) for i in range(1, n_steps)]
+    sign = 1 if delta >= 0 else -1
+    abs_delta = abs(delta)
+    if abs_delta >= total_min:
+        slack = abs_delta - total_min
+        base_extra, rem = divmod(slack, n_steps)
+        cum = 0
+        positions: list[int] = []
+        for idx in range(n_steps - 1):
+            step = step_lengths[idx] + base_extra + (1 if idx < rem else 0)
+            cum += step
+            positions.append(sign * cum)
+        return positions
+    cum = 0
+    positions = []
+    for idx in range(n_steps - 1):
+        cum += step_lengths[idx]
+        positions.append(round(cum * delta / total_min))
+    return positions
 
 
 def expand_corridor_coordinates(
@@ -35,11 +64,48 @@ def expand_corridor_coordinates(
     if not corridor.intermediate_vnums:
         return {}
 
-    total_steps = len(corridor.intermediate_vnums) + 1
     dx = end_coord.x - start_coord.x
     dy = end_coord.y - start_coord.y
     dz = end_coord.z - start_coord.z
 
+    n_intermediate = len(corridor.intermediate_vnums)
+    step_lengths = corridor.step_lengths
+    if len(step_lengths) == n_intermediate + 1 and sum(step_lengths) > 0:
+        total_min = sum(step_lengths)
+        xs = (
+            _distribute_axis_positions(step_lengths, dx)
+            if abs(dx) >= abs(dy) and abs(dx) >= abs(dz) and abs(dx) >= total_min
+            else [
+                round(sum(step_lengths[:i]) * dx / total_min)
+                for i in range(1, n_intermediate + 1)
+            ]
+        )
+        ys = (
+            _distribute_axis_positions(step_lengths, dy)
+            if abs(dy) > abs(dx) and abs(dy) >= abs(dz) and abs(dy) >= total_min
+            else [
+                round(sum(step_lengths[:i]) * dy / total_min)
+                for i in range(1, n_intermediate + 1)
+            ]
+        )
+        zs = (
+            _distribute_axis_positions(step_lengths, dz)
+            if abs(dz) > abs(dx) and abs(dz) > abs(dy) and abs(dz) >= total_min
+            else [
+                round(sum(step_lengths[:i]) * dz / total_min)
+                for i in range(1, n_intermediate + 1)
+            ]
+        )
+        return {
+            vnum: Coord3D(
+                x=int(start_coord.x + xs[idx]),
+                y=int(start_coord.y + ys[idx]),
+                z=int(start_coord.z + zs[idx]),
+            )
+            for idx, vnum in enumerate(corridor.intermediate_vnums)
+        }
+
+    total_steps = n_intermediate + 1
     expanded: dict[int, Coord3D] = {}
     for i, vnum in enumerate(corridor.intermediate_vnums, start=1):
         x = start_coord.x + round(i * dx / total_steps)
@@ -72,6 +138,13 @@ class HallwayCompactor:
             g.add_node(vnum)
         for edge in graph.edges:
             g.add_edge(edge.src, edge.dst)
+
+        terrain_scales = options.terrain_scales if options is not None else None
+        coord_unit, room_scales, room_extents = compute_room_footprints(
+            graph.rooms,
+            terrain_scales=terrain_scales,
+            coord_unit=graph.coord_unit,
+        )
 
         # Identify collinear degree-2 rooms
         collinear_candidates: set[int] = set()
@@ -119,7 +192,12 @@ class HallwayCompactor:
             collinear_candidates.add(v)
 
         if not collinear_candidates:
-            return SimplifiedGraph(graph=graph)
+            resolved_graph = (
+                graph
+                if graph.coord_unit == coord_unit
+                else LayoutGraph(rooms=graph.rooms, edges=graph.edges, coord_unit=coord_unit)
+            )
+            return SimplifiedGraph(graph=resolved_graph)
 
         # Find maximal chains in the induced subgraph of collinear candidates
         sub_g = g.subgraph(collinear_candidates)
@@ -144,6 +222,15 @@ class HallwayCompactor:
                 u = next(n for n in g.neighbors(p1) if n not in comp)
                 w = next(n for n in g.neighbors(p2) if n not in comp)
 
+            # Peel scale step-ups at narrower endpoints so compacted transverse extents
+            # never overhang adjacent rooms owned by endpoint clusters.
+            while chain_nodes and max(room_scales.get(v, 1) for v in chain_nodes) > room_scales.get(u, 1):
+                u = chain_nodes.pop(0)
+            while chain_nodes and max(room_scales.get(v, 1) for v in chain_nodes) > room_scales.get(w, 1):
+                w = chain_nodes.pop()
+            if not chain_nodes:
+                continue
+
             first_node = chain_nodes[0]
             edge_u_first = edge_map[(u, first_node)][0]
             d = edge_u_first.direction
@@ -160,19 +247,37 @@ class HallwayCompactor:
                 intermediate = list(reversed(chain_nodes))
                 direction = int(Direction(d).invert())
 
-            # Calculate total macro-edge weight along the chain
-            curr = start_vnum
-            total_weight = 0
-            for next_node in intermediate:
-                total_weight += edge_map[(curr, next_node)][0].weight
-                curr = next_node
-            total_weight += edge_map[(curr, end_vnum)][0].weight
+            # Calculate minimum step lengths and macro-edge weight along the chain
+            chain_sequence = [start_vnum, *intermediate, end_vnum]
+            is_vertical = Direction(direction) in (Direction.up, Direction.down)
+            step_lengths_list: list[int] = []
+            for a, b in zip(chain_sequence, chain_sequence[1:]):
+                raw_w = edge_map[(a, b)][0].weight
+                if is_vertical:
+                    step_lengths_list.append(max(1, raw_w))
+                else:
+                    hi_a = room_extents.get(a, (0, 0))[1]
+                    lo_b = room_extents.get(b, (0, 0))[0]
+                    step_lengths_list.append(max(raw_w, hi_a + lo_b + 1))
+
+            step_lengths = tuple(step_lengths_list)
+            total_weight = sum(step_lengths)
+            if intermediate:
+                transverse_extent = (
+                    max(room_extents.get(v, (0, 0))[0] for v in intermediate),
+                    max(room_extents.get(v, (0, 0))[1] for v in intermediate),
+                )
+            else:
+                transverse_extent = (0, 0)
 
             corridor = CorridorSegment(
                 start_vnum=start_vnum,
                 end_vnum=end_vnum,
                 direction=direction,
                 intermediate_vnums=tuple(intermediate),
+                step_lengths=step_lengths,
+                transverse_extent=transverse_extent,
+                intermediate_scales=tuple(room_scales.get(v, 1) for v in intermediate),
             )
             corridors.append(corridor)
             macro_edges.append(
@@ -181,7 +286,7 @@ class HallwayCompactor:
                     dst=end_vnum,
                     direction=direction,
                     weight=total_weight,
-                    metadata={"corridor": corridor, "is_corridor": True},
+                    metadata={"corridor": corridor, "is_corridor": True, "is_compacted": True},
                 )
             )
             all_intermediate.update(intermediate)
@@ -205,6 +310,7 @@ class HallwayCompactor:
         compacted_graph = LayoutGraph(
             rooms=compacted_rooms,
             edges=tuple(compacted_edges),
+            coord_unit=coord_unit,
         )
         return SimplifiedGraph(
             graph=compacted_graph,

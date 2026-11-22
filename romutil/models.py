@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import enum
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 
 class Direction(enum.IntEnum):
@@ -175,6 +175,122 @@ def get_terrain_label(terrain: TerrainType | str, sector: int | None = None) -> 
     return TERRAIN_LABELS.get(t_enum, "Unknown")
 
 
+DEFAULT_TERRAIN_SCALES: dict[TerrainType, int] = {
+    TerrainType.INSIDE: 1,
+    TerrainType.UNDERGROUND: 1,
+    TerrainType.UNUSED: 1,
+    TerrainType.UNKNOWN: 1,
+    TerrainType.CITY: 2,
+    TerrainType.WATER_SWIM: 2,
+    TerrainType.FIELD: 4,
+    TerrainType.FOREST: 4,
+    TerrainType.HILLS: 4,
+    TerrainType.MOUNTAIN: 4,
+    TerrainType.WATER_NOSWIM: 4,
+    TerrainType.UNDERWATER: 4,
+    TerrainType.OCEANFLOOR: 4,
+    TerrainType.AIR: 4,
+    TerrainType.DESERT: 4,
+    TerrainType.LAVA: 4,
+    TerrainType.SWAMP: 4,
+    TerrainType.ICE: 4,
+}
+
+ROOM_INDOORS_FLAG = 8
+
+
+def has_indoors_flag(room_flags: Any) -> bool:
+    """Return True if room_flags includes ROOM_INDOORS (bit 8 or ROM ASCII flag 'D')."""
+    if isinstance(room_flags, int):
+        return bool(room_flags & ROOM_INDOORS_FLAG)
+    if isinstance(room_flags, str):
+        s = room_flags.strip()
+        if not s:
+            return False
+        for part in s.split("|"):
+            part = part.strip()
+            if part.lstrip("-").isdigit():
+                if int(part) & ROOM_INDOORS_FLAG:
+                    return True
+            elif "D" in part:
+                return True
+    return False
+
+
+def normalize_room_terrain(
+    sector: int,
+    room_flags: Any = 0,
+    dialect: AreaDialect | str = AreaDialect.ROM,
+) -> TerrainType:
+    """Normalize a room's terrain; the room-level INDOORS flag forces ``INSIDE``.
+
+    The raw ``sector`` is preserved on the room and then only conveys relative
+    movement difficulty.
+    """
+    if has_indoors_flag(room_flags):
+        return TerrainType.INSIDE
+    return normalize_sector(sector, dialect)
+
+
+UNIFORM_TERRAIN_SCALES: dict[TerrainType, int] = {t: 1 for t in TerrainType}
+
+
+def get_terrain_scale(
+    terrain: TerrainType | str | None,
+    scales: Mapping[TerrainType, int] | None = None,
+) -> int:
+    """Return the spatial footprint scale (>= 1) for a canonical terrain type."""
+    scale_map = DEFAULT_TERRAIN_SCALES if scales is None else scales
+    if terrain is None:
+        t_enum = TerrainType.INSIDE
+    elif isinstance(terrain, TerrainType):
+        t_enum = terrain
+    else:
+        try:
+            t_enum = TerrainType(str(terrain).strip().lower())
+        except ValueError:
+            t_enum = TerrainType.UNKNOWN
+    raw = scale_map.get(t_enum, DEFAULT_TERRAIN_SCALES.get(t_enum, 1))
+    return max(1, int(raw))
+
+
+def scale_to_extent(scale: int, coord_unit: int) -> tuple[int, int]:
+    """Convert a room's integer scale factor and grid unit into (lo, hi) footprint half-extents."""
+    if coord_unit == 1:
+        half = (scale - 1) // 2
+        return (half, half)
+    return (scale, scale - 1)
+
+
+def compute_room_footprints(
+    rooms: Mapping[int, Room],
+    terrain_scales: Mapping[TerrainType, int] | None = None,
+    *,
+    coord_unit: int | None = None,
+) -> tuple[int, dict[int, int], dict[int, tuple[int, int]]]:
+    """Compute grid unit and per-room discrete footprint extents across a room mapping.
+
+    When all present room scales are odd integers (including uniform 1s), ``coord_unit = 1``
+    and each room spans ``[x - lo, x + hi]`` with ``lo = hi = (scale - 1) // 2``. When any
+    present room scale is even (e.g. ``1 / 2 / 4``), ``coord_unit = 2`` half-cell coordinates
+    are used with ``lo = scale`` and ``hi = scale - 1`` so arbitrary scale pairs tile cleanly on
+    integer coordinates.
+    """
+    room_scales: dict[int, int] = {
+        vnum: get_terrain_scale(getattr(room, "terrain", None), terrain_scales)
+        for vnum, room in rooms.items()
+    }
+    if coord_unit is None:
+        resolved_unit = 2 if any(s % 2 == 0 for s in room_scales.values()) else 1
+    else:
+        resolved_unit = int(coord_unit)
+    room_extents: dict[int, tuple[int, int]] = {
+        vnum: scale_to_extent(scale, resolved_unit)
+        for vnum, scale in room_scales.items()
+    }
+    return resolved_unit, room_scales, room_extents
+
+
 @dataclass(frozen=True)
 class AreaHeader:
     filename: str
@@ -219,7 +335,7 @@ class Room:
         if not isinstance(self.extras, tuple):
             object.__setattr__(self, "extras", tuple(self.extras) if self.extras is not None else ())
         if self.terrain is None:
-            object.__setattr__(self, "terrain", normalize_sector(self.sector))
+            object.__setattr__(self, "terrain", normalize_room_terrain(self.sector, self.room_flags))
         elif not isinstance(self.terrain, TerrainType):
             object.__setattr__(self, "terrain", TerrainType(str(self.terrain).lower()))
 
@@ -500,6 +616,10 @@ __all__ = [
     "AreaData",
     "AreaDialect",
     "AreaHeader",
+    "DEFAULT_TERRAIN_SCALES",
+    "ROOM_INDOORS_FLAG",
+    "has_indoors_flag",
+    "normalize_room_terrain",
     "DIALECT_SECTOR_TABLES",
     "Direction",
     "Exit",
@@ -514,8 +634,12 @@ __all__ = [
     "Special",
     "TERRAIN_LABELS",
     "TerrainType",
+    "UNIFORM_TERRAIN_SCALES",
+    "compute_room_footprints",
     "get_terrain_label",
+    "get_terrain_scale",
     "merge_areas",
     "normalize_sector",
     "resolve_dialect",
+    "scale_to_extent",
 ]

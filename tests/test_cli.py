@@ -454,3 +454,31 @@ class TestCliCoverage:
         with pytest.raises(SystemExit) as exc:
             cli()
         assert exc.value.code != 0
+
+    def test_cli_uniform_rooms_flag(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        shire_file = AREAS_DIR / "shire.are"
+        scaled_out = str(tmp_path / "shire_scaled")
+        uniform_out = str(tmp_path / "shire_uniform")
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["romutil", str(shire_file), "-outbase", scaled_out, "-f", "json", "--solver-timeout", "20"],
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli()
+        assert exc.value.code == 0
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["romutil", str(shire_file), "-outbase", uniform_out, "-f", "json", "--solver-timeout", "20", "--uniform-rooms"],
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli()
+        assert exc.value.code == 0
+
+        scaled_data = json.loads((tmp_path / "shire_scaled.json").read_text(encoding="utf-8"))
+        uniform_data = json.loads((tmp_path / "shire_uniform.json").read_text(encoding="utf-8"))
+        assert scaled_data["coord_unit"] == 2
+        assert any(r["size"] > 1 for r in scaled_data["rooms"])
+        assert uniform_data["coord_unit"] == 1
+        assert all(r["size"] == 1 for r in uniform_data["rooms"])

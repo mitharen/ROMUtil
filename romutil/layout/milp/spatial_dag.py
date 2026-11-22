@@ -121,6 +121,20 @@ def _get_child_sub_box_bounds(
     )
 
 
+def _room_spatial_bounds(
+    vnum: int,
+    inventory: ClusterInventory | None,
+) -> EntitySpatialBounds:
+    """Construct 3D affine bounding box expressions for a room using its terrain half-extents."""
+    extents = getattr(inventory, "room_extents", None) if inventory is not None else None
+    lo, hi = extents.get(vnum, (0, 0)) if isinstance(extents, Mapping) else (0, 0)
+    return (
+        SpatialBoundExpr(min_node=vnum, min_const=-lo, max_node=vnum, max_const=hi),
+        SpatialBoundExpr(min_node=vnum, min_const=-lo, max_node=vnum, max_const=hi),
+        SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
+    )
+
+
 def _get_corridor_bounds(
     ae: ActiveEdge,
     inventory: ClusterInventory | None,
@@ -131,44 +145,47 @@ def _get_corridor_bounds(
     Args:
         ae: ActiveEdge representing the corridor connection.
         inventory: ClusterInventory containing child solutions and endpoint references.
-        full: If True, include endpoints (full box); if False, exclude endpoints by 1 unit (interior box).
+        full: If True, include endpoints (full box); if False, exclude endpoint footprints (interior box).
     """
     src_node, src_off = resolve_endpoint_node_offset(ae.src, inventory)
     dst_node, dst_off = resolve_endpoint_node_offset(ae.dst, inventory)
     dx, dy, dz = ae.direction
-    interior_margin = 0 if full else 1
+    src_lo, src_hi = getattr(ae, "src_extent", (0, 0))
+    dst_lo, dst_hi = getattr(ae, "dst_extent", (0, 0))
+    t_lo, t_hi = getattr(ae, "transverse_extent", (0, 0))
 
     # X axis
     if dx > 0:
-        min_nx, min_cx = src_node, src_off[0] + interior_margin
-        max_nx, max_cx = dst_node, dst_off[0] - interior_margin
+        min_nx, min_cx = src_node, src_off[0] + (0 if full else src_hi + 1)
+        max_nx, max_cx = dst_node, dst_off[0] - (0 if full else dst_lo + 1)
     elif dx < 0:
-        min_nx, min_cx = dst_node, dst_off[0] + interior_margin
-        max_nx, max_cx = src_node, src_off[0] - interior_margin
+        min_nx, min_cx = dst_node, dst_off[0] + (0 if full else dst_hi + 1)
+        max_nx, max_cx = src_node, src_off[0] - (0 if full else src_lo + 1)
     else:
-        min_nx, min_cx = src_node, src_off[0]
-        max_nx, max_cx = src_node, src_off[0]
+        min_nx, min_cx = src_node, src_off[0] - t_lo
+        max_nx, max_cx = src_node, src_off[0] + t_hi
     bounds_x = SpatialBoundExpr(min_nx, min_cx, max_nx, max_cx)
 
     # Y axis
     if dy > 0:
-        min_ny, min_cy = src_node, src_off[1] + interior_margin
-        max_ny, max_cy = dst_node, dst_off[1] - interior_margin
+        min_ny, min_cy = src_node, src_off[1] + (0 if full else src_hi + 1)
+        max_ny, max_cy = dst_node, dst_off[1] - (0 if full else dst_lo + 1)
     elif dy < 0:
-        min_ny, min_cy = dst_node, dst_off[1] + interior_margin
-        max_ny, max_cy = src_node, src_off[1] - interior_margin
+        min_ny, min_cy = dst_node, dst_off[1] + (0 if full else dst_hi + 1)
+        max_ny, max_cy = src_node, src_off[1] - (0 if full else src_lo + 1)
     else:
-        min_ny, min_cy = src_node, src_off[1]
-        max_ny, max_cy = src_node, src_off[1]
+        min_ny, min_cy = src_node, src_off[1] - t_lo
+        max_ny, max_cy = src_node, src_off[1] + t_hi
     bounds_y = SpatialBoundExpr(min_ny, min_cy, max_ny, max_cy)
 
     # Z axis
+    z_margin = 0 if full else 1
     if dz > 0:
-        min_nz, min_cz = src_node, src_off[2] + interior_margin
-        max_nz, max_cz = dst_node, dst_off[2] - interior_margin
+        min_nz, min_cz = src_node, src_off[2] + z_margin
+        max_nz, max_cz = dst_node, dst_off[2] - z_margin
     elif dz < 0:
-        min_nz, min_cz = dst_node, dst_off[2] + interior_margin
-        max_nz, max_cz = src_node, src_off[2] - interior_margin
+        min_nz, min_cz = dst_node, dst_off[2] + z_margin
+        max_nz, max_cz = src_node, src_off[2] - z_margin
     else:
         min_nz, min_cz = src_node, src_off[2]
         max_nz, max_cz = src_node, src_off[2]
@@ -199,11 +216,7 @@ def get_entity_spatial_bounds(
         vnum = item.vnum if hasattr(item, "vnum") else item
         if not isinstance(vnum, int):
             return None
-        return (
-            SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
-            SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
-            SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
-        )
+        return _room_spatial_bounds(vnum, inventory)
 
     if category == "child_child":
         if hasattr(item, "child_id") and hasattr(item, "box_index"):
@@ -217,11 +230,7 @@ def get_entity_spatial_bounds(
             vnum = item.vnum if hasattr(item, "vnum") else item
             if not isinstance(vnum, int):
                 return None
-            return (
-                SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
-                SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
-                SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
-            )
+            return _room_spatial_bounds(vnum, inventory)
         else:
             if hasattr(item, "child_id") and hasattr(item, "box_index"):
                 return _get_child_sub_box_bounds(item.child_id, item.box_index, inventory)
@@ -250,11 +259,7 @@ def get_entity_spatial_bounds(
                 vnum = item.vnum if hasattr(item, "vnum") else item
                 if not isinstance(vnum, int):
                     return None
-                return (
-                    SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
-                    SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
-                    SpatialBoundExpr(min_node=vnum, min_const=0, max_node=vnum, max_const=0),
-                )
+                return _room_spatial_bounds(vnum, inventory)
             else:
                 if hasattr(item, "child_id") and hasattr(item, "box_index"):
                     return _get_child_sub_box_bounds(item.child_id, item.box_index, inventory)

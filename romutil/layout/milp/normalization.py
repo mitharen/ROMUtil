@@ -57,6 +57,7 @@ def normalize_cluster_solution(
     child_sub_boxes: Mapping[str, Sequence[BoundingBox3D]] | None = None,
     active_edges: Sequence[ActiveEdge] | None = None,
     graph: Any | None = None,
+    room_extents: Mapping[int, tuple[int, int]] | None = None,
 ) -> NodeSolution:
     """Normalize solved room coordinates and child offsets to origin (0, 0, 0).
 
@@ -190,7 +191,21 @@ def normalize_cluster_solution(
                 and p2.y - p1.y == dist * dy
                 and p2.z - p1.z == dist * dz
             ):
-                for t in range(1, dist):
+                ext_src = getattr(ae, "src_extent", None)
+                ext_dst = getattr(ae, "dst_extent", None)
+                if not ext_src and room_extents and isinstance(src_vnum, int):
+                    ext_src = room_extents.get(src_vnum, (0, 0))
+                if not ext_dst and room_extents and isinstance(dst_vnum, int):
+                    ext_dst = room_extents.get(dst_vnum, (0, 0))
+                s_lo, s_hi = ext_src or (0, 0)
+                d_lo, d_hi = ext_dst or (0, 0)
+                if dx != 0 or dy != 0:
+                    pos_dir = (dx > 0) or (dy > 0)
+                    t_start = (s_hi + 1) if pos_dir else (s_lo + 1)
+                    t_stop = dist - (d_lo if pos_dir else d_hi)
+                else:
+                    t_start, t_stop = 1, dist
+                for t in range(t_start, t_stop):
                     corr_pt = Coord3D(p1.x + t * dx, p1.y + t * dy, p1.z + t * dz)
                     all_room_coords[f"corridor_{src_vnum}_{dst_vnum}_{t}"] = corr_pt
 
@@ -223,17 +238,43 @@ def normalize_cluster_solution(
     )
 
 
-def _get_solution_bounding_box(solution: NodeSolution | None) -> BoundingBox3D:
-    """Retrieve or compute the 3D bounding box for a child node solution."""
-    if solution is not None and solution.bounding_box is not None:
-        return solution.bounding_box
-    return BoundingBox3D(min_x=0, max_x=0, min_y=0, max_y=0, min_z=0, max_z=0)
+def _get_solution_x_span(
+    solution: NodeSolution | None,
+    room_extents: Mapping[int, tuple[int, int]] | None = None,
+) -> tuple[int, int]:
+    """Return conservative (min_x, max_x) span including room footprint half-extents."""
+    if solution is None:
+        return (0, 0)
+    extents = room_extents or {}
+    xs_min: list[int] = []
+    xs_max: list[int] = []
+    for sb in solution.sub_boxes:
+        xs_min.append(sb.min_x)
+        xs_max.append(sb.max_x)
+    coord_sources = (
+        solution.metadata.get("all_room_coordinates"),
+        solution.local_coordinates,
+    )
+    for src_map in coord_sources:
+        if not src_map:
+            continue
+        for u, pt in src_map.items():
+            lo, hi = extents.get(u, (0, 0)) if isinstance(u, int) else (0, 0)
+            xs_min.append(pt.x - lo)
+            xs_max.append(pt.x + hi)
+    if xs_min and xs_max:
+        return (min(xs_min), max(xs_max))
+    if solution.bounding_box is not None:
+        return (solution.bounding_box.min_x, solution.bounding_box.max_x)
+    return (0, 0)
 
 
 def pack_world_root_components(
     node: SolveTreeNode,
     child_solutions: Mapping[str, NodeSolution],
     options: LayoutOptions | None = None,
+    coord_unit: int = 1,
+    room_extents: Mapping[int, tuple[int, int]] | None = None,
 ) -> NodeSolution:
     """Pack disconnected 0-cut component child solutions sequentially along the X-axis.
 
@@ -247,6 +288,8 @@ def pack_world_root_components(
         node: SolveTreeNode representing the world root container.
         child_solutions: Mapping of child component node IDs to solved NodeSolutions.
         options: Optional layout configuration parameters containing component padding.
+        coord_unit: Coordinate subdivision resolution per room unit (>= 1).
+        room_extents: Optional mapping of room vnum to (lo, hi) footprint half-extents.
 
     Returns:
         NodeSolution containing normalized child offsets, aggregated descendant coordinates,
@@ -255,7 +298,8 @@ def pack_world_root_components(
     if not node.children:
         return normalize_empty_cluster(node)
 
-    padding = options.component_padding if options is not None else 2
+    raw_padding = options.component_padding if options is not None else 2
+    padding = raw_padding * max(1, int(coord_unit))
     child_offsets: dict[str, Coord3D] = {}
     all_room_coords: dict[Any, Coord3D] = {}
     sub_boxes_map: dict[str, tuple[BoundingBox3D, ...]] = {}
@@ -264,17 +308,17 @@ def pack_world_root_components(
     for i, child in enumerate(node.children):
         cid = child.node_id
         c_sol = child_solutions.get(cid)
-        c_bbox = _get_solution_bounding_box(c_sol)
+        c_min_x, c_max_x = _get_solution_x_span(c_sol, room_extents=room_extents)
 
         if i == 0:
             offset = Coord3D(0, 0, 0)
             child_offsets[cid] = offset
-            current_max_x = c_bbox.max_x
+            current_max_x = c_max_x
         else:
-            offset_x = current_max_x + padding - c_bbox.min_x
+            offset_x = current_max_x + padding - c_min_x
             offset = Coord3D(offset_x, 0, 0)
             child_offsets[cid] = offset
-            current_max_x = offset_x + c_bbox.max_x
+            current_max_x = offset_x + c_max_x
 
         if c_sol is not None:
             if c_sol.sub_boxes:
