@@ -931,12 +931,14 @@ def detect_cluster_collisions(
         except KeyError:
             continue
         dx, dy, dz = ae.direction
+        c_min_x, c_max_x, c_min_y, c_max_y, c_min_z, c_max_z = _corridor_interior_aabb(ae, p1, p2)
+        if c_min_x > c_max_x or c_min_y > c_max_y or c_min_z > c_max_z:
+            continue
         is_aligned = (
             (dx != 0 and p1[1] == p2[1] and p1[2] == p2[2])
             or (dy != 0 and p1[0] == p2[0] and p1[2] == p2[2])
             or (dz != 0 and p1[0] == p2[0] and p1[1] == p2[1])
         )
-        c_box = _corridor_interior_aabb(ae, p1, p2) if is_aligned else None
         seg = None if is_aligned else Segment3D(Coord3D(*p1), Coord3D(*p2))
 
         for w in parent_rooms:
@@ -954,10 +956,7 @@ def detect_cluster_collisions(
                 continue
             wx, wy, wz = w_coord
             w_lo, w_hi = room_extents.get(w, (0, 0))
-            if c_box is not None:
-                c_min_x, c_max_x, c_min_y, c_max_y, c_min_z, c_max_z = c_box
-                if c_min_x > c_max_x or c_min_y > c_max_y or c_min_z > c_max_z:
-                    continue
+            if is_aligned:
                 if (
                     c_min_z <= wz <= c_max_z
                     and max(c_min_x, wx - w_lo) <= min(c_max_x, wx + w_hi)
@@ -974,10 +973,21 @@ def detect_cluster_collisions(
                         )
                     )
             elif seg is not None:
+                if dz != 0 and not (c_min_z <= wz <= c_max_z):
+                    continue
+                if dx != 0:
+                    rx_min, rx_max = max(wx - w_lo, c_min_x), min(wx + w_hi, c_max_x)
+                    ry_min, ry_max = wy - w_lo, wy + w_hi
+                elif dy != 0:
+                    rx_min, rx_max = wx - w_lo, wx + w_hi
+                    ry_min, ry_max = max(wy - w_lo, c_min_y), min(wy + w_hi, c_max_y)
+                else:
+                    rx_min, rx_max = wx - w_lo, wx + w_hi
+                    ry_min, ry_max = wy - w_lo, wy + w_hi
                 if any(
                     segment_room_penetration(seg, Coord3D(rx, ry, wz))
-                    for rx in range(wx - w_lo, wx + w_hi + 1)
-                    for ry in range(wy - w_lo, wy + w_hi + 1)
+                    for rx in range(rx_min, rx_max + 1)
+                    for ry in range(ry_min, ry_max + 1)
                 ):
                     violations.append(
                         ClearanceViolation(
