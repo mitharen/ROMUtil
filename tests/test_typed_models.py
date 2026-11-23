@@ -3,6 +3,9 @@ import os
 import pytest
 
 from romutil.models import (
+    DEFAULT_TERRAIN_SCALES,
+    TERRAIN_SCALES_1_1_2,
+    UNIFORM_TERRAIN_SCALES,
     AreaData,
     AreaHeader,
     Direction,
@@ -16,7 +19,12 @@ from romutil.models import (
     Shop,
     Social,
     Special,
+    TerrainType,
+    build_terrain_scales,
+    compute_room_footprints,
+    get_terrain_scale,
     merge_areas,
+    parse_terrain_scales,
 )
 from romutil.parser import Parser
 import importlib
@@ -393,3 +401,158 @@ def test_indoor_flag_normalizes_terrain_to_inside():
     assert ascii_out.terrain == TerrainType.FOREST
     assert inn.sector == 3
     assert ascii_inn.sector == 3
+
+
+class TestTerrainScalesAndFootprints:
+    """Positive and negative tests for terrain scale builders, parsers, and default 1:1:1 footprints."""
+
+    def test_build_terrain_scales_and_presets(self):
+        import romutil
+        from romutil.models import (
+            DEFAULT_TERRAIN_SCALES,
+            TERRAIN_SCALES_1_1_2,
+            UNIFORM_TERRAIN_SCALES,
+            TerrainType,
+            build_terrain_scales,
+        )
+
+        assert romutil.TERRAIN_SCALES_1_1_2 == TERRAIN_SCALES_1_1_2
+        assert romutil.build_terrain_scales is build_terrain_scales
+
+        uniform = build_terrain_scales()
+        assert uniform == UNIFORM_TERRAIN_SCALES
+        assert set(uniform.keys()) == set(TerrainType)
+        assert all(v == 1 for v in uniform.values())
+
+        scaled_112 = build_terrain_scales(1, 1, 2)
+        assert scaled_112 == TERRAIN_SCALES_1_1_2
+        for t in (TerrainType.INSIDE, TerrainType.UNDERGROUND, TerrainType.UNUSED, TerrainType.UNKNOWN):
+            assert scaled_112[t] == 1
+        for t in (TerrainType.CITY, TerrainType.WATER_SWIM):
+            assert scaled_112[t] == 1
+        for t in (
+            TerrainType.FIELD,
+            TerrainType.FOREST,
+            TerrainType.HILLS,
+            TerrainType.MOUNTAIN,
+            TerrainType.WATER_NOSWIM,
+            TerrainType.UNDERWATER,
+            TerrainType.OCEANFLOOR,
+            TerrainType.AIR,
+            TerrainType.DESERT,
+            TerrainType.LAVA,
+            TerrainType.SWAMP,
+            TerrainType.ICE,
+        ):
+            assert scaled_112[t] == 2
+
+        assert build_terrain_scales(1, 2, 4) == DEFAULT_TERRAIN_SCALES
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            (0, 1, 1),
+            (1, 0, 1),
+            (1, 1, 0),
+            (-1, 1, 1),
+            (True, 1, 1),
+            (1, False, 1),
+            (1, 1, True),
+            (1.5, 1, 1),
+            ("bad", 1, 1),
+            (None, 1, 1),
+        ],
+    )
+    def test_build_terrain_scales_rejects_invalid_values(self, args):
+        from romutil.models import build_terrain_scales
+
+        with pytest.raises(ValueError):
+            build_terrain_scales(*args)
+
+    def test_parse_terrain_scales_valid_inputs(self):
+        import romutil
+        from romutil.models import (
+            DEFAULT_TERRAIN_SCALES,
+            TERRAIN_SCALES_1_1_2,
+            UNIFORM_TERRAIN_SCALES,
+            TerrainType,
+            parse_terrain_scales,
+        )
+
+        assert romutil.parse_terrain_scales is parse_terrain_scales
+        assert parse_terrain_scales(None) is None
+        assert parse_terrain_scales("1:1:1") == UNIFORM_TERRAIN_SCALES
+        assert parse_terrain_scales("1:1:2") == TERRAIN_SCALES_1_1_2
+        assert parse_terrain_scales(" 1 : 2 : 4 ") == DEFAULT_TERRAIN_SCALES
+        assert parse_terrain_scales([1, 1, 2]) == TERRAIN_SCALES_1_1_2
+        assert parse_terrain_scales((1, 2, 4)) == DEFAULT_TERRAIN_SCALES
+
+        parsed_map = parse_terrain_scales({TerrainType.CITY: 2, "forest": 3})  # type: ignore[dict-item]
+        assert parsed_map == {TerrainType.CITY: 2, TerrainType.FOREST: 3}
+
+    @pytest.mark.parametrize(
+        "bad_spec",
+        [
+            "",
+            "1:1",
+            "1:1:2:4",
+            "1:1:",
+            "0:1:2",
+            "1:0:2",
+            "1:1:-2",
+            "1:a:2",
+            "1:1.5:2",
+            b"1:1:2",
+            123,
+            True,
+            (1, 2),
+            (1, 2, 3, 4),
+            (True, 1, 2),
+            (1, 0, 2),
+            (1, 1.5, 2),
+            ("1", "1", "2"),
+            {"bogus": 2},
+            {123: 2},
+            {TerrainType.CITY: True},
+            {TerrainType.CITY: 0},
+            {TerrainType.CITY: 1.5},
+        ],
+    )
+    def test_parse_terrain_scales_rejects_invalid_inputs(self, bad_spec):
+        from romutil.models import parse_terrain_scales
+
+        with pytest.raises(ValueError):
+            parse_terrain_scales(bad_spec)  # type: ignore[arg-type]
+
+    def test_default_footprints_use_uniform_1_1_1_scale(self):
+        from romutil.models import (
+            TERRAIN_SCALES_1_1_2,
+            Room,
+            TerrainType,
+            compute_room_footprints,
+            get_terrain_scale,
+        )
+
+        assert get_terrain_scale(None) == 1
+        assert get_terrain_scale(TerrainType.INSIDE) == 1
+        assert get_terrain_scale(TerrainType.CITY) == 1
+        assert get_terrain_scale(TerrainType.FOREST) == 1
+        assert get_terrain_scale("unknown_value") == 1
+
+        assert get_terrain_scale(TerrainType.CITY, TERRAIN_SCALES_1_1_2) == 1
+        assert get_terrain_scale(TerrainType.FOREST, TERRAIN_SCALES_1_1_2) == 2
+
+        rooms = {
+            1: Room(vnum=1, name="Inn", description="", sector=0),
+            2: Room(vnum=2, name="Street", description="", sector=1),
+            3: Room(vnum=3, name="Woods", description="", sector=3),
+        }
+        unit, scales, extents = compute_room_footprints(rooms)
+        assert unit == 1
+        assert scales == {1: 1, 2: 1, 3: 1}
+        assert extents == {1: (0, 0), 2: (0, 0), 3: (0, 0)}
+
+        unit_112, scales_112, extents_112 = compute_room_footprints(rooms, TERRAIN_SCALES_1_1_2)
+        assert unit_112 == 2
+        assert scales_112 == {1: 1, 2: 1, 3: 2}
+        assert extents_112 == {1: (1, 0), 2: (1, 0), 3: (2, 1)}

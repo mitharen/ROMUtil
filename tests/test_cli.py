@@ -455,14 +455,14 @@ class TestCliCoverage:
             cli()
         assert exc.value.code != 0
 
-    def test_cli_uniform_rooms_flag(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_cli_terrain_scales_flag(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         shire_file = AREAS_DIR / "shire.are"
         scaled_out = str(tmp_path / "shire_scaled")
         uniform_out = str(tmp_path / "shire_uniform")
 
         monkeypatch.setattr(
             "sys.argv",
-            ["romutil", str(shire_file), "-outbase", scaled_out, "-f", "json", "--solver-timeout", "20"],
+            ["romutil", str(shire_file), "-outbase", scaled_out, "-f", "json", "--solver-timeout", "20", "--terrain-scales", "1:1:2"],
         )
         with pytest.raises(SystemExit) as exc:
             cli()
@@ -470,7 +470,7 @@ class TestCliCoverage:
 
         monkeypatch.setattr(
             "sys.argv",
-            ["romutil", str(shire_file), "-outbase", uniform_out, "-f", "json", "--solver-timeout", "20", "--uniform-rooms"],
+            ["romutil", str(shire_file), "-outbase", uniform_out, "-f", "json", "--solver-timeout", "20"],
         )
         with pytest.raises(SystemExit) as exc:
             cli()
@@ -482,3 +482,12 @@ class TestCliCoverage:
         assert any(r["size"] > 1 for r in scaled_data["rooms"])
         assert uniform_data["coord_unit"] == 1
         assert all(r["size"] == 1 for r in uniform_data["rooms"])
+
+        for bad_spec in ("invalid", "1:0:2", "1:2"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["romutil", str(shire_file), "--terrain-scales", bad_spec],
+            )
+            with pytest.raises(SystemExit) as bad_exc:
+                cli()
+            assert bad_exc.value.code != 0

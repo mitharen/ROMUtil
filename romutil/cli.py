@@ -6,7 +6,7 @@ import argparse
 import logging
 from pathlib import Path
 import sys
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from romutil.layout import (
     ChainedSimplifier,
@@ -18,11 +18,12 @@ from romutil.layout import (
     WarpSeverer,
 )
 from romutil.models import (
-    UNIFORM_TERRAIN_SCALES,
     AreaData,
     AreaDialect,
     AreaHeader,
+    TerrainType,
     merge_areas,
+    parse_terrain_scales,
     resolve_dialect,
 )
 from romutil.parser import Parser, parse_circlemud_directory
@@ -42,10 +43,11 @@ def main(
     solver_timeout: int | None = None,
     debug_solve_dir: Path | str | None = None,
     dialect: AreaDialect | str | None = None,
-    uniform_rooms: bool = False,
+    terrain_scales: Mapping[TerrainType, int] | str | None = None,
 ) -> WorldGraph:
     """Parse areas into a unified WorldGraph and optionally render without invoking the solver engine."""
     resolved_dialect = resolve_dialect(dialect) if dialect is not None else None
+    resolved_scales = parse_terrain_scales(terrain_scales)
     if isinstance(fmt, str):
         format_list = [f.strip().lower() for f in fmt.split(",") if f.strip()]
     elif isinstance(fmt, (list, tuple, set)):
@@ -171,7 +173,7 @@ def main(
         layout_opts = LayoutOptions(
             timeout_seconds=solver_timeout or 60,
             debug_solve_dir=Path(debug_solve_dir) if debug_solve_dir is not None else None,
-            terrain_scales=UNIFORM_TERRAIN_SCALES if uniform_rooms else None,
+            terrain_scales=resolved_scales,
         )
         layout = solver.solve(graph, layout_opts)
 
@@ -232,14 +234,20 @@ def cli() -> None:
         help="Override auto-detected MUD area dialect for terrain normalization (default: auto-detect)",
     )
     parser.add_argument(
-        "--uniform-rooms",
-        action="store_true",
-        help="Use uniform 1x1 unit room footprints instead of terrain-based room scaling",
+        "--terrain-scales",
+        type=str,
+        default=None,
+        help="Terrain footprint scale ratio '<indoor>:<city>:<wilderness>' (default: 1:1:1, e.g. 1:1:2)",
     )
     args = parser.parse_args()
 
     if not args.areas and not args.circle_dir:
         parser.error("At least one area file or --circle-dir must be provided.")
+
+    try:
+        resolved_scales = parse_terrain_scales(args.terrain_scales)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     raw_fmt = args.format
     format_list = [f.strip().lower() for f in raw_fmt.split(",") if f.strip()]
@@ -273,7 +281,7 @@ def cli() -> None:
         solver_timeout=args.solver_timeout,
         debug_solve_dir=debug_solve_dir,
         dialect=args.dialect,
-        uniform_rooms=args.uniform_rooms,
+        terrain_scales=resolved_scales,
     )
 
 

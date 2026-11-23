@@ -175,26 +175,108 @@ def get_terrain_label(terrain: TerrainType | str, sector: int | None = None) -> 
     return TERRAIN_LABELS.get(t_enum, "Unknown")
 
 
-DEFAULT_TERRAIN_SCALES: dict[TerrainType, int] = {
-    TerrainType.INSIDE: 1,
-    TerrainType.UNDERGROUND: 1,
-    TerrainType.UNUSED: 1,
-    TerrainType.UNKNOWN: 1,
-    TerrainType.CITY: 2,
-    TerrainType.WATER_SWIM: 2,
-    TerrainType.FIELD: 4,
-    TerrainType.FOREST: 4,
-    TerrainType.HILLS: 4,
-    TerrainType.MOUNTAIN: 4,
-    TerrainType.WATER_NOSWIM: 4,
-    TerrainType.UNDERWATER: 4,
-    TerrainType.OCEANFLOOR: 4,
-    TerrainType.AIR: 4,
-    TerrainType.DESERT: 4,
-    TerrainType.LAVA: 4,
-    TerrainType.SWAMP: 4,
-    TerrainType.ICE: 4,
-}
+_INDOOR_TERRAINS: tuple[TerrainType, ...] = (
+    TerrainType.INSIDE,
+    TerrainType.UNDERGROUND,
+    TerrainType.UNUSED,
+    TerrainType.UNKNOWN,
+)
+_CITY_TERRAINS: tuple[TerrainType, ...] = (
+    TerrainType.CITY,
+    TerrainType.WATER_SWIM,
+)
+_WILDERNESS_TERRAINS: tuple[TerrainType, ...] = (
+    TerrainType.FIELD,
+    TerrainType.FOREST,
+    TerrainType.HILLS,
+    TerrainType.MOUNTAIN,
+    TerrainType.WATER_NOSWIM,
+    TerrainType.UNDERWATER,
+    TerrainType.OCEANFLOOR,
+    TerrainType.AIR,
+    TerrainType.DESERT,
+    TerrainType.LAVA,
+    TerrainType.SWAMP,
+    TerrainType.ICE,
+)
+
+
+def _validate_terrain_scale_value(value: Any, label: str) -> int:
+    """Validate that a terrain scale factor is a positive integer (>= 1), rejecting booleans."""
+    if isinstance(value, bool) or isinstance(value, (float, complex)):
+        raise ValueError(f"{label} must be a positive integer >= 1, got {value!r}.")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a positive integer >= 1, got {value!r}.") from exc
+    if parsed < 1:
+        raise ValueError(f"{label} must be a positive integer >= 1, got {parsed}.")
+    return parsed
+
+
+def build_terrain_scales(
+    indoor: int = 1,
+    city: int = 1,
+    wilderness: int = 1,
+) -> dict[TerrainType, int]:
+    """Build a complete TerrainType-to-scale mapping from indoor, city, and wilderness scales."""
+    indoor_scale = _validate_terrain_scale_value(indoor, "indoor terrain scale")
+    city_scale = _validate_terrain_scale_value(city, "city terrain scale")
+    wilderness_scale = _validate_terrain_scale_value(wilderness, "wilderness terrain scale")
+
+    scales: dict[TerrainType, int] = {}
+    for terrain in _INDOOR_TERRAINS:
+        scales[terrain] = indoor_scale
+    for terrain in _CITY_TERRAINS:
+        scales[terrain] = city_scale
+    for terrain in _WILDERNESS_TERRAINS:
+        scales[terrain] = wilderness_scale
+    return scales
+
+
+def parse_terrain_scales(
+    spec: Mapping[TerrainType, int] | str | Sequence[int] | None,
+) -> dict[TerrainType, int] | None:
+    """Parse and validate a terrain scale specification into a TerrainType scale mapping."""
+    if spec is None:
+        return None
+    if isinstance(spec, Mapping):
+        resolved: dict[TerrainType, int] = {}
+        for key, val in spec.items():
+            if isinstance(key, TerrainType):
+                t_enum = key
+            elif isinstance(key, str):
+                try:
+                    t_enum = TerrainType(key.strip().lower())
+                except ValueError as exc:
+                    raise ValueError(f"Unknown terrain type: {key!r}") from exc
+            else:
+                raise ValueError(f"Invalid terrain type key: {key!r}")
+            resolved[t_enum] = _validate_terrain_scale_value(val, f"terrain scale for {t_enum.value}")
+        return resolved
+    if isinstance(spec, str):
+        parts = [part.strip() for part in spec.split(":")]
+        if len(parts) != 3 or any(not part or not (part.isascii() and part.isdigit()) for part in parts):
+            raise ValueError(
+                f"Invalid terrain scales {spec!r}; expected '<indoor>:<city>:<wilderness>' of positive integers >= 1."
+            )
+        return build_terrain_scales(int(parts[0]), int(parts[1]), int(parts[2]))
+    if isinstance(spec, Sequence) and not isinstance(spec, (bytes, bytearray)):
+        if len(spec) != 3:
+            raise ValueError(
+                f"Expected 3 terrain scale integers (indoor, city, wilderness), got {len(spec)}."
+            )
+        if any(isinstance(v, bool) or not isinstance(v, int) for v in spec):
+            raise ValueError(
+                f"Expected 3 non-boolean integer terrain scales, got {spec!r}."
+            )
+        return build_terrain_scales(int(spec[0]), int(spec[1]), int(spec[2]))
+    raise ValueError(f"Unsupported terrain scales specification: {spec!r}")
+
+
+UNIFORM_TERRAIN_SCALES: dict[TerrainType, int] = {t: 1 for t in TerrainType}
+TERRAIN_SCALES_1_1_2: dict[TerrainType, int] = build_terrain_scales(1, 1, 2)
+DEFAULT_TERRAIN_SCALES: dict[TerrainType, int] = build_terrain_scales(1, 2, 4)
 
 ROOM_INDOORS_FLAG = 8
 
@@ -232,15 +314,12 @@ def normalize_room_terrain(
     return normalize_sector(sector, dialect)
 
 
-UNIFORM_TERRAIN_SCALES: dict[TerrainType, int] = {t: 1 for t in TerrainType}
-
-
 def get_terrain_scale(
     terrain: TerrainType | str | None,
     scales: Mapping[TerrainType, int] | None = None,
 ) -> int:
     """Return the spatial footprint scale (>= 1) for a canonical terrain type."""
-    scale_map = DEFAULT_TERRAIN_SCALES if scales is None else scales
+    scale_map = UNIFORM_TERRAIN_SCALES if scales is None else scales
     if terrain is None:
         t_enum = TerrainType.INSIDE
     elif isinstance(terrain, TerrainType):
@@ -250,7 +329,7 @@ def get_terrain_scale(
             t_enum = TerrainType(str(terrain).strip().lower())
         except ValueError:
             t_enum = TerrainType.UNKNOWN
-    raw = scale_map.get(t_enum, DEFAULT_TERRAIN_SCALES.get(t_enum, 1))
+    raw = scale_map.get(t_enum, 1)
     return max(1, int(raw))
 
 
@@ -633,13 +712,16 @@ __all__ = [
     "Social",
     "Special",
     "TERRAIN_LABELS",
+    "TERRAIN_SCALES_1_1_2",
     "TerrainType",
     "UNIFORM_TERRAIN_SCALES",
+    "build_terrain_scales",
     "compute_room_footprints",
     "get_terrain_label",
     "get_terrain_scale",
     "merge_areas",
     "normalize_sector",
+    "parse_terrain_scales",
     "resolve_dialect",
     "scale_to_extent",
 ]

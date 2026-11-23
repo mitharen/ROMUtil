@@ -4591,3 +4591,76 @@ class TestClusterClearanceStateMachine:
             assert ext is zero_shear_ext
             # Only the finally-block cleanup unlock ran (zero mid-solve shear unlock!)
             assert unlock_calls == 1
+
+    def test_compacted_crossings_prioritizes_pendant_gateway_bridges(self) -> None:
+        """_compacted_crossings includes degree-1 pendant gw_ edges while excluding multi-edge gw_ and unit internal edges."""
+        from romutil.layout.milp.cluster import (
+            _compacted_crossings,
+            _has_compacted_crossing,
+            _pendant_gateway_edge_indices,
+        )
+
+        ae_pendant_gw = ActiveEdge(
+            "gw_c1_1_10",
+            1,
+            ("c1", 10),
+            (1, 0, 0),
+            min_length=1,
+            associated_rooms=frozenset({1}),
+            associated_children=frozenset({"c1"}),
+        )
+        ae_non_pendant_gw_a = ActiveEdge(
+            "gw_c2_2_20",
+            2,
+            ("c2", 20),
+            (0, 1, 0),
+            min_length=1,
+            associated_rooms=frozenset({2}),
+            associated_children=frozenset({"c2"}),
+        )
+        ae_non_pendant_gw_b = ActiveEdge(
+            "gw_c2_3_21",
+            3,
+            ("c2", 21),
+            (1, 0, 0),
+            min_length=1,
+            associated_rooms=frozenset({3}),
+            associated_children=frozenset({"c2"}),
+        )
+        ae_unit_int = ActiveEdge(
+            "int_4_5",
+            4,
+            5,
+            (0, 1, 0),
+            min_length=1,
+            associated_rooms=frozenset({4, 5}),
+            associated_children=frozenset(),
+        )
+        ae_compacted = ActiveEdge(
+            "int_6_7",
+            6,
+            7,
+            (1, 0, 0),
+            min_length=2,
+            associated_rooms=frozenset({6, 7}),
+            associated_children=frozenset(),
+        )
+        active_edges = (
+            ae_pendant_gw,
+            ae_non_pendant_gw_a,
+            ae_non_pendant_gw_b,
+            ae_unit_int,
+            ae_compacted,
+        )
+
+        assert _pendant_gateway_edge_indices(active_edges) == frozenset({0})
+
+        viol_pendant = ClearanceViolation(category="corridor_crossing", item_a=0, item_b=3)
+        viol_non_pendant_unit = ClearanceViolation(category="corridor_crossing", item_a=1, item_b=3)
+        viol_non_pendant_pair = ClearanceViolation(category="corridor_crossing", item_a=1, item_b=2)
+        viol_compacted = ClearanceViolation(category="corridor_crossing", item_a=4, item_b=3)
+
+        all_viols = [viol_pendant, viol_non_pendant_unit, viol_non_pendant_pair, viol_compacted]
+        assert _compacted_crossings(all_viols, active_edges) == [viol_pendant, viol_compacted]
+        assert _has_compacted_crossing([viol_non_pendant_unit, viol_non_pendant_pair], active_edges) is False
+        assert _has_compacted_crossing([viol_pendant], active_edges) is True
