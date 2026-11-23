@@ -4664,3 +4664,181 @@ class TestClusterClearanceStateMachine:
         assert _compacted_crossings(all_viols, active_edges) == [viol_pendant, viol_compacted]
         assert _has_compacted_crossing([viol_non_pendant_unit, viol_non_pendant_pair], active_edges) is False
         assert _has_compacted_crossing([viol_pendant], active_edges) is True
+
+    @staticmethod
+    def _build_mandatory_crossing_test_context(
+        node_id: str,
+    ) -> tuple[
+        SolveTreeNode,
+        MagicMock,
+        list[tuple[list[ClearanceViolation], Any]],
+        tuple[ClearanceViolation, ClearanceViolation, ClearanceViolation, ClearanceViolation],
+    ]:
+        """Construct shared node, formulation mock, and violation tuple for co-injection tests."""
+        node = SolveTreeNode(
+            node_id=node_id,
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3, 4, 5, 6, 7}),
+        )
+        ae_compacted = ActiveEdge(
+            edge_id="int_1_2",
+            src=1,
+            dst=2,
+            direction=(1, 0, 0),
+            min_length=2,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+        )
+        ae_pendant_gw = ActiveEdge(
+            edge_id="gw_c1_3_10",
+            src=3,
+            dst=("c1", 10),
+            direction=(0, 1, 0),
+            min_length=1,
+            associated_rooms=frozenset({3}),
+            associated_children=frozenset({"c1"}),
+        )
+        ae_unit_x = ActiveEdge(
+            edge_id="int_4_5",
+            src=4,
+            dst=5,
+            direction=(1, 0, 0),
+            min_length=1,
+            associated_rooms=frozenset({4, 5}),
+            associated_children=frozenset(),
+        )
+        ae_unit_y = ActiveEdge(
+            edge_id="int_6_7",
+            src=6,
+            dst=7,
+            direction=(0, 1, 0),
+            min_length=1,
+            associated_rooms=frozenset({6, 7}),
+            associated_children=frozenset(),
+        )
+
+        form = MagicMock()
+        form.inventory.active_edges = (ae_compacted, ae_pendant_gw, ae_unit_x, ae_unit_y)
+        injected_calls: list[tuple[list[ClearanceViolation], Any]] = []
+
+        def record_inject(viols: Sequence[ClearanceViolation], **kwargs: Any) -> int:
+            injected_calls.append((list(viols), kwargs.get("extraction")))
+            return len(viols)
+
+        form.clearance_builder.inject_clearance_cuts.side_effect = record_inject
+
+        violations = (
+            ClearanceViolation(category="parent_room", item_a=1, item_b=4),
+            ClearanceViolation(category="corridor_crossing", item_a=0, item_b=3),
+            ClearanceViolation(category="corridor_crossing", item_a=1, item_b=2),
+            ClearanceViolation(category="corridor_crossing", item_a=2, item_b=3),
+        )
+        return node, form, injected_calls, violations
+
+    def test_physical_clearance_co_injects_mandatory_crossings_and_defers_unit_crossings(self) -> None:
+        """PHYSICAL_CLEARANCE co-injects mandatory crossings with physical collisions and defers unit crossings."""
+        from romutil.layout.milp.cluster import SolvedClusterExtraction, solve_cluster_with_cutting_planes
+
+        node, form, injected_calls, (phys_viol, comp_cross, pendant_cross, unit_cross) = (
+            self._build_mandatory_crossing_test_context("phys_co_inject")
+        )
+
+        dirty_coords = {1: (0, 0, 0), 2: (2, 0, 0), 3: (3, 0, 0), 4: (0, 0, 0), 5: (1, 0, 0), 6: (0, 1, 0), 7: (0, 2, 0)}
+        clean_coords = {1: (0, 0, 0), 2: (2, 0, 0), 3: (3, 0, 0), 4: (4, 0, 0), 5: (5, 0, 0), 6: (6, 0, 0), 7: (6, 1, 0)}
+        ext_0 = SolvedClusterExtraction(dirty_coords, {"c1": (3, 1, 0)}, SolverStatus.TIMEOUT)
+        ext_1 = SolvedClusterExtraction(
+            {1: (0, 0, 0), 2: (2, 0, 0), 3: (3, 0, 0), 4: (4, 0, 0), 5: (5, 0, 0), 6: (4, -1, 0), 7: (4, 1, 0)},
+            {"c1": (3, 1, 0)},
+            SolverStatus.FEASIBLE,
+        )
+        clean_ext = SolvedClusterExtraction(clean_coords, {"c1": (3, 1, 0)}, SolverStatus.OPTIMAL)
+
+        det_calls = 0
+
+        def mock_detect(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal det_calls
+            det_calls += 1
+            if det_calls == 1:
+                return [phys_viol, unit_cross, comp_cross, pendant_cross]
+            if det_calls == 2:
+                return [unit_cross]
+            return []
+
+        solve_calls = 0
+
+        def mock_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal solve_calls
+            solve_calls += 1
+            if solve_calls == 1:
+                return ext_0
+            if solve_calls == 2:
+                return ext_1
+            return clean_ext
+
+        with (
+            patch("time.monotonic", side_effect=[float(i) for i in range(10)]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            ext = solve_cluster_with_cutting_planes(
+                formulation=form,
+                node=node,
+                total_cluster_budget=60.0,
+            )
+
+        assert ext is clean_ext
+        assert len(injected_calls) == 2
+        assert injected_calls[0][0] == [phys_viol, comp_cross, pendant_cross]
+        assert injected_calls[0][1] is ext_0
+        assert injected_calls[1][0] == [unit_cross]
+        assert injected_calls[1][1] is None
+
+    def test_convergence_physical_fallback_co_injects_mandatory_crossings(self) -> None:
+        """CONVERGENCE physical fallback co-injects mandatory crossings while excluding unit crossings."""
+        from romutil.layout.milp.cluster import SolvedClusterExtraction, solve_cluster_with_cutting_planes
+
+        node, form, injected_calls, (phys_viol, comp_cross, pendant_cross, unit_cross) = (
+            self._build_mandatory_crossing_test_context("conv_co_inject")
+        )
+
+        dirty_coords = {1: (0, 0, 0), 2: (2, 0, 0), 3: (3, 0, 0), 4: (0, 0, 0), 5: (1, 0, 0), 6: (0, 1, 0), 7: (0, 2, 0)}
+        clean_coords = {1: (0, 0, 0), 2: (2, 0, 0), 3: (3, 0, 0), 4: (4, 0, 0), 5: (5, 0, 0), 6: (6, 0, 0), 7: (6, 1, 0)}
+        feasible_ext = SolvedClusterExtraction(clean_coords, {"c1": (3, 1, 0)}, SolverStatus.FEASIBLE)
+        dirty_conv_ext = SolvedClusterExtraction(dirty_coords, {"c1": (3, 1, 0)}, SolverStatus.OPTIMAL)
+        clean_ext = SolvedClusterExtraction(clean_coords, {"c1": (3, 1, 0)}, SolverStatus.OPTIMAL)
+
+        det_calls = 0
+
+        def mock_detect(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal det_calls
+            det_calls += 1
+            if det_calls == 2:
+                return [phys_viol, unit_cross, comp_cross, pendant_cross]
+            return []
+
+        solve_calls = 0
+
+        def mock_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal solve_calls
+            solve_calls += 1
+            if solve_calls == 1:
+                return feasible_ext
+            if solve_calls == 2:
+                return dirty_conv_ext
+            return clean_ext
+
+        with (
+            patch("time.monotonic", side_effect=[float(i) for i in range(10)]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            ext = solve_cluster_with_cutting_planes(
+                formulation=form,
+                node=node,
+                total_cluster_budget=60.0,
+            )
+
+        assert ext is clean_ext
+        assert len(injected_calls) == 1
+        assert injected_calls[0][0] == [phys_viol, comp_cross, pendant_cross]
+        assert injected_calls[0][1] is dirty_conv_ext
