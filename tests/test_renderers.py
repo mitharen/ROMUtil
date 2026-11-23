@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from unittest.mock import patch
 import pytest
 
@@ -15,6 +16,8 @@ from romutil.models import (
     AreaHeader,
     Direction,
     Exit,
+    Mobile,
+    Reset,
     Room,
     TerrainType,
     get_terrain_label,
@@ -1244,3 +1247,204 @@ class TestTerrainColoringAndSerialization:
         svg_text = svg_path.read_text(encoding="utf-8")
         assert 'width="0.5"' in svg_text
         assert 'width="3.5"' in svg_text
+
+
+class TestHtmlMobileAndUxEnhancements:
+    """Tests for mobile responsiveness, touch ergonomics, search autocomplete, pathfinding, and hash deep-linking."""
+
+    @pytest.fixture
+    def sample_mob_and_route_html(self) -> str:
+        rooms = {
+            3001: Room(
+                vnum=3001,
+                name="The Temple of Mota",
+                description="A grand temple hall.",
+                area_name="Midgaard",
+                exits=(Exit(direction=0, dst_vnum=3002),),
+            ),
+            3002: Room(
+                vnum=3002,
+                name="Temple Square",
+                description="Busy central square.",
+                area_name="Midgaard",
+                exits=(
+                    Exit(direction=2, dst_vnum=3001),
+                    Exit(direction=1, dst_vnum=3003),
+                ),
+            ),
+            3003: Room(
+                vnum=3003,
+                name="Market Square",
+                description="Merchants shout prices.",
+                area_name="Midgaard",
+                exits=(Exit(direction=3, dst_vnum=3002),),
+            ),
+        }
+        mob = Mobile(
+            vnum=3011,
+            player_name="hassan",
+            short_desc="Hassan the Guard",
+            long_desc="Hassan stands watch.",
+            level=45,
+        )
+        resets = (Reset(command="M", args=(0, 3011, 1, 3001, 1)),)
+        header = AreaHeader(
+            filename="midgaard.are",
+            name="Midgaard",
+            builder="Diku",
+            vnum_min=3001,
+            vnum_max=3003,
+        )
+        graph = WorldGraph(
+            rooms=rooms,
+            exits=tuple(ex for r in rooms.values() for ex in r.exits),
+            header=header,
+            mobiles={3011: mob},
+            resets=resets,
+        )
+        layout = SolvedLayout(
+            coordinates={
+                3001: Coord3D(0, 0, 0),
+                3002: Coord3D(0, 1, 0),
+                3003: Coord3D(1, 1, 0),
+            },
+            diagnostics=LayoutDiagnostics(status=SolverStatus.OPTIMAL, duration_seconds=0.01),
+        )
+        data = build_area_json(graph, layout)
+        return generate_html_viewer(data)
+
+    def test_mobile_responsive_layout_and_bottom_sheet(self, sample_mob_and_route_html: str):
+        html = sample_mob_and_route_html
+
+        assert "height: 100%;" in html
+        assert "height: 100dvh;" in html
+        assert "height: calc(100% - 53px);" not in html
+        assert "min-height: 0;" in html
+
+        assert "@media (max-width: 768px)" in html
+        assert "max-height: 58dvh;" in html
+        assert "border-radius: 14px 14px 0 0;" in html
+        assert ".sidebar-header::before" in html
+        assert "aside.sidebar.collapsed" in html
+        assert "#app.collapsed aside.sidebar" in html
+        assert "#app.sidebar-collapsed aside.sidebar" in html
+
+        assert "function isMobileViewport()" in html
+        assert "window.innerWidth <= 768" in html
+        assert "const initialHashVnum = parseHashVnum();" in html
+        assert "selectRoom(rooms[0].vnum, { updateHash: false, autoExpand: false });" in html
+        assert "function selectRoom(vnum, options)" in html
+        assert "if (isMobileViewport() && (!options || options.autoExpand !== false))" in html
+
+    def test_mobile_toolbar_filters_and_floating_controls(self, sample_mob_and_route_html: str):
+        html = sample_mob_and_route_html
+
+        assert 'id="btn-toggle-filters"' in html
+        assert 'class="btn-filters-toggle"' in html
+        assert 'aria-expanded="false"' in html
+        assert "filters-open" in html
+        assert "#stat-bounds" in html
+        assert "font-size: 16px;" in html
+        assert "#search-input" in html
+        assert "#pf-start" in html
+        assert "#pf-dst" in html
+
+        assert 'class="floating-map-controls"' in html
+        assert 'id="btn-float-zoom-in"' in html
+        assert 'id="btn-float-zoom-out"' in html
+        assert 'id="btn-float-reset-view"' in html
+        assert 'id="btn-toggle-minimap"' in html
+        assert "min-width: 38px;" in html
+        assert "min-height: 38px;" in html
+        assert ".minimap-container.minimap-hidden" in html
+        assert "width: 128px;" in html
+        assert "height: 96px;" in html
+
+        assert 'id="btn-zoom-in"' in html
+        assert 'id="btn-zoom-out"' in html
+        assert 'id="btn-reset-view"' in html
+        assert "document.getElementById('btn-reset-view').addEventListener('click', resetView);" in html
+
+    def test_touch_tooltips_clamping_and_coarse_pointer_targets(self, sample_mob_and_route_html: str):
+        html = sample_mob_and_route_html
+
+        assert "let isTouchInteraction = false;" in html
+        assert "e.pointerType === 'touch'" in html
+        assert "e.pointerType === 'mouse'" in html
+        assert "@media (hover: none) and (pointer: coarse)" in html
+        assert "display: none !important;" in html
+        assert "@media (pointer: coarse)" in html
+        assert "stroke-width: 5px;" in html
+
+        assert "window.innerWidth - ttW - 8" in html
+        assert "window.innerHeight - ttH - 8" in html
+        assert "Math.max(8," in html
+
+    def test_search_autocomplete_dropdown_and_mob_search(self, sample_mob_and_route_html: str):
+        html = sample_mob_and_route_html
+
+        assert 'placeholder="Search rooms or mobs by name or VNUM..."' in html
+        assert 'id="search-results"' in html
+        assert 'class="search-results-dropdown"' in html
+        assert 'role="listbox"' in html
+        assert "max-height: 320px;" in html
+        assert ".search-result-item" in html
+
+        assert "Hassan the Guard" in html
+        assert "allMatches.slice(0, 25)" in html
+        assert "mobData.short_desc" in html
+        assert "mobData.name" in html
+        assert "matchedRoomVnums.add(r.vnum)" in html
+        assert "showMobDetails(item.mobVnum);" in html
+
+        assert "e.key === 'ArrowDown'" in html
+        assert "e.key === 'ArrowUp'" in html
+        assert "e.key === 'Enter'" in html
+        assert "e.key === 'Escape'" in html
+        assert "e.target.closest('.search-section')" in html
+
+    def test_one_tap_pathfinding_speedwalk_and_clickable_steps(self, sample_mob_and_route_html: str):
+        html = sample_mob_and_route_html
+
+        assert 'id="btn-route-from-here"' in html
+        assert 'id="btn-route-to-here"' in html
+        assert 'class="btn-route-action"' in html
+        assert "function calculateShortestPath()" in html
+        assert "alert(" not in html
+
+        assert "function buildSpeedwalk(directions)" in html
+        for direction in (
+            "north",
+            "east",
+            "south",
+            "west",
+            "up",
+            "down",
+            "northeast",
+            "northwest",
+            "southeast",
+            "southwest",
+        ):
+            assert f"{direction}:" in html
+
+        assert 'id="path-speedwalk-bar"' in html
+        assert 'id="path-speedwalk-text"' in html
+        assert 'id="btn-copy-speedwalk"' in html
+        assert "Copied!" in html
+        assert "centerOnRoom(nextVnum);" in html
+        assert "selectRoom(nextVnum);" in html
+
+    def test_url_hash_deep_linking_and_offline_invariant(self, sample_mob_and_route_html: str):
+        html = sample_mob_and_route_html
+
+        assert "function parseHashVnum()" in html
+        assert "(?:vnum|room)=" in html
+        assert "function updateUrlHash(vnum)" in html
+        assert "history.replaceState(null, '', '#vnum=' + vnum)" in html
+        assert "history.replaceState(null, '', window.location.pathname + window.location.search)" in html
+        assert "window.addEventListener('hashchange'" in html
+        assert "updateUrlHash(null);" in html
+
+        assert not re.findall(r"<script\b[^>]*\bsrc=", html, re.IGNORECASE)
+        assert not re.findall(r"<link\b[^>]*stylesheet", html, re.IGNORECASE)
+        assert not re.findall(r"""(?:src|href)=['"]https?://[^'">]+['"]""", html, re.IGNORECASE)

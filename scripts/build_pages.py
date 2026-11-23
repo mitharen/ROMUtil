@@ -221,58 +221,185 @@ def generate_index_html(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ROMUtil Maps</title>
   <style>
+    :root {{
+      --bg-primary: #0f172a;
+      --bg-secondary: #1e293b;
+      --bg-card: #334155;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --border-color: #475569;
+    }}
+    * {{
+      box-sizing: border-box;
+    }}
     body {{
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
       margin: 2rem auto;
-      max-width: 800px;
+      max-width: 920px;
       padding: 0 1rem;
-      color: #24292f;
+      background-color: var(--bg-primary);
+      color: var(--text-main);
       line-height: 1.5;
     }}
-    h1 {{ font-size: 1.5rem; margin-bottom: 0.5rem; }}
-    p {{ color: #57606a; margin-top: 0; }}
+    h1 {{
+      font-size: 1.5rem;
+      margin-bottom: 0.4rem;
+      color: var(--accent);
+    }}
+    p {{
+      color: var(--text-muted);
+      margin-top: 0;
+      margin-bottom: 1.25rem;
+    }}
+    .index-controls {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+    }}
+    #index-search {{
+      flex: 1;
+      min-width: 220px;
+      max-width: 420px;
+      padding: 8px 12px;
+      background-color: var(--bg-secondary);
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      font-size: 0.95rem;
+      outline: none;
+    }}
+    #index-search:focus {{
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+    }}
+    .index-count {{
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }}
+    .table-responsive {{
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      background-color: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+    }}
     table {{
       width: 100%;
       border-collapse: collapse;
-      margin-top: 1.5rem;
     }}
     th, td {{
-      padding: 8px 12px;
+      padding: 10px 14px;
       text-align: left;
-      border-bottom: 1px solid #d0d7de;
+      border-bottom: 1px solid var(--border-color);
+      white-space: nowrap;
     }}
     th {{
-      background-color: #f6f8fa;
+      background-color: var(--bg-card);
+      color: var(--text-main);
       font-weight: 600;
+      font-size: 0.85rem;
     }}
-    a {{ color: #0969da; text-decoration: none; }}
-    a:hover {{ text-decoration: underline; }}
+    tbody tr:last-child td {{
+      border-bottom: none;
+    }}
+    tbody tr:hover {{
+      background-color: rgba(51, 65, 85, 0.55);
+    }}
+    a {{
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 500;
+    }}
+    a:hover {{
+      text-decoration: underline;
+    }}
     code {{
       font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
       font-size: 0.9em;
-      background: #f6f8fa;
-      padding: 2px 4px;
+      background: var(--bg-primary);
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+      padding: 2px 6px;
       border-radius: 4px;
+    }}
+    @media (max-width: 640px) {{
+      body {{
+        margin: 1rem auto;
+        padding: 0 0.75rem;
+      }}
+      h1 {{
+        font-size: 1.25rem;
+      }}
+      .index-controls {{
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+      }}
+      #index-search {{
+        max-width: 100%;
+        font-size: 16px;
+      }}
+      th, td {{
+        padding: 8px 10px;
+        font-size: 0.85rem;
+      }}
     }}
   </style>
 </head>
 <body>
   <h1>ROMUtil Map Directory</h1>
   <p>Static map visualizer builds generated via Coin-OR CBC Mixed-Integer Linear Programming.</p>
-  <table>
-    <thead>
-      <tr>
-        <th>Area</th>
-        <th>Source</th>
-        <th>Solve Time</th>
-        <th>Web Viewer</th>
-        <th>Vector SVG</th>
-      </tr>
-    </thead>
-    <tbody>
-      {rows_html}
-    </tbody>
-  </table>
+  <div class="index-controls">
+    <input type="search" id="index-search" placeholder="Filter maps by area name or source..." aria-label="Filter maps by area name or source" autocomplete="off">
+    <span id="index-count" class="index-count"></span>
+  </div>
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr>
+          <th>Area</th>
+          <th>Source</th>
+          <th>Solve Time</th>
+          <th>Web Viewer</th>
+          <th>Vector SVG</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows_html}
+      </tbody>
+    </table>
+  </div>
+  <script>
+    (function() {{
+      var searchInput = document.getElementById('index-search');
+      var countEl = document.getElementById('index-count');
+      var tbody = document.querySelector('table tbody');
+      if (!searchInput || !tbody) return;
+      var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+      function filterRows() {{
+        var query = searchInput.value.trim().toLowerCase();
+        var visible = 0;
+        rows.forEach(function(row) {{
+          var cells = row.querySelectorAll('td');
+          var areaText = cells[0] ? cells[0].textContent.toLowerCase() : '';
+          var sourceText = cells[1] ? cells[1].textContent.toLowerCase() : '';
+          var matches = !query || areaText.indexOf(query) !== -1 || sourceText.indexOf(query) !== -1;
+          row.style.display = matches ? '' : 'none';
+          if (matches) visible += 1;
+        }});
+        if (countEl) {{
+          countEl.textContent = visible + ' of ' + rows.length + ' maps';
+        }}
+      }}
+      searchInput.addEventListener('input', filterRows);
+      filterRows();
+    }})();
+  </script>
 </body>
 </html>
 """

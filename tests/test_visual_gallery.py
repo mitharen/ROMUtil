@@ -708,6 +708,61 @@ class TestGalleryAssetsGeneration:
                         main()
                     assert mock_render.call_args_list[0].kwargs["solver_timeout"] == 210
 
+    def test_index_html_dark_theme_responsive_and_live_filter(self, tmp_path):
+        from html.parser import HTMLParser
+        from scripts.build_pages import generate_index_html
+
+        (tmp_path / "midgaard.html").write_text("<!DOCTYPE html><html><body>viewer</body></html>", encoding="utf-8")
+        (tmp_path / "midgaard.svg").write_text("<svg></svg>", encoding="utf-8")
+        (tmp_path / "school.html").write_text("<!DOCTYPE html><html><body>viewer</body></html>", encoding="utf-8")
+        (tmp_path / "school0.svg").write_text("<svg></svg>", encoding="utf-8")
+
+        rendered = [
+            ("ROM 2.4 / QuickMUD", "midgaard", 1.25),
+            ("ROM 2.4 / QuickMUD", "school", 0.75),
+        ]
+        generate_index_html(rendered, tmp_path)
+
+        content = (tmp_path / "index.html").read_text(encoding="utf-8")
+        assert "N/A" not in content
+
+        # Dark slate theme palette matching viewer.html
+        for hex_color in ("#0f172a", "#1e293b", "#334155", "#f8fafc", "#94a3b8", "#38bdf8", "#475569"):
+            assert hex_color in content
+
+        # Responsive wrapper, mobile media query, and live search filter
+        assert '<div class="table-responsive">' in content
+        assert "overflow-x: auto;" in content
+        assert "@media (max-width: 640px)" in content
+        assert "font-size: 16px;" in content
+        assert 'type="search"' in content
+        assert 'id="index-search"' in content
+        assert "searchInput.addEventListener('input'" in content
+
+        # Zero external dependencies
+        assert not re.findall(r"<script\b[^>]*\bsrc=", content, re.IGNORECASE)
+        assert not re.findall(r"<link\b[^>]*stylesheet", content, re.IGNORECASE)
+        assert not re.findall(r"""(?:src|href)=['"]https?://[^'">]+['"]""", content, re.IGNORECASE)
+
+        # Balanced HTML tags
+        class _BalancedTagParser(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__()
+                self.stack: list[str] = []
+                self.void_tags = {"meta", "link", "input", "br", "hr", "img"}
+
+            def handle_starttag(self, tag: str, attrs) -> None:
+                if tag.lower() not in self.void_tags:
+                    self.stack.append(tag.lower())
+
+            def handle_endtag(self, tag: str) -> None:
+                assert self.stack and self.stack[-1] == tag.lower()
+                self.stack.pop()
+
+        parser = _BalancedTagParser()
+        parser.feed(content)
+        assert not parser.stack
+
 
 @pytest.mark.slow
 @pytest.mark.integration
@@ -790,6 +845,31 @@ class TestHtmlAssetIntegrity:
             assert "mapContainer.addEventListener('touchstart'" in content
             assert "minimap.addEventListener('touchstart'" in content
             assert "Math.hypot(x2 - x1, y2 - y1)" in content
+
+    def test_html_viewer_mobile_ux_and_offline_invariants(self, sample_gallery_artifacts):
+        """Verify responsive bottom sheet, floating controls, search dropdown, speedwalk, and hash deep-linking."""
+        html_files = list(sample_gallery_artifacts.glob("*.html"))
+        assert len(html_files) >= 1
+        for html_file in html_files:
+            validate_html_viewer_file(html_file)
+            content = html_file.read_text(encoding="utf-8")
+
+            assert "height: 100dvh;" in content
+            assert "min-height: 0;" in content
+            assert "@media (max-width: 768px)" in content
+            assert "function isMobileViewport()" in content
+            assert 'id="btn-toggle-filters"' in content
+            assert 'class="floating-map-controls"' in content
+            assert 'id="btn-toggle-minimap"' in content
+            assert "@media (hover: none) and (pointer: coarse)" in content
+            assert "@media (pointer: coarse)" in content
+            assert 'id="search-results"' in content
+            assert 'id="btn-route-from-here"' in content
+            assert 'id="btn-route-to-here"' in content
+            assert "function buildSpeedwalk(directions)" in content
+            assert 'id="path-speedwalk-bar"' in content
+            assert "function parseHashVnum()" in content
+            assert "function updateUrlHash(vnum)" in content
 
 
 class TestNegativeAndBoundaryCases:
