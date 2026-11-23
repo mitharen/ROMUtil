@@ -131,13 +131,14 @@ class TestGalleryAssetsGeneration:
     def test_pages_builder_discovery_and_index_generation(self, tmp_path):
         from scripts.build_pages import resolve_candidate_areas, generate_index_html
         candidates = resolve_candidate_areas()
-        assert len(candidates) == 9
+        assert len(candidates) == 10
         candidate_names = {c[1] for c in candidates}
         assert candidate_names == {
             "arachnos",
             "chapel",
             "midgaard",
             "midgaard_region",
+            "midgaard_region_scaled",
             "moria",
             "school",
             "sewer",
@@ -153,16 +154,14 @@ class TestGalleryAssetsGeneration:
             assert path.is_file()
             assert not is_dir
 
-        # Verify composite showcase cluster
+        # Verify composite showcase clusters
         comp_candidates = [c for c in candidates if c[0] == "ROM 2.4 / Composite"]
-        assert len(comp_candidates) == 1
+        assert len(comp_candidates) == 2
         comp_by_name = {c[1]: c for c in comp_candidates}
         assert "midgaard_region" in comp_by_name
+        assert "midgaard_region_scaled" in comp_by_name
 
-        cat, name, paths, is_dir = comp_by_name["midgaard_region"][:4]
-        assert isinstance(paths, list)
-        assert len(paths) == 9
-        assert [p.name for p in paths] == [
+        expected_region_files = [
             "midgaard.are",
             "hood.are",
             "grave.are",
@@ -173,9 +172,18 @@ class TestGalleryAssetsGeneration:
             "shire.are",
             "sewer.are",
         ]
-        assert all(p.is_file() for p in paths)
-        assert not is_dir
-        assert comp_by_name["midgaard_region"].solver_timeout is None
+        for slug, expected_scales in (
+            ("midgaard_region", None),
+            ("midgaard_region_scaled", "1:1:2"),
+        ):
+            cat, name, paths, is_dir = comp_by_name[slug][:4]
+            assert isinstance(paths, list)
+            assert len(paths) == 9
+            assert [p.name for p in paths] == expected_region_files
+            assert all(p.is_file() for p in paths)
+            assert not is_dir
+            assert comp_by_name[slug].solver_timeout is None
+            assert comp_by_name[slug].terrain_scales == expected_scales
 
         dummy_rendered = [
             ("ROM 2.4 / QuickMUD", "smurf", 1.23),
@@ -482,17 +490,10 @@ class TestGalleryAssetsGeneration:
 
 
     def test_composite_showcase_cluster_metadata(self):
-        """Assert constituent filenames for midgaard_region."""
+        """Assert constituent filenames and terrain scale presets for midgaard_region showcase clusters."""
         from scripts.build_pages import COMPOSITE_SHOWCASE_AREAS, resolve_candidate_areas
 
-        cluster_entry = next((item for item in COMPOSITE_SHOWCASE_AREAS if item[1] == "midgaard_region"), None)
-        assert cluster_entry is not None
-        cat, name, filenames = cluster_entry[:3]
-        assert "moria.are" in filenames
-        assert "haon.are" in filenames
-        assert "midennir.are" in filenames
-        assert "sewer.are" in filenames
-        assert filenames == (
+        expected_filenames = (
             "midgaard.are",
             "hood.are",
             "grave.are",
@@ -503,25 +504,64 @@ class TestGalleryAssetsGeneration:
             "shire.are",
             "sewer.are",
         )
-
         candidates = resolve_candidate_areas()
-        comp_candidate = next((c for c in candidates if c[1] == "midgaard_region"), None)
-        assert comp_candidate is not None
-        source_paths = comp_candidate.source_path
-        assert isinstance(source_paths, list)
-        source_filenames = [p.name for p in source_paths]
-        assert "moria.are" in source_filenames
-        assert source_filenames == [
-            "midgaard.are",
-            "hood.are",
-            "grave.are",
-            "mobfact.are",
-            "moria.are",
-            "midennir.are",
-            "haon.are",
-            "shire.are",
-            "sewer.are",
-        ]
+
+        for slug, expected_scales in (
+            ("midgaard_region", None),
+            ("midgaard_region_scaled", "1:1:2"),
+        ):
+            cluster_entry = next((item for item in COMPOSITE_SHOWCASE_AREAS if item[1] == slug), None)
+            assert cluster_entry is not None
+            cat, name, filenames = cluster_entry[:3]
+            assert "moria.are" in filenames
+            assert "haon.are" in filenames
+            assert "midennir.are" in filenames
+            assert "sewer.are" in filenames
+            assert filenames == expected_filenames
+            assert (cluster_entry[4] if len(cluster_entry) > 4 else None) == expected_scales
+
+            comp_candidate = next((c for c in candidates if c[1] == slug), None)
+            assert comp_candidate is not None
+            assert comp_candidate.terrain_scales == expected_scales
+            source_paths = comp_candidate.source_path
+            assert isinstance(source_paths, list)
+            source_filenames = [p.name for p in source_paths]
+            assert "moria.are" in source_filenames
+            assert source_filenames == list(expected_filenames)
+
+    def test_render_area_and_main_forward_terrain_scales(self, tmp_path):
+        """Verify render_area appends --terrain-scales and main() forwards CandidateArea.terrain_scales."""
+        from unittest.mock import MagicMock
+        from scripts.build_pages import CandidateArea, main, render_area
+
+        with patch("scripts.build_pages.subprocess.run", return_value=MagicMock(returncode=0, stderr="")) as mock_run:
+            render_area("scaled_area", Path("a.are"), False, tmp_path, terrain_scales="1:1:2")
+            cmd_with_scales = mock_run.call_args.args[0]
+            assert "--terrain-scales" in cmd_with_scales
+            idx = cmd_with_scales.index("--terrain-scales")
+            assert cmd_with_scales[idx + 1] == "1:1:2"
+
+            render_area("default_area", Path("b.are"), False, tmp_path)
+            cmd_without_scales = mock_run.call_args.args[0]
+            assert "--terrain-scales" not in cmd_without_scales
+
+        cand_default = CandidateArea("ROM 2.4 / Composite", "midgaard_region", [Path("a.are")], False)
+        cand_scaled = CandidateArea(
+            "ROM 2.4 / Composite",
+            "midgaard_region_scaled",
+            [Path("a.are")],
+            False,
+            terrain_scales="1:1:2",
+        )
+        with patch("scripts.build_pages.resolve_candidate_areas", return_value=[cand_default, cand_scaled]):
+            with patch("scripts.build_pages.render_area", return_value=1.0) as mock_render:
+                with patch("scripts.build_pages.generate_index_html"):
+                    with patch("sys.argv", ["build_pages.py", "--outdir", str(tmp_path)]):
+                        main()
+
+        assert mock_render.call_count == 2
+        assert "terrain_scales" not in mock_render.call_args_list[0].kwargs
+        assert mock_render.call_args_list[1].kwargs["terrain_scales"] == "1:1:2"
 
     def test_render_composite_area_generates_artifacts_and_resolves_cross_exits(self, tmp_path):
         """Verify rendering composite area generates artifacts and resolves cross-area exit 3700<->3001 as internal exit."""

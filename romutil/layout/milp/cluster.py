@@ -95,18 +95,33 @@ def _is_compacted_active_edge(ae: ActiveEdge) -> bool:
     return ae.min_length > 1
 
 
+def _pendant_gateway_edge_indices(active_edges: Sequence[ActiveEdge]) -> frozenset[int]:
+    """Return active-edge indices of gateway bridges attached to a degree-1 pendant child."""
+    child_edge_counts: dict[str, int] = {}
+    for ae in active_edges:
+        for cid in ae.associated_children:
+            child_edge_counts[cid] = child_edge_counts.get(cid, 0) + 1
+    return frozenset(
+        i
+        for i, ae in enumerate(active_edges)
+        if ae.edge_id.startswith("gw_")
+        and any(child_edge_counts.get(cid, 0) == 1 for cid in ae.associated_children)
+    )
+
+
 def _compacted_crossings(
     crossings: Sequence[ClearanceViolation],
     active_edges: Sequence[ActiveEdge],
 ) -> list[ClearanceViolation]:
-    """Return crossing violations involving at least one compacted multi-room hallway."""
+    """Return crossing violations involving a compacted hallway or pendant gateway bridge."""
+    pendant_gw_indices = _pendant_gateway_edge_indices(active_edges)
     return [
         viol
         for viol in crossings
         if any(
             isinstance(idx, int)
             and 0 <= idx < len(active_edges)
-            and _is_compacted_active_edge(active_edges[idx])
+            and (_is_compacted_active_edge(active_edges[idx]) or idx in pendant_gw_indices)
             for idx in (viol.item_a, viol.item_b)
         )
     ]
@@ -116,7 +131,7 @@ def _has_compacted_crossing(
     crossings: Sequence[ClearanceViolation],
     active_edges: Sequence[ActiveEdge],
 ) -> bool:
-    """Return True if any crossing violation involves a compacted multi-room hallway."""
+    """Return True if any crossing violation involves a compacted hallway or pendant gateway bridge."""
     return bool(_compacted_crossings(crossings, active_edges))
 
 

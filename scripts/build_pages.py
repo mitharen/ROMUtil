@@ -30,22 +30,31 @@ SHOWCASE_AREAS = (
     "thalos.are",
 )
 
-# Curated composite showcase clusters (category, name/slug, constituent filenames, [optional timeout])
+_MIDGAARD_REGION_FILES = (
+    "midgaard.are",
+    "hood.are",
+    "grave.are",
+    "mobfact.are",
+    "moria.are",
+    "midennir.are",
+    "haon.are",
+    "shire.are",
+    "sewer.are",
+)
+
+# Curated composite showcase clusters (category, name/slug, constituent filenames, [optional timeout], [optional terrain_scales])
 COMPOSITE_SHOWCASE_AREAS = (
     (
         "ROM 2.4 / Composite",
         "midgaard_region",
-        (
-            "midgaard.are",
-            "hood.are",
-            "grave.are",
-            "mobfact.are",
-            "moria.are",
-            "midennir.are",
-            "haon.are",
-            "shire.are",
-            "sewer.are",
-        ),
+        _MIDGAARD_REGION_FILES,
+    ),
+    (
+        "ROM 2.4 / Composite",
+        "midgaard_region_scaled",
+        _MIDGAARD_REGION_FILES,
+        None,
+        "1:1:2",
     ),
 )
 
@@ -55,7 +64,7 @@ class CandidateArea(tuple):
 
     Inherits from tuple as (category, name, source_path, is_dir) to maintain
     unpacking compatibility with 4-element tuples while optionally carrying
-    a custom solver_timeout attribute.
+    custom solver_timeout and terrain_scales attributes.
     """
 
     category: str
@@ -63,6 +72,7 @@ class CandidateArea(tuple):
     source_path: Path | list[Path]
     is_dir: bool
     solver_timeout: int | None
+    terrain_scales: str | None
 
     def __new__(
         cls,
@@ -71,6 +81,7 @@ class CandidateArea(tuple):
         source_path: Path | list[Path],
         is_dir: bool,
         solver_timeout: int | None = None,
+        terrain_scales: str | None = None,
     ):
         inst = super().__new__(cls, (category, name, source_path, is_dir))
         inst.category = category
@@ -78,6 +89,7 @@ class CandidateArea(tuple):
         inst.source_path = source_path
         inst.is_dir = is_dir
         inst.solver_timeout = solver_timeout
+        inst.terrain_scales = terrain_scales
         return inst
 
 
@@ -113,6 +125,7 @@ def resolve_candidate_areas() -> list[CandidateArea]:
         comp_name = item[1]
         filenames = item[2]
         comp_timeout = item[3] if len(item) > 3 else None
+        comp_scales = item[4] if len(item) > 4 else None
 
         # Check if all constituent files exist within a single directory first
         found_cluster: list[Path] | None = None
@@ -123,7 +136,16 @@ def resolve_candidate_areas() -> list[CandidateArea]:
                     found_cluster = paths
                     break
         if found_cluster is not None:
-            candidates.append(CandidateArea(cat, comp_name, found_cluster, False, solver_timeout=comp_timeout))
+            candidates.append(
+                CandidateArea(
+                    cat,
+                    comp_name,
+                    found_cluster,
+                    False,
+                    solver_timeout=comp_timeout,
+                    terrain_scales=comp_scales,
+                )
+            )
         else:
             resolved_files: list[Path] = []
             for fname in filenames:
@@ -134,7 +156,16 @@ def resolve_candidate_areas() -> list[CandidateArea]:
                             resolved_files.append(candidate_file)
                             break
             if len(resolved_files) == len(filenames):
-                candidates.append(CandidateArea(cat, comp_name, resolved_files, False, solver_timeout=comp_timeout))
+                candidates.append(
+                    CandidateArea(
+                        cat,
+                        comp_name,
+                        resolved_files,
+                        False,
+                        solver_timeout=comp_timeout,
+                        terrain_scales=comp_scales,
+                    )
+                )
 
     candidates.sort(key=lambda c: c[1])
     return candidates
@@ -146,6 +177,7 @@ def render_area(
     is_dir: bool,
     outdir: Path,
     solver_timeout: int | None = None,
+    terrain_scales: str | None = None,
 ) -> float:
     """Invokes romutil to render HTML viewer and SVG vector map in a single pass.
 
@@ -169,6 +201,8 @@ def render_area(
     ])
     if solver_timeout is not None:
         cmd.extend(["--solver-timeout", str(solver_timeout)])
+    if terrain_scales is not None:
+        cmd.extend(["--terrain-scales", str(terrain_scales)])
 
     if solver_timeout is not None:
         log.info(f"Rendering map artifacts for {name} (timeout={solver_timeout}s)...")
@@ -435,6 +469,7 @@ def main():
         else:
             category, name, source_path, is_dir = cand[:4]
             cand_timeout = getattr(cand, "solver_timeout", None)
+        cand_scales = cand[5] if len(cand) >= 6 else getattr(cand, "terrain_scales", None)
 
         is_composite = isinstance(source_path, Sequence) and not isinstance(source_path, (str, bytes, Path))
         if is_composite and args.composite_solver_timeout is not None:
@@ -444,7 +479,17 @@ def main():
         else:
             timeout = args.solver_timeout
 
-        elapsed = render_area(name, source_path, is_dir, args.outdir, solver_timeout=timeout)
+        if cand_scales is not None:
+            elapsed = render_area(
+                name,
+                source_path,
+                is_dir,
+                args.outdir,
+                solver_timeout=timeout,
+                terrain_scales=cand_scales,
+            )
+        else:
+            elapsed = render_area(name, source_path, is_dir, args.outdir, solver_timeout=timeout)
         rendered.append((category, name, elapsed))
 
     generate_index_html(rendered, args.outdir)
