@@ -29,6 +29,7 @@
     body, html {
       width: 100%;
       height: 100%;
+      height: 100dvh;
       overflow: hidden;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       background-color: var(--bg-primary);
@@ -40,6 +41,7 @@
       flex-direction: column;
       width: 100%;
       height: 100%;
+      height: 100dvh;
     }
 
     header.toolbar {
@@ -113,6 +115,109 @@
       cursor: pointer;
       font-size: 1rem;
       line-height: 1;
+      display: none;
+    }
+
+    .search-results-dropdown {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      background-color: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.65);
+      max-height: 320px;
+      overflow-y: auto;
+      z-index: 60;
+    }
+
+    .search-results-header {
+      padding: 6px 12px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      border-bottom: 1px solid var(--border-color);
+      background-color: rgba(15, 23, 42, 0.85);
+      position: sticky;
+      top: 0;
+    }
+
+    .search-result-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+      border-bottom: 1px solid rgba(71, 85, 105, 0.45);
+      transition: background-color 0.12s ease;
+    }
+
+    .search-result-item:last-child {
+      border-bottom: none;
+    }
+
+    .search-result-item:hover,
+    .search-result-item.active {
+      background-color: var(--bg-card);
+    }
+
+    .search-result-main {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .search-result-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-main);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .search-result-sub {
+      font-size: 0.73rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .search-result-badges {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .search-type-badge {
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--border-color);
+    }
+
+    .search-type-badge.room {
+      background-color: rgba(56, 189, 248, 0.15);
+      color: var(--accent);
+      border-color: rgba(56, 189, 248, 0.35);
+    }
+
+    .search-type-badge.mob {
+      background-color: rgba(220, 38, 38, 0.18);
+      color: #fca5a5;
+      border-color: rgba(239, 68, 68, 0.4);
+    }
+
+    .btn-filters-toggle {
       display: none;
     }
 
@@ -373,7 +478,7 @@
     .main-workspace {
       display: flex;
       flex: 1;
-      height: calc(100% - 53px);
+      min-height: 0;
       position: relative;
       overflow: hidden;
     }
@@ -840,6 +945,291 @@
       border-left: 3px solid var(--path-color);
       border-radius: 0 4px 4px 0;
       font-size: 0.8rem;
+      cursor: pointer;
+      transition: background-color 0.15s ease;
+    }
+
+    .path-step:hover {
+      background-color: var(--bg-card);
+    }
+
+    .room-route-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .btn-route-action {
+      flex: 1;
+      padding: 6px 10px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      background-color: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      color: var(--text-main);
+    }
+
+    .btn-route-action:hover {
+      border-color: var(--path-color);
+      color: #6ee7b7;
+    }
+
+    #pathfind-card input[type="number"] {
+      width: 100%;
+      padding: 6px 10px;
+      background-color: var(--bg-primary);
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      font-size: 0.85rem;
+      outline: none;
+    }
+
+    #pathfind-card input[type="number"]:focus {
+      border-color: var(--accent);
+    }
+
+    .path-speedwalk-bar {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 10px;
+      padding: 8px 10px;
+      background-color: var(--bg-primary);
+      border: 1px solid rgba(16, 185, 129, 0.45);
+      border-radius: 6px;
+    }
+
+    .path-speedwalk-meta {
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      letter-spacing: 0.04em;
+    }
+
+    .path-speedwalk-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .path-speedwalk-text {
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 0.85rem;
+      color: #6ee7b7;
+      word-break: break-all;
+      flex: 1;
+    }
+
+    .btn-copy-speedwalk {
+      padding: 3px 10px;
+      font-size: 0.75rem;
+      flex-shrink: 0;
+    }
+
+    .minimap-container.minimap-hidden {
+      display: none;
+    }
+
+    .floating-map-controls {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      z-index: 16;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .floating-map-btn {
+      min-width: 38px;
+      min-height: 38px;
+      padding: 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background-color: rgba(30, 41, 59, 0.92);
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 700;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+    }
+
+    .floating-map-btn:hover {
+      background-color: var(--bg-card);
+      border-color: var(--accent);
+    }
+
+    .floating-map-btn.btn-active {
+      background-color: var(--accent);
+      color: var(--bg-primary);
+      border-color: var(--accent);
+    }
+
+    @media (pointer: coarse) {
+      .exit-line {
+        stroke-width: 5px;
+      }
+      .exit-line.two-way,
+      .exit-line.one-way,
+      .exit-line.inter-floor,
+      .exit-line.stub {
+        stroke-width: 5px;
+      }
+    }
+
+    @media (hover: none) and (pointer: coarse) {
+      .tooltip {
+        display: none !important;
+      }
+    }
+
+    @media (max-width: 768px) {
+      header.toolbar {
+        padding: 8px 10px;
+        gap: 8px;
+      }
+
+      .brand-section {
+        width: 100%;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .brand-section .title {
+        font-size: 1rem;
+        max-width: 70%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .btn-filters-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        margin-left: auto;
+        min-height: 34px;
+        padding: 4px 10px;
+        font-size: 0.8rem;
+      }
+
+      #stat-bounds {
+        display: none;
+      }
+
+      .search-section {
+        flex: 1 1 100%;
+        max-width: 100%;
+      }
+
+      .search-results-dropdown {
+        max-height: 45dvh;
+      }
+
+      #search-input,
+      #pf-start,
+      #pf-dst {
+        font-size: 16px;
+      }
+
+      .controls-section {
+        display: none;
+      }
+
+      #app.filters-open .controls-section,
+      header.toolbar.filters-open .controls-section {
+        display: flex;
+        flex-wrap: wrap;
+        width: 100%;
+        gap: 6px;
+        max-height: 45dvh;
+        overflow-y: auto;
+        padding-top: 2px;
+      }
+
+      .zone-selector,
+      .floor-selector,
+      .color-selector {
+        max-width: 100%;
+        flex-wrap: wrap;
+      }
+
+      .zone-pill-list,
+      .floor-pill-list {
+        max-width: 100%;
+      }
+
+      aside.sidebar {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        width: 100%;
+        max-height: 58dvh;
+        height: auto;
+        border-left: none;
+        border-top: 1px solid var(--border-color);
+        border-radius: 14px 14px 0 0;
+        box-shadow: 0 -8px 24px rgba(0,0,0,0.6);
+        z-index: 25;
+        padding: 12px 14px 16px;
+        gap: 12px;
+      }
+
+      aside.sidebar.collapsed,
+      #app.collapsed aside.sidebar,
+      #app.sidebar-collapsed aside.sidebar {
+        display: none;
+      }
+
+      .sidebar-header {
+        position: relative;
+        padding-top: 12px;
+      }
+
+      .sidebar-header::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 38px;
+        height: 4px;
+        border-radius: 9999px;
+        background-color: var(--border-color);
+      }
+
+      .btn-collapse-sidebar {
+        min-width: 36px;
+        min-height: 36px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .minimap-container,
+      #app.collapsed .minimap-container,
+      #app.sidebar-collapsed .minimap-container,
+      .minimap-container.sidebar-collapsed,
+      .sidebar-collapsed .minimap-container {
+        right: 12px;
+        bottom: 12px;
+      }
+
+      #minimap {
+        width: 128px;
+        height: 96px;
+      }
     }
   </style>
 </head>
@@ -851,11 +1241,13 @@
         <span class="badge">__AREA_FILE__</span>
         <span class="badge" id="stat-rooms">__ROOM_COUNT__ Rooms</span>
         <span class="badge" id="stat-bounds">Bounds: (__MAX_X__x__MAX_Y__)</span>
+        <button type="button" id="btn-toggle-filters" class="btn-filters-toggle" title="Toggle Filters & Controls" aria-label="Toggle filters and controls" aria-expanded="false">Filters</button>
       </div>
 
       <div class="search-section">
-        <input type="text" id="search-input" placeholder="Search by room name or VNUM..." autocomplete="off">
-        <button id="search-clear" class="clear-btn">&times;</button>
+        <input type="text" id="search-input" placeholder="Search rooms or mobs by name or VNUM..." autocomplete="off">
+        <button id="search-clear" class="clear-btn" aria-label="Clear search">&times;</button>
+        <div id="search-results" class="search-results-dropdown" role="listbox" aria-label="Search results" style="display: none;"></div>
       </div>
 
       <div class="controls-section">
@@ -911,6 +1303,12 @@
         <div class="minimap-container">
           <canvas id="minimap" width="180" height="135"></canvas>
         </div>
+        <div class="floating-map-controls" role="group" aria-label="Map navigation controls">
+          <button type="button" id="btn-float-zoom-in" class="floating-map-btn" title="Zoom In" aria-label="Zoom in">+</button>
+          <button type="button" id="btn-float-zoom-out" class="floating-map-btn" title="Zoom Out" aria-label="Zoom out">&minus;</button>
+          <button type="button" id="btn-float-reset-view" class="floating-map-btn" title="Fit / Reset View" aria-label="Reset view">&#8982;</button>
+          <button type="button" id="btn-toggle-minimap" class="floating-map-btn btn-active" title="Toggle Minimap" aria-label="Toggle minimap" aria-pressed="true">&#128506;&#65039;</button>
+        </div>
         <button id="btn-expand-sidebar" class="btn-sidebar-expand" title="Open Inspector Sidebar" aria-label="Open sidebar" style="display: none;">&laquo; Sidebar</button>
       </div>
 
@@ -930,12 +1328,16 @@
             <span style="color: var(--text-muted); font-weight: 600; text-transform: uppercase; font-size: 0.75rem;">Terrain / Sector:</span>
             <span id="card-room-terrain" style="display: inline-flex; align-items: center; gap: 6px; font-weight: 600; margin-left: 4px; color: var(--text-main);">-</span>
           </div>
+          <div class="room-route-actions" id="room-route-actions" style="display: none;">
+            <button type="button" id="btn-route-from-here" class="btn-route-action">🚩 Route From Here</button>
+            <button type="button" id="btn-route-to-here" class="btn-route-action">🎯 Route To Here</button>
+          </div>
           <div id="card-room-desc" class="room-desc" style="display:none;"></div>
           <div style="margin-top: 10px;">
             <strong style="font-size: 0.8rem; color: var(--text-muted);">EXITS</strong>
             <div class="exit-badge-list" id="card-room-exits"></div>
           </div>
-          <div id="incoming-exits-section" style="margin-top: 12px;">
+          <div id="incoming-exits-section" style="margin-top: 12px; display: none;">
             <strong style="font-size: 0.8rem; color: var(--text-muted);">INCOMING EXITS / ENTRANCES</strong>
             <div class="exit-badge-list" id="card-room-incoming"></div>
           </div>
@@ -1030,6 +1432,13 @@
             <div style="display: flex; gap: 6px;">
               <button id="btn-calc-path" style="flex:1; background-color: var(--path-color); color:#fff;">Find Route</button>
               <button id="btn-clear-path">Clear</button>
+            </div>
+          </div>
+          <div id="path-speedwalk-bar" class="path-speedwalk-bar" style="display: none;">
+            <div class="path-speedwalk-meta">Speedwalk</div>
+            <div class="path-speedwalk-row">
+              <code id="path-speedwalk-text" class="path-speedwalk-text"></code>
+              <button type="button" id="btn-copy-speedwalk" class="btn-copy-speedwalk" title="Copy speedwalk">Copy</button>
             </div>
           </div>
           <div class="path-step-list" id="path-steps"></div>
@@ -1818,6 +2227,7 @@ __JSON_DATA__
             line.addEventListener('mousemove', (ev) => positionTooltip(ev));
             line.addEventListener('mouseleave', hideTooltip);
             line.addEventListener('click', (ev) => {
+              if (wasDragging) return;
               ev.stopPropagation();
               selectEdge(line, exitInfo);
             });
@@ -1873,6 +2283,7 @@ __JSON_DATA__
             line.addEventListener('mousemove', (ev) => positionTooltip(ev));
             line.addEventListener('mouseleave', hideTooltip);
             line.addEventListener('click', (ev) => {
+              if (wasDragging) return;
               ev.stopPropagation();
               selectEdge(line, stubInfo);
             });
@@ -1999,7 +2410,54 @@ __JSON_DATA__
         });
       });
 
+      function isMobileViewport() {
+        return window.innerWidth <= 768;
+      }
+
+      function parseHashVnum() {
+        const raw = window.location.hash || '';
+        const match = raw.match(/(?:^|[#&])(?:vnum|room)=(-?\d+)(?:&|$)/i);
+        if (!match) return null;
+        const parsed = parseInt(match[1], 10);
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+
+      function updateUrlHash(vnum) {
+        if (typeof history === 'undefined' || !history.replaceState) return;
+        try {
+          if (vnum === null || vnum === undefined) {
+            if (window.location.hash) {
+              history.replaceState(null, '', window.location.pathname + window.location.search);
+            }
+          } else {
+            history.replaceState(null, '', '#vnum=' + vnum);
+          }
+        } catch (err) {
+          // Ignore restricted history updates in sandboxed contexts
+        }
+      }
+
+      let isTouchInteraction = false;
+      window.addEventListener('pointerdown', (e) => {
+        if (e.pointerType === 'touch') {
+          isTouchInteraction = true;
+          hideTooltip();
+        } else if (e.pointerType === 'mouse' || e.pointerType === 'pen') {
+          isTouchInteraction = false;
+        }
+      }, { passive: true });
+      window.addEventListener('touchstart', () => {
+        isTouchInteraction = true;
+        hideTooltip();
+      }, { passive: true });
+      window.addEventListener('pointermove', (e) => {
+        if (e.pointerType === 'mouse') {
+          isTouchInteraction = false;
+        }
+      }, { passive: true });
+
       function showTooltip(room, e) {
+        if (isTouchInteraction) return;
         let ttTitle = '[' + room.vnum + '] ' + room.name;
         if (room.area_name) {
           ttTitle += ' | Area: ' + room.area_name;
@@ -2034,6 +2492,7 @@ __JSON_DATA__
       }
 
       function showMobBadgeTooltip(room, e) {
+        if (isTouchInteraction) return;
         document.getElementById('tt-name').textContent = '👾 Spawning Mobs: [' + room.vnum + '] ' + room.name;
         const mobCount = (room.mobs || []).reduce((acc, m) => acc + (m.count || 1), 0);
         document.getElementById('tt-meta').textContent = 'Total Mobs: ' + mobCount + ' | Room VNUM: ' + room.vnum;
@@ -2052,6 +2511,7 @@ __JSON_DATA__
       }
 
       function showExitTooltip(info, ev) {
+        if (isTouchInteraction) return;
         const isWarning = info.isStub || info.isRelaxed;
         let title = (info.one_way ? '🔴 One-Way Exit' : 'Two-Way Exit') + ': [' + info.src + '] ➔ [' + info.dst + ']';
         document.getElementById('tt-name').textContent = title;
@@ -2078,9 +2538,17 @@ __JSON_DATA__
       }
 
       function positionTooltip(e) {
+        if (isTouchInteraction || !e || typeof e.clientX !== 'number' || typeof e.clientY !== 'number') return;
         const offset = 14;
-        tooltip.style.left = (e.clientX + offset) + 'px';
-        tooltip.style.top = (e.clientY + offset) + 'px';
+        const ttRect = tooltip.getBoundingClientRect();
+        const ttW = ttRect.width || tooltip.offsetWidth || 220;
+        const ttH = ttRect.height || tooltip.offsetHeight || 100;
+        const maxLeft = Math.max(8, window.innerWidth - ttW - 8);
+        const maxTop = Math.max(8, window.innerHeight - ttH - 8);
+        const left = Math.min(Math.max(8, e.clientX + offset), maxLeft);
+        const top = Math.min(Math.max(8, e.clientY + offset), maxTop);
+        tooltip.style.left = left + 'px';
+        tooltip.style.top = top + 'px';
       }
 
       function hideTooltip() {
@@ -2204,9 +2672,13 @@ __JSON_DATA__
             elevLabel.textContent = elevText;
           }
         }
+
+        if (isMobileViewport()) {
+          setSidebarCollapsed(false);
+        }
       }
 
-      function selectRoom(vnum) {
+      function selectRoom(vnum, options) {
         selectedVnum = vnum;
         selectedEdge = null;
 
@@ -2252,6 +2724,13 @@ __JSON_DATA__
         });
 
         showRoomDetails(room);
+
+        if (!options || options.updateHash !== false) {
+          updateUrlHash(vnum);
+        }
+        if (isMobileViewport() && (!options || options.autoExpand !== false)) {
+          setSidebarCollapsed(false);
+        }
       }
 
       function showRoomDetails(room) {
@@ -2307,6 +2786,9 @@ __JSON_DATA__
         const descElem = document.getElementById('card-room-desc');
         descElem.style.display = 'block';
         descElem.textContent = room.description || room.desc || 'No description available.';
+
+        const routeActions = document.getElementById('room-route-actions');
+        if (routeActions) routeActions.style.display = 'flex';
 
         const exitsElem = document.getElementById('card-room-exits');
         exitsElem.innerHTML = '';
@@ -2442,6 +2924,10 @@ __JSON_DATA__
         if (roomCard) roomCard.style.display = 'none';
         if (edgeCard) edgeCard.style.display = 'none';
         if (mobCard) mobCard.style.display = 'block';
+
+        if (isMobileViewport()) {
+          setSidebarCollapsed(false);
+        }
 
         // Title and meta
         document.getElementById('mob-insp-name').textContent = '👾 [' + mobData.vnum + '] ' + (mobData.short_desc || mobData.name);
@@ -2605,30 +3091,229 @@ __JSON_DATA__
         updateTransform();
       }
 
-      // Search functionality
+      // Search functionality & autocomplete dropdown
       const searchInput = document.getElementById('search-input');
       const searchClear = document.getElementById('search-clear');
+      const searchResults = document.getElementById('search-results');
+      let searchResultItems = [];
+      let searchActiveIndex = -1;
+
+      function closeSearchResults() {
+        if (searchResults) {
+          searchResults.style.display = 'none';
+        }
+        searchActiveIndex = -1;
+      }
+
+      function updateSearchActiveHighlight() {
+        if (!searchResults) return;
+        const rows = searchResults.querySelectorAll('.search-result-item');
+        rows.forEach((row, idx) => {
+          const isActive = idx === searchActiveIndex;
+          row.classList.toggle('active', isActive);
+          row.setAttribute('aria-selected', String(isActive));
+          if (isActive && row.scrollIntoView) {
+            row.scrollIntoView({ block: 'nearest' });
+          }
+        });
+      }
+
+      function activateSearchResult(item) {
+        if (!item) return;
+        if (item.type === 'room') {
+          centerOnRoom(item.vnum);
+          selectRoom(item.vnum);
+        } else if (item.type === 'mob') {
+          centerOnRoom(item.roomVnum);
+          selectRoom(item.roomVnum);
+          showMobDetails(item.mobVnum);
+        }
+        closeSearchResults();
+      }
+
+      function renderSearchDropdown(allMatches, rawQuery) {
+        if (!searchResults) return;
+        searchResults.innerHTML = '';
+        searchActiveIndex = -1;
+
+        const header = document.createElement('div');
+        header.className = 'search-results-header';
+        if (allMatches.length === 0) {
+          header.textContent = '0 matches for "' + rawQuery + '"';
+          searchResults.appendChild(header);
+          const empty = document.createElement('div');
+          empty.style.padding = '10px 12px';
+          empty.style.fontSize = '0.8rem';
+          empty.style.color = 'var(--text-muted)';
+          empty.textContent = 'No matching rooms or spawning mobs found.';
+          searchResults.appendChild(empty);
+          searchResultItems = [];
+          searchResults.style.display = 'block';
+          return;
+        }
+
+        const displayMatches = allMatches.slice(0, 25);
+        searchResultItems = displayMatches;
+        header.textContent = allMatches.length + ' match' + (allMatches.length === 1 ? '' : 'es') + (allMatches.length > 25 ? ' (showing top 25)' : '');
+        searchResults.appendChild(header);
+
+        displayMatches.forEach((item, idx) => {
+          const row = document.createElement('div');
+          row.className = 'search-result-item';
+          row.setAttribute('role', 'option');
+          row.setAttribute('aria-selected', 'false');
+          row.setAttribute('data-index', String(idx));
+
+          if (item.type === 'room') {
+            const r = item.room;
+            const areaSub = r.area_name ? (r.area_name + ' | ') : '';
+            row.innerHTML =
+              '<div class="search-result-main">' +
+                '<div class="search-result-title">' + escapeHtml(r.name || ('Room #' + r.vnum)) + '</div>' +
+                '<div class="search-result-sub">' + escapeHtml(areaSub + 'Floor Z=' + r.coords.z) + '</div>' +
+              '</div>' +
+              '<div class="search-result-badges">' +
+                '<span class="search-type-badge room">Room</span>' +
+                '<span class="badge">' + r.vnum + '</span>' +
+              '</div>';
+          } else {
+            const mLabel = item.mob ? (item.mob.short_desc || item.mob.name) : ('Mob #' + item.mobVnum);
+            const lvlStr = item.mob && item.mob.level !== undefined ? ('Lvl ' + item.mob.level + ' | ') : '';
+            const rName = item.room ? item.room.name : '';
+            row.innerHTML =
+              '<div class="search-result-main">' +
+                '<div class="search-result-title">' + escapeHtml(mLabel) + '</div>' +
+                '<div class="search-result-sub">' + escapeHtml(lvlStr + 'Spawns in [' + item.roomVnum + '] ' + rName) + '</div>' +
+              '</div>' +
+              '<div class="search-result-badges">' +
+                '<span class="search-type-badge mob">Mob</span>' +
+                '<span class="badge">' + item.mobVnum + '</span>' +
+              '</div>';
+          }
+
+          row.addEventListener('mouseenter', () => {
+            searchActiveIndex = idx;
+            updateSearchActiveHighlight();
+          });
+          row.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            activateSearchResult(item);
+          });
+          searchResults.appendChild(row);
+        });
+
+        searchResults.style.display = 'block';
+      }
 
       searchInput.addEventListener('input', () => {
-        const query = searchInput.value.trim().toLowerCase();
+        const rawQuery = searchInput.value.trim();
+        const query = rawQuery.toLowerCase();
         searchClear.style.display = query ? 'block' : 'none';
 
-        let firstMatch = null;
+        if (!query) {
+          roomGroups.forEach(g => g.classList.remove('highlighted'));
+          applyFloorFilter();
+          searchResultItems = [];
+          if (searchResults) searchResults.innerHTML = '';
+          closeSearchResults();
+          return;
+        }
+
+        const matchedRoomVnums = new Set();
+        const allMatches = [];
+
+        rooms.forEach(r => {
+          const vnumStr = String(r.vnum);
+          const rName = (r.name || '').toLowerCase();
+          const rArea = (r.area_name || '').toLowerCase();
+          if (vnumStr === query || vnumStr.includes(query) || rName.includes(query) || rArea.includes(query)) {
+            let score = 2;
+            if (vnumStr === query) score = 0;
+            else if (vnumStr.startsWith(query) || rName.startsWith(query)) score = 1;
+            matchedRoomVnums.add(r.vnum);
+            allMatches.push({ type: 'room', vnum: r.vnum, score, room: r });
+          }
+
+          (r.mobs || []).forEach(m => {
+            const mobData = mobilesMap.get(m.vnum) || (mapData.mobiles ? mapData.mobiles[String(m.vnum)] : null);
+            const mvStr = String(m.vnum);
+            const mShort = mobData && mobData.short_desc ? mobData.short_desc.toLowerCase() : '';
+            const mName = mobData && mobData.name ? mobData.name.toLowerCase() : '';
+            if (mvStr === query || mvStr.includes(query) || mShort.includes(query) || mName.includes(query)) {
+              let score = 2;
+              if (mvStr === query) score = 0;
+              else if (mvStr.startsWith(query) || mShort.startsWith(query) || mName.startsWith(query)) score = 1;
+              matchedRoomVnums.add(r.vnum);
+              allMatches.push({ type: 'mob', roomVnum: r.vnum, mobVnum: m.vnum, score, room: r, mob: mobData, count: m.count || 1 });
+            }
+          });
+        });
+
+        allMatches.sort((a, b) => {
+          if (a.score !== b.score) return a.score - b.score;
+          if (a.type !== b.type) return a.type === 'room' ? -1 : 1;
+          const av = a.type === 'room' ? a.vnum : a.mobVnum;
+          const bv = b.type === 'room' ? b.vnum : b.mobVnum;
+          return av - bv;
+        });
+
         roomGroups.forEach((g, vnum) => {
-          const r = roomMap.get(vnum);
-          const matches = query && (r.vnum.toString() === query || r.name.toLowerCase().includes(query));
-          g.classList.toggle('highlighted', Boolean(matches));
-          g.classList.toggle('dimmed', Boolean(query && !matches));
-          if (matches && !firstMatch) firstMatch = vnum;
+          const matches = matchedRoomVnums.has(vnum);
+          g.classList.toggle('highlighted', matches);
+          g.classList.toggle('dimmed', !matches);
         });
 
         exitElements.forEach(line => {
-          line.classList.toggle('dimmed', Boolean(query));
+          line.classList.toggle('dimmed', true);
         });
 
-        if (firstMatch && (query.length > 2 || !isNaN(query))) {
-          centerOnRoom(firstMatch);
+        renderSearchDropdown(allMatches, rawQuery);
+
+        if (allMatches.length > 0 && (query.length > 2 || !isNaN(query))) {
+          const firstVnum = allMatches[0].type === 'room' ? allMatches[0].vnum : allMatches[0].roomVnum;
+          centerOnRoom(firstVnum);
         }
+      });
+
+      searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') {
+          if (searchResultItems.length === 0) return;
+          e.preventDefault();
+          if (searchResults) searchResults.style.display = 'block';
+          searchActiveIndex = Math.min(searchActiveIndex + 1, searchResultItems.length - 1);
+          updateSearchActiveHighlight();
+        } else if (e.key === 'ArrowUp') {
+          if (searchResultItems.length === 0) return;
+          e.preventDefault();
+          if (searchResults) searchResults.style.display = 'block';
+          searchActiveIndex = Math.max(searchActiveIndex - 1, 0);
+          updateSearchActiveHighlight();
+        } else if (e.key === 'Enter') {
+          if (searchResults && searchResults.style.display !== 'none' && searchResultItems.length > 0) {
+            e.preventDefault();
+            const pickIdx = searchActiveIndex >= 0 ? searchActiveIndex : 0;
+            activateSearchResult(searchResultItems[pickIdx]);
+          }
+        } else if (e.key === 'Escape') {
+          if (searchResults && searchResults.style.display !== 'none') {
+            e.preventDefault();
+            closeSearchResults();
+          } else if (searchInput.value) {
+            searchInput.value = '';
+            searchInput.dispatchEvent(new Event('input'));
+          }
+        }
+      });
+
+      searchInput.addEventListener('focus', () => {
+        if (searchInput.value.trim() && searchResults && searchResults.innerHTML) {
+          searchResults.style.display = 'block';
+        }
+      });
+
+      document.addEventListener('click', (e) => {
+        if (e.target && e.target.closest && e.target.closest('.search-section')) return;
+        closeSearchResults();
       });
 
       searchClear.addEventListener('click', () => {
@@ -2637,13 +3322,27 @@ __JSON_DATA__
       });
 
 
-      // Collapsible Sidebar functionality
+      // Collapsible Sidebar & Mobile Filters functionality
       const sidebar = document.getElementById('sidebar');
       const app = document.getElementById('app');
+      const toolbarHeader = document.querySelector('header.toolbar');
+      const btnToggleFilters = document.getElementById('btn-toggle-filters');
       const btnCollapseSidebar = document.getElementById('btn-collapse-sidebar');
       const btnExpandSidebar = document.getElementById('btn-expand-sidebar');
       const btnToggleSidebar = document.getElementById('btn-toggle-sidebar');
       const minimapContainer = document.querySelector('.minimap-container');
+
+      if (btnToggleFilters) {
+        btnToggleFilters.addEventListener('click', () => {
+          const isOpen = !app.classList.contains('filters-open');
+          app.classList.toggle('filters-open', isOpen);
+          if (toolbarHeader) {
+            toolbarHeader.classList.toggle('filters-open', isOpen);
+          }
+          btnToggleFilters.classList.toggle('btn-active', isOpen);
+          btnToggleFilters.setAttribute('aria-expanded', String(isOpen));
+        });
+      }
 
       function setSidebarCollapsed(collapsed) {
         sidebar.classList.toggle('collapsed', collapsed);
@@ -2691,11 +3390,17 @@ __JSON_DATA__
           l.classList.remove('selected', 'highlighted');
         });
 
+        const mobCard = document.getElementById('card-mob-inspector');
+        if (mobCard) mobCard.style.display = 'none';
+
         const edgeCard = document.getElementById('card-edge-inspector');
         if (edgeCard) edgeCard.style.display = 'none';
 
         const roomCard = document.getElementById('room-detail-card');
         if (roomCard) roomCard.style.display = 'block';
+
+        const routeActions = document.getElementById('room-route-actions');
+        if (routeActions) routeActions.style.display = 'none';
 
         document.getElementById('card-room-name').textContent = 'Select a Room';
         document.getElementById('card-room-meta').textContent = 'Click any room on the map to inspect details.';
@@ -2714,11 +3419,24 @@ __JSON_DATA__
         if (incomingElem) incomingElem.innerHTML = '';
         const incomingSection = document.getElementById('incoming-exits-section');
         if (incomingSection) incomingSection.style.display = 'none';
+        const mobsSection = document.getElementById('room-mobs-section');
+        if (mobsSection) mobsSection.style.display = 'none';
+
+        updateUrlHash(null);
+      }
+
+      function isViewportOverlayTarget(target) {
+        return Boolean(
+          target &&
+          target.closest &&
+          (target.closest('.minimap-container') || target.closest('.floating-map-controls') || target.closest('.btn-sidebar-expand'))
+        );
       }
 
       // Pan & Zoom handlers
       viewport.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
+        if (isViewportOverlayTarget(e.target)) return;
         isPanning = true;
         wasDragging = false;
         startX = e.clientX - panX;
@@ -2736,7 +3454,7 @@ __JSON_DATA__
       let lastMidY = 0;
 
       mapContainer.addEventListener('touchstart', (e) => {
-        if (e.target && e.target.closest && e.target.closest('.minimap-container')) return;
+        if (isViewportOverlayTarget(e.target)) return;
         if (e.touches.length === 1) {
           isTouchPanning = true;
           isPinching = false;
@@ -2762,7 +3480,7 @@ __JSON_DATA__
       }, { passive: false });
 
       mapContainer.addEventListener('touchmove', (e) => {
-        if (e.target && e.target.closest && e.target.closest('.minimap-container')) return;
+        if (isViewportOverlayTarget(e.target)) return;
         if (e.touches.length === 1 && isTouchPanning) {
           e.preventDefault();
           const t = e.touches[0];
@@ -2840,7 +3558,7 @@ __JSON_DATA__
       // Canvas / Background click for deselection
       viewport.addEventListener('click', (e) => {
         if (wasDragging) return;
-        if (e.target && e.target.closest && e.target.closest('.minimap-container')) return;
+        if (isViewportOverlayTarget(e.target)) return;
         deselectAll();
       });
 
@@ -2858,15 +3576,43 @@ __JSON_DATA__
         updateTransform();
       }, { passive: false });
 
-      document.getElementById('btn-zoom-in').addEventListener('click', () => {
-        zoom = Math.min(zoom * 1.25, 5.0);
+      function zoomByFactor(factor) {
+        const rect = viewport.getBoundingClientRect();
+        const newZoom = Math.min(Math.max(zoom * factor, 0.15), 5.0);
+        if (rect && rect.width > 0 && rect.height > 0) {
+          const cx = rect.width / 2;
+          const cy = rect.height / 2;
+          panX = cx - (cx - panX) * (newZoom / zoom);
+          panY = cy - (cy - panY) * (newZoom / zoom);
+        }
+        zoom = newZoom;
         updateTransform();
-      });
+      }
 
-      document.getElementById('btn-zoom-out').addEventListener('click', () => {
-        zoom = Math.max(zoom * 0.8, 0.15);
-        updateTransform();
-      });
+      document.getElementById('btn-zoom-in').addEventListener('click', () => zoomByFactor(1.25));
+      document.getElementById('btn-zoom-out').addEventListener('click', () => zoomByFactor(0.8));
+
+      const btnFloatZoomIn = document.getElementById('btn-float-zoom-in');
+      const btnFloatZoomOut = document.getElementById('btn-float-zoom-out');
+      const btnFloatResetView = document.getElementById('btn-float-reset-view');
+      const btnToggleMinimap = document.getElementById('btn-toggle-minimap');
+
+      if (btnFloatZoomIn) {
+        btnFloatZoomIn.addEventListener('click', () => zoomByFactor(1.25));
+      }
+      if (btnFloatZoomOut) {
+        btnFloatZoomOut.addEventListener('click', () => zoomByFactor(0.8));
+      }
+      if (btnToggleMinimap && minimapContainer) {
+        btnToggleMinimap.addEventListener('click', () => {
+          const isHidden = minimapContainer.classList.toggle('minimap-hidden');
+          btnToggleMinimap.classList.toggle('btn-active', !isHidden);
+          btnToggleMinimap.setAttribute('aria-pressed', String(!isHidden));
+          if (!isHidden) {
+            renderMinimap();
+          }
+        });
+      }
 
       function computeIsometricCentroidAndBounds() {
         if (rooms.length === 0) {
@@ -2912,21 +3658,89 @@ __JSON_DATA__
       }
 
       document.getElementById('btn-reset-view').addEventListener('click', resetView);
+      if (btnFloatResetView) {
+        btnFloatResetView.addEventListener('click', resetView);
+      }
 
-      // Pathfinder (BFS)
+      // Pathfinder (BFS) & Speedwalk
       const btnPathfind = document.getElementById('btn-pathfind');
       const pathfindCard = document.getElementById('pathfind-card');
-      btnPathfind.addEventListener('click', () => {
-        const isShown = pathfindCard.style.display !== 'none';
-        pathfindCard.style.display = isShown ? 'none' : 'block';
-        btnPathfind.classList.toggle('btn-active', !isShown);
-      });
+      const speedwalkBar = document.getElementById('path-speedwalk-bar');
+      const speedwalkText = document.getElementById('path-speedwalk-text');
+      const btnCopySpeedwalk = document.getElementById('btn-copy-speedwalk');
 
-      document.getElementById('btn-calc-path').addEventListener('click', () => {
+      function buildSpeedwalk(directions) {
+        if (!Array.isArray(directions) || directions.length === 0) return '';
+        const dirAbbr = {
+          north: 'n',
+          east: 'e',
+          south: 's',
+          west: 'w',
+          up: 'u',
+          down: 'd',
+          northeast: 'ne',
+          northwest: 'nw',
+          southeast: 'se',
+          southwest: 'sw',
+          n: 'n',
+          e: 'e',
+          s: 's',
+          w: 'w',
+          u: 'u',
+          d: 'd',
+          ne: 'ne',
+          nw: 'nw',
+          se: 'se',
+          sw: 'sw',
+        };
+        const tokens = directions
+          .map(d => {
+            const key = String(d || '').trim().toLowerCase();
+            return dirAbbr[key] || key;
+          })
+          .filter(Boolean);
+        if (tokens.length === 0) return '';
+
+        let out = '';
+        let current = tokens[0];
+        let count = 1;
+        for (let i = 1; i < tokens.length; i++) {
+          if (tokens[i] === current) {
+            count += 1;
+          } else {
+            out += (count > 1 ? String(count) : '') + current;
+            current = tokens[i];
+            count = 1;
+          }
+        }
+        out += (count > 1 ? String(count) : '') + current;
+        return out;
+      }
+
+      function openPathfinderCard() {
+        if (pathfindCard) {
+          pathfindCard.style.display = 'block';
+        }
+        if (btnPathfind) {
+          btnPathfind.classList.add('btn-active');
+        }
+        if (sidebar.classList.contains('collapsed')) {
+          setSidebarCollapsed(false);
+        }
+        if (pathfindCard && pathfindCard.scrollIntoView) {
+          pathfindCard.scrollIntoView({ block: 'nearest' });
+        }
+      }
+
+      function calculateShortestPath() {
         const start = parseInt(document.getElementById('pf-start').value, 10);
         const dst = parseInt(document.getElementById('pf-dst').value, 10);
+        clearPathHighlight();
+        const stepsContainer = document.getElementById('path-steps');
         if (isNaN(start) || isNaN(dst) || !roomMap.has(start) || !roomMap.has(dst)) {
-          alert('Please enter valid Start and Destination VNUMs.');
+          if (stepsContainer) {
+            stepsContainer.innerHTML = '<div style="color: #ef4444; font-size: 0.8rem;">Please enter valid Start and Destination VNUMs.</div>';
+          }
           return;
         }
 
@@ -2951,14 +3765,12 @@ __JSON_DATA__
           }
         }
 
-        clearPathHighlight();
-        const stepsContainer = document.getElementById('path-steps');
-        stepsContainer.innerHTML = '';
-
         if (!foundPath) {
           stepsContainer.innerHTML = '<div style="color: #ef4444; font-size: 0.8rem;">No navigable path found between specified rooms.</div>';
           return;
         }
+
+        const directions = [];
 
         // Highlight path nodes and edges
         foundPath.forEach((vnum, idx) => {
@@ -2969,11 +3781,28 @@ __JSON_DATA__
             const nextVnum = foundPath[idx + 1];
             const currRoom = roomMap.get(vnum);
             const exitObj = (currRoom.exits || []).find(e => e.dst === nextVnum);
-            const dir = exitObj ? exitObj.direction.toUpperCase() : 'MOVE';
+            const rawDir = exitObj ? exitObj.direction : 'move';
+            directions.push(rawDir);
+            const dir = rawDir.toUpperCase();
+            const nextRoom = roomMap.get(nextVnum);
 
             const stepDiv = document.createElement('div');
             stepDiv.className = 'path-step';
-            stepDiv.innerHTML = '<strong>Step ' + (idx + 1) + ':</strong> Go ' + dir + ' to [' + nextVnum + '] ' + roomMap.get(nextVnum).name;
+            stepDiv.setAttribute('role', 'button');
+            stepDiv.setAttribute('tabindex', '0');
+            stepDiv.title = 'Click to center and inspect [' + nextVnum + ']';
+            stepDiv.innerHTML = '<strong>Step ' + (idx + 1) + ':</strong> Go ' + escapeHtml(dir) + ' to [' + nextVnum + '] ' + escapeHtml(nextRoom ? nextRoom.name : '');
+            stepDiv.addEventListener('click', () => {
+              centerOnRoom(nextVnum);
+              selectRoom(nextVnum);
+            });
+            stepDiv.addEventListener('keydown', (ev) => {
+              if (ev.key === 'Enter' || ev.key === ' ') {
+                ev.preventDefault();
+                centerOnRoom(nextVnum);
+                selectRoom(nextVnum);
+              }
+            });
             stepsContainer.appendChild(stepDiv);
 
             // Highlight exit line
@@ -2981,7 +3810,110 @@ __JSON_DATA__
             if (line) line.classList.add('path-edge');
           }
         });
+
+        if (foundPath.length === 1) {
+          stepsContainer.innerHTML = '<div style="color: var(--text-muted); font-size: 0.8rem;">Start and destination are the same room ([' + start + ']).</div>';
+        } else {
+          const speedwalk = buildSpeedwalk(directions);
+          if (speedwalk && speedwalkBar && speedwalkText) {
+            speedwalkText.textContent = speedwalk;
+            speedwalkBar.style.display = 'flex';
+          }
+        }
+      }
+
+      btnPathfind.addEventListener('click', () => {
+        const isShown = pathfindCard.style.display !== 'none';
+        if (isShown) {
+          pathfindCard.style.display = 'none';
+          btnPathfind.classList.remove('btn-active');
+        } else {
+          openPathfinderCard();
+        }
       });
+
+      document.getElementById('btn-calc-path').addEventListener('click', calculateShortestPath);
+
+      const btnRouteFromHere = document.getElementById('btn-route-from-here');
+      const btnRouteToHere = document.getElementById('btn-route-to-here');
+
+      if (btnRouteFromHere) {
+        btnRouteFromHere.addEventListener('click', () => {
+          if (selectedVnum === null || !roomMap.has(selectedVnum)) return;
+          const pfStart = document.getElementById('pf-start');
+          const pfDst = document.getElementById('pf-dst');
+          if (pfStart) pfStart.value = selectedVnum;
+          openPathfinderCard();
+          const dstVal = pfDst ? parseInt(pfDst.value, 10) : NaN;
+          if (!isNaN(dstVal) && roomMap.has(dstVal)) {
+            calculateShortestPath();
+          } else {
+            const stepsContainer = document.getElementById('path-steps');
+            if (stepsContainer) {
+              stepsContainer.innerHTML = '<div style="color: var(--text-muted); font-size: 0.8rem;">Start set to [' + selectedVnum + ']. Select or enter a destination room.</div>';
+            }
+            if (pfDst) pfDst.focus();
+          }
+        });
+      }
+
+      if (btnRouteToHere) {
+        btnRouteToHere.addEventListener('click', () => {
+          if (selectedVnum === null || !roomMap.has(selectedVnum)) return;
+          const pfStart = document.getElementById('pf-start');
+          const pfDst = document.getElementById('pf-dst');
+          if (pfDst) pfDst.value = selectedVnum;
+          openPathfinderCard();
+          const startVal = pfStart ? parseInt(pfStart.value, 10) : NaN;
+          if (!isNaN(startVal) && roomMap.has(startVal)) {
+            calculateShortestPath();
+          } else {
+            const stepsContainer = document.getElementById('path-steps');
+            if (stepsContainer) {
+              stepsContainer.innerHTML = '<div style="color: var(--text-muted); font-size: 0.8rem;">Destination set to [' + selectedVnum + ']. Select or enter a start room.</div>';
+            }
+            if (pfStart) pfStart.focus();
+          }
+        });
+      }
+
+      function fallbackCopyText(text) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+          document.execCommand('copy');
+        } finally {
+          document.body.removeChild(ta);
+        }
+      }
+
+      let copyFeedbackTimer = null;
+      if (btnCopySpeedwalk && speedwalkText) {
+        btnCopySpeedwalk.addEventListener('click', () => {
+          const text = speedwalkText.textContent || '';
+          if (!text) return;
+          const done = () => {
+            btnCopySpeedwalk.textContent = 'Copied!';
+            if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
+            copyFeedbackTimer = setTimeout(() => {
+              btnCopySpeedwalk.textContent = 'Copy';
+            }, 1500);
+          };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(() => {
+              fallbackCopyText(text);
+              done();
+            });
+          } else {
+            fallbackCopyText(text);
+            done();
+          }
+        });
+      }
 
       document.getElementById('btn-clear-path').addEventListener('click', clearPathHighlight);
 
@@ -2989,6 +3921,9 @@ __JSON_DATA__
         roomGroups.forEach(g => g.classList.remove('path-node'));
         canvasRoot.querySelectorAll('.exit-line').forEach(l => l.classList.remove('path-edge'));
         document.getElementById('path-steps').innerHTML = '';
+        if (speedwalkBar) speedwalkBar.style.display = 'none';
+        if (speedwalkText) speedwalkText.textContent = '';
+        if (btnCopySpeedwalk) btnCopySpeedwalk.textContent = 'Copy';
       }
 
       // Minimap rendering
@@ -3147,10 +4082,27 @@ __JSON_DATA__
         }
       });
 
+      window.addEventListener('hashchange', () => {
+        const hashVnum = parseHashVnum();
+        if (hashVnum !== null && roomMap.has(hashVnum)) {
+          centerOnRoom(hashVnum);
+          selectRoom(hashVnum, { updateHash: false });
+        } else if (!window.location.hash) {
+          deselectAll();
+        }
+      });
+
       // Initial fit & render
       resetView();
-      if (rooms.length > 0) {
-        selectRoom(rooms[0].vnum);
+      const initialHashVnum = parseHashVnum();
+      if (initialHashVnum !== null && roomMap.has(initialHashVnum)) {
+        setSidebarCollapsed(false);
+        centerOnRoom(initialHashVnum);
+        selectRoom(initialHashVnum, { updateHash: false });
+      } else if (isMobileViewport()) {
+        setSidebarCollapsed(true);
+      } else if (rooms.length > 0) {
+        selectRoom(rooms[0].vnum, { updateHash: false, autoExpand: false });
       }
     })();
   </script>
