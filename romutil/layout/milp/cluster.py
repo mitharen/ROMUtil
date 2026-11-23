@@ -140,7 +140,7 @@ def solve_cluster_with_cutting_planes(
     node: SolveTreeNode,
     options: LayoutOptions | None = None,
     solver_name: str = "cbc",
-    max_iterations: int = 35,
+    max_iterations: int = 50,
     total_cluster_budget: float | None = None,
     max_solutions: int | None = None,
 ) -> SolvedClusterExtraction:
@@ -148,7 +148,10 @@ def solve_cluster_with_cutting_planes(
 
     Coordinates an explicit 4-phase state machine:
       1. PHYSICAL_CLEARANCE: When physical room or macro-box collisions exist, inject disjunctive
-         clearance cuts strictly for physical collisions using intermediate fast passes.
+         clearance cuts for physical collisions alongside mandatory crossings (compacted multi-room
+         hallways and degree-1 pendant gateway bridges) at lower priority tier (tier 5 inside
+         ``inject_clearance_cuts``), while deferring non-mandatory unit-edge crossings to
+         CROSSING_CLEARANCE, using intermediate fast passes.
       2. CROSSING_CLEARANCE: When all physical collisions are cleared but planar corridor crossings
          remain, inject corridor crossing separation cuts. If resolving crossings re-introduces
          physical collisions, immediately falls back to PHYSICAL_CLEARANCE (self-healing).
@@ -168,7 +171,7 @@ def solve_cluster_with_cutting_planes(
         node: SolveTreeNode representing the cluster to lay out.
         options: Optional layout configuration parameters containing base timeout.
         solver_name: Pyomo MILP solver name (defaults to 'cbc').
-        max_iterations: Maximum cutting-plane refinement iterations (defaults to 15).
+        max_iterations: Maximum cutting-plane refinement iterations (defaults to 50).
         total_cluster_budget: Optional explicit aggregate cluster budget in seconds.
             If None, computed dynamically via compute_adaptive_cluster_timeout.
         max_solutions: Optional limit on the number of solutions found on intermediate passes.
@@ -337,7 +340,8 @@ def solve_cluster_with_cutting_planes(
             if physical_collisions:
                 phase = ClusterSolvePhase.PHYSICAL_CLEARANCE
                 new_cuts = formulation.clearance_builder.inject_clearance_cuts(
-                    physical_collisions, extraction=extraction
+                    [*physical_collisions, *compacted_crossings],
+                    extraction=extraction,
                 )
                 if new_cuts == 0:
                     if unit_crossing_cuts_injected and best_physical_extraction is not None:
@@ -435,8 +439,12 @@ def solve_cluster_with_cutting_planes(
                     if final_physical:
                         phase = ClusterSolvePhase.PHYSICAL_CLEARANCE
                         extraction = final_extraction
+                        final_compacted = _compacted_crossings(
+                            final_crossings, formulation.inventory.active_edges
+                        )
                         new_cuts = formulation.clearance_builder.inject_clearance_cuts(
-                            final_physical, extraction=final_extraction
+                            [*final_physical, *final_compacted],
+                            extraction=final_extraction,
                         )
                         remaining_budget = total_cluster_budget - (time.monotonic() - t_start)
                         if new_cuts == 0 or remaining_budget < 1.0:
