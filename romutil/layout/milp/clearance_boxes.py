@@ -265,6 +265,65 @@ def max_box_3d_containing(
     return BoundingBox3D(x0, x1, y0, y1, z0, z1)
 
 
+def _cells_2d_to_x_runs(pts_2d: set[tuple[int, int]]) -> list[tuple[int, int, int]]:
+    """Collapse a 2D cell set into maximal contiguous horizontal runs ``(y, x_lo, x_hi)``."""
+    if not pts_2d:
+        return []
+    by_y: dict[int, list[int]] = collections.defaultdict(list)
+    for x, y in pts_2d:
+        by_y[y].append(x)
+    runs: list[tuple[int, int, int]] = []
+    for y in sorted(by_y):
+        xs = sorted(by_y[y])
+        x_lo = x_hi = xs[0]
+        for x in xs[1:]:
+            if x == x_hi + 1:
+                x_hi = x
+            else:
+                runs.append((y, x_lo, x_hi))
+                x_lo = x_hi = x
+        runs.append((y, x_lo, x_hi))
+    return runs
+
+
+def _minkowski_diff_2d(
+    s2: set[tuple[int, int]],
+    s1: set[tuple[int, int]],
+    *,
+    max_run_pairs: int = 50_000,
+    max_output_cells: int = 100_000,
+) -> set[tuple[int, int]] | None:
+    """Compute the 2D Minkowski difference ``{(x2 - x1, y2 - y1)}`` via X-run interval merging."""
+    if not s1 or not s2:
+        return set()
+    r1 = _cells_2d_to_x_runs(s1)
+    r2 = _cells_2d_to_x_runs(s2)
+    if len(r1) * len(r2) > max_run_pairs:
+        return None
+
+    intervals_by_dy: dict[int, list[tuple[int, int]]] = collections.defaultdict(list)
+    for y2, x2_lo, x2_hi in r2:
+        for y1, x1_lo, x1_hi in r1:
+            intervals_by_dy[y2 - y1].append((x2_lo - x1_hi, x2_hi - x1_lo))
+
+    out: set[tuple[int, int]] = set()
+    for dy, intervals in intervals_by_dy.items():
+        intervals.sort()
+        merged: list[tuple[int, int]] = [intervals[0]]
+        for lo, hi in intervals[1:]:
+            prev_lo, prev_hi = merged[-1]
+            if lo <= prev_hi + 1:
+                if hi > prev_hi:
+                    merged[-1] = (prev_lo, hi)
+            else:
+                merged.append((lo, hi))
+        for lo, hi in merged:
+            if len(out) + (hi - lo + 1) > max_output_cells:
+                return None
+            out.update((dx, dy) for dx in range(lo, hi + 1))
+    return out
+
+
 def compute_planar_component_sizes(inventory: ClusterInventory) -> dict[int | str, int]:
     """Compute conservative cell-count lower bounds for strictly planar (dz == 0) components."""
     room_extents = getattr(inventory, "room_extents", {})
@@ -514,7 +573,6 @@ class ExactCollisionCutGrower:
         if (
             not o1
             or not o2
-            or len(o1) * len(o2) > 25_000
             or c1 not in extraction.raw_child_offsets
             or c2 not in extraction.raw_child_offsets
         ):
@@ -537,15 +595,18 @@ class ExactCollisionCutGrower:
                     continue
                 s1 = self._get_hole_filled_slice(c1, z1, max(0, p_size2 - 1))
                 s2 = self._get_hole_filled_slice(c2, z2, max(0, p_size1 - 1))
-                for x2, y2 in s2:
-                    for x1, y1 in s1:
-                        mink_2d.add((x2 - x1, y2 - y1))
+                slice_mink = _minkowski_diff_2d(s2, s1)
+                if slice_mink is None:
+                    return None
+                mink_2d |= slice_mink
             if (dx_cur, dy_cur) not in mink_2d:
                 return None
             rx0, rx1, ry0, ry1 = max_rect_2d_containing(mink_2d, dx_cur, dy_cur)
             box = BoundingBox3D(rx0, rx1, ry0, ry1, dz_locked, dz_locked)
             candidate_dirs: Sequence[str] = _PLANAR_DIRS
         else:
+            if len(o1) * len(o2) > 25_000:
+                return None
             mink_3d = {
                 (x2 - x1, y2 - y1, z2 - z1)
                 for (x2, y2, z2) in o2

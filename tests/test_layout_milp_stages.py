@@ -1410,6 +1410,60 @@ class TestStage2Formulation:
             assert len(int_box) == 6
             assert len(full_box) == 6
 
+    def test_vertical_active_edge_transverse_slack_variables_and_envelope_box(self) -> None:
+        """Vertical (dz != 0) edges with allow_transverse_slack declare X/Y slack and expand envelope boxes."""
+        node = SolveTreeNode(node_id="n_vert_slack", node_type="leaf", rooms=frozenset({1, 2, 3}))
+        inv = inventory_cluster(node=node, child_solutions={}, graph=_make_graph([1, 2, 3], []))
+        ae_vert_slack = ActiveEdge(
+            edge_id="e_up_slack",
+            src=1,
+            dst=2,
+            direction=(0, 0, 1),
+            min_length=2,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+            transverse_extent=(1, 1),
+        )
+        ae_vert_rigid = ActiveEdge(
+            edge_id="e_down_rigid",
+            src=2,
+            dst=3,
+            direction=(0, 0, -1),
+            min_length=2,
+            associated_rooms=frozenset({2, 3}),
+            associated_children=frozenset(),
+            allow_transverse_slack=False,
+        )
+        import dataclasses
+
+        inv = dataclasses.replace(inv, active_edges=(ae_vert_slack, ae_vert_rigid))
+        formulation = ClusterFormulation(inventory=inv)
+
+        assert formulation.has_transverse_slack() is True
+        assert len(formulation.model.s_transverse_p) == 2
+        assert len(formulation.model.s_transverse_m) == 2
+        assert ("e_up_slack", "x") in formulation._edge_transverse_slack
+        assert ("e_up_slack", "y") in formulation._edge_transverse_slack
+        assert ("e_down_rigid", "x") not in formulation._edge_transverse_slack
+        assert ("e_down_rigid", "y") not in formulation._edge_transverse_slack
+
+        env_int = formulation.get_corridor_envelope_box(ae_vert_slack, interior=True)
+        env_full = formulation.get_corridor_envelope_box(ae_vert_slack, interior=False)
+        for env in (env_int, env_full):
+            assert "-" in str(env[0]) and "+" in str(env[1])
+            assert "-" in str(env[2]) and "+" in str(env[3])
+            assert str(env[0]) != str(env[1])
+            assert str(env[2]) != str(env[3])
+
+        int_plain = formulation.get_corridor_interior_box(ae_vert_slack)
+        assert "s_transverse" not in str(int_plain[0])
+        assert "s_transverse" not in str(int_plain[2])
+
+        env_rigid = formulation.get_corridor_envelope_box(ae_vert_rigid, interior=True)
+        assert str(env_rigid[0]) == str(env_rigid[1])
+        assert str(env_rigid[2]) == str(env_rigid[3])
+
     def test_dynamic_bounds_small_leaf_hits_floor(self) -> None:
         """Small leaf clusters with few rooms and edges resolve to the baseline floor of 50."""
         node = SolveTreeNode(node_id="leaf_3", node_type="leaf", rooms=frozenset({1, 2, 3}))

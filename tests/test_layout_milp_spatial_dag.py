@@ -298,6 +298,54 @@ class TestCandidateDirectionFiltering:
         for eliminated in (DIR_AHEAD, DIR_UP, DIR_DOWN):
             assert eliminated in pruned_y
 
+    def test_vertical_active_edge_with_transverse_slack_omits_xy_equalities(self) -> None:
+        """Vertical active edges with allow_transverse_slack=True omit rigid X and Y equalities."""
+        ae_vert_slack = ActiveEdge(
+            edge_id="e_z_slack",
+            src=10,
+            dst=20,
+            direction=(0, 0, 1),
+            min_length=1,
+            associated_rooms=frozenset({10, 20}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+        )
+        ae_vert_rigid = ActiveEdge(
+            edge_id="e_z_rigid",
+            src=30,
+            dst=40,
+            direction=(0, 0, -1),
+            min_length=1,
+            associated_rooms=frozenset({30, 40}),
+            associated_children=frozenset(),
+            allow_transverse_slack=False,
+        )
+        mock_inv = MagicMock()
+        mock_inv.active_edges = [ae_vert_slack, ae_vert_rigid]
+        mock_inv.child_alignments = ()
+
+        mock_form = MagicMock()
+        mock_form.inventory = mock_inv
+
+        dag = ClusterPositionalDAG.from_formulation(mock_form)
+
+        assert dag.get_lower_bound(AXIS_X, 10, 20) is None
+        assert dag.get_lower_bound(AXIS_X, 20, 10) is None
+        assert dag.get_lower_bound(AXIS_Y, 10, 20) is None
+        assert dag.get_lower_bound(AXIS_Y, 20, 10) is None
+        assert dag.get_lower_bound(AXIS_Z, 10, 20) == 1
+
+        valid_z_slack, pruned_z_slack = dag.filter_candidate_directions(
+            10, 20, "parent_room", mock_inv
+        )
+        assert valid_z_slack == [DIR_RIGHT, DIR_LEFT, DIR_AHEAD, DIR_BEHIND, DIR_DOWN]
+        assert list(pruned_z_slack.keys()) == [DIR_UP]
+
+        assert dag.get_lower_bound(AXIS_X, 30, 40) == 0
+        assert dag.get_lower_bound(AXIS_Y, 30, 40) == 0
+        valid_z_rigid, _ = dag.filter_candidate_directions(30, 40, "parent_room", mock_inv)
+        assert valid_z_rigid == [DIR_UP]
+
     def test_unsatisfiable_collision_detection(self) -> None:
         """When two items are rigidly constrained to exact coordinate equality, all directions are pruned."""
         # Rooms 10 and 20 constrained to exact coordinate equality on all 3 axes

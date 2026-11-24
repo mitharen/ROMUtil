@@ -163,3 +163,95 @@ class TestDecomposeIntoOrthogonalSubBoxes:
         assert sum(b.volume() for b in boxes) == 3
         union_cells = set().union(*(_get_box_cells(b) for b in boxes))
         assert union_cells == coords
+
+    def test_lexicographic_tie_breaking_and_maximal_volume(self) -> None:
+        """Selects maximal 3D volume first and breaks ties lexicographically by (x1, y1, z1, x2, y2, z2)."""
+        # 2D L-shape of size 3 at origin: vertical stem (0,0..1,0) vs horizontal bar (0..1,0,0)
+        # Both have volume=2, x1=0, y1=0, z1=0; (0..0, 0..1, 0..0) has x2=0 < x2=1 so it wins first.
+        l_small = {Coord3D(0, 0, 0), Coord3D(1, 0, 0), Coord3D(0, 1, 0)}
+        boxes_small = decompose_into_orthogonal_sub_boxes(l_small)
+        assert boxes_small == (
+            BoundingBox3D(0, 0, 0, 1, 0, 0),
+            BoundingBox3D(1, 1, 0, 0, 0, 0),
+        )
+
+        # Multi-floor 3D volume selection: 2x2x2 cube (vol 8) beats 3x2x1 slab (vol 6)
+        coords_3d = {
+            Coord3D(x, y, z)
+            for x in range(2)
+            for y in range(2)
+            for z in range(2)
+        } | {
+            Coord3D(2, 0, 0),
+            Coord3D(2, 1, 0),
+        }
+        boxes_3d = decompose_into_orthogonal_sub_boxes(coords_3d)
+        assert boxes_3d == (
+            BoundingBox3D(0, 1, 0, 1, 0, 1),
+            BoundingBox3D(2, 2, 0, 1, 0, 0),
+        )
+
+        # Equal-volume 3D tie-break across z1 when z has a non-contiguous gap (z=0 and z=2)
+        tie_z_coords = {
+            Coord3D(x, y, z)
+            for x in range(2)
+            for y in range(2)
+            for z in (0, 2)
+        }
+        boxes_tie_z = decompose_into_orthogonal_sub_boxes(tie_z_coords)
+        assert boxes_tie_z == (
+            BoundingBox3D(0, 1, 0, 1, 0, 0),
+            BoundingBox3D(0, 1, 0, 1, 2, 2),
+        )
+
+    def test_non_contiguous_z_gaps_and_multi_floor_l_shapes(self) -> None:
+        """Non-contiguous Z layers are never merged across voids and multi-floor L-shapes stay disjoint."""
+        coords: set[Coord3D] = set()
+        # z=0: 3x2 base plus L arm; z=1: only corner column (0,0,1); z=2: 3x2 upper plate
+        for x in range(3):
+            for y in range(2):
+                coords.add(Coord3D(x, y, 0))
+                coords.add(Coord3D(x, y, 2))
+        coords.update({Coord3D(0, 2, 0), Coord3D(0, 3, 0), Coord3D(0, 0, 1)})
+        # Add disjoint horizontal run with X gap on z=2
+        coords.update({Coord3D(5, 0, 2), Coord3D(6, 0, 2)})
+
+        boxes = decompose_into_orthogonal_sub_boxes(coords)
+        union_cells: set[Coord3D] = set()
+        for box in boxes:
+            cells = _get_box_cells(box)
+            assert cells.issubset(coords)
+            assert union_cells.isdisjoint(cells)
+            union_cells.update(cells)
+            # No box wider than 1x1 can span across z=1 where only (0,0,1) exists
+            if box.min_z <= 1 <= box.max_z and box.min_z != box.max_z:
+                assert box.min_x == box.max_x == 0 and box.min_y == box.max_y == 0
+
+        assert union_cells == coords
+        assert sum(b.volume() for b in boxes) == len(coords)
+
+    def test_large_scaled_grid_performance_and_exact_partition(self) -> None:
+        """Decomposes a large multi-floor non-convex grid in sub-second time with 100% density."""
+        import time
+
+        coords: set[Coord3D] = set()
+        for z in (0, 1, 3, 4):
+            for y in range(24):
+                for x in range(24):
+                    if not (10 <= x <= 13 and 10 <= y <= 13) and not (x >= 20 and y <= 3):
+                        coords.add(Coord3D(x, y, z))
+
+        t0 = time.perf_counter()
+        boxes = decompose_into_orthogonal_sub_boxes(coords)
+        elapsed = time.perf_counter() - t0
+
+        assert elapsed < 1.0
+        assert sum(b.volume() for b in boxes) == len(coords)
+
+        union_cells: set[Coord3D] = set()
+        for box in boxes:
+            cells = _get_box_cells(box)
+            assert cells.issubset(coords)
+            assert union_cells.isdisjoint(cells)
+            union_cells.update(cells)
+        assert union_cells == coords

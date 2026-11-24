@@ -146,7 +146,7 @@ class ClusterFormulation:
             else 10.0 * (self.m_scale**2)
         )
         self.model = pyo.ConcreteModel()
-        self._edge_transverse_slack: dict[str, tuple[Any, Any]] = {}
+        self._edge_transverse_slack: dict[tuple[str, str], tuple[Any, Any]] = {}
         self._build_model()
         self.clearance_builder = ClearanceConstraintBuilder(self)
 
@@ -235,21 +235,21 @@ class ClusterFormulation:
 
                 if dx != 0:
                     model.edge_x.add(dst_x - src_x == model.L[i] * dx)
-                elif ae.allow_transverse_slack and dy != 0:
+                elif ae.allow_transverse_slack and (dy != 0 or dz != 0):
                     sp = model.s_transverse_p.add()
                     sm = model.s_transverse_m.add()
                     model.edge_x.add(dst_x - src_x == sp - sm)
-                    self._edge_transverse_slack[ae.edge_id] = (sp, sm)
+                    self._edge_transverse_slack[(ae.edge_id, "x")] = (sp, sm)
                 else:
                     model.edge_x.add(dst_x - src_x == 0)
 
                 if dy != 0:
                     model.edge_y.add(dst_y - src_y == model.L[i] * dy)
-                elif ae.allow_transverse_slack and dx != 0:
+                elif ae.allow_transverse_slack and (dx != 0 or dz != 0):
                     sp = model.s_transverse_p.add()
                     sm = model.s_transverse_m.add()
                     model.edge_y.add(dst_y - src_y == sp - sm)
-                    self._edge_transverse_slack[ae.edge_id] = (sp, sm)
+                    self._edge_transverse_slack[(ae.edge_id, "y")] = (sp, sm)
                 else:
                     model.edge_y.add(dst_y - src_y == 0)
 
@@ -369,11 +369,9 @@ class ClusterFormulation:
         src_lo, src_hi = getattr(ae, "src_extent", (0, 0))
         dst_lo, dst_hi = getattr(ae, "dst_extent", (0, 0))
         t_lo, t_hi = getattr(ae, "transverse_extent", (0, 0))
-        slack = (
-            self._edge_transverse_slack.get(ae.edge_id)
-            if include_transverse_slack and ae.allow_transverse_slack
-            else None
-        )
+        use_slack = include_transverse_slack and ae.allow_transverse_slack
+        slack_x = self._edge_transverse_slack.get((ae.edge_id, "x")) if use_slack else None
+        slack_y = self._edge_transverse_slack.get((ae.edge_id, "y")) if use_slack else None
 
         if dx != 0:
             if interior:
@@ -384,8 +382,8 @@ class ClusterFormulation:
                 )
             else:
                 x_min, x_max = (x1, x2) if dx > 0 else (x2, x1)
-            y_min = y1 - t_lo - slack[1] if slack is not None else y1 - t_lo
-            y_max = y1 + t_hi + slack[0] if slack is not None else y1 + t_hi
+            y_min = y1 - t_lo - slack_y[1] if slack_y is not None else y1 - t_lo
+            y_max = y1 + t_hi + slack_y[0] if slack_y is not None else y1 + t_hi
             return (x_min, x_max, y_min, y_max, z1, z1)
         if dy != 0:
             if interior:
@@ -396,12 +394,16 @@ class ClusterFormulation:
                 )
             else:
                 y_min, y_max = (y1, y2) if dy > 0 else (y2, y1)
-            x_min = x1 - t_lo - slack[1] if slack is not None else x1 - t_lo
-            x_max = x1 + t_hi + slack[0] if slack is not None else x1 + t_hi
+            x_min = x1 - t_lo - slack_x[1] if slack_x is not None else x1 - t_lo
+            x_max = x1 + t_hi + slack_x[0] if slack_x is not None else x1 + t_hi
             return (x_min, x_max, y_min, y_max, z1, z1)
         margin = 1 if interior else 0
         z_min, z_max = (z1 + margin, z2 - margin) if dz > 0 else (z2 + margin, z1 - margin)
-        return (x1 - t_lo, x1 + t_hi, y1 - t_lo, y1 + t_hi, z_min, z_max)
+        x_min = x1 - t_lo - slack_x[1] if slack_x is not None else x1 - t_lo
+        x_max = x1 + t_hi + slack_x[0] if slack_x is not None else x1 + t_hi
+        y_min = y1 - t_lo - slack_y[1] if slack_y is not None else y1 - t_lo
+        y_max = y1 + t_hi + slack_y[0] if slack_y is not None else y1 + t_hi
+        return (x_min, x_max, y_min, y_max, z_min, z_max)
 
     def get_corridor_interior_box(self, ae: ActiveEdge) -> tuple[Any, Any, Any, Any, Any, Any]:
         """Return 3D bounding box for a corridor's interior (excluding endpoints)."""
