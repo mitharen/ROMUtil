@@ -424,7 +424,7 @@ class ClusterPositionalDAG(PositionalConstraintDAG):
                 elif dx < 0:
                     w = min_len * (-dx) + dst_off[0] - src_off[0]
                     dag.add_edge(AXIS_X, dst_node, src_node, w)
-                elif not (allow_transverse and dy != 0):
+                elif not (allow_transverse and (dy != 0 or dz != 0)):
                     dag.add_equality(AXIS_X, src_node, dst_node, src_off[0] - dst_off[0])
 
                 # Process Y axis
@@ -434,7 +434,7 @@ class ClusterPositionalDAG(PositionalConstraintDAG):
                 elif dy < 0:
                     w = min_len * (-dy) + dst_off[1] - src_off[1]
                     dag.add_edge(AXIS_Y, dst_node, src_node, w)
-                elif not (allow_transverse and dx != 0):
+                elif not (allow_transverse and (dx != 0 or dz != 0)):
                     dag.add_equality(AXIS_Y, src_node, dst_node, src_off[1] - dst_off[1])
 
                 # Process Z axis

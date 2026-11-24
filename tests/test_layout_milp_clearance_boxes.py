@@ -27,6 +27,8 @@ from romutil.layout.milp.clearance import (
 )
 from romutil.layout.milp.clearance_boxes import (
     ExactCollisionCutGrower,
+    _cells_2d_to_x_runs,
+    _minkowski_diff_2d,
     compute_planar_component_sizes,
     dilate_2d_along_axis,
     fill_enclosed_2d_holes,
@@ -156,6 +158,31 @@ class TestDiscreteGeometryPrimitives:
         }
         assert max_box_3d_containing(pts_3d, 1, 1, 0) == BoundingBox3D(0, 2, 0, 1, 0, 1)
         assert max_box_3d_containing(pts_3d, 9, 9, 9) == BoundingBox3D(9, 9, 9, 9, 9, 9)
+
+    def test_cells_2d_to_x_runs_and_minkowski_diff_2d_equivalence_and_guards(self) -> None:
+        """Run-length 2D Minkowski difference matches naive cell pairs and enforces run/output guards."""
+        assert _cells_2d_to_x_runs(set()) == []
+        assert _minkowski_diff_2d(set(), {(0, 0)}) == set()
+        assert _minkowski_diff_2d({(0, 0)}, set()) == set()
+
+        s1 = {(-1, 0), (0, 0), (1, 0), (3, 0), (0, 1), (3, 2), (4, 2)}
+        s2 = {(2, -1), (3, -1), (5, -1), (2, 0), (3, 0), (4, 1)}
+        assert _cells_2d_to_x_runs(s1) == [(0, -1, 1), (0, 3, 3), (1, 0, 0), (2, 3, 4)]
+
+        expected = {(x2 - x1, y2 - y1) for (x2, y2) in s2 for (x1, y1) in s1}
+        assert _minkowski_diff_2d(s2, s1) == expected
+
+        # Guard: len(r1) * len(r2) > max_run_pairs returns None
+        assert _minkowski_diff_2d(s2, s1, max_run_pairs=5) is None
+
+        # Guard: total output cells > max_output_cells returns None
+        bar_a = {(x, 0) for x in range(20)}
+        bar_b = {(x, 0) for x in range(20)}
+        assert _minkowski_diff_2d(bar_b, bar_a, max_output_cells=30) is None
+
+        # Disjoint intervals on same dy row exceeding max_output_cells also returns None
+        two_bars = {(x, 0) for x in range(5)} | {(x, 0) for x in range(20, 25)}
+        assert _minkowski_diff_2d(two_bars, {(0, 0)}, max_output_cells=8) is None
 
 
 class TestPlanarComponentAndZLockHelpers:
@@ -608,6 +635,46 @@ class TestExactCollisionCutGrower:
         # Left wall dilates only to [-1, 1] and MUST NOT seal (2, 2) across to the right wall!
         assert cut.obstacle_box == BoundingBox3D(-1, 1, 0, 3, 0, 0)
         assert not (cut.obstacle_box.min_x <= 2 <= cut.obstacle_box.max_x)
+
+    def test_grow_child_child_cut_large_planar_locked_and_unlocked_z_guard(self) -> None:
+        """Planar-locked children exceeding 25,000 cell-pairs use run-length 2D Minkowski while 3D unlocked guards."""
+        box_16x16 = (BoundingBox3D(0, 15, 0, 15, 0, 0),)
+        ch1 = SolveTreeNode("c1", TreeNodeType.BLOCK, frozenset({10}))
+        ch2 = SolveTreeNode("c2", TreeNodeType.BLOCK, frozenset({20}))
+        parent = SolveTreeNode("root", TreeNodeType.BLOCK, frozenset({1}), children=(ch1, ch2))
+        s1 = NodeSolution("c1", {10: Coord3D(0, 0, 0)}, sub_boxes=box_16x16)
+        s2 = NodeSolution("c2", {20: Coord3D(0, 0, 0)}, sub_boxes=box_16x16)
+        inv = inventory_cluster(parent, {"c1": s1, "c2": s2}, _make_graph([1, 10, 20], []))
+        inv = dataclasses.replace(inv, child_sub_boxes={"c1": box_16x16, "c2": box_16x16})
+
+        ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0)},
+            raw_child_offsets={"c1": (0, 0, 0), "c2": (4, 4, 0)},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        # 1. Unlocked Z: 256 * 256 = 65,536 > 25,000 -> guarded to None
+        form_unlocked = ClusterFormulation(inventory=inv)
+        grower_unlocked = ExactCollisionCutGrower(
+            form_unlocked.inventory, form_unlocked.clearance_builder.spatial_dag
+        )
+        assert grower_unlocked.try_grow_cut("child_child", ("c1", 0), ("c2", 0), ext) is None
+
+        # 2. Planar-locked Z: bypasses 25,000 guard and synthesizes exact 31x31 Minkowski cut
+        form_locked = ClusterFormulation(inventory=inv)
+        form_locked.clearance_builder.spatial_dag.add_equality(AXIS_Z, "c1", "c2", 0)
+        grower_locked = ExactCollisionCutGrower(
+            form_locked.inventory, form_locked.clearance_builder.spatial_dag
+        )
+        cut = grower_locked.try_grow_cut("child_child", ("c1", 0), ("c2", 0), ext)
+        assert cut is not None
+        assert cut.kind == "mink_child_child"
+        assert cut.obstacle_box == BoundingBox3D(-15, 15, -15, 15, 0, 0)
+        assert cut.valid_dirs == ("r", "l", "a", "b")
+
+        # 3. Planar-locked Z falls back to None if _minkowski_diff_2d exceeds limits and returns None
+        with patch("romutil.layout.milp.clearance_boxes._minkowski_diff_2d", return_value=None):
+            assert grower_locked.try_grow_cut("child_child", ("c1", 0), ("c2", 0), ext) is None
 
 
 class TestTransverseSlackCorridorBoxes:

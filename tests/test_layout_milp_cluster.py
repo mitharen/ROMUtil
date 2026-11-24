@@ -2690,6 +2690,88 @@ class TestSplitPairBoundaryPortAlignment:
         assert c200.y > c302.y
         assert c200.x > c2.x
 
+    def test_split_pair_vertical_boundary_port_alongside_parallel_staircase(self) -> None:
+        """R-node split-pair child with vertical boundary port solves to OPTIMAL with 0 collisions."""
+        from romutil.layout.milp.clearance import detect_cluster_collisions
+        from romutil.layout.milp.cluster import solve_cluster_with_cutting_planes
+
+        p0, p1 = 7817, 7860
+        child = SolveTreeNode(
+            node_id="c_sp_r",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({p0, p1, 7853, 7854, 7855, 7856}),
+            metadata={
+                "cut_type": CutType.SPLIT_PAIR,
+                "poles": (p0, p1),
+                "cut_contract": SplitPairCut(poles=(p0, p1)),
+            },
+        )
+        parent = SolveTreeNode(
+            node_id="r_parent_vert",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({p0, 7818, 7819, 7820, p1}),
+            children=(child,),
+        )
+        child_sol = NodeSolution(
+            node_id="c_sp_r",
+            local_coordinates={
+                p0: Coord3D(0, 0, 1),
+                7853: Coord3D(0, 0, 0),
+                7854: Coord3D(1, 0, 0),
+                7855: Coord3D(0, 1, 0),
+                7856: Coord3D(1, 1, 0),
+                p1: Coord3D(2, 0, 0),
+            },
+            sub_boxes=(BoundingBox3D(0, 1, 0, 1, 0, 0),),
+        )
+        graph = _make_graph(
+            rooms=[7817, 7818, 7819, 7820, 7853, 7854, 7855, 7856, 7860],
+            edges=[
+                # Longer parallel 3D staircase in parent shifting both X and Y negatively and Z down 2
+                (7817, 7818, Direction.west, 1),
+                (7818, 7819, Direction.south, 1),
+                (7819, 7820, Direction.down, 1),
+                (7820, 7860, Direction.down, 1),
+                # Vertical boundary port into R-node child and horizontal exit to second pole
+                (7817, 7853, Direction.down, 1),
+                (7853, 7854, Direction.east, 1),
+                (7853, 7855, Direction.north, 1),
+                (7854, 7856, Direction.north, 1),
+                (7855, 7856, Direction.east, 1),
+                (7854, 7860, Direction.east, 1),
+            ],
+        )
+
+        inv = inventory_cluster(parent, {"c_sp_r": child_sol}, graph)
+        vert_edge = next(e for e in inv.active_edges if e.edge_id == "ext_c_sp_r_7817_7853")
+        assert vert_edge.direction == (0, 0, -1)
+        assert vert_edge.allow_transverse_slack is True
+
+        form = formulate_cluster_model(inv, options=LayoutOptions(timeout_seconds=10))
+        ext = solve_cluster_with_cutting_planes(
+            formulation=form,
+            node=parent,
+            options=LayoutOptions(timeout_seconds=10),
+        )
+        assert ext.solver_status == SolverStatus.OPTIMAL
+        assert detect_cluster_collisions(form, ext) == []
+
+        sol = solve_cluster(
+            parent,
+            {"c_sp_r": child_sol},
+            graph,
+            options=LayoutOptions(timeout_seconds=10),
+        )
+        assert sol.metadata["status"] == SolverStatus.OPTIMAL
+        assert "c_sp_r" in sol.metadata["child_offsets"]
+        c_off = sol.metadata["child_offsets"]["c_sp_r"]
+        c7817 = sol.local_coordinates[7817]
+        c7853 = Coord3D(c_off.x + 0, c_off.y + 0, c_off.z + 0)
+        c7860 = sol.local_coordinates[7860]
+        assert c7853.z < c7817.z
+        assert c7853.x < c7817.x
+        assert c7860.x >= c7853.x + 2
+
     def test_on_axis_stretch_preferred_over_transverse_shear(self) -> None:
         """Solver strictly chooses edge stretch over diagonal transverse shear under quadratic penalty."""
         s_child = SolveTreeNode(
