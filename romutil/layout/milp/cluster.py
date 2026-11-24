@@ -162,9 +162,16 @@ def solve_cluster_with_cutting_planes(
       4. DONE: Reached exclusively when an extraction is verified to contain zero physical
          collisions and zero corridor crossings.
 
+    For medium clusters (``<= 50`` entities), intermediate CBC cutting-plane passes run
+    single-threaded to reduce multi-threaded branch-and-bound overhead, while Pass 0,
+    CONVERGENCE, and larger clusters use up to 4 threads. When
+    ``options.intermediate_ratio_gap`` is unspecified on ``> 20``-entity clusters, the
+    intermediate ``ratioGap`` adaptively relaxes after intermediate ``TIMEOUT`` extractions
+    (``0.20 -> 0.50 -> 0.80``) while keeping ``ratio_gap`` on Pass 0 and CONVERGENCE.
+
     Aggregate cluster budget is tracked monotonically across all iterations. If the budget
-    expires or max_iterations is reached with unresolved collisions or crossings, raises
-    LayoutSolverError.
+    expires or a tail-budget intermediate failure occurs with a verified incumbent available,
+    returns that incumbent; otherwise raises LayoutSolverError.
 
     Args:
         formulation: ClusterFormulation containing the Pyomo model and clearance builder.
@@ -214,6 +221,7 @@ def solve_cluster_with_cutting_planes(
     best_physical_extraction: SolvedClusterExtraction | None = None
     best_clean_extraction: SolvedClusterExtraction | None = None
     unit_crossing_cuts_injected = False
+    intermediate_timeouts = 0
 
     transverse_slack_locked = False
     if isinstance(formulation, ClusterFormulation) and formulation.has_transverse_slack():
@@ -240,8 +248,18 @@ def solve_cluster_with_cutting_planes(
             solver_opts: dict[str, Any] = {}
             if solver_name == "cbc":
                 solver_opts["heuristics"] = "on"
-                solver_opts["ratioGap"] = intermediate_ratio_gap if iteration > 0 else ratio_gap
-                solver_opts["threads"] = min(4, os.cpu_count() or 1)
+                if iteration > 0:
+                    effective_inter_rgap = intermediate_ratio_gap
+                    if raw_inter_rgap is None and n_entities > 20:
+                        if intermediate_timeouts == 1:
+                            effective_inter_rgap = max(effective_inter_rgap, 0.50)
+                        elif intermediate_timeouts >= 2:
+                            effective_inter_rgap = max(effective_inter_rgap, 0.80)
+                    solver_opts["ratioGap"] = effective_inter_rgap
+                    solver_opts["threads"] = 1 if n_entities <= 50 else min(4, os.cpu_count() or 1)
+                else:
+                    solver_opts["ratioGap"] = ratio_gap
+                    solver_opts["threads"] = min(4, os.cpu_count() or 1)
                 solver_opts["timeMode"] = "elapsed"
 
             if iteration > 0:
@@ -256,7 +274,7 @@ def solve_cluster_with_cutting_planes(
                 pass_max_sol = None
                 use_warmstart = False
 
-            aborted_unit_crossings = False
+            finish_with_incumbent = False
             while True:
                 pass_options = (
                     replace(options, timeout_seconds=pass_timeout)
@@ -276,7 +294,7 @@ def solve_cluster_with_cutting_planes(
                 except LayoutInfeasibleError:
                     if unit_crossing_cuts_injected and best_physical_extraction is not None:
                         extraction = best_physical_extraction
-                        aborted_unit_crossings = True
+                        finish_with_incumbent = True
                         phase = ClusterSolvePhase.DONE
                         break
                     if transverse_slack_locked:
@@ -289,7 +307,7 @@ def solve_cluster_with_cutting_planes(
                         rem = total_cluster_budget - (time.monotonic() - t_start)
                         if rem <= 2.0 or pass_timeout >= 20 or pass_timeout >= int(round(rem)):
                             extraction = best_physical_extraction
-                            aborted_unit_crossings = True
+                            finish_with_incumbent = True
                             phase = ClusterSolvePhase.DONE
                             break
                         pass_timeout = min(max(1, int(round(rem))), max(pass_timeout * 2, 20))
@@ -302,6 +320,16 @@ def solve_cluster_with_cutting_planes(
                         raise
                     rem = total_cluster_budget - (time.monotonic() - t_start)
                     if rem <= 2.0:
+                        if best_clean_extraction is not None:
+                            extraction = best_clean_extraction
+                            finish_with_incumbent = True
+                            phase = ClusterSolvePhase.DONE
+                            break
+                        if best_physical_extraction is not None:
+                            extraction = best_physical_extraction
+                            finish_with_incumbent = True
+                            phase = ClusterSolvePhase.DONE
+                            break
                         raise
                     next_timeout = min(max(1, int(round(rem))), max(pass_timeout * 2, 30))
                     if pass_timeout >= int(round(rem)) or next_timeout <= pass_timeout:
@@ -313,8 +341,11 @@ def solve_cluster_with_cutting_planes(
                         raise
                     pass_timeout = next_timeout
 
-            if aborted_unit_crossings:
+            if finish_with_incumbent:
                 break
+
+            if iteration > 0 and extraction.solver_status == SolverStatus.TIMEOUT:
+                intermediate_timeouts += 1
 
             violations = detect_cluster_collisions(
                 formulation=formulation,
