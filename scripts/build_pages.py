@@ -40,6 +40,17 @@ _MIDGAARD_REGION_FILES = (
     "haon.are",
     "shire.are",
     "sewer.are",
+    "plains.are",
+    "ofcol.are",
+    "ofcol2.are",
+    "valley.are",
+    "olympus.are",
+    "dwarven.are",
+    "daycare.are",
+    "catacomb.are",
+    "arachnos.are",
+    "marsh.are",
+    "trollden.are",
 )
 
 # Curated composite showcase clusters (category, name/slug, constituent filenames, [optional timeout], [optional terrain_scales])
