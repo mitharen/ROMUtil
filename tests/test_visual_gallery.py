@@ -171,6 +171,17 @@ class TestGalleryAssetsGeneration:
             "haon.are",
             "shire.are",
             "sewer.are",
+            "plains.are",
+            "ofcol.are",
+            "ofcol2.are",
+            "valley.are",
+            "olympus.are",
+            "dwarven.are",
+            "daycare.are",
+            "catacomb.are",
+            "arachnos.are",
+            "marsh.are",
+            "trollden.are",
         ]
         for slug, expected_scales in (
             ("midgaard_region", None),
@@ -178,8 +189,21 @@ class TestGalleryAssetsGeneration:
         ):
             cat, name, paths, is_dir = comp_by_name[slug][:4]
             assert isinstance(paths, list)
-            assert len(paths) == 9
-            assert [p.name for p in paths] == expected_region_files
+            assert len(paths) == 20
+            discovered_names = [p.name for p in paths]
+            assert discovered_names == expected_region_files
+            for wing_file in (
+                "plains.are",
+                "ofcol2.are",
+                "valley.are",
+                "olympus.are",
+                "dwarven.are",
+                "catacomb.are",
+                "arachnos.are",
+                "marsh.are",
+                "trollden.are",
+            ):
+                assert wing_file in discovered_names
             assert all(p.is_file() for p in paths)
             assert not is_dir
             assert comp_by_name[slug].solver_timeout is None
@@ -503,6 +527,17 @@ class TestGalleryAssetsGeneration:
             "haon.are",
             "shire.are",
             "sewer.are",
+            "plains.are",
+            "ofcol.are",
+            "ofcol2.are",
+            "valley.are",
+            "olympus.are",
+            "dwarven.are",
+            "daycare.are",
+            "catacomb.are",
+            "arachnos.are",
+            "marsh.are",
+            "trollden.are",
         )
         candidates = resolve_candidate_areas()
 
@@ -513,10 +548,23 @@ class TestGalleryAssetsGeneration:
             cluster_entry = next((item for item in COMPOSITE_SHOWCASE_AREAS if item[1] == slug), None)
             assert cluster_entry is not None
             cat, name, filenames = cluster_entry[:3]
+            assert len(filenames) == 20
             assert "moria.are" in filenames
             assert "haon.are" in filenames
             assert "midennir.are" in filenames
             assert "sewer.are" in filenames
+            for wing_file in (
+                "plains.are",
+                "ofcol2.are",
+                "valley.are",
+                "olympus.are",
+                "dwarven.are",
+                "catacomb.are",
+                "arachnos.are",
+                "marsh.are",
+                "trollden.are",
+            ):
+                assert wing_file in filenames
             assert filenames == expected_filenames
             assert (cluster_entry[4] if len(cluster_entry) > 4 else None) == expected_scales
 
@@ -525,8 +573,21 @@ class TestGalleryAssetsGeneration:
             assert comp_candidate.terrain_scales == expected_scales
             source_paths = comp_candidate.source_path
             assert isinstance(source_paths, list)
+            assert len(source_paths) == 20
             source_filenames = [p.name for p in source_paths]
             assert "moria.are" in source_filenames
+            for wing_file in (
+                "plains.are",
+                "ofcol2.are",
+                "valley.are",
+                "olympus.are",
+                "dwarven.are",
+                "catacomb.are",
+                "arachnos.are",
+                "marsh.are",
+                "trollden.are",
+            ):
+                assert wing_file in source_filenames
             assert source_filenames == list(expected_filenames)
 
     def test_render_area_and_main_forward_terrain_scales(self, tmp_path):
@@ -648,6 +709,53 @@ class TestGalleryAssetsGeneration:
             assert area_path.is_file(), f"Missing bundled composite constituent: {filename}"
             area = parse_file(str(area_path))
             assert len(area.rooms) >= min_rooms, f"{filename} has {len(area.rooms)} rooms, expected >={min_rooms}"
+
+    def test_midgaard_region_20_constituents_parse_and_merge(self):
+        from scripts.build_pages import _MIDGAARD_REGION_FILES
+        from romutil.models import merge_areas
+        from romutil.parser import parse_file
+        from romutil.types import WorldGraph
+
+        areas_dir = REPO_ROOT / "tests" / "fixtures" / "areas"
+        expected_room_counts = {
+            "midgaard.are": 143,
+            "hood.are": 70,
+            "grave.are": 33,
+            "mobfact.are": 25,
+            "moria.are": 121,
+            "midennir.are": 52,
+            "haon.are": 71,
+            "shire.are": 58,
+            "sewer.are": 177,
+            "plains.are": 44,
+            "ofcol.are": 8,
+            "ofcol2.are": 100,
+            "valley.are": 84,
+            "olympus.are": 50,
+            "dwarven.are": 51,
+            "daycare.are": 19,
+            "catacomb.are": 69,
+            "arachnos.are": 56,
+            "marsh.are": 18,
+            "trollden.are": 5,
+        }
+        assert len(_MIDGAARD_REGION_FILES) == 20
+        assert set(_MIDGAARD_REGION_FILES) == set(expected_room_counts)
+
+        parsed_areas = []
+        for filename in _MIDGAARD_REGION_FILES:
+            area_path = areas_dir / filename
+            assert area_path.is_file(), f"Missing bundled midgaard_region constituent: {filename}"
+            area = parse_file(str(area_path))
+            expected_rooms = expected_room_counts[filename]
+            assert len(area.rooms) == expected_rooms, (
+                f"{filename} has {len(area.rooms)} rooms, expected {expected_rooms}"
+            )
+            parsed_areas.append(area)
+
+        merged = merge_areas(parsed_areas, title="midgaard_region")
+        graph = WorldGraph.from_area_data(merged)
+        assert len(graph.rooms) == 1254
 
     def test_build_pages_main_e2e(self, tmp_path):
         from scripts.build_pages import main
