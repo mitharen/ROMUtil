@@ -1006,3 +1006,53 @@ class TestHierarchicalAssemblerDataOwnership:
         assert layout.coordinates[10] == Coord3D(4, 15, 0)
         assert layout.coordinates[11] == Coord3D(5, 15, 0)
         assert layout.coordinates[12] == Coord3D(0, 0, 0)
+
+
+class TestVirtualRoomStrippingBeforeNormalization:
+    """Verify HierarchicalLayoutAssembler strips virtual_rooms after expansion and before normalization."""
+
+    def test_strips_virtual_rooms_and_normalizes_real_rooms_to_origin(self) -> None:
+        """Virtual room with smaller x/y/z is stripped before min-offset normalization."""
+        assembler = HierarchicalLayoutAssembler()
+        # Corridor 1 <-> [2] <-> 9000 (virtual endpoint) where 9000 has smallest z and x
+        corridor = CorridorSegment(
+            start_vnum=1,
+            end_vnum=9000,
+            direction=int(Direction.west),
+            intermediate_vnums=(2,),
+        )
+        rooms = {
+            1: _make_dummy_room(1),
+            2: _make_dummy_room(2),
+            3: _make_dummy_room(3),
+            9000: _make_dummy_room(9000),
+        }
+        lg = LayoutGraph(rooms=rooms, edges=(), virtual_rooms=frozenset({9000}))
+        node = SolveTreeNode(node_id="root", node_type="block", rooms=frozenset({1, 3, 9000}))
+        tree = SolveTree(root=node, components=(node,), graph=lg)
+        sol = TreeSolution(
+            node_solutions={
+                "root": NodeSolution(
+                    node_id="root",
+                    local_coordinates={
+                        1: Coord3D(4, 3, 2),
+                        3: Coord3D(5, 4, 3),
+                        9000: Coord3D(0, 1, -4),
+                    },
+                )
+            }
+        )
+        simplified = SimplifiedGraph(graph=lg, corridors=(corridor,))
+
+        layout = assembler.assemble(tree, sol, simplified)
+        assert 9000 not in layout.coordinates
+        assert 9000 not in layout.room_scales
+        assert set(layout.coordinates.keys()) == {1, 2, 3}
+        # Real rooms normalize to min_x == min_y == min_z == 0; room 2 interpolated before stripping 9000
+        assert min(c.x for c in layout.coordinates.values()) == 0
+        assert min(c.y for c in layout.coordinates.values()) == 0
+        assert min(c.z for c in layout.coordinates.values()) == 0
+        # 1 is at (4, 3, 2), 9000 was at (0, 1, -4), so 2 interpolated to (2, 2, -1); min=(2, 2, -1)
+        assert layout.coordinates[2] == Coord3D(0, 0, 0)
+        assert layout.coordinates[1] == Coord3D(2, 1, 3)
+        assert layout.coordinates[3] == Coord3D(3, 2, 4)

@@ -149,6 +149,8 @@ class HallwayCompactor:
         # Identify collinear degree-2 rooms
         collinear_candidates: set[int] = set()
         for v in graph.rooms:
+            if v in graph.virtual_rooms:
+                continue
             if g.degree(v) != 2:
                 continue
 
@@ -195,7 +197,12 @@ class HallwayCompactor:
             resolved_graph = (
                 graph
                 if graph.coord_unit == coord_unit
-                else LayoutGraph(rooms=graph.rooms, edges=graph.edges, coord_unit=coord_unit)
+                else LayoutGraph(
+                    rooms=graph.rooms,
+                    edges=graph.edges,
+                    coord_unit=coord_unit,
+                    virtual_rooms=graph.virtual_rooms,
+                )
             )
             return SimplifiedGraph(graph=resolved_graph)
 
@@ -311,6 +318,7 @@ class HallwayCompactor:
             rooms=compacted_rooms,
             edges=tuple(compacted_edges),
             coord_unit=coord_unit,
+            virtual_rooms=graph.virtual_rooms,
         )
         return SimplifiedGraph(
             graph=compacted_graph,

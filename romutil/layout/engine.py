@@ -57,6 +57,11 @@ class IdentityLayoutAssembler:
                 )
                 all_coords.update(intermediate_coords)
 
+        base_graph = tree.graph if tree.graph is not None else simplified.graph
+        virtual_rooms = base_graph.virtual_rooms if base_graph is not None else frozenset()
+        for vnum in virtual_rooms:
+            all_coords.pop(vnum, None)
+
         return SolvedLayout(
             coordinates=all_coords,
             diagnostics=LayoutDiagnostics(

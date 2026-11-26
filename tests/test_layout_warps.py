@@ -545,3 +545,134 @@ class TestChainedSimplifier:
         assert severed.cut is True
         assert {severed.src, severed.dst}.issubset({10, 11, 12})
         assert severed not in simplified.graph.edges
+
+
+class TestWarpSevererVirtualAndCanonicalCycles:
+    """Verify WarpSeverer virtual-room deduplication, canonical cycle basis, and sentinel handling."""
+
+    def test_virtual_room_dedup_keeps_one_per_direction_and_preserves_virtual_rooms(self) -> None:
+        """Hybrid incoming edges (1 --N--> 9000, 2 --E--> 9000, 3 --E--> 9000) keep 1->9000 and best E->9000."""
+        rooms = {
+            1: _make_room(1),
+            2: _make_room(2),
+            3: _make_room(3),
+            9000: _make_room(9000),
+        }
+        edges = [
+            LayoutEdge(src=1, dst=9000, direction=int(Direction.north)),
+            LayoutEdge(src=2, dst=9000, direction=int(Direction.east)),
+            LayoutEdge(src=3, dst=9000, direction=int(Direction.east)),
+        ]
+        lg = LayoutGraph(rooms=rooms, edges=edges, virtual_rooms=frozenset({9000}))
+
+        simplified = WarpSeverer().simplify(lg)
+        assert simplified.graph.virtual_rooms == frozenset({9000})
+        active = {(e.src, e.dst, e.direction) for e in simplified.graph.edges if not e.cut}
+        assert (1, 9000, int(Direction.north)) in active
+        assert (2, 9000, int(Direction.east)) in active
+        assert (3, 9000, int(Direction.east)) not in active
+        assert len(simplified.severed_chords) == 1
+        assert simplified.severed_chords[0].src == 3
+        assert simplified.severed_chords[0].dst == 9000
+        assert simplified.severed_chords[0].cut is True
+
+    def test_virtual_room_dedup_prioritizes_degree_and_weight(self) -> None:
+        """Higher-weight and higher-degree sources win over lower-vnum leaves when deduplicating."""
+        rooms = {i: _make_room(i) for i in (1, 2, 3, 20, 21, 9000)}
+        edges = [
+            # Source 2 has higher degree (20, 21) than source 1
+            LayoutEdge(src=1, dst=9000, direction=int(Direction.east), weight=1),
+            LayoutEdge(src=2, dst=9000, direction=int(Direction.east), weight=1),
+            LayoutEdge(src=2, dst=20, direction=int(Direction.south)),
+            LayoutEdge(src=2, dst=21, direction=int(Direction.north)),
+            # Source 3 has higher weight than source 2
+            LayoutEdge(src=3, dst=9000, direction=int(Direction.east), weight=3),
+        ]
+        lg = LayoutGraph(rooms=rooms, edges=edges, virtual_rooms=frozenset({9000}))
+        simplified = WarpSeverer().simplify(lg)
+
+        kept_east = [
+            e for e in simplified.graph.edges
+            if e.dst == 9000 and e.direction == int(Direction.east) and not e.cut
+        ]
+        assert len(kept_east) == 1
+        assert kept_east[0].src == 3
+        severed_srcs = {e.src for e in simplified.severed_chords}
+        assert severed_srcs == {1, 2}
+
+    def test_canonical_cycle_basis_invariant_under_added_articulation_wing(self) -> None:
+        """Attaching a low-VNUM biconnected articulation wing does not alter warp cuts in another block."""
+        # Biconnected warp block on {10, 11, 12, 13}: 10 <-> 11 <-> 12 <-> 13 (Euclidean square) + chord 10 -> 12 (North)
+        base_rooms = {v: _make_room(v) for v in (10, 11, 12, 13)}
+        base_edges = [
+            LayoutEdge(src=10, dst=11, direction=int(Direction.north)),
+            LayoutEdge(src=11, dst=10, direction=int(Direction.south)),
+            LayoutEdge(src=11, dst=12, direction=int(Direction.east)),
+            LayoutEdge(src=12, dst=11, direction=int(Direction.west)),
+            LayoutEdge(src=12, dst=13, direction=int(Direction.south)),
+            LayoutEdge(src=13, dst=12, direction=int(Direction.north)),
+            LayoutEdge(src=13, dst=10, direction=int(Direction.west)),
+            LayoutEdge(src=10, dst=13, direction=int(Direction.east)),
+            # Non-Euclidean one-way chord creating warp cycles inside {10, 11, 12, 13}
+            LayoutEdge(src=10, dst=12, direction=int(Direction.north)),
+        ]
+        base_lg = LayoutGraph(rooms=base_rooms, edges=base_edges)
+        base_cuts = {
+            (e.src, e.dst, e.direction)
+            for e in WarpSeverer().simplify(base_lg).severed_chords
+        }
+        assert len(base_cuts) >= 1
+
+        # Attach an unrelated Euclidean biconnected wing with very low VNUMs {1, 2, 3, 4} at articulation 10
+        wing_rooms = {**base_rooms, **{v: _make_room(v) for v in (1, 2, 3, 4)}}
+        wing_edges = list(base_edges) + [
+            LayoutEdge(src=10, dst=1, direction=int(Direction.down)),
+            LayoutEdge(src=1, dst=10, direction=int(Direction.up)),
+            LayoutEdge(src=1, dst=2, direction=int(Direction.north)),
+            LayoutEdge(src=2, dst=1, direction=int(Direction.south)),
+            LayoutEdge(src=2, dst=3, direction=int(Direction.east)),
+            LayoutEdge(src=3, dst=2, direction=int(Direction.west)),
+            LayoutEdge(src=3, dst=4, direction=int(Direction.south)),
+            LayoutEdge(src=4, dst=3, direction=int(Direction.north)),
+            LayoutEdge(src=4, dst=1, direction=int(Direction.west)),
+            LayoutEdge(src=1, dst=4, direction=int(Direction.east)),
+        ]
+        # Reverse insertion order to verify order independence as well
+        wing_lg = LayoutGraph(rooms=wing_rooms, edges=list(reversed(wing_edges)))
+        wing_cuts = {
+            (e.src, e.dst, e.direction)
+            for e in WarpSeverer().simplify(wing_lg).severed_chords
+        }
+        assert wing_cuts == base_cuts
+
+    def test_negative_sentinel_exits_do_not_sever_cross_area_oneway_chain(self) -> None:
+        """Shared -1 sentinel exits across disconnected subgraphs do not sever a one-way connecting chain."""
+        # Area A (100 <-> 101 with -1 stub), Area B (200 <-> 201 with -1 stub), linked via 101 -> 300 -> 201
+        r100 = _make_room(100, [Exit(Direction.east, 101)])
+        r101 = _make_room(
+            101,
+            [
+                Exit(Direction.west, 100),
+                Exit(Direction.north, -1),
+                Exit(Direction.down, 300),
+            ],
+        )
+        r300 = _make_room(300, [Exit(Direction.down, 201)])
+        r201 = _make_room(
+            201,
+            [
+                Exit(Direction.east, 200),
+                Exit(Direction.west, -1),
+            ],
+        )
+        r200 = _make_room(200, [Exit(Direction.west, 201)])
+
+        rooms = {r.vnum: r for r in (r100, r101, r300, r201, r200)}
+        wg = WorldGraph(rooms=rooms, exits=tuple(ex for r in rooms.values() for ex in r.exits))
+        lg = LayoutGraph.from_world_graph(wg)
+
+        simplified = WarpSeverer().simplify(lg)
+        assert simplified.severed_chords == ()
+        active_pairs = {(e.src, e.dst) for e in simplified.graph.edges if not e.cut}
+        assert (101, 300) in active_pairs
+        assert (300, 201) in active_pairs

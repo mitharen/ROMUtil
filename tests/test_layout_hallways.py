@@ -608,3 +608,47 @@ class TestPipelineIntegration:
         assert stretched_coords[2].x - 0 >= 6
         assert stretched_coords[3].x - stretched_coords[2].x >= 4
         assert 18 - stretched_coords[3].x >= 6
+
+
+class TestHallwayCompactorVirtualRooms:
+    """Verify HallwayCompactor preserves virtual_rooms and excludes them from compaction."""
+
+    def test_virtual_rooms_preserved_and_excluded_from_compaction(self) -> None:
+        """Virtual rooms with reciprocal degree-2 collinear edges are never compacted."""
+        # Real corridor 1 <-> 2 <-> 3 (North/South) + virtual room 9000 with 10 <-> 9000 <-> 20 (East/West)
+        rooms_hall, edges_hall = _make_bidirectional_corridor([1, 2, 3], direction_forward=0, direction_backward=2)
+        rooms_virt, edges_virt = _make_bidirectional_corridor([10, 9000, 20], direction_forward=1, direction_backward=3)
+        all_rooms = {**rooms_hall, **rooms_virt}
+        all_edges = edges_hall + edges_virt
+
+        lg = LayoutGraph(
+            rooms=all_rooms,
+            edges=all_edges,
+            virtual_rooms=frozenset({9000}),
+        )
+        simplified = HallwayCompactor().simplify(lg, LayoutOptions())
+
+        assert 2 not in simplified.graph.rooms
+        assert 9000 in simplified.graph.rooms
+        assert simplified.graph.virtual_rooms == frozenset({9000})
+        assert len(simplified.corridors) == 1
+        assert simplified.corridors[0].intermediate_vnums == (2,)
+
+    def test_virtual_rooms_preserved_when_no_candidates_and_coord_unit_escalates(self) -> None:
+        """Early return on no collinear candidates propagates virtual_rooms across coord_unit change."""
+        rooms = {
+            1: Room(vnum=1, name="City", description="", sector=1),
+            9000: Room(vnum=9000, name="<external:9000>", description="", sector=0, terrain=TerrainType.INSIDE),
+        }
+        lg = LayoutGraph(
+            rooms=rooms,
+            edges=(LayoutEdge(src=1, dst=9000, direction=0),),
+            virtual_rooms=frozenset({9000}),
+        )
+        simplified = HallwayCompactor().simplify(
+            lg,
+            LayoutOptions(terrain_scales=DEFAULT_TERRAIN_SCALES),
+        )
+        assert simplified.corridors == ()
+        assert simplified.graph.coord_unit == 2
+        assert simplified.graph.virtual_rooms == frozenset({9000})

@@ -172,6 +172,99 @@ def is_euclidean_satisfiable(cycle_vectors: Sequence[tuple[int, int, int]]) -> b
                         tableau[r][c] -= factor * tableau[leaving_row][c]
 
 
+def _extract_canonical_cycle_basis(g: nx.Graph) -> list[list[int]]:
+    """Extract a deterministic cycle basis independently per biconnected component."""
+    g_sorted = nx.Graph()
+    g_sorted.add_nodes_from(sorted(g.nodes()))
+    g_sorted.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in g.edges()))
+    cycles: list[list[int]] = []
+    biconnected = sorted(
+        (frozenset(b) for b in nx.biconnected_components(g_sorted) if len(b) >= 3),
+        key=lambda b: (-len(b), min(b)),
+    )
+    for bcc in biconnected:
+        sub = g_sorted.subgraph(bcc)
+        cycles.extend(nx.cycle_basis(sub, root=min(bcc)))
+    return cycles
+
+
+def _is_corridor_edge(edge: LayoutEdge) -> bool:
+    """Return True if an edge represents a compacted corridor segment."""
+    return (
+        isinstance(edge.metadata.get("corridor"), CorridorSegment)
+        or bool(edge.metadata.get("is_corridor"))
+        or "corridor" in edge.metadata
+        or "corridor_segment" in edge.metadata
+    )
+
+
+def _is_bidirectional_or_corridor(
+    u_node: int,
+    v_node: int,
+    edges: Sequence[LayoutEdge],
+) -> bool:
+    """Return True if edges connect endpoints reciprocally or represent a corridor."""
+    has_fwd = any(e.src == u_node and e.dst == v_node for e in edges)
+    has_bwd = any(e.src == v_node and e.dst == u_node for e in edges)
+    return (has_fwd and has_bwd) or any(_is_corridor_edge(e) for e in edges)
+
+
+def _deduplicate_virtual_room_entrances(
+    graph: LayoutGraph,
+    active_edges: list[LayoutEdge],
+    severed_chords: list[LayoutEdge],
+) -> list[LayoutEdge]:
+    """Sever duplicate same-direction incoming edges into virtual anchor rooms."""
+    if not graph.virtual_rooms:
+        return active_edges
+
+    g = nx.Graph()
+    g.add_nodes_from(graph.rooms)
+    undirected_edge_map: dict[tuple[int, int], list[LayoutEdge]] = collections.defaultdict(list)
+    buckets: dict[tuple[int, int], list[LayoutEdge]] = collections.defaultdict(list)
+
+    for edge in active_edges:
+        if edge.src != edge.dst:
+            g.add_edge(edge.src, edge.dst)
+            pair = (min(edge.src, edge.dst), max(edge.src, edge.dst))
+            undirected_edge_map[pair].append(edge)
+        if (
+            edge.dst in graph.virtual_rooms
+            and edge.src in graph.rooms
+            and edge.src != edge.dst
+        ):
+            buckets[(edge.dst, int(edge.direction))].append(edge)
+
+    severed_ids: set[int] = set()
+    for v_dst, direction in sorted(buckets):
+        bucket_edges = buckets[(v_dst, direction)]
+        by_src: dict[int, list[LayoutEdge]] = collections.defaultdict(list)
+        for edge in bucket_edges:
+            by_src[edge.src].append(edge)
+        if len(by_src) < 2:
+            continue
+
+        def _source_priority(src: int) -> tuple[bool, int, int, int]:
+            pair = (min(src, v_dst), max(src, v_dst))
+            pair_edges = undirected_edge_map.get(pair, [])
+            bidir_or_corridor = _is_bidirectional_or_corridor(
+                pair[0], pair[1], pair_edges
+            )
+            max_weight = max(e.weight for e in by_src[src])
+            deg_src = int(g.degree(src))
+            return (bidir_or_corridor, max_weight, deg_src, -src)
+
+        best_src = max(by_src, key=_source_priority)
+        for edge in bucket_edges:
+            if edge.src != best_src:
+                severed_chords.append(replace(edge, cut=True))
+                severed_ids.add(id(edge))
+
+    if not severed_ids:
+        return active_edges
+    return [edge for edge in active_edges if id(edge) not in severed_ids]
+
+
 class WarpSeverer:
     """Graph simplifier detecting non-Euclidean warp cycles and severing minimal chords."""
 
@@ -254,20 +347,11 @@ class WarpSeverer:
             bidir_degree: dict[int, int] = collections.defaultdict(int)
             for pair, edges in undirected_edge_map.items():
                 u_pair, v_pair = pair
-                has_fwd = any(e.src == u_pair and e.dst == v_pair for e in edges)
-                has_bwd = any(e.src == v_pair and e.dst == u_pair for e in edges)
-                is_corridor = any(
-                    isinstance(e.metadata.get("corridor"), CorridorSegment)
-                    or bool(e.metadata.get("is_corridor"))
-                    or "corridor" in e.metadata
-                    or "corridor_segment" in e.metadata
-                    for e in edges
-                )
-                if (has_fwd and has_bwd) or is_corridor:
+                if _is_bidirectional_or_corridor(u_pair, v_pair, edges):
                     bidir_degree[u_pair] += 1
                     bidir_degree[v_pair] += 1
 
-            cycles = nx.cycle_basis(g)
+            cycles = _extract_canonical_cycle_basis(g)
             if not cycles:
                 break
 
@@ -319,16 +403,7 @@ class WarpSeverer:
                     ) -> tuple[int, int, int, int, int, int, int, tuple[int, int]]:
                         u_node, v_node = pair
                         edges = undirected_edge_map.get(pair, [])
-                        has_fwd = any(e.src == u_node and e.dst == v_node for e in edges)
-                        has_bwd = any(e.src == v_node and e.dst == u_node for e in edges)
-                        is_corridor = any(
-                            isinstance(e.metadata.get("corridor"), CorridorSegment)
-                            or bool(e.metadata.get("is_corridor"))
-                            or "corridor" in e.metadata
-                            or "corridor_segment" in e.metadata
-                            for e in edges
-                        )
-                        is_bidirectional = (has_fwd and has_bwd) or is_corridor
+                        is_bidirectional = _is_bidirectional_or_corridor(u_node, v_node, edges)
                         reciprocity_rank = 1 if is_bidirectional else 0
                         min_weight = min((e.weight for e in edges), default=1)
                         max_parallel = max(
@@ -363,10 +438,15 @@ class WarpSeverer:
             if not found_warp:
                 break
 
+        active_edges = _deduplicate_virtual_room_entrances(
+            graph, active_edges, severed_chords
+        )
+
         simplified_graph = LayoutGraph(
             rooms=dict(graph.rooms),
             edges=tuple(active_edges),
             coord_unit=graph.coord_unit,
+            virtual_rooms=graph.virtual_rooms,
         )
         return SimplifiedGraph(
             graph=simplified_graph,

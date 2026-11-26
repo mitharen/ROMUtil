@@ -108,3 +108,38 @@ class TestMidgaardSewerCompositeIntegration:
         assert 7418 in target_node.rooms
         assert isinstance(target_node.cut_contract, ArticulationPointCut)
         assert target_node.cut_contract.anchor_vnum == 7402
+
+
+class TestArachnosVirtualAnchorIntegration:
+    """Integration tests verifying virtual external anchor resolution in arachnos.are."""
+
+    def test_arachnos_virtual_anchor_6134_l_corner_and_zero_collisions(self) -> None:
+        """Arachnos synthesizes virtual anchor 6134, places 6201/6202 in an L-corner, and strips 6134."""
+        from romutil.types import LayoutOptions, SolverStatus
+        from tests.regressions.invariants import (
+            assert_corridor_non_penetration,
+            assert_zero_coordinate_collisions,
+        )
+
+        area = parse_file(FIXTURES_DIR / "arachnos.are")
+        world_graph = WorldGraph.from_area_data(area)
+        layout_graph = LayoutGraph.from_world_graph(world_graph)
+
+        assert 6134 in layout_graph.virtual_rooms
+
+        layout = HierarchicalLayoutSolver.production().solve(
+            world_graph, LayoutOptions(timeout_seconds=30)
+        )
+        assert layout.diagnostics.status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE)
+        assert 6134 not in layout.coordinates
+        assert 6134 not in layout.room_scales
+        assert set(layout.coordinates.keys()) == set(world_graph.rooms.keys())
+
+        assert_zero_coordinate_collisions(layout)
+        assert_corridor_non_penetration(layout, world_graph)
+
+        c6201 = layout.coordinates[6201]
+        c6202 = layout.coordinates[6202]
+        assert c6201.x - c6202.x == 1
+        assert c6202.y - c6201.y == 1
+        assert c6201.z == c6202.z
