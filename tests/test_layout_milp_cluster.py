@@ -6607,3 +6607,632 @@ class TestLexicographicShearedStretchPolishCluster:
         assert form_pol.model.obj.active
         assert not hasattr(form_pol.model, "transverse_slack_lb")
         assert not any(v.fixed for pair in form_pol._edge_transverse_slack.values() for v in pair)
+
+
+
+class TestLargeClusterBoundedStage1AndIterativePolish:
+    """Verify bounded Stage-1 vertical shear and iterative fixed-shear polish on >20-entity clusters."""
+
+    @staticmethod
+    def _build_large_mixed_slack_formulation(
+        *,
+        n_rooms: int = 22,
+        coord_unit: int = 1,
+        w_transverse: float = 1_000_000.0,
+    ) -> tuple[SolveTreeNode, ClusterFormulation]:
+        rooms = tuple(range(1, n_rooms + 1))
+        node = SolveTreeNode(
+            node_id=f"large_mixed_{n_rooms}_cu{coord_unit}",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset(rooms),
+        )
+        ae_vert = ActiveEdge(
+            edge_id="e_vert",
+            src=1,
+            dst=2,
+            direction=(0, 0, 1),
+            min_length=1,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+        )
+        ae_horiz = ActiveEdge(
+            edge_id="e_horiz",
+            src=2,
+            dst=3,
+            direction=(1, 0, 0),
+            min_length=1,
+            associated_rooms=frozenset({2, 3}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+        )
+        chain_edges = tuple(
+            ActiveEdge(
+                edge_id=f"e_{i}_{i + 1}",
+                src=i,
+                dst=i + 1,
+                direction=(1, 0, 0),
+                min_length=1,
+                associated_rooms=frozenset({i, i + 1}),
+                associated_children=frozenset(),
+                allow_transverse_slack=False,
+            )
+            for i in range(3, n_rooms)
+        )
+        inv = ClusterInventory(
+            node=node,
+            rooms=rooms,
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(ae_vert, ae_horiz, *chain_edges),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+            coord_unit=coord_unit,
+        )
+        return node, ClusterFormulation(inventory=inv, w_transverse=w_transverse)
+
+    @staticmethod
+    def _set_stretch(form: ClusterFormulation, s1_edge0: float, s2_edge0: float = 0.0) -> None:
+        for idx in form.model.s_stretch_1:
+            form.model.s_stretch_1[idx].set_value(s1_edge0 if idx == 0 else 0.0)
+            form.model.s_stretch_2[idx].set_value(s2_edge0 if idx == 0 else 0.0)
+            form.model.s_stretch_3[idx].set_value(0.0)
+
+    def test_large_cluster_stage1_bounds_vertical_shear_before_unbounded_stage1_and_stage2(self) -> None:
+        """Large (>20) clusters cap Stage-1 vertical shear to 4*coord_unit, then relax to unbounded Stage 1 before Stage 2."""
+        import pyomo.environ as pyo
+
+        from romutil.layout.milp.cluster import SolvedClusterExtraction, solve_cluster_with_cutting_planes
+
+        zero_shear_coords = {1: (0, 0, 0), 2: (0, 0, 1), **{r: (r - 2, 0, 1) for r in range(3, 23)}}
+        clean_ext = SolvedClusterExtraction(zero_shear_coords, {}, SolverStatus.OPTIMAL)
+
+        for coord_unit in (1, 2):
+            node, form = self._build_large_mixed_slack_formulation(n_rooms=22, coord_unit=coord_unit)
+            observed: list[tuple[bool, bool, bool, bool, bool, int | None]] = []
+
+            def mock_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+                vert_fixed = all(
+                    v.fixed
+                    for axis in ("x", "y")
+                    for v in form._edge_transverse_slack[("e_vert", axis)]
+                )
+                horiz_fixed = all(v.fixed for v in form._edge_transverse_slack[("e_horiz", "y")])
+                has_lb = hasattr(form.model, "transverse_slack_lb")
+                has_hlb = hasattr(form.model, "horizontal_transverse_slack_lb")
+                has_ub = hasattr(form.model, "transverse_slack_ub")
+                ub_val = int(pyo.value(form.model.transverse_slack_ub.upper)) if has_ub else None
+                observed.append((vert_fixed, horiz_fixed, has_lb, has_hlb, has_ub, ub_val))
+                if len(observed) == 1:
+                    raise LayoutInfeasibleError("Stage 0 zero-shear infeasible")
+                if len(observed) == 2:
+                    raise LayoutInfeasibleError("Bounded Stage 1 infeasible")
+                if len(observed) == 3:
+                    raise LayoutInfeasibleError("Unbounded Stage 1 infeasible")
+                return clean_ext
+
+            with (
+                patch("time.monotonic", side_effect=[float(i) for i in range(10)]),
+                patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+                patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+            ):
+                ext = solve_cluster_with_cutting_planes(
+                    formulation=form,
+                    node=node,
+                    total_cluster_budget=30.0,
+                )
+
+            assert ext is clean_ext
+            assert observed == [
+                (True, True, False, False, False, None),
+                (False, True, True, False, True, 4 * coord_unit),
+                (False, True, True, False, False, None),
+                (False, False, True, True, False, None),
+            ]
+            assert not hasattr(form.model, "transverse_slack_ub")
+            assert not hasattr(form.model, "transverse_slack_lb")
+            assert not hasattr(form.model, "horizontal_transverse_slack_lb")
+            assert not any(v.fixed for pair in form._edge_transverse_slack.values() for v in pair)
+
+        # Also verify cleanup when bounded Stage 1 succeeds directly without relaxing to Stage 2
+        node_b1, form_b1 = self._build_large_mixed_slack_formulation(n_rooms=22, coord_unit=2)
+        b1_seen_ub: list[int | None] = []
+
+        def mock_solve_b1(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            if not b1_seen_ub:
+                b1_seen_ub.append(None)
+                raise LayoutInfeasibleError("Stage 0 infeasible")
+            assert hasattr(form_b1.model, "transverse_slack_ub")
+            b1_seen_ub.append(int(pyo.value(form_b1.model.transverse_slack_ub.upper)))
+            return clean_ext
+
+        with (
+            patch("time.monotonic", side_effect=[float(i) for i in range(10)]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_b1),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            ext_b1 = solve_cluster_with_cutting_planes(
+                formulation=form_b1,
+                node=node_b1,
+                total_cluster_budget=30.0,
+            )
+
+        assert ext_b1 is clean_ext
+        assert b1_seen_ub == [None, 8]
+        assert not hasattr(form_b1.model, "transverse_slack_ub")
+        assert not hasattr(form_b1.model, "transverse_slack_lb")
+        assert not any(v.fixed for pair in form_b1._edge_transverse_slack.values() for v in pair)
+
+    def test_iterative_polish_clears_compact_collisions_escalates_timeout_and_skips_redundant_phase2(self) -> None:
+        """Large sheared _run_convergence_solve clears compact collisions, escalates Phase 1 timeout, and refines in Phase 2."""
+        import os
+
+        from romutil.layout.milp.cluster import (
+            SolvedClusterExtraction,
+            _extract_objective_value,
+            _run_convergence_solve,
+        )
+
+        node, form = self._build_large_mixed_slack_formulation(n_rooms=22)
+        form.unlock_vertical_transverse_slack()
+        sheared_coords = {1: (0, 0, 0), 2: (1, 0, 1), **{r: (r - 1, 0, 1) for r in range(3, 23)}}
+        ref_ext = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.FEASIBLE)
+        coll_ext = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.FEASIBLE)
+        phase1_clean = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.FEASIBLE)
+        phase2_clean = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.OPTIMAL)
+        phys_viol = ClearanceViolation(category="parent_room", item_a=1, item_b=3)
+
+        calls: list[tuple[int, float, int, bool]] = []
+        solve_step = 0
+
+        def mock_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal solve_step
+            solve_step += 1
+            sopts = kwargs["solver_options"]
+            calls.append(
+                (
+                    kwargs["options"].timeout_seconds,
+                    sopts["ratioGap"],
+                    sopts["threads"],
+                    hasattr(form.model, "_stretch_polish_obj"),
+                )
+            )
+            if solve_step == 1:
+                raise LayoutSolverError("Phase 1 15s timeout")
+            if solve_step == 2:
+                self._set_stretch(form, 3.0)
+                return coll_ext
+            if solve_step == 3:
+                self._set_stretch(form, 2.0)
+                return phase1_clean
+            self._set_stretch(form, 0.5)
+            return phase2_clean
+
+        det_step = 0
+
+        def mock_detect(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal det_step
+            det_step += 1
+            if det_step == 1:
+                return [phys_viol]
+            return []
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 0.0, 15.0, 15.0, 20.0, 22.0]),
+            patch.object(form.clearance_builder, "inject_clearance_cuts", return_value=1) as mock_inject,
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            res = _run_convergence_solve(
+                formulation=form,
+                options=LayoutOptions(timeout_seconds=60),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=60.0,
+                reference_extraction=ref_ext,
+            )
+
+        assert res is phase2_clean
+        assert calls == [
+            (15, 0.20, 1, True),
+            (30, 0.20, 1, True),
+            (30, 0.20, 1, True),
+            (38, 0.05, min(4, os.cpu_count() or 1), True),
+        ]
+        mock_inject.assert_called_once_with([phys_viol], extraction=coll_ext)
+        assert _extract_objective_value(form) == pytest.approx(5.0 + 1_000_000.0)
+        assert form.model.obj.active
+        assert not hasattr(form.model, "_stretch_polish_obj")
+
+        # Phase 1 OPTIMAL with ratio_gap >= 0.20 skips redundant Phase 2
+        solve_step_skip = 0
+
+        def mock_solve_skip(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal solve_step_skip
+            solve_step_skip += 1
+            self._set_stretch(form, 1.0)
+            return phase2_clean
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 0.0]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_skip),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            res_skip = _run_convergence_solve(
+                formulation=form,
+                options=LayoutOptions(timeout_seconds=60),
+                solver_name="cbc",
+                ratio_gap=0.20,
+                remaining_budget=60.0,
+                reference_extraction=ref_ext,
+            )
+
+        assert res_skip is phase2_clean
+        assert solve_step_skip == 1
+
+        # Cluster with <= 20 entities stays on single-pass polish without calling time.monotonic
+        _small_node, small_form = self._build_large_mixed_slack_formulation(n_rooms=20)
+        small_form.unlock_vertical_transverse_slack()
+        small_coords = {1: (0, 0, 0), 2: (1, 0, 1), **{r: (r - 1, 0, 1) for r in range(3, 21)}}
+        small_ref = SolvedClusterExtraction(small_coords, {}, SolverStatus.FEASIBLE)
+        with (
+            patch("time.monotonic", side_effect=AssertionError("unexpected time.monotonic call")),
+            patch("romutil.layout.milp.cluster.solve_and_extract", return_value=small_ref) as mock_small,
+        ):
+            res_small = _run_convergence_solve(
+                formulation=small_form,
+                options=LayoutOptions(timeout_seconds=30),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=30.0,
+                reference_extraction=small_ref,
+            )
+        assert res_small is small_ref
+        assert mock_small.call_count == 1
+
+    def test_iterative_polish_restores_stretch_snapshot_when_phase2_fails_collides_or_regresses(self) -> None:
+        """Phase 2 failures, unresolvable collisions, or stretch regressions restore Phase-1 stretch snapshot."""
+        from romutil.layout.milp.cluster import (
+            SolvedClusterExtraction,
+            _extract_objective_value,
+            _run_convergence_solve,
+        )
+
+        sheared_coords = {1: (0, 0, 0), 2: (1, 0, 1), **{r: (r - 1, 0, 1) for r in range(3, 23)}}
+        ref_ext = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.FEASIBLE)
+        phase1_clean = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.FEASIBLE)
+        phase2_cand = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.OPTIMAL)
+        phys_viol = ClearanceViolation(category="parent_room", item_a=1, item_b=3)
+
+        # Case A: Phase 2 collides with 0 cuts injectable after mutating stretch vars
+        _node_a, form_a = self._build_large_mixed_slack_formulation(n_rooms=22)
+        form_a.unlock_vertical_transverse_slack()
+        step_a = 0
+
+        def mock_solve_a(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal step_a
+            step_a += 1
+            if step_a == 1:
+                self._set_stretch(form_a, 1.0)
+                return phase1_clean
+            self._set_stretch(form_a, 2.0, 3.0)
+            return phase2_cand
+
+        det_a = 0
+
+        def mock_detect_a(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal det_a
+            det_a += 1
+            return [] if det_a == 1 else [phys_viol]
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 0.0, 1.0]),
+            patch.object(form_a.clearance_builder, "inject_clearance_cuts", return_value=0),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_a),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect_a),
+        ):
+            res_a = _run_convergence_solve(
+                formulation=form_a,
+                options=LayoutOptions(timeout_seconds=60),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=60.0,
+                reference_extraction=ref_ext,
+            )
+        assert res_a is phase1_clean
+        assert _extract_objective_value(form_a) == pytest.approx(10.0 + 1_000_000.0)
+
+        # Case B: Phase 2 raises LayoutSolverError after mutating stretch vars
+        _node_b, form_b = self._build_large_mixed_slack_formulation(n_rooms=22)
+        form_b.unlock_vertical_transverse_slack()
+        step_b = 0
+
+        def mock_solve_b(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal step_b
+            step_b += 1
+            if step_b == 1:
+                self._set_stretch(form_b, 1.0)
+                return phase1_clean
+            self._set_stretch(form_b, 2.0, 2.0)
+            raise LayoutSolverError("Phase 2 timeout")
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 0.0, 1.0]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_b),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            res_b = _run_convergence_solve(
+                formulation=form_b,
+                options=LayoutOptions(timeout_seconds=60),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=60.0,
+                reference_extraction=ref_ext,
+            )
+        assert res_b is phase1_clean
+        assert _extract_objective_value(form_b) == pytest.approx(10.0 + 1_000_000.0)
+
+        # Case C: Phase 2 returns clean candidate with strictly worse stretch
+        _node_c, form_c = self._build_large_mixed_slack_formulation(n_rooms=22)
+        form_c.unlock_vertical_transverse_slack()
+        step_c = 0
+
+        def mock_solve_c(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal step_c
+            step_c += 1
+            if step_c == 1:
+                self._set_stretch(form_c, 1.0)
+                return phase1_clean
+            self._set_stretch(form_c, 2.0)
+            return phase2_cand
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 0.0, 1.0]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_c),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            res_c = _run_convergence_solve(
+                formulation=form_c,
+                options=LayoutOptions(timeout_seconds=60),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=60.0,
+                reference_extraction=ref_ext,
+            )
+        assert res_c is phase1_clean
+        assert _extract_objective_value(form_c) == pytest.approx(10.0 + 1_000_000.0)
+
+    def test_iterative_polish_failure_raises_and_cutting_planes_preserves_verified_incumbent(self) -> None:
+        """Iterative polish raises LayoutSolverError when no clean candidate exists so cutting planes keeps its incumbent."""
+        from romutil.layout.milp.cluster import (
+            SolvedClusterExtraction,
+            _run_convergence_solve,
+            solve_cluster_with_cutting_planes,
+        )
+
+        sheared_coords = {1: (0, 0, 0), 2: (1, 0, 1), **{r: (r - 1, 0, 1) for r in range(3, 23)}}
+        ref_ext = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.FEASIBLE)
+        phys_viol = ClearanceViolation(category="parent_room", item_a=1, item_b=3)
+
+        # Direct call raises LayoutSolverError when Phase 1 finds no clean candidate and restores model state
+        _node_err, form_err = self._build_large_mixed_slack_formulation(n_rooms=22)
+        form_err.unlock_vertical_transverse_slack()
+        with (
+            patch("time.monotonic", side_effect=[0.0, 0.0]),
+            patch.object(form_err.clearance_builder, "inject_clearance_cuts", return_value=0),
+            patch("romutil.layout.milp.cluster.solve_and_extract", return_value=ref_ext),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[phys_viol]),
+            pytest.raises(LayoutSolverError, match="did not find a clean candidate within budget"),
+        ):
+            _run_convergence_solve(
+                formulation=form_err,
+                options=LayoutOptions(timeout_seconds=30),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=30.0,
+                reference_extraction=ref_ext,
+            )
+        assert form_err.model.obj.active
+        assert not hasattr(form_err.model, "_stretch_polish_obj")
+        assert not any(v.fixed for pair in form_err._edge_transverse_slack.values() for v in pair)
+
+        # End-to-end cutting-planes preserves clean Stage-1 incumbent when iterative polish fails
+        node_cp, form_cp = self._build_large_mixed_slack_formulation(n_rooms=22)
+        stage1_incumbent = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.FEASIBLE)
+        cp_solve_step = 0
+
+        def mock_solve_cp(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal cp_solve_step
+            cp_solve_step += 1
+            if cp_solve_step == 1:
+                raise LayoutInfeasibleError("Stage 0 zero-shear infeasible")
+            if cp_solve_step == 2:
+                self._set_stretch(form_cp, 2.0)
+                return stage1_incumbent
+            # Inside iterative polish Phase 1
+            assert hasattr(form_cp.model, "_stretch_polish_obj")
+            assert not form_cp.model.transverse_slack_ub.active
+            return ref_ext
+
+        cp_det_step = 0
+
+        def mock_detect_cp(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal cp_det_step
+            cp_det_step += 1
+            if cp_det_step == 1:
+                return []
+            return [phys_viol]
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 1.0, 2.0, 2.0, 3.0]),
+            patch.object(form_cp.clearance_builder, "inject_clearance_cuts", return_value=0),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_cp),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect_cp),
+        ):
+            res_cp = solve_cluster_with_cutting_planes(
+                formulation=form_cp,
+                node=node_cp,
+                options=LayoutOptions(timeout_seconds=15),
+                total_cluster_budget=60.0,
+            )
+
+        assert res_cp is stage1_incumbent
+        assert cp_solve_step == 3
+        assert form_cp.model.obj.active
+        assert not hasattr(form_cp.model, "_stretch_polish_obj")
+        assert not hasattr(form_cp.model, "transverse_slack_ub")
+        assert not hasattr(form_cp.model, "transverse_slack_lb")
+        assert not any(v.fixed for pair in form_cp._edge_transverse_slack.values() for v in pair)
+
+    def test_iterative_polish_edge_branches_and_phase2_cut_retry(self) -> None:
+        """Covers inactive polish fallback, Phase 1/2 budget bounds, infeasible break, and Phase 2 cut retry."""
+        from contextlib import nullcontext
+
+        from romutil.layout.milp.cluster import (
+            SolvedClusterExtraction,
+            _extract_objective_value,
+            _run_convergence_solve,
+        )
+
+        sheared_coords = {1: (0, 0, 0), 2: (1, 0, 1), **{r: (r - 1, 0, 1) for r in range(3, 23)}}
+        ref_ext = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.FEASIBLE)
+        phase1_clean = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.FEASIBLE)
+        phase2_coll = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.FEASIBLE)
+        phase2_clean = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.OPTIMAL)
+        phys_viol = ClearanceViolation(category="parent_room", item_a=1, item_b=3)
+
+        # 1. Inactive polish context executes standard single-pass solve_and_extract
+        _node_inact, form_inact = self._build_large_mixed_slack_formulation(n_rooms=22)
+        form_inact.unlock_vertical_transverse_slack()
+        with (
+            patch.object(form_inact, "fixed_transverse_slack_stretch_polish", return_value=nullcontext(False)),
+            patch("romutil.layout.milp.cluster.solve_and_extract", return_value=ref_ext) as mock_inact,
+        ):
+            res_inact = _run_convergence_solve(
+                formulation=form_inact,
+                options=LayoutOptions(timeout_seconds=20),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=20.0,
+                reference_extraction=ref_ext,
+            )
+        assert res_inact is ref_ext
+        assert mock_inact.call_count == 1
+
+        # 2. Phase 1 breaks when remaining_budget < 2.0
+        _node_low, form_low = self._build_large_mixed_slack_formulation(n_rooms=22)
+        form_low.unlock_vertical_transverse_slack()
+        with (
+            patch("time.monotonic", side_effect=[0.0, 0.0]),
+            pytest.raises(LayoutSolverError, match="did not find a clean candidate"),
+        ):
+            _run_convergence_solve(
+                formulation=form_low,
+                options=LayoutOptions(timeout_seconds=1),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=1.5,
+                reference_extraction=ref_ext,
+            )
+
+        # 3. Phase 1 breaks immediately on LayoutInfeasibleError and when pass_to >= rem on LayoutSolverError
+        _node_inf, form_inf = self._build_large_mixed_slack_formulation(n_rooms=22)
+        form_inf.unlock_vertical_transverse_slack()
+        with (
+            patch("time.monotonic", side_effect=[0.0, 0.0]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=LayoutInfeasibleError("Fixed infeasible")),
+            pytest.raises(LayoutSolverError, match="did not find a clean candidate"),
+        ):
+            _run_convergence_solve(
+                formulation=form_inf,
+                options=LayoutOptions(timeout_seconds=20),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=20.0,
+                reference_extraction=ref_ext,
+            )
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 0.0, 1.0]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=LayoutSolverError("Full-rem timeout")),
+            pytest.raises(LayoutSolverError, match="did not find a clean candidate"),
+        ):
+            _run_convergence_solve(
+                formulation=form_inf,
+                options=LayoutOptions(timeout_seconds=10),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=10.0,
+                reference_extraction=ref_ext,
+            )
+
+        # 4. Phase 2 skips when rem < 2.0 after Phase 1
+        _node_p2b, form_p2b = self._build_large_mixed_slack_formulation(n_rooms=22)
+        form_p2b.unlock_vertical_transverse_slack()
+
+        def mock_solve_p2b(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            self._set_stretch(form_p2b, 1.5)
+            return phase1_clean
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 0.0, 3.5]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_p2b),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            res_p2b = _run_convergence_solve(
+                formulation=form_p2b,
+                options=LayoutOptions(timeout_seconds=5),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=5.0,
+                reference_extraction=ref_ext,
+            )
+        assert res_p2b is phase1_clean
+
+        # 5. Phase 2 collision with cuts > 0 continues and succeeds on retry
+        _node_retry, form_retry = self._build_large_mixed_slack_formulation(n_rooms=22)
+        form_retry.unlock_vertical_transverse_slack()
+        retry_step = 0
+
+        def mock_solve_retry(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal retry_step
+            retry_step += 1
+            if retry_step == 1:
+                self._set_stretch(form_retry, 2.0)
+                return phase1_clean
+            if retry_step == 2:
+                self._set_stretch(form_retry, 1.0)
+                return phase2_coll
+            self._set_stretch(form_retry, 0.5)
+            return phase2_clean
+
+        retry_det = 0
+
+        def mock_detect_retry(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal retry_det
+            retry_det += 1
+            if retry_det == 2:
+                return [phys_viol]
+            return []
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 0.0, 1.0, 2.0]),
+            patch.object(form_retry.clearance_builder, "inject_clearance_cuts", return_value=1) as mock_p2_inject,
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_retry),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect_retry),
+        ):
+            res_retry = _run_convergence_solve(
+                formulation=form_retry,
+                options=LayoutOptions(timeout_seconds=60),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=60.0,
+                reference_extraction=ref_ext,
+            )
+        assert res_retry is phase2_clean
+        assert retry_step == 3
+        mock_p2_inject.assert_called_once_with([phys_viol], extraction=phase2_coll)
+        assert _extract_objective_value(form_retry) == pytest.approx(5.0 + 1_000_000.0)
