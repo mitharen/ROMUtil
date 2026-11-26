@@ -7,7 +7,7 @@ import time
 from dataclasses import replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, NoReturn, Sequence
 
 import pyomo.environ as pyo
 
@@ -16,6 +16,7 @@ from romutil.layout.milp.clearance import ClearanceViolation, detect_cluster_col
 from romutil.layout.milp.formulation import ClusterFormulation, formulate_cluster_model
 from romutil.layout.milp.inventory import (
     ActiveEdge,
+    ClusterInventory,
     get_child_boundary_ports,
     inventory_cluster,
 )
@@ -40,6 +41,99 @@ class ClusterSolvePhase(str, Enum):
     CROSSING_CLEARANCE = "crossing_clearance"
     CONVERGENCE = "convergence"
     DONE = "done"
+
+
+class UnresolvableCollisionError(LayoutSolverError):
+    """Raised when cutting-plane clearance encounters unresolvable geometric collisions."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        node_id: str = "",
+        collisions: Sequence[ClearanceViolation] = (),
+        colliding_entities: Sequence[tuple[str, Any]] = (),
+        pruned_reasons: Sequence[Mapping[str, str]] = (),
+        inventory: ClusterInventory | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.node_id = node_id
+        self.collisions = tuple(collisions)
+        self.colliding_entities = tuple(colliding_entities)
+        self.pruned_reasons = tuple(dict(reason) for reason in pruned_reasons)
+        self.inventory = inventory
+
+
+def _extract_colliding_entities(
+    collisions: Sequence[ClearanceViolation],
+    active_edges: Sequence[ActiveEdge],
+) -> tuple[tuple[str, Any], ...]:
+    """Extract deduplicated colliding macro entities (including corridor children)."""
+    seen: set[tuple[str, Any]] = set()
+    ordered: list[tuple[str, Any]] = []
+
+    def _add(ent: tuple[str, Any]) -> None:
+        if ent not in seen:
+            seen.add(ent)
+            ordered.append(ent)
+
+    for viol in collisions:
+        for item in (viol.item_a, viol.item_b):
+            if isinstance(item, int):
+                if viol.category in ("corridor_room", "corridor_child", "corridor_crossing"):
+                    _add(("corridor", item))
+                    if 0 <= item < len(active_edges):
+                        for cid in sorted(active_edges[item].associated_children):
+                            _add(("child", cid))
+                else:
+                    _add(("room", item))
+            elif hasattr(item, "vnum"):
+                _add(("room", item.vnum))
+            elif hasattr(item, "child_id"):
+                _add(("child", item.child_id))
+            elif hasattr(item, "edge_index"):
+                idx = item.edge_index
+                _add(("corridor", idx))
+                if 0 <= idx < len(active_edges):
+                    for cid in sorted(active_edges[idx].associated_children):
+                        _add(("child", cid))
+            elif isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
+                if item[0] == "edge":
+                    _add(("corridor", item[1]))
+                    if isinstance(item[1], int) and 0 <= item[1] < len(active_edges):
+                        for cid in sorted(active_edges[item[1]].associated_children):
+                            _add(("child", cid))
+                else:
+                    _add(("child", item[0]))
+    return tuple(ordered)
+
+
+def _raise_collision_error(
+    formulation: ClusterFormulation,
+    node_id: str,
+    message: str,
+    fallback_collisions: Sequence[ClearanceViolation] = (),
+) -> NoReturn:
+    """Raise UnresolvableCollisionError if unsatisfiable or fallback collisions exist, else LayoutSolverError."""
+    cb = getattr(formulation, "clearance_builder", None)
+    raw_unsat = getattr(cb, "unsatisfiable_collisions", ())
+    unsat = tuple(raw_unsat) if isinstance(raw_unsat, (list, tuple)) else ()
+    collisions = unsat if unsat else tuple(fallback_collisions)
+    if collisions:
+        raw_reasons = getattr(cb, "unsatisfiable_collision_reasons", ()) if unsat else ()
+        reasons = tuple(raw_reasons) if isinstance(raw_reasons, (list, tuple)) else ()
+        inv = getattr(formulation, "inventory", None)
+        active_edges = getattr(inv, "active_edges", ()) if isinstance(inv, ClusterInventory) else ()
+        entities = _extract_colliding_entities(collisions, active_edges)
+        raise UnresolvableCollisionError(
+            message,
+            node_id=node_id,
+            collisions=collisions,
+            colliding_entities=entities,
+            pruned_reasons=reasons,
+            inventory=inv if isinstance(inv, ClusterInventory) else None,
+        )
+    raise LayoutSolverError(message)
 
 
 def compute_adaptive_cluster_timeout(
@@ -447,7 +541,7 @@ def solve_cluster_with_cutting_planes(
                         warmstart=use_warmstart,
                     )
                     break
-                except LayoutInfeasibleError:
+                except LayoutInfeasibleError as exc:
                     verified_incumbent = _select_verified_incumbent(
                         best_clean_extraction, best_physical_extraction
                     )
@@ -458,6 +552,14 @@ def solve_cluster_with_cutting_planes(
                         break
                     if _escalate_transverse_slack(proven_infeasible=True):
                         continue
+                    cb = getattr(formulation, "clearance_builder", None)
+                    raw_unsat = getattr(cb, "unsatisfiable_collisions", None)
+                    if isinstance(raw_unsat, (list, tuple)) and raw_unsat:
+                        _raise_collision_error(
+                            formulation,
+                            node.node_id,
+                            str(exc),
+                        )
                     raise
                 except LayoutSolverError:
                     verified_incumbent = _select_verified_incumbent(
@@ -566,8 +668,11 @@ def solve_cluster_with_cutting_planes(
                     if iteration > 0 and intermediate_timeout < remaining_budget - 1.0:
                         intermediate_timeout = remaining_budget
                         continue
-                    raise LayoutSolverError(
-                        f"MILP solver encountered unresolvable geometric collisions for cluster '{node.node_id}'."
+                    _raise_collision_error(
+                        formulation,
+                        node.node_id,
+                        f"MILP solver encountered unresolvable geometric collisions for cluster '{node.node_id}'.",
+                        fallback_collisions=physical_collisions,
                     )
                 continue
 
@@ -724,8 +829,11 @@ def solve_cluster_with_cutting_planes(
                                 extraction = best_clean_extraction
                                 phase = ClusterSolvePhase.DONE
                                 break
-                            raise LayoutSolverError(
-                                f"MILP solver encountered unresolvable geometric collisions for cluster '{node.node_id}'."
+                            _raise_collision_error(
+                                formulation,
+                                node.node_id,
+                                f"MILP solver encountered unresolvable geometric collisions for cluster '{node.node_id}'.",
+                                fallback_collisions=final_physical if new_cuts == 0 else (),
                             )
                         physical_converged = False
                         continue
@@ -796,8 +904,10 @@ def solve_cluster_with_cutting_planes(
             if verified_incumbent is not None:
                 extraction = verified_incumbent
             else:
-                raise LayoutSolverError(
-                    f"MILP solver failed to resolve all geometric collisions within {max_iterations} iterations for cluster '{node.node_id}'."
+                _raise_collision_error(
+                    formulation,
+                    node.node_id,
+                    f"MILP solver failed to resolve all geometric collisions within {max_iterations} iterations for cluster '{node.node_id}'.",
                 )
     finally:
         if has_slack:
@@ -967,6 +1077,7 @@ class HierarchicalClusterSolver:
 __all__ = [
     "ClusterSolvePhase",
     "HierarchicalClusterSolver",
+    "UnresolvableCollisionError",
     "compute_adaptive_cluster_timeout",
     "solve_cluster",
     "solve_cluster_with_cutting_planes",

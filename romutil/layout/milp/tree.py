@@ -19,6 +19,7 @@ from romutil.layout.ir import (
     TreeSolution,
 )
 from romutil.layout.milp.cluster import (
+    UnresolvableCollisionError,
     compute_adaptive_cluster_timeout,
     solve_cluster,
     solve_cluster_with_cutting_planes,
@@ -30,15 +31,30 @@ from romutil.layout.milp.inventory import (
     _expand_room_cells,
     get_child_boundary_ports,
     get_child_coordinate,
+    get_child_strictly_interior_rooms,
     inventory_cluster,
 )
 from romutil.layout.milp.normalization import normalize_cluster_solution
+from romutil.layout.milp.reactive_split import (
+    compute_split_lp_signature,
+    compute_total_edge_length,
+    detect_planar_transverse_shear,
+    diagnose_transverse_shear,
+    diagnose_unresolvable_collision,
+    generate_coordinate_threshold_partitions,
+    get_child_interface_rooms,
+    is_split_pair_origin,
+    is_splittable_child,
+    split_child_along_direction,
+)
 from romutil.layout.protocols import TreeSolver
 from romutil.layout.simplification.warps import direction_to_displacement
 from romutil.models import Direction, Room
 from romutil.types import Coord3D, LayoutOptions, LayoutSolverError, SolverStatus
 
 _MAX_DYNAMIC_BRIDGE_SPLIT_DEPTH = 4
+_MAX_REACTIVE_SPLIT_ROUNDS = 8
+_MAX_DIAGNOSTIC_RETRIES = 4
 
 
 def _safe_displacement(direction: int | Direction) -> tuple[int, int, int] | None:
@@ -735,30 +751,39 @@ def _resynthesize_split_child_solution(
     parent_sol: NodeSolution,
     solutions: Mapping[str, NodeSolution],
     room_extents: Mapping[int, tuple[int, int]] | None = None,
+    *,
+    unpacked_ids: Collection[str] = (),
+    graph: LayoutGraph | None = None,
+    descendant_solutions_out: dict[str, NodeSolution] | None = None,
 ) -> tuple[NodeSolution, Coord3D, tuple[BoundingBox3D, ...]]:
-    """Recombine dynamically split sub-pieces back into orig_child's normalized NodeSolution."""
+    """Recombine dynamically split sub-pieces back into orig_child and unpacked descendants."""
     parent_offsets = parent_sol.metadata.get("child_offsets", {})
 
-    local_in_parent: dict[int, Coord3D] = {}
+    abs_room_coords: dict[int, Coord3D] = {}
     sub_offsets_in_parent: dict[str, Coord3D] = {}
     sub_boxes_map: dict[str, tuple[BoundingBox3D, ...]] = {}
     all_coords_in_parent: dict[Any, Coord3D] = {}
     port_in_parent: dict[int, Coord3D] = {}
 
     orig_child_ids = {c.node_id for c in orig_child.children}
+    orig_subtree_rooms = _collect_subtree_rooms(orig_child)
     parent_sub_boxes = parent_sol.metadata.get("child_sub_boxes", {})
+    unpacked_set = set(unpacked_ids) | {orig_child.node_id}
 
     for p_node, p_sol in pieces:
         p_off = _as_coord3d(parent_offsets.get(p_node.node_id))
-        if p_node.node_id in orig_child_ids:
+        if (p_node.node_id in orig_child_ids and not unpacked_ids) or (
+            p_node.node_id in solutions and p_node.node_id not in unpacked_set
+        ):
             sub_offsets_in_parent[p_node.node_id] = p_off
             if p_node.node_id in parent_sub_boxes:
                 sub_boxes_map[p_node.node_id] = tuple(parent_sub_boxes[p_node.node_id])
             for room_vnum, pt in p_sol.local_coordinates.items():
+                translated = Coord3D(p_off.x + pt.x, p_off.y + pt.y, p_off.z + pt.z)
+                if room_vnum in orig_subtree_rooms:
+                    abs_room_coords.setdefault(room_vnum, translated)
                 if room_vnum not in orig_child.rooms:
-                    all_coords_in_parent.setdefault(
-                        room_vnum, Coord3D(p_off.x + pt.x, p_off.y + pt.y, p_off.z + pt.z)
-                    )
+                    all_coords_in_parent.setdefault(room_vnum, translated)
             for key, pt in p_sol.metadata.get("all_room_coordinates", {}).items():
                 if key not in orig_child.rooms:
                     all_coords_in_parent.setdefault(
@@ -766,120 +791,84 @@ def _resynthesize_split_child_solution(
                     )
             continue
 
-        for room_vnum, pt in p_sol.local_coordinates.items():
-            translated = Coord3D(p_off.x + pt.x, p_off.y + pt.y, p_off.z + pt.z)
-            if room_vnum in orig_child.rooms:
-                local_in_parent[room_vnum] = translated
-            all_coords_in_parent.setdefault(room_vnum, translated)
-
-        for key, pt in p_sol.metadata.get("all_room_coordinates", {}).items():
-            all_coords_in_parent[key] = Coord3D(p_off.x + pt.x, p_off.y + pt.y, p_off.z + pt.z)
-
         for port_vnum, pt in p_sol.port_coordinates.items():
             port_in_parent[port_vnum] = Coord3D(p_off.x + pt.x, p_off.y + pt.y, p_off.z + pt.z)
+
+        p_ports = set(p_sol.port_coordinates.keys())
+        for key, pt in p_sol.metadata.get("all_room_coordinates", {}).items():
+            if key in p_ports and key not in p_sol.local_coordinates:
+                continue
+            all_coords_in_parent[key] = Coord3D(p_off.x + pt.x, p_off.y + pt.y, p_off.z + pt.z)
+
+        for room_vnum, pt in p_sol.local_coordinates.items():
+            translated = Coord3D(p_off.x + pt.x, p_off.y + pt.y, p_off.z + pt.z)
+            abs_room_coords[room_vnum] = translated
+            all_coords_in_parent[room_vnum] = translated
 
         p_child_offsets = p_sol.metadata.get("child_offsets", {})
         p_child_sbs = p_sol.metadata.get("child_sub_boxes", {})
         for sc in p_node.children:
             sc_off = _as_coord3d(p_child_offsets.get(sc.node_id))
-            sub_offsets_in_parent[sc.node_id] = Coord3D(
-                p_off.x + sc_off.x,
-                p_off.y + sc_off.y,
-                p_off.z + sc_off.z,
-            )
+            sc_abs = Coord3D(p_off.x + sc_off.x, p_off.y + sc_off.y, p_off.z + sc_off.z)
+            sub_offsets_in_parent[sc.node_id] = sc_abs
             if sc.node_id in p_child_sbs:
                 sub_boxes_map[sc.node_id] = tuple(p_child_sbs[sc.node_id])
+            sc_sol = solutions.get(sc.node_id)
+            if sc_sol is not None:
+                for rv, pt in sc_sol.local_coordinates.items():
+                    abs_room_coords.setdefault(rv, Coord3D(sc_abs.x + pt.x, sc_abs.y + pt.y, sc_abs.z + pt.z))
+
+    def _add_corridor_cells(a: int, b: int, disp: tuple[int, int, int]) -> None:
+        pa = abs_room_coords.get(a) or all_coords_in_parent.get(a)
+        pb = abs_room_coords.get(b) or all_coords_in_parent.get(b)
+        if pa is None or pb is None:
+            return
+        dx, dy, dz = disp
+        dist = abs(pb.x - pa.x) + abs(pb.y - pa.y) + abs(pb.z - pa.z)
+        if (
+            dist > 1
+            and pb.x - pa.x == dist * dx
+            and pb.y - pa.y == dist * dy
+            and pb.z - pa.z == dist * dz
+        ):
+            if dz == 0:
+                ext_a = (room_extents or {}).get(a, (0, 0))
+                ext_b = (room_extents or {}).get(b, (0, 0))
+                pos_dir = (dx > 0) or (dy > 0)
+                t_start = (ext_a[1] + 1) if pos_dir else (ext_a[0] + 1)
+                t_stop = dist - (ext_b[0] if pos_dir else ext_b[1])
+            else:
+                t_start, t_stop = 1, dist
+            for step in range(t_start, t_stop):
+                all_coords_in_parent.setdefault(
+                    f"corridor_{a}_{b}_{step}",
+                    Coord3D(pa.x + step * dx, pa.y + step * dy, pa.z + step * dz),
+                )
 
     # Include stretched corridor cells along inter-piece split bridges
     for p_node, _p_sol in pieces:
         contract = p_node.cut_contract
         if not isinstance(contract, BridgeCut):
             continue
-        a, b = contract.bridge_edge
-        pa = local_in_parent.get(a) or all_coords_in_parent.get(a)
-        pb = local_in_parent.get(b) or all_coords_in_parent.get(b)
-        if pa is not None and pb is not None:
-            disp = _safe_displacement(contract.direction)
-            if disp is None:
-                continue
-            dx, dy, dz = disp
-            dist = abs(pb.x - pa.x) + abs(pb.y - pa.y) + abs(pb.z - pa.z)
-            if (
-                dist > 1
-                and pb.x - pa.x == dist * dx
-                and pb.y - pa.y == dist * dy
-                and pb.z - pa.z == dist * dz
-            ):
-                if dz == 0:
-                    ext_a = (room_extents or {}).get(a, (0, 0))
-                    ext_b = (room_extents or {}).get(b, (0, 0))
-                    pos_dir = (dx > 0) or (dy > 0)
-                    t_start = (ext_a[1] + 1) if pos_dir else (ext_a[0] + 1)
-                    t_stop = dist - (ext_b[0] if pos_dir else ext_b[1])
-                else:
-                    t_start, t_stop = 1, dist
-                for step in range(t_start, t_stop):
-                    all_coords_in_parent[f"corridor_{a}_{b}_{step}"] = Coord3D(
-                        pa.x + step * dx,
-                        pa.y + step * dy,
-                        pa.z + step * dz,
-                    )
+        disp = _safe_displacement(contract.direction)
+        if disp is not None:
+            _add_corridor_cells(contract.bridge_edge[0], contract.bridge_edge[1], disp)
 
-    bound_pts: list[Coord3D] = list(local_in_parent.values()) + list(all_coords_in_parent.values())
-    for sc in orig_child.children:
-        nested_off = sub_offsets_in_parent.get(sc.node_id)
-        sc_sol = solutions.get(sc.node_id)
-        if nested_off is not None and sc_sol is not None and sc_sol.bounding_box is not None:
-            bb = sc_sol.bounding_box
-            bound_pts.append(Coord3D(nested_off.x + bb.min_x, nested_off.y + bb.min_y, nested_off.z + bb.min_z))
-            bound_pts.append(Coord3D(nested_off.x + bb.max_x, nested_off.y + bb.max_y, nested_off.z + bb.max_z))
-
-    if bound_pts:
-        orig_offset = Coord3D(
-            min(pt.x for pt in bound_pts),
-            min(pt.y for pt in bound_pts),
-            min(pt.z for pt in bound_pts),
-        )
-    else:
-        orig_offset = Coord3D(0, 0, 0)
-
-    def _shift(pt: Coord3D) -> Coord3D:
-        return Coord3D(pt.x - orig_offset.x, pt.y - orig_offset.y, pt.z - orig_offset.z)
-
-    merged_local_coords = {r: _shift(pt) for r, pt in local_in_parent.items()}
-    merged_sub_offsets = {cid: _shift(pt) for cid, pt in sub_offsets_in_parent.items()}
-    merged_all_coords = {k: _shift(pt) for k, pt in all_coords_in_parent.items()}
-
-    merged_port_coords: dict[int, Coord3D] = {}
-    for bp in get_child_boundary_ports(orig_child):
-        raw_pt = (
-            parent_sol.local_coordinates.get(bp)
-            or parent_sol.port_coordinates.get(bp)
-            or port_in_parent.get(bp)
-            or all_coords_in_parent.get(bp)
-        )
-        if raw_pt is not None:
-            merged_port_coords[bp] = _shift(raw_pt)
-
-    extents = room_extents or {}
-    bp_coord_set: set[Coord3D] = set()
-    for bp, pt in merged_port_coords.items():
-        bp_coord_set.update(_expand_room_cells(pt, extents.get(bp, (0, 0))))
-
-    interior_cells: set[Coord3D] = set()
-    for key, pt in merged_all_coords.items():
-        if key in merged_port_coords:
-            continue
-        ext = extents.get(key, (0, 0)) if isinstance(key, int) else (0, 0)
-        for cell in _expand_room_cells(pt, ext):
-            if cell not in bp_coord_set:
-                interior_cells.add(cell)
-    if interior_cells:
-        orig_sub_boxes = decompose_into_orthogonal_sub_boxes(interior_cells)
-    elif merged_all_coords:
-        orig_sub_boxes = (BoundingBox3D.from_coordinates(merged_all_coords.values()),)
-    else:
-        orig_sub_boxes = ()
+    # Include stretched corridor cells along severed inter-piece edges (e.g. directed parallel cuts)
+    if graph is not None:
+        severed_pairs: set[frozenset[int]] = set()
+        for p_node, _p_sol in pieces:
+            for e_raw in p_node.metadata.get("severed_bridge_edges", ()):
+                severed_pairs.add(frozenset((int(e_raw[0]), int(e_raw[1]))))
+        if severed_pairs:
+            for edge in graph.edges:
+                if edge.cut:
+                    continue
+                if frozenset({edge.src, edge.dst}) in severed_pairs:
+                    if edge.src in orig_subtree_rooms and edge.dst in orig_subtree_rooms:
+                        disp = _safe_displacement(edge.direction)
+                        if disp is not None:
+                            _add_corridor_cells(edge.src, edge.dst, disp)
 
     statuses = [_extract_status(p_sol) for _p_node, p_sol in pieces]
     statuses.append(_extract_status(parent_sol))
@@ -890,20 +879,128 @@ def _resynthesize_split_child_solution(
     else:
         merged_status = SolverStatus.FEASIBLE
 
-    merged_sol = NodeSolution(
-        node_id=orig_child.node_id,
-        local_coordinates=merged_local_coords,
-        port_coordinates=merged_port_coords,
-        sub_boxes=(),
-        metadata={
-            "child_offsets": merged_sub_offsets,
-            "status": merged_status,
-            "child_sub_boxes": sub_boxes_map,
-            "all_room_coordinates": merged_all_coords,
-            "port_coordinates": merged_port_coords,
-        },
-    )
-    return merged_sol, orig_offset, orig_sub_boxes
+    extents = room_extents or {}
+
+    def _project_node(
+        cur_node: SolveTreeNode,
+    ) -> tuple[NodeSolution, Coord3D, tuple[BoundingBox3D, ...]]:
+        if cur_node.node_id not in unpacked_set:
+            c_sol = solutions[cur_node.node_id]
+            c_off = sub_offsets_in_parent.get(cur_node.node_id, Coord3D(0, 0, 0))
+            c_sbs = sub_boxes_map.get(cur_node.node_id, c_sol.sub_boxes)
+            return c_sol, c_off, c_sbs
+
+        cur_local_in_parent = {
+            r: abs_room_coords[r]
+            for r in cur_node.rooms
+            if r in abs_room_coords
+        }
+        cur_all_in_parent: dict[Any, Coord3D] = dict(cur_local_in_parent)
+        cur_sub_offsets_in_parent: dict[str, Coord3D] = {}
+        cur_sub_boxes_map: dict[str, tuple[BoundingBox3D, ...]] = {}
+        child_projected: list[tuple[SolveTreeNode, NodeSolution, Coord3D]] = []
+
+        for ch in cur_node.children:
+            ch_sol, ch_off, ch_sbs = _project_node(ch)
+            child_projected.append((ch, ch_sol, ch_off))
+            cur_sub_offsets_in_parent[ch.node_id] = ch_off
+            if ch_sbs:
+                cur_sub_boxes_map[ch.node_id] = tuple(ch_sbs)
+            elif ch.node_id in sub_boxes_map:
+                cur_sub_boxes_map[ch.node_id] = sub_boxes_map[ch.node_id]
+            for rv, pt in ch_sol.local_coordinates.items():
+                if rv not in cur_node.rooms:
+                    cur_all_in_parent.setdefault(
+                        rv, Coord3D(ch_off.x + pt.x, ch_off.y + pt.y, ch_off.z + pt.z)
+                    )
+            for key, pt in ch_sol.metadata.get("all_room_coordinates", {}).items():
+                if key not in cur_node.rooms:
+                    cur_all_in_parent.setdefault(
+                        key, Coord3D(ch_off.x + pt.x, ch_off.y + pt.y, ch_off.z + pt.z)
+                    )
+
+        if cur_node.node_id == orig_child.node_id:
+            for key, pt in all_coords_in_parent.items():
+                cur_all_in_parent.setdefault(key, pt)
+        else:
+            cur_sub_and_ports = _collect_subtree_rooms(cur_node) | get_child_boundary_ports(cur_node)
+            for key, pt in all_coords_in_parent.items():
+                if isinstance(key, int) and key in cur_sub_and_ports:
+                    cur_all_in_parent.setdefault(key, pt)
+
+        bound_pts: list[Coord3D] = list(cur_local_in_parent.values()) + list(cur_all_in_parent.values())
+        for _ch, ch_sol, ch_off in child_projected:
+            if ch_sol.bounding_box is not None:
+                bb = ch_sol.bounding_box
+                bound_pts.append(Coord3D(ch_off.x + bb.min_x, ch_off.y + bb.min_y, ch_off.z + bb.min_z))
+                bound_pts.append(Coord3D(ch_off.x + bb.max_x, ch_off.y + bb.max_y, ch_off.z + bb.max_z))
+
+        if bound_pts:
+            node_origin = Coord3D(
+                min(pt.x for pt in bound_pts),
+                min(pt.y for pt in bound_pts),
+                min(pt.z for pt in bound_pts),
+            )
+        else:
+            node_origin = Coord3D(0, 0, 0)
+
+        def _shift(pt: Coord3D) -> Coord3D:
+            return Coord3D(pt.x - node_origin.x, pt.y - node_origin.y, pt.z - node_origin.z)
+
+        merged_local = {r: _shift(pt) for r, pt in cur_local_in_parent.items()}
+        merged_sub_offsets = {cid: _shift(pt) for cid, pt in cur_sub_offsets_in_parent.items()}
+        merged_all = {k: _shift(pt) for k, pt in cur_all_in_parent.items()}
+
+        merged_ports: dict[int, Coord3D] = {}
+        for bp in get_child_boundary_ports(cur_node):
+            raw_pt = (
+                abs_room_coords.get(bp)
+                or parent_sol.local_coordinates.get(bp)
+                or parent_sol.port_coordinates.get(bp)
+                or port_in_parent.get(bp)
+                or cur_all_in_parent.get(bp)
+                or all_coords_in_parent.get(bp)
+            )
+            if raw_pt is not None:
+                merged_ports[bp] = _shift(raw_pt)
+
+        bp_coord_set: set[Coord3D] = set()
+        for bp, pt in merged_ports.items():
+            bp_coord_set.update(_expand_room_cells(pt, extents.get(bp, (0, 0))))
+
+        interior_cells: set[Coord3D] = set()
+        for key, pt in merged_all.items():
+            if key in merged_ports:
+                continue
+            ext = extents.get(key, (0, 0)) if isinstance(key, int) else (0, 0)
+            for cell in _expand_room_cells(pt, ext):
+                if cell not in bp_coord_set:
+                    interior_cells.add(cell)
+        if interior_cells:
+            node_sub_boxes = decompose_into_orthogonal_sub_boxes(interior_cells)
+        elif merged_all:
+            node_sub_boxes = (BoundingBox3D.from_coordinates(merged_all.values()),)
+        else:
+            node_sub_boxes = ()
+
+        node_sol = NodeSolution(
+            node_id=cur_node.node_id,
+            local_coordinates=merged_local,
+            port_coordinates=merged_ports,
+            sub_boxes=(),
+            metadata={
+                "child_offsets": merged_sub_offsets,
+                "status": merged_status,
+                "child_sub_boxes": cur_sub_boxes_map,
+                "all_room_coordinates": merged_all,
+                "port_coordinates": merged_ports,
+            },
+        )
+        if cur_node.node_id != orig_child.node_id and descendant_solutions_out is not None:
+            descendant_solutions_out[cur_node.node_id] = node_sol
+        return node_sol, node_origin, node_sub_boxes
+
+    return _project_node(orig_child)
 
 
 class HierarchicalTreeSolver(TreeSolver):
@@ -989,7 +1086,12 @@ class HierarchicalTreeSolver(TreeSolver):
                 wing_node, wing_sol, g, depth + 1
             )
 
-        def _solve_node(node: SolveTreeNode, g: LayoutGraph) -> NodeSolution:
+        def _solve_node(
+            node: SolveTreeNode,
+            g: LayoutGraph,
+            *,
+            cache_solution: bool = True,
+        ) -> NodeSolution:
             if node.node_id in solutions:
                 return solutions[node.node_id]
 
@@ -1026,7 +1128,8 @@ class HierarchicalTreeSolver(TreeSolver):
                     solver_name=self.solver_name,
                 )
                 cluster_sol = _maybe_resolve_rays(node, cluster_sol, child_solutions_map)
-                solutions[node.node_id] = cluster_sol
+                if cache_solution:
+                    solutions[node.node_id] = cluster_sol
                 return cluster_sol
 
             effective_children: list[SolveTreeNode] = []
@@ -1041,43 +1144,392 @@ class HierarchicalTreeSolver(TreeSolver):
                     effective_children.append(p_node)
                     effective_child_solutions[p_node.node_id] = p_sol
 
-            if not split_map:
+            def _has_any_splittable(
+                inv: Any,
+                cur_children: Sequence[SolveTreeNode],
+                cur_child_sols: Mapping[str, NodeSolution],
+            ) -> bool:
+                return any(
+                    is_splittable_child(c, inv, cur_child_sols)
+                    for c in cur_children
+                )
+
+            has_split_candidate = any(is_split_pair_origin(c) for c in effective_children)
+            reactive_unpacked_ids: dict[str, set[str]] = collections.defaultdict(set)
+            init_inv = (
+                inventory_cluster(
+                    node=replace(node, children=tuple(effective_children)) if split_map else node,
+                    child_solutions=effective_child_solutions,
+                    graph=g,
+                    options=options,
+                )
+                if has_split_candidate
+                else None
+            )
+
+            if init_inv is None or not _has_any_splittable(
+                init_inv, effective_children, effective_child_solutions
+            ):
+                target_node = (
+                    replace(node, children=tuple(effective_children)) if split_map else node
+                )
+                target_sols = effective_child_solutions if split_map else child_solutions_map
                 cluster_sol = solve_cluster(
-                    node=node,
-                    child_solutions=child_solutions_map,
+                    node=target_node,
+                    child_solutions=target_sols,
                     graph=g,
                     options=options,
                     solver_name=self.solver_name,
                 )
-                cluster_sol = _maybe_resolve_rays(node, cluster_sol, child_solutions_map)
-                solutions[node.node_id] = cluster_sol
-                return cluster_sol
+                cluster_sol = _maybe_resolve_rays(target_node, cluster_sol, target_sols)
+                if not split_map:
+                    if cache_solution:
+                        solutions[node.node_id] = cluster_sol
+                    return cluster_sol
+            else:
+                orig_child_by_id = {c.node_id: c for c in node.children}
+                split_seq = 0
+                attempted_splits: set[
+                    tuple[str, tuple[int, ...], tuple[int, ...], tuple[int, int, int]]
+                ] = set()
+                failed_splits: set[tuple[str, int, int]] = set()
 
-            effective_node = replace(node, children=tuple(effective_children))
-            cluster_sol = solve_cluster(
-                node=effective_node,
-                child_solutions=effective_child_solutions,
-                graph=g,
-                options=options,
-                solver_name=self.solver_name,
-            )
-            cluster_sol = _maybe_resolve_rays(
-                effective_node, cluster_sol, effective_child_solutions
-            )
+                def _compute_parent_attach_rooms(
+                    cur_children: Sequence[SolveTreeNode],
+                    cur_child_sols: Mapping[str, NodeSolution],
+                ) -> set[int]:
+                    b_ports = frozenset(get_child_boundary_ports(node))
+                    strictly_int: set[int] = set()
+                    for c in cur_children:
+                        strictly_int.update(
+                            get_child_strictly_interior_rooms(c, cur_child_sols.get(c.node_id))
+                        )
+                    ext_ports = {p for p in b_ports if p not in strictly_int}
+                    return set(node.rooms) | ext_ports
+
+                def _apply_reactive_split(
+                    target_cid: str,
+                    s_rooms: set[int],
+                    t_rooms: set[int],
+                    direction: tuple[int, int, int],
+                ) -> bool:
+                    nonlocal split_seq
+                    sig = (
+                        target_cid,
+                        tuple(sorted(s_rooms)),
+                        tuple(sorted(t_rooms)),
+                        direction,
+                    )
+                    if sig in attempted_splits:
+                        return False
+                    attempted_splits.add(sig)
+
+                    target_idx = next(
+                        (i for i, c in enumerate(effective_children) if c.node_id == target_cid),
+                        None,
+                    )
+                    if target_idx is None:
+                        return False
+                    target_child = effective_children[target_idx]
+                    parent_attach = _compute_parent_attach_rooms(
+                        effective_children, effective_child_solutions
+                    )
+                    split_res = split_child_along_direction(
+                        child=target_child,
+                        s_rooms=s_rooms,
+                        t_rooms=t_rooms,
+                        direction=direction,
+                        parent_attach_rooms=parent_attach,
+                        graph=g,
+                        split_tag=f"rs{split_seq}",
+                    )
+                    if split_res is None:
+                        return False
+                    split_seq += 1
+                    piece_s, piece_t, unpacked_nodes = split_res
+
+                    try:
+                        s_sol = _solve_node(piece_s, g, cache_solution=False)
+                        t_sol = _solve_node(piece_t, g, cache_solution=False)
+                    except LayoutSolverError:
+                        return False
+
+                    orig_root_id = str(
+                        target_child.metadata.get("reactive_split_origin")
+                        or target_child.node_id
+                    )
+                    new_pieces: list[tuple[SolveTreeNode, NodeSolution]] = []
+                    for p_n, p_s in ((piece_s, s_sol), (piece_t, t_sol)):
+                        expanded = _expand_child(p_n, p_s, g)
+                        for ep_n, ep_s in expanded:
+                            if ep_n.metadata.get("reactive_split_origin") != orig_root_id:
+                                ep_meta = dict(ep_n.metadata)
+                                ep_meta["reactive_split_origin"] = orig_root_id
+                                ep_n = replace(ep_n, metadata=ep_meta)
+                            new_pieces.append((ep_n, ep_s))
+
+                    effective_child_solutions.pop(target_cid, None)
+                    updated_list = (
+                        effective_children[:target_idx]
+                        + [pn for pn, _ in new_pieces]
+                        + effective_children[target_idx + 1 :]
+                    )
+                    effective_children[:] = updated_list
+                    for pn, ps in new_pieces:
+                        effective_child_solutions[pn.node_id] = ps
+
+                    for desc in unpacked_nodes:
+                        reactive_unpacked_ids[orig_root_id].add(desc.node_id)
+                    return True
+
+                def _record_failed_split(
+                    target_cid: str,
+                    s_rooms: set[int],
+                    t_rooms: set[int],
+                    u_dir: tuple[int, int, int],
+                    inv_ctx: Any,
+                ) -> None:
+                    target_child = next(
+                        (c for c in effective_children if c.node_id == target_cid),
+                        None,
+                    )
+                    if target_child is None:
+                        return
+                    iface, _ = get_child_interface_rooms(
+                        target_child, inv_ctx, effective_child_solutions
+                    )
+                    lp_sig = compute_split_lp_signature(iface, s_rooms, t_rooms, u_dir)
+                    if lp_sig is not None:
+                        failed_splits.add((target_cid, lp_sig[0], lp_sig[1]))
+
+                def _try_apply_split_request(
+                    target_cid: str,
+                    s_rooms: set[int],
+                    t_rooms: set[int],
+                    u_dir: tuple[int, int, int],
+                    inv_ctx: Any,
+                    *,
+                    preserve_lp_sign: bool = True,
+                ) -> bool:
+                    if _apply_reactive_split(target_cid, s_rooms, t_rooms, u_dir):
+                        return True
+                    target_child = next(
+                        (c for c in effective_children if c.node_id == target_cid),
+                        None,
+                    )
+                    if target_child is not None:
+                        iface, _ = get_child_interface_rooms(
+                            target_child, inv_ctx, effective_child_solutions
+                        )
+                        orig_sig = compute_split_lp_signature(iface, s_rooms, t_rooms, u_dir)
+                        alt_parts = generate_coordinate_threshold_partitions(
+                            effective_child_solutions.get(target_cid),
+                            s_rooms,
+                            t_rooms,
+                            u_dir,
+                        )
+                        for cand_s, cand_t, cand_dir in alt_parts:
+                            if preserve_lp_sign:
+                                if cand_dir != u_dir:
+                                    continue
+                                if (
+                                    orig_sig is not None
+                                    and compute_split_lp_signature(
+                                        iface, cand_s, cand_t, cand_dir
+                                    )
+                                    != orig_sig
+                                ):
+                                    continue
+                            if _apply_reactive_split(target_cid, cand_s, cand_t, cand_dir):
+                                return True
+                    _record_failed_split(target_cid, s_rooms, t_rooms, u_dir, inv_ctx)
+                    return False
+
+                best_valid_state: tuple[
+                    NodeSolution,
+                    list[SolveTreeNode],
+                    dict[str, NodeSolution],
+                    dict[str, set[str]],
+                    tuple[int, int, int],
+                ] | None = None
+                cluster_sol_opt: NodeSolution | None = None
+
+                def _restore_best_valid_state() -> NodeSolution:
+                    assert best_valid_state is not None
+                    (
+                        restored_sol,
+                        restored_children,
+                        restored_child_sols,
+                        restored_unpacked,
+                        _,
+                    ) = best_valid_state
+                    effective_children[:] = restored_children
+                    effective_child_solutions.clear()
+                    effective_child_solutions.update(restored_child_sols)
+                    reactive_unpacked_ids.clear()
+                    for orig_k, desc_set in restored_unpacked.items():
+                        reactive_unpacked_ids[orig_k] = set(desc_set)
+                    return restored_sol
+
+                for round_idx in range(_MAX_REACTIVE_SPLIT_ROUNDS + 1):
+                    effective_node = replace(node, children=tuple(effective_children))
+                    inv_round = (
+                        init_inv
+                        if round_idx == 0
+                        else inventory_cluster(
+                            node=effective_node,
+                            child_solutions=effective_child_solutions,
+                            graph=g,
+                            options=options,
+                        )
+                    )
+                    can_split_more = (
+                        round_idx < _MAX_REACTIVE_SPLIT_ROUNDS
+                        and _has_any_splittable(
+                            inv_round, effective_children, effective_child_solutions
+                        )
+                    )
+
+                    try:
+                        solved_this_round = solve_cluster(
+                            node=effective_node,
+                            child_solutions=effective_child_solutions,
+                            graph=g,
+                            options=options,
+                            solver_name=self.solver_name,
+                        )
+                    except UnresolvableCollisionError as exc:
+                        if can_split_more:
+                            inv_err = exc.inventory or inv_round
+                            candidates = diagnose_unresolvable_collision(
+                                exc,
+                                effective_children,
+                                inv_err,
+                                effective_child_solutions,
+                                g,
+                            )
+                            if any(
+                                _apply_reactive_split(cid, s_rooms, t_rooms, u_dir)
+                                for cid, s_rooms, t_rooms, u_dir in candidates
+                            ):
+                                continue
+                        if best_valid_state is not None:
+                            cluster_sol_opt = _restore_best_valid_state()
+                            break
+                        raise
+                    except LayoutSolverError:
+                        if best_valid_state is not None:
+                            cluster_sol_opt = _restore_best_valid_state()
+                            break
+                        raise
+
+                    inv_post = inventory_cluster(
+                        node=effective_node,
+                        child_solutions=effective_child_solutions,
+                        graph=g,
+                        options=options,
+                    )
+                    sheared = detect_planar_transverse_shear(
+                        cluster_sol=solved_this_round,
+                        inventory=inv_post,
+                        effective_children=effective_children,
+                        child_solutions=effective_child_solutions,
+                    )
+                    score = (
+                        len(sheared),
+                        sum(abs(v) for _ae, _ax, v in sheared),
+                        compute_total_edge_length(
+                            solved_this_round, inv_post, effective_child_solutions
+                        ),
+                    )
+                    if best_valid_state is None or score < best_valid_state[4]:
+                        best_valid_state = (
+                            solved_this_round,
+                            list(effective_children),
+                            dict(effective_child_solutions),
+                            {k: set(v) for k, v in reactive_unpacked_ids.items()},
+                            score,
+                        )
+
+                    if not sheared or round_idx >= _MAX_REACTIVE_SPLIT_ROUNDS:
+                        if best_valid_state is not None and best_valid_state[4] <= score:
+                            cluster_sol_opt = _restore_best_valid_state()
+                        else:
+                            cluster_sol_opt = solved_this_round
+                        break
+
+                    split_ok = False
+                    for _diag_attempt in range(_MAX_DIAGNOSTIC_RETRIES):
+                        shear_candidates = diagnose_transverse_shear(
+                            cluster_sol=solved_this_round,
+                            inventory=inv_post,
+                            effective_children=effective_children,
+                            child_solutions=effective_child_solutions,
+                            solver_name=self.solver_name,
+                            graph=g,
+                            failed_splits=failed_splits,
+                        )
+                        if not shear_candidates:
+                            break
+                        for cid, s_rooms, t_rooms, u_dir in shear_candidates:
+                            if _try_apply_split_request(
+                                cid,
+                                s_rooms,
+                                t_rooms,
+                                u_dir,
+                                inv_post,
+                                preserve_lp_sign=True,
+                            ):
+                                split_ok = True
+                                break
+                        if split_ok:
+                            break
+                    if not split_ok:
+                        cluster_sol_opt = _restore_best_valid_state()
+                        break
+
+                assert cluster_sol_opt is not None
+                effective_node = replace(node, children=tuple(effective_children))
+                cluster_sol = _maybe_resolve_rays(
+                    effective_node, cluster_sol_opt, effective_child_solutions
+                )
+
+                reactive_pieces_by_orig: dict[str, list[tuple[SolveTreeNode, NodeSolution]]] = (
+                    collections.defaultdict(list)
+                )
+                for p_n in effective_children:
+                    orig_root_id = p_n.metadata.get("reactive_split_origin")
+                    if orig_root_id is not None and orig_root_id in orig_child_by_id:
+                        reactive_pieces_by_orig[str(orig_root_id)].append(
+                            (p_n, effective_child_solutions[p_n.node_id])
+                        )
+
+                for orig_cid, r_pieces in reactive_pieces_by_orig.items():
+                    split_map[orig_cid] = (orig_child_by_id[orig_cid], r_pieces)
+
+                if not split_map:
+                    if cache_solution:
+                        solutions[node.node_id] = cluster_sol
+                    return cluster_sol
 
             updated_meta = dict(cluster_sol.metadata)
             updated_offsets = dict(updated_meta.get("child_offsets", {}))
             updated_sub_boxes = dict(updated_meta.get("child_sub_boxes", {}))
 
             for orig_cid, (orig_child, pieces) in split_map.items():
+                desc_out: dict[str, NodeSolution] = {}
                 merged_sol, orig_offset, orig_sub_boxes = _resynthesize_split_child_solution(
                     orig_child=orig_child,
                     pieces=pieces,
                     parent_sol=cluster_sol,
                     solutions=solutions,
                     room_extents=resolved_extents,
+                    unpacked_ids=reactive_unpacked_ids.get(orig_cid, ()),
+                    graph=g,
+                    descendant_solutions_out=desc_out,
                 )
                 solutions[orig_cid] = merged_sol
+                solutions.update(desc_out)
                 for p_node, _p_sol in pieces:
                     updated_offsets.pop(p_node.node_id, None)
                     updated_sub_boxes.pop(p_node.node_id, None)
@@ -1087,7 +1539,8 @@ class HierarchicalTreeSolver(TreeSolver):
             updated_meta["child_offsets"] = updated_offsets
             updated_meta["child_sub_boxes"] = updated_sub_boxes
             resynthesized_parent = replace(cluster_sol, metadata=updated_meta)
-            solutions[node.node_id] = resynthesized_parent
+            if cache_solution:
+                solutions[node.node_id] = resynthesized_parent
             return resynthesized_parent
 
         _solve_node(tree.root, layout_graph)

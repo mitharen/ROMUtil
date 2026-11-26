@@ -159,6 +159,7 @@ class ClearanceConstraintBuilder:
         self.separated_pairs: set[tuple[Any, ...]] = set()
         self.spatial_dag = ClusterPositionalDAG.from_formulation(formulation)
         self.unsatisfiable_collisions: list[ClearanceViolation] = []
+        self.unsatisfiable_collision_reasons: list[dict[str, str]] = []
         self._cut_grower: ExactCollisionCutGrower | None = None
 
     def _get_cut_grower(self) -> ExactCollisionCutGrower | None:
@@ -496,6 +497,7 @@ class ClearanceConstraintBuilder:
             )
             if not valid_dirs:
                 self.unsatisfiable_collisions.append(viol)
+                self.unsatisfiable_collision_reasons.append(dict(pruned_reasons))
                 self.separated_pairs.add(norm_key)
                 logger.warning(
                     "Detected unresolvable geometric deadlock (UNSATISFIABLE_COLLISION) between %s and %s in category '%s'. "
