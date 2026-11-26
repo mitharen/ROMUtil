@@ -887,20 +887,15 @@ def solve_cluster(
         t_cluster = compute_adaptive_cluster_timeout(
             node, options, n_sub_boxes=n_sub_boxes
         )
-        cluster_options = (
-            replace(options, timeout_seconds=t_cluster)
-            if options is not None
-            else LayoutOptions(timeout_seconds=t_cluster)
-        )
 
         # Stage 2: Basic MILP Formulation
-        formulation = formulate_cluster_model(inventory=inventory, options=cluster_options)
+        formulation = formulate_cluster_model(inventory=inventory, options=options)
 
         # Stage 3: Iterative Cutting-Plane Clearance & Solve
         extraction = solve_cluster_with_cutting_planes(
             formulation=formulation,
             node=node,
-            options=cluster_options,
+            options=options,
             solver_name=solver_name,
             total_cluster_budget=float(t_cluster),
         )

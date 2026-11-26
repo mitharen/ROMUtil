@@ -453,12 +453,7 @@ def _try_resolve_articulation_ray_blockage(
     )
     n_sub_boxes = sum(len(sbs) for sbs in inv.child_sub_boxes.values())
     t_cluster = compute_adaptive_cluster_timeout(node, options, n_sub_boxes=n_sub_boxes)
-    c_opts = (
-        replace(options, timeout_seconds=t_cluster)
-        if options is not None
-        else LayoutOptions(timeout_seconds=t_cluster)
-    )
-    form = formulate_cluster_model(inv, c_opts)
+    form = formulate_cluster_model(inv, options)
     if anchor not in form.local_rooms:
         return None
 
@@ -512,7 +507,7 @@ def _try_resolve_articulation_ray_blockage(
     add_disjunctive_box_separation(
         model=form.model,
         pairs=corr_pairs,
-        get_box_a=lambda idx: form.get_corridor_full_box(inv.active_edges[idx]),
+        get_box_a=lambda idx: form.get_corridor_envelope_box(inv.active_edges[idx], interior=False),
         get_box_b=get_ray_box,
         prefix="ray_corr",
         m_big=form.m_big,
@@ -523,7 +518,7 @@ def _try_resolve_articulation_ray_blockage(
         extraction = solve_cluster_with_cutting_planes(
             formulation=form,
             node=node,
-            options=c_opts,
+            options=options,
             solver_name=solver_name,
             total_cluster_budget=float(t_cluster),
         )
@@ -1004,6 +999,24 @@ class HierarchicalTreeSolver(TreeSolver):
                 child_sol = _solve_node(child, g)
                 child_solutions_map[child.node_id] = child_sol
 
+            def _maybe_resolve_rays(
+                target_node: SolveTreeNode,
+                sol: NodeSolution,
+                c_sols: Mapping[str, NodeSolution],
+            ) -> NodeSolution:
+                if isinstance(target_node.cut_contract, ArticulationPointCut):
+                    resolved = _try_resolve_articulation_ray_blockage(
+                        node=target_node,
+                        node_sol=sol,
+                        child_solutions_map=c_sols,
+                        graph=g,
+                        options=options,
+                        solver_name=self.solver_name,
+                    )
+                    if resolved is not None:
+                        return resolved
+                return sol
+
             if node.node_type == TreeNodeType.WORLD_ROOT or not node.children:
                 cluster_sol = solve_cluster(
                     node=node,
@@ -1012,17 +1025,7 @@ class HierarchicalTreeSolver(TreeSolver):
                     options=options,
                     solver_name=self.solver_name,
                 )
-                if isinstance(node.cut_contract, ArticulationPointCut):
-                    resolved_sol = _try_resolve_articulation_ray_blockage(
-                        node=node,
-                        node_sol=cluster_sol,
-                        child_solutions_map=child_solutions_map,
-                        graph=g,
-                        options=options,
-                        solver_name=self.solver_name,
-                    )
-                    if resolved_sol is not None:
-                        cluster_sol = resolved_sol
+                cluster_sol = _maybe_resolve_rays(node, cluster_sol, child_solutions_map)
                 solutions[node.node_id] = cluster_sol
                 return cluster_sol
 
@@ -1046,17 +1049,7 @@ class HierarchicalTreeSolver(TreeSolver):
                     options=options,
                     solver_name=self.solver_name,
                 )
-                if isinstance(node.cut_contract, ArticulationPointCut):
-                    resolved_sol = _try_resolve_articulation_ray_blockage(
-                        node=node,
-                        node_sol=cluster_sol,
-                        child_solutions_map=child_solutions_map,
-                        graph=g,
-                        options=options,
-                        solver_name=self.solver_name,
-                    )
-                    if resolved_sol is not None:
-                        cluster_sol = resolved_sol
+                cluster_sol = _maybe_resolve_rays(node, cluster_sol, child_solutions_map)
                 solutions[node.node_id] = cluster_sol
                 return cluster_sol
 
@@ -1068,17 +1061,9 @@ class HierarchicalTreeSolver(TreeSolver):
                 options=options,
                 solver_name=self.solver_name,
             )
-            if isinstance(effective_node.cut_contract, ArticulationPointCut):
-                resolved_sol = _try_resolve_articulation_ray_blockage(
-                    node=effective_node,
-                    node_sol=cluster_sol,
-                    child_solutions_map=effective_child_solutions,
-                    graph=g,
-                    options=options,
-                    solver_name=self.solver_name,
-                )
-                if resolved_sol is not None:
-                    cluster_sol = resolved_sol
+            cluster_sol = _maybe_resolve_rays(
+                effective_node, cluster_sol, effective_child_solutions
+            )
 
             updated_meta = dict(cluster_sol.metadata)
             updated_offsets = dict(updated_meta.get("child_offsets", {}))

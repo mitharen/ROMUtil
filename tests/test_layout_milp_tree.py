@@ -1603,3 +1603,181 @@ class TestDynamicBridgeRaySplit:
             )
             is None
         )
+
+    def test_resolve_articulation_ray_blockage_east_west_envelope_and_split_hook(self) -> None:
+        """Exercises East/West open-ray separation, corridor envelope calls, and split-map ray hook."""
+        from romutil.layout.ir import SplitPairCut
+        from romutil.layout.milp.formulation import ClusterFormulation
+
+        # 1. East-blocked ray (1 -> 6 East) cleared by shifting elastic split-pair child West
+        g_east = LayoutGraph(
+            rooms={v: _make_room(v) for v in (1, 2, 3, 4, 5, 6, 11, 20)},
+            edges=(
+                LayoutEdge(src=1, dst=6, direction=Direction.east, weight=1),
+                LayoutEdge(src=1, dst=2, direction=Direction.north, weight=1),
+                LayoutEdge(src=2, dst=3, direction=Direction.west, weight=1),
+                LayoutEdge(src=3, dst=4, direction=Direction.south, weight=1),
+                LayoutEdge(src=4, dst=5, direction=Direction.south, weight=1),
+                LayoutEdge(src=5, dst=11, direction=Direction.east, weight=1),
+                LayoutEdge(src=11, dst=1, direction=Direction.north, weight=1),
+                LayoutEdge(src=3, dst=20, direction=Direction.east, weight=1),
+                LayoutEdge(src=20, dst=4, direction=Direction.south, weight=1),
+            ),
+        )
+        sp_e = SolveTreeNode(
+            node_id="sp_e",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({20}),
+            metadata={"cut_type": CutType.SPLIT_PAIR, "poles": (3, 4), "cut_contract": SplitPairCut((3, 4))},
+        )
+        ap_e = SolveTreeNode(
+            node_id="ap_e",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({2, 3, 4, 5, 11}),
+            children=(sp_e,),
+            metadata={"cut_contract": ArticulationPointCut(anchor_vnum=1)},
+        )
+        sp_e_sol = NodeSolution(
+            "sp_e",
+            {20: Coord3D(2, 1, 0)},
+            port_coordinates={3: Coord3D(0, 2, 0), 4: Coord3D(0, 0, 0)},
+            sub_boxes=(BoundingBox3D(1, 2, 1, 1, 0, 0),),
+        )
+        blocked_e_sol = NodeSolution(
+            "ap_e",
+            {2: Coord3D(2, 3, 0), 3: Coord3D(1, 3, 0), 4: Coord3D(1, 1, 0), 5: Coord3D(1, 0, 0), 11: Coord3D(2, 0, 0)},
+            port_coordinates={1: Coord3D(2, 2, 0)},
+            metadata={
+                "child_offsets": {"sp_e": Coord3D(1, 1, 0)},
+                "child_sub_boxes": {"sp_e": (BoundingBox3D(1, 2, 1, 1, 0, 0),)},
+            },
+        )
+        envelope_calls: list[bool] = []
+        orig_envelope = ClusterFormulation.get_corridor_envelope_box
+
+        def spy_envelope(self_form: ClusterFormulation, ae: object, *, interior: bool = True) -> tuple[object, ...]:
+            envelope_calls.append(interior)
+            return orig_envelope(self_form, ae, interior=interior)  # type: ignore[arg-type]
+
+        with patch.object(ClusterFormulation, "get_corridor_envelope_box", autospec=True, side_effect=spy_envelope):
+            resolved_e = _try_resolve_articulation_ray_blockage(
+                ap_e, blocked_e_sol, {"sp_e": sp_e_sol}, g_east, LayoutOptions(timeout_seconds=10)
+            )
+
+        assert resolved_e is not None
+        assert False in envelope_calls
+        anchor_e = resolved_e.port_coordinates[1]
+        sp_e_off = resolved_e.metadata["child_offsets"]["sp_e"]
+        for sb in resolved_e.metadata["child_sub_boxes"]["sp_e"]:
+            assert not (sp_e_off.x + sb.max_x > anchor_e.x and sp_e_off.y + sb.min_y <= anchor_e.y <= sp_e_off.y + sb.max_y)
+
+        # 2. West-blocked ray (1 -> 7 West) cleared by shifting elastic split-pair child East
+        g_west = LayoutGraph(
+            rooms={v: _make_room(v) for v in (1, 2, 3, 4, 5, 7, 11, 20)},
+            edges=(
+                LayoutEdge(src=1, dst=7, direction=Direction.west, weight=1),
+                LayoutEdge(src=1, dst=2, direction=Direction.north, weight=1),
+                LayoutEdge(src=2, dst=3, direction=Direction.east, weight=1),
+                LayoutEdge(src=3, dst=4, direction=Direction.south, weight=1),
+                LayoutEdge(src=4, dst=5, direction=Direction.south, weight=1),
+                LayoutEdge(src=5, dst=11, direction=Direction.west, weight=1),
+                LayoutEdge(src=11, dst=1, direction=Direction.north, weight=1),
+                LayoutEdge(src=3, dst=20, direction=Direction.west, weight=1),
+                LayoutEdge(src=20, dst=4, direction=Direction.south, weight=1),
+            ),
+        )
+        sp_w = SolveTreeNode(
+            node_id="sp_w",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({20}),
+            metadata={"cut_type": CutType.SPLIT_PAIR, "poles": (3, 4), "cut_contract": SplitPairCut((3, 4))},
+        )
+        ap_w = SolveTreeNode(
+            node_id="ap_w",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({2, 3, 4, 5, 11}),
+            children=(sp_w,),
+            metadata={"cut_contract": ArticulationPointCut(anchor_vnum=1)},
+        )
+        sp_w_sol = NodeSolution(
+            "sp_w",
+            {20: Coord3D(0, 1, 0)},
+            port_coordinates={3: Coord3D(2, 2, 0), 4: Coord3D(2, 0, 0)},
+            sub_boxes=(BoundingBox3D(0, 1, 1, 1, 0, 0),),
+        )
+        blocked_w_sol = NodeSolution(
+            "ap_w",
+            {2: Coord3D(2, 3, 0), 3: Coord3D(3, 3, 0), 4: Coord3D(3, 1, 0), 5: Coord3D(3, 0, 0), 11: Coord3D(2, 0, 0)},
+            port_coordinates={1: Coord3D(2, 2, 0)},
+            metadata={
+                "child_offsets": {"sp_w": Coord3D(1, 1, 0)},
+                "child_sub_boxes": {"sp_w": (BoundingBox3D(0, 1, 1, 1, 0, 0),)},
+            },
+        )
+        resolved_w = _try_resolve_articulation_ray_blockage(
+            ap_w, blocked_w_sol, {"sp_w": sp_w_sol}, g_west, LayoutOptions(timeout_seconds=10)
+        )
+        assert resolved_w is not None
+        anchor_w = resolved_w.port_coordinates[1]
+        sp_w_off = resolved_w.metadata["child_offsets"]["sp_w"]
+        for sb in resolved_w.metadata["child_sub_boxes"]["sp_w"]:
+            assert not (sp_w_off.x + sb.min_x < anchor_w.x and sp_w_off.y + sb.min_y <= anchor_w.y <= sp_w_off.y + sb.max_y)
+
+        # 3. Verify split-map (effective_node) path invokes _try_resolve_articulation_ray_blockage
+        wing_split_child = SolveTreeNode(
+            node_id="br_child",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({20}),
+            metadata={"cut_contract": BridgeCut((2, 20), int(Direction.east), 1, 2)},
+        )
+        ap_split = SolveTreeNode(
+            node_id="ap_split",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({2, 3, 4}),
+            children=(wing_split_child,),
+            metadata={"cut_contract": ArticulationPointCut(anchor_vnum=1)},
+        )
+        g_split = LayoutGraph(
+            rooms={v: _make_room(v) for v in (1, 2, 3, 4, 20)},
+            edges=(
+                LayoutEdge(src=1, dst=2, direction=Direction.east, weight=1),
+                LayoutEdge(src=2, dst=3, direction=Direction.north, weight=1),
+                LayoutEdge(src=3, dst=4, direction=Direction.west, weight=1),
+                LayoutEdge(src=4, dst=1, direction=Direction.south, weight=1),
+                LayoutEdge(src=2, dst=20, direction=Direction.east, weight=1),
+            ),
+        )
+        tree_split = SolveTree(root=ap_split, components=(ap_split,), graph=g_split)
+        split_base = SolveTreeNode("br_child__base", TreeNodeType.BLOCK, frozenset({20}))
+        split_wing = SolveTreeNode(
+            "br_child__wing",
+            TreeNodeType.BLOCK,
+            frozenset({20}),
+            metadata={"cut_contract": BridgeCut((2, 20), int(Direction.east), 1, 2)},
+        )
+
+        with (
+            patch(
+                "romutil.layout.milp.tree._try_split_ray_blocked_child",
+                side_effect=[(split_base, split_wing), None, None],
+            ),
+            patch("romutil.layout.milp.tree._try_resolve_articulation_ray_blockage", return_value=None) as mock_resolve,
+            patch(
+                "romutil.layout.milp.tree._resynthesize_split_child_solution",
+                return_value=(NodeSolution("br_child", {20: Coord3D(0, 0, 0)}), Coord3D(0, 0, 0), ()),
+            ),
+            patch(
+                "romutil.layout.milp.tree.solve_cluster",
+                side_effect=[
+                    NodeSolution("br_child", {20: Coord3D(0, 0, 0)}),
+                    NodeSolution("br_child__base", {20: Coord3D(0, 0, 0)}),
+                    NodeSolution("br_child__wing", {20: Coord3D(0, 0, 0)}),
+                    NodeSolution("ap_split", {2: Coord3D(1, 0, 0), 3: Coord3D(1, 1, 0), 4: Coord3D(0, 1, 0)}, port_coordinates={1: Coord3D(0, 0, 0)}),
+                ],
+            ),
+        ):
+            HierarchicalTreeSolver().solve_tree(tree_split, LayoutOptions(timeout_seconds=10))
+
+        mock_resolve.assert_called_once()
+        called_node = mock_resolve.call_args.kwargs["node"]
+        assert [c.node_id for c in called_node.children] == ["br_child__base", "br_child__wing"]

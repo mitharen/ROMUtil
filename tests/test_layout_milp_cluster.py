@@ -6202,3 +6202,62 @@ class TestStagedVerticalShearAndSubBoxTimeout:
 
         # 80 sub-boxes -> n_entities = 5 + max(2, 80 // 4) = 25 -> int(10 * 25 / 20) = 12
         assert captured_budgets == [12.0]
+
+    def test_solve_cluster_sheared_convergence_caps_below_sub_box_scaled_budget(self) -> None:
+        """solve_cluster preserves caller base_timeout so sheared CONVERGENCE caps below scaled t_cluster."""
+        from romutil.layout.milp.cluster import SolvedClusterExtraction
+
+        node = SolveTreeNode(
+            node_id="sb_sheared_cap",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset(range(1, 11)),
+            children=(
+                SolveTreeNode(
+                    node_id="c0",
+                    node_type=TreeNodeType.SERIES_LOOP,
+                    rooms=frozenset({100}),
+                    metadata={"cut_type": CutType.SPLIT_PAIR, "poles": (1, 2), "cut_contract": SplitPairCut(poles=(1, 2))},
+                ),
+                SolveTreeNode(node_id="c1", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({101})),
+            ),
+        )
+        c0_sbs = tuple(BoundingBox3D(i * 2, i * 2, 10, 10, 0, 0) for i in range(140))
+        c1_sbs = tuple(BoundingBox3D(i * 2, i * 2, 20, 20, 0, 0) for i in range(140))
+        c_sols = {
+            "c0": NodeSolution(
+                "c0",
+                {100: Coord3D(0, 10, 0)},
+                port_coordinates={1: Coord3D(0, 0, 0), 2: Coord3D(2, 0, 0)},
+                sub_boxes=c0_sbs,
+            ),
+            "c1": NodeSolution("c1", {101: Coord3D(0, 20, 0)}, sub_boxes=c1_sbs),
+        }
+        graph = _make_graph([*range(1, 11), 100, 101], [(1, 2, Direction.east, 1)])
+        clean_ext = SolvedClusterExtraction(
+            raw_parent_coords={i: (i, 0, 0) for i in range(1, 11)},
+            raw_child_offsets={"c0": (0, 0, 0), "c1": (0, 30, 0)},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        recorded_timeouts: list[int] = []
+
+        def mock_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            recorded_timeouts.append(kwargs["options"].timeout_seconds)
+            if len(recorded_timeouts) == 1:
+                raise LayoutInfeasibleError("Trigger shear unlock mid-solve")
+            return clean_ext
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 1.0, 2.0]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            solve_cluster(
+                node=node,
+                child_solutions=c_sols,
+                graph=graph,
+                options=LayoutOptions(timeout_seconds=10, max_solutions=1),
+            )
+
+        # n_sub_boxes=280 -> n_entities=10 + 70 = 80 -> t_cluster = 40s (rem=39, 38).
+        # Caller base_timeout=10s is preserved so sheared CONVERGENCE caps at max(30, 10) = 30s < 38s.
+        assert recorded_timeouts == [39, 39, 30]
