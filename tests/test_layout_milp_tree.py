@@ -34,10 +34,13 @@ from romutil.layout.milp.tree import (
     _extract_status,
     _find_bridge_ray_blockers,
     _has_outward_exit_in_direction,
+    _ray_continues_beyond_neighbor,
     _ray_hits_box,
+    _ray_hits_box_with_extent,
     _resynthesize_split_child_solution,
     _safe_displacement,
     _try_detach_articulation_ray_blocking_subchild,
+    _try_resolve_articulation_ray_blockage,
     _try_split_ray_blocked_child,
 )
 from romutil.layout.protocols import TreeSolver
@@ -1357,3 +1360,246 @@ class TestDynamicBridgeRaySplit:
             edges=(LayoutEdge(src=106, dst=120, direction=Direction.east, weight=1),),
         )
         assert _try_detach_articulation_ray_blocking_subchild(ap_child, ap_non_blocking_sol, g_east) is None
+
+    def test_ray_continues_beyond_neighbor_and_parallel_bridge_guard(self) -> None:
+        """_ray_continues_beyond_neighbor detects continuing rays and guards parallel-bridge detachment."""
+        base_rooms = {v: _make_room(v) for v in (105, 106, 110, 111, 112, 119, 120, 121)}
+        subtree = {105, 106, 110, 111, 112, 119}
+
+        # Forward continuing ray: 106 -(E)-> 120 -(E)-> 121
+        g_fwd = LayoutGraph(
+            rooms=base_rooms,
+            edges=(
+                LayoutEdge(src=106, dst=120, direction=Direction.east, weight=1),
+                LayoutEdge(src=120, dst=121, direction=Direction.east, weight=1),
+            ),
+        )
+        assert _ray_continues_beyond_neighbor(106, (1, 0, 0), subtree, g_fwd) is True
+        assert _ray_continues_beyond_neighbor(106, (0, 1, 0), subtree, g_fwd) is False
+
+        # Reverse edge orientation continuing ray: 121 -(W)-> 120 -(W)-> 106
+        g_rev = LayoutGraph(
+            rooms=base_rooms,
+            edges=(
+                LayoutEdge(src=120, dst=106, direction=Direction.west, weight=1),
+                LayoutEdge(src=121, dst=120, direction=Direction.west, weight=1),
+            ),
+        )
+        assert _ray_continues_beyond_neighbor(106, (1, 0, 0), subtree, g_rev) is True
+
+        # Cut continuation edge does not count as continuing ray
+        g_cut_cont = LayoutGraph(
+            rooms=base_rooms,
+            edges=(
+                LayoutEdge(src=106, dst=120, direction=Direction.east, weight=1),
+                LayoutEdge(src=120, dst=121, direction=Direction.east, weight=1, cut=True),
+            ),
+        )
+        assert _ray_continues_beyond_neighbor(106, (1, 0, 0), subtree, g_cut_cont) is False
+
+        # Parallel East BridgeCut sub-child must NOT detach when East ray continues past 120 -> 121
+        sc_parallel = SolveTreeNode(
+            node_id="sc_wing",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({110, 119}),
+            children=(),
+            metadata={
+                "cut_type": CutType.BRIDGE,
+                "anchor_vnum": 105,
+                "bridge_edge": (105, 110),
+                "direction": int(Direction.east),
+                "weight": 1,
+                "cut_contract": BridgeCut((105, 110), int(Direction.east), 1, 105),
+            },
+        )
+        ap_child = SolveTreeNode(
+            node_id="ap_loop",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({105, 111, 112}),
+            children=(sc_parallel,),
+            metadata={"cut_contract": ArticulationPointCut(anchor_vnum=106)},
+        )
+        ap_sol = NodeSolution(
+            node_id="ap_loop",
+            local_coordinates={
+                105: Coord3D(1, 0, 0),
+                111: Coord3D(0, 0, 0),
+                112: Coord3D(0, 1, 0),
+            },
+            port_coordinates={106: Coord3D(1, 1, 0)},
+            metadata={
+                "child_offsets": {"sc_wing": Coord3D(2, 1, 0)},
+                "child_sub_boxes": {"sc_wing": (BoundingBox3D(0, 0, 0, 1, 0, 0),)},
+            },
+        )
+        assert _try_detach_articulation_ray_blocking_subchild(ap_child, ap_sol, g_fwd) is None
+
+        # Perpendicular (North) BridgeCut sub-child blocking the same continuing East ray DOES detach
+        sc_perp = SolveTreeNode(
+            node_id="sc_wing",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({110, 119}),
+            children=(),
+            metadata={
+                "cut_type": CutType.BRIDGE,
+                "anchor_vnum": 105,
+                "bridge_edge": (105, 110),
+                "direction": int(Direction.north),
+                "weight": 1,
+                "cut_contract": BridgeCut((105, 110), int(Direction.north), 1, 105),
+            },
+        )
+        ap_perp = SolveTreeNode(
+            node_id="ap_loop",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({105, 111, 112}),
+            children=(sc_perp,),
+            metadata={"cut_contract": ArticulationPointCut(anchor_vnum=106)},
+        )
+        assert _try_detach_articulation_ray_blocking_subchild(ap_perp, ap_sol, g_fwd) is not None
+
+    def test_resolve_articulation_ray_blockage_clears_continuing_north_ray_with_zero_shear(self) -> None:
+        """Open-ray re-solve shifts an ArticulationPointCut loop laterally off a continuing North ray with zero shear."""
+        rooms = {
+            106: _make_room(106, {Direction.north: 120, Direction.east: 112, Direction.south: 118}),
+            120: _make_room(120, {Direction.south: 106, Direction.north: 121}),
+            121: _make_room(121, {Direction.south: 120}),
+            112: _make_room(112, {Direction.west: 106, Direction.north: 111}),
+            111: _make_room(111, {Direction.south: 112, Direction.north: 114}),
+            114: _make_room(114, {Direction.south: 111, Direction.east: 115, Direction.north: 130}),
+            115: _make_room(115, {Direction.west: 114, Direction.south: 116}),
+            116: _make_room(116, {Direction.north: 115, Direction.south: 117}),
+            117: _make_room(117, {Direction.north: 116, Direction.west: 118}),
+            118: _make_room(118, {Direction.east: 117, Direction.north: 106}),
+            130: _make_room(130, {Direction.south: 114, Direction.west: 131}),
+            131: _make_room(131, {Direction.east: 130, Direction.north: 132}),
+            132: _make_room(132, {Direction.south: 131}),
+        }
+        edges = (
+            LayoutEdge(src=106, dst=120, direction=Direction.north, weight=1),
+            LayoutEdge(src=120, dst=121, direction=Direction.north, weight=1),
+            LayoutEdge(src=106, dst=112, direction=Direction.east, weight=1),
+            LayoutEdge(src=112, dst=111, direction=Direction.north, weight=1),
+            LayoutEdge(src=111, dst=114, direction=Direction.north, weight=1),
+            LayoutEdge(src=114, dst=115, direction=Direction.east, weight=1),
+            LayoutEdge(src=115, dst=116, direction=Direction.south, weight=1),
+            LayoutEdge(src=116, dst=117, direction=Direction.south, weight=1),
+            LayoutEdge(src=117, dst=118, direction=Direction.west, weight=1),
+            LayoutEdge(src=118, dst=106, direction=Direction.north, weight=1),
+            LayoutEdge(src=114, dst=130, direction=Direction.north, weight=1),
+            LayoutEdge(src=130, dst=131, direction=Direction.west, weight=1),
+            LayoutEdge(src=131, dst=132, direction=Direction.north, weight=1),
+        )
+        graph = LayoutGraph(rooms=rooms, edges=edges)
+        sc = SolveTreeNode(
+            node_id="sc_wing",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({130, 131, 132}),
+            children=(),
+            metadata={
+                "cut_type": CutType.BRIDGE,
+                "anchor_vnum": 114,
+                "bridge_edge": (114, 130),
+                "direction": int(Direction.north),
+                "weight": 1,
+                "cut_contract": BridgeCut((114, 130), int(Direction.north), 1, 114),
+            },
+        )
+        ap_loop = SolveTreeNode(
+            node_id="ap_loop",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({111, 112, 114, 115, 116, 117, 118}),
+            children=(sc,),
+            metadata={
+                "cut_type": CutType.ARTICULATION_POINT,
+                "anchor_vnum": 106,
+                "cut_contract": ArticulationPointCut(anchor_vnum=106),
+            },
+        )
+        root = SolveTreeNode(
+            node_id="root",
+            node_type=TreeNodeType.BLOCK,
+            rooms=frozenset({106, 120, 121}),
+            children=(ap_loop,),
+        )
+        tree = SolveTree(root=root, components=(root,), graph=graph)
+
+        sol = HierarchicalTreeSolver().solve_tree(tree, options=LayoutOptions(timeout_seconds=15))
+        # Parallel-North sub-child was NOT detached; ap_loop cleared the North ray internally
+        assert set(sol.node_solutions.keys()) == {"sc_wing", "ap_loop", "root"}
+        assert set(sol.node_solutions["root"].metadata["child_offsets"].keys()) == {"ap_loop"}
+
+        assembled = HierarchicalLayoutAssembler().assemble(
+            tree=tree,
+            solution=sol,
+            simplified=SimplifiedGraph(graph=graph),
+        )
+        assert_zero_coordinate_collisions(assembled)
+        c = assembled.coordinates
+        # Continuing North ray keeps zero transverse shear along X and Z
+        assert c[120].x == c[106].x and c[120].z == c[106].z and c[120].y > c[106].y
+        assert c[121].x == c[120].x and c[121].z == c[120].z and c[121].y > c[120].y
+        # No room in ap_loop or sc_wing obstructs the North ray of anchor 106
+        for vnum in (111, 112, 114, 115, 116, 117, 118, 130, 131, 132):
+            assert not (c[vnum].x == c[106].x and c[vnum].y > c[106].y and c[vnum].z == c[106].z)
+
+    def test_ray_hits_box_with_extent_and_blockage_solver_error_fallback(self) -> None:
+        """Exercises _ray_hits_box_with_extent bounds and safe LayoutSolverError fallback in ray resolution."""
+        orig = Coord3D(10, 10, 0)
+        ext = (1, 1)  # closed anchor square [9..11, 9..11]
+        assert _ray_hits_box_with_extent(orig, ext, (1, 0, 0), (12, 13, 11, 12, 0, 0)) is True
+        assert _ray_hits_box_with_extent(orig, ext, (1, 0, 0), (11, 11, 10, 10, 0, 0)) is False
+        assert _ray_hits_box_with_extent(orig, ext, (-1, 0, 0), (6, 8, 8, 9, 0, 0)) is True
+        assert _ray_hits_box_with_extent(orig, ext, (0, 1, 0), (9, 10, 12, 14, 0, 0)) is True
+        assert _ray_hits_box_with_extent(orig, ext, (0, -1, 0), (11, 12, 5, 8, 0, 0)) is True
+        assert _ray_hits_box_with_extent(orig, ext, (1, 0, 0), (12, 13, 10, 10, 1, 1)) is False
+        assert _ray_hits_box_with_extent(orig, ext, (0, 0, 1), (0, 20, 0, 20, 0, 20)) is False
+
+        # Non-ArticulationPointCut and missing-origin guards
+        non_ap = SolveTreeNode(node_id="non_ap", node_type=TreeNodeType.BLOCK, rooms=frozenset({1}))
+        assert _try_resolve_articulation_ray_blockage(non_ap, NodeSolution("non_ap", {1: Coord3D(0, 0, 0)}), {}, LayoutGraph(rooms={1: _make_room(1)}, edges=()), None) is None
+
+        ap_node = SolveTreeNode(
+            node_id="ap_err",
+            node_type=TreeNodeType.SERIES_LOOP,
+            rooms=frozenset({2, 3, 4}),
+            metadata={"cut_contract": ArticulationPointCut(anchor_vnum=1)},
+        )
+        g_blocked = LayoutGraph(
+            rooms={v: _make_room(v) for v in (1, 2, 3, 4, 5)},
+            edges=(
+                LayoutEdge(src=1, dst=5, direction=Direction.north, weight=1),
+                LayoutEdge(src=1, dst=2, direction=Direction.east, weight=1),
+                LayoutEdge(src=2, dst=3, direction=Direction.north, weight=1),
+                LayoutEdge(src=3, dst=4, direction=Direction.west, weight=1),
+                LayoutEdge(src=4, dst=1, direction=Direction.south, weight=1),
+            ),
+        )
+        sol_blocked = NodeSolution(
+            "ap_err",
+            {2: Coord3D(1, 0, 0), 3: Coord3D(1, 1, 0), 4: Coord3D(0, 1, 0)},
+            port_coordinates={1: Coord3D(0, 0, 0)},
+        )
+        with patch(
+            "romutil.layout.milp.tree.solve_cluster_with_cutting_planes",
+            side_effect=LayoutSolverError("Simulated timeout during ray clear"),
+        ):
+            assert (
+                _try_resolve_articulation_ray_blockage(
+                    ap_node, sol_blocked, {}, g_blocked, LayoutOptions(timeout_seconds=5)
+                )
+                is None
+            )
+
+        # Unblocked layout returns None without invoking solver
+        sol_clear = NodeSolution(
+            "ap_err",
+            {2: Coord3D(1, 1, 0), 3: Coord3D(1, 0, 0), 4: Coord3D(0, 0, 0)},
+            port_coordinates={1: Coord3D(0, 1, 0)},
+        )
+        assert (
+            _try_resolve_articulation_ray_blockage(
+                ap_node, sol_clear, {}, g_blocked, LayoutOptions(timeout_seconds=5)
+            )
+            is None
+        )

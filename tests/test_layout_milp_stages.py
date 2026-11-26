@@ -3015,3 +3015,153 @@ class TestTypedChildHandlers:
         assert len(res.active_edges) == 0
         assert "c_no_sol" not in res.aligned_children
         assert "c_miss" not in res.aligned_children
+
+
+class TestStagedTransverseSlackFormulation:
+    """Verify vertical-first transverse slack unlocking and lower-bound cut lifecycle."""
+
+    def test_unlock_vertical_transverse_slack_selectivity_and_idempotency(self) -> None:
+        """unlock_vertical_transverse_slack unfixes only vertical elastic slack variables."""
+        node = SolveTreeNode(node_id="p_vert_slack", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2, 3}))
+        ae_vert = ActiveEdge(
+            edge_id="e_vert",
+            src=1,
+            dst=2,
+            direction=(0, 0, 1),
+            min_length=1,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+        )
+        ae_horiz = ActiveEdge(
+            edge_id="e_horiz",
+            src=2,
+            dst=3,
+            direction=(1, 0, 0),
+            min_length=1,
+            associated_rooms=frozenset({2, 3}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+        )
+        inv = ClusterInventory(
+            node=node,
+            rooms=(1, 2, 3),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(ae_vert, ae_horiz),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        form = ClusterFormulation(inventory=inv)
+        form.lock_transverse_slack()
+
+        assert form.unlock_vertical_transverse_slack() is True
+        # Vertical edge X and Y slack pairs are now unfixed
+        for axis in ("x", "y"):
+            sp, sm = form._edge_transverse_slack[("e_vert", axis)]
+            assert not sp.fixed
+            assert not sm.fixed
+        # Horizontal edge Y slack remains fixed
+        h_sp, h_sm = form._edge_transverse_slack[("e_horiz", "y")]
+        assert h_sp.fixed and h_sm.fixed
+
+        # Already unfixed -> second call returns False
+        assert form.unlock_vertical_transverse_slack() is False
+
+        # Horizontal-only inventory -> returns False
+        inv_horiz_only = ClusterInventory(
+            node=node,
+            rooms=(2, 3),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(ae_horiz,),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        form_horiz = ClusterFormulation(inventory=inv_horiz_only)
+        form_horiz.lock_transverse_slack()
+        assert form_horiz.unlock_vertical_transverse_slack() is False
+
+    def test_enforce_min_transverse_slack_and_clear_bounds(self) -> None:
+        """enforce_min_transverse_slack attaches idempotent lower-bound cuts cleared by clear_transverse_slack_lower_bounds."""
+        node = SolveTreeNode(node_id="p_lb", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2, 3}))
+        ae_vert = ActiveEdge(
+            edge_id="e_vert",
+            src=1,
+            dst=2,
+            direction=(0, 0, 1),
+            min_length=1,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+        )
+        ae_horiz = ActiveEdge(
+            edge_id="e_horiz",
+            src=2,
+            dst=3,
+            direction=(1, 0, 0),
+            min_length=1,
+            associated_rooms=frozenset({2, 3}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+        )
+        inv = ClusterInventory(
+            node=node,
+            rooms=(1, 2, 3),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(ae_vert, ae_horiz),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        form = ClusterFormulation(inventory=inv)
+
+        assert form.enforce_min_transverse_slack(1) is True
+        assert hasattr(form.model, "transverse_slack_lb")
+        # Idempotent on repeated call
+        assert form.enforce_min_transverse_slack(1) is False
+
+        assert form.enforce_min_transverse_slack(1, horizontal_only=True) is True
+        assert hasattr(form.model, "horizontal_transverse_slack_lb")
+        assert form.enforce_min_transverse_slack(1, horizontal_only=True) is False
+
+        # Solving with transverse_slack_lb >= 1 forces total transverse slack >= 1
+        solve_and_extract(form, options=LayoutOptions(timeout_seconds=10))
+        total_slack = sum(
+            float(pyo.value(v))
+            for pair in form._edge_transverse_slack.values()
+            for v in pair
+        )
+        assert total_slack >= 1.0 - 1e-6
+
+        form.clear_transverse_slack_lower_bounds()
+        assert not hasattr(form.model, "transverse_slack_lb")
+        assert not hasattr(form.model, "horizontal_transverse_slack_lb")
+        # Safe when already cleared
+        form.clear_transverse_slack_lower_bounds()
+
+        # Vertical-only formulation returns False for horizontal_only=True
+        inv_vert_only = ClusterInventory(
+            node=node,
+            rooms=(1, 2),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(ae_vert,),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        form_vert = ClusterFormulation(inventory=inv_vert_only)
+        assert form_vert.enforce_min_transverse_slack(1, horizontal_only=True) is False
+        assert not hasattr(form_vert.model, "horizontal_transverse_slack_lb")
