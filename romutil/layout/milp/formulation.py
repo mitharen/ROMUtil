@@ -518,6 +518,35 @@ class ClusterFormulation:
         if hasattr(self.model, "transverse_slack_ub"):
             self.model.del_component("transverse_slack_ub")
 
+    def activate_conditioned_shear_objective(self, search_weight: float = 2000.0) -> bool:
+        """Temporarily replace the active search objective with a better-conditioned shear penalty."""
+        if (
+            not self.has_transverse_slack()
+            or search_weight <= 0
+            or search_weight >= self.w_transverse
+        ):
+            return False
+        if hasattr(self.model, "_conditioned_shear_obj"):
+            self.model.del_component("_conditioned_shear_obj")
+        conditioned_transverse = sum(
+            search_weight * (self.model.s_transverse_p[k] + self.model.s_transverse_m[k])
+            for k in self.model.s_transverse_p
+        )
+        if hasattr(self.model, "obj"):
+            self.model.obj.deactivate()
+        self.model._conditioned_shear_obj = pyo.Objective(
+            expr=self._stretch_expr + conditioned_transverse,
+            sense=pyo.minimize,
+        )
+        return True
+
+    def restore_base_objective(self) -> None:
+        """Remove any temporary conditioned shear objective and reactivate the base objective."""
+        if hasattr(self.model, "_conditioned_shear_obj"):
+            self.model.del_component("_conditioned_shear_obj")
+        if hasattr(self.model, "obj"):
+            self.model.obj.activate()
+
     def _compute_canonical_transverse_shear(
         self,
         extraction: SolvedClusterExtraction | None = None,
@@ -578,6 +607,8 @@ class ClusterFormulation:
 
         saved_fixed: list[tuple[Any, bool, Any, bool]] = []
         deactivated_bounds: list[str] = []
+        cond_was_active = False
+        base_was_active = False
         try:
             for key, (p_val, m_val) in canonical.items():
                 sp, sm = self._edge_transverse_slack[key]
@@ -596,7 +627,15 @@ class ClusterFormulation:
                         constr.deactivate()
                         deactivated_bounds.append(cname)
 
-            self.model.obj.deactivate()
+            cond_was_active = (
+                hasattr(self.model, "_conditioned_shear_obj")
+                and self.model._conditioned_shear_obj.active
+            )
+            base_was_active = hasattr(self.model, "obj") and self.model.obj.active
+            if cond_was_active:
+                self.model._conditioned_shear_obj.deactivate()
+            if base_was_active:
+                self.model.obj.deactivate()
             self.model._stretch_polish_obj = pyo.Objective(
                 expr=self._stretch_expr,
                 sense=pyo.minimize,
@@ -605,7 +644,9 @@ class ClusterFormulation:
         finally:
             if hasattr(self.model, "_stretch_polish_obj"):
                 self.model.del_component("_stretch_polish_obj")
-            if hasattr(self.model, "obj"):
+            if cond_was_active and hasattr(self.model, "_conditioned_shear_obj"):
+                self.model._conditioned_shear_obj.activate()
+            elif hasattr(self.model, "obj"):
                 self.model.obj.activate()
             for cname in deactivated_bounds:
                 if hasattr(self.model, cname):
