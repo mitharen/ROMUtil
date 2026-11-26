@@ -609,18 +609,25 @@ def solve_cluster_with_cutting_planes(
     caps total transverse slack to ``4 * coord_unit`` via ``enforce_max_transverse_slack`` to
     prevent large-shear branch-and-bound thrashing, relaxing via
     ``clear_transverse_slack_upper_bound`` to unbounded Stage 1 before ever adding
-    ``horizontal_transverse_slack_lb`` or escalating to Stage 2. For medium clusters (``<= 50``
-    entities), intermediate CBC cutting-plane passes run single-threaded to reduce multi-threaded
-    branch-and-bound overhead, while Pass 0, CONVERGENCE, and larger clusters use up to 4 threads. When
+    ``horizontal_transverse_slack_lb`` or escalating to Stage 2; whenever a ``> 20``-entity
+    cluster escalates out of Stage 0 (into Stage 1 or directly into Stage 2), it also activates a
+    conditioned Stage-1/2 search objective (``search_weight=2000.0`` via
+    ``activate_conditioned_shear_objective``) while preserving canonical ``w_transverse`` on
+    ``model.obj`` for incumbent evaluation via ``_extract_objective_value`` and restoring
+    ``model.obj`` in ``finally``. For medium clusters (``<= 50`` entities), intermediate CBC
+    cutting-plane passes run single-threaded to reduce multi-threaded branch-and-bound overhead,
+    while Pass 0, CONVERGENCE, and larger clusters use up to 4 threads. When
     ``options.intermediate_ratio_gap`` is unspecified on ``> 20``-entity clusters, the
     intermediate ``ratioGap`` adaptively relaxes after intermediate ``TIMEOUT`` extractions
     (``0.20 -> 0.50 -> 0.80``) while keeping ``ratio_gap`` on Pass 0 and CONVERGENCE. When an
     intermediate retry escalates ``pass_timeout`` without an explicit
     ``options.intermediate_pass_timeout``, ``intermediate_timeout`` escalates monotonically
     across subsequent passes (raising to at least ``15.0``s and up to ``30.0``s without
-    shrinking larger initial timeouts). Verified clean and physical incumbents track scalar
-    objective values via ``_extract_objective_value`` so strictly worse timed-out passes do not
-    displace better incumbents.
+    shrinking larger initial timeouts), and escalated CBC retries with ``next_timeout >= 30``
+    fall back to ``threads=1`` to avoid repeating multi-threaded ``intermediateNonInteger`` stalls.
+    Verified clean and physical incumbents track scalar objective values via
+    ``_extract_objective_value`` so strictly worse timed-out passes do not displace better
+    incumbents.
 
     Aggregate cluster budget is tracked monotonically across all iterations. If the budget
     expires or a tail-budget intermediate failure occurs with a verified incumbent available,
@@ -703,9 +710,12 @@ def solve_cluster_with_cutting_planes(
                 if n_entities > 20:
                     coord_unit = max(1, int(getattr(formulation.inventory, "coord_unit", 1)))
                     stage1_shear_cap_active = formulation.enforce_max_transverse_slack(4 * coord_unit)
+                    formulation.activate_conditioned_shear_objective()
                 return True
             formulation.unlock_transverse_slack()
             slack_stage = 2
+            if n_entities > 20:
+                formulation.activate_conditioned_shear_objective()
             return True
         if slack_stage == 1:
             if stage1_shear_cap_active:
@@ -771,6 +781,7 @@ def solve_cluster_with_cutting_planes(
 
             finish_with_incumbent = False
             pass_escalated = False
+            retry_solver_opts = solver_opts
             while True:
                 pass_options = (
                     replace(options, timeout_seconds=pass_timeout)
@@ -783,7 +794,7 @@ def solve_cluster_with_cutting_planes(
                         solver_name=solver_name,
                         options=pass_options,
                         max_solutions=pass_max_sol,
-                        solver_options=solver_opts if solver_opts else None,
+                        solver_options=retry_solver_opts if retry_solver_opts else None,
                         warmstart=use_warmstart,
                     )
                     break
@@ -839,6 +850,12 @@ def solve_cluster_with_cutting_planes(
                             continue
                         raise
                     pass_timeout = next_timeout
+                    if (
+                        solver_name == "cbc"
+                        and next_timeout >= 30
+                        and retry_solver_opts.get("threads", 1) > 1
+                    ):
+                        retry_solver_opts = {**retry_solver_opts, "threads": 1}
                     pass_escalated = True
 
             if finish_with_incumbent:
@@ -1164,6 +1181,7 @@ def solve_cluster_with_cutting_planes(
                 )
     finally:
         if has_slack:
+            formulation.restore_base_objective()
             formulation.clear_transverse_slack_lower_bounds()
             formulation.clear_transverse_slack_upper_bound()
             if slack_stage < 2:

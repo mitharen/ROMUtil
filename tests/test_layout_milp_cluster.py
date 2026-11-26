@@ -7236,3 +7236,425 @@ class TestLargeClusterBoundedStage1AndIterativePolish:
         assert retry_step == 3
         mock_p2_inject.assert_called_once_with([phys_viol], extraction=phase2_coll)
         assert _extract_objective_value(form_retry) == pytest.approx(5.0 + 1_000_000.0)
+
+
+class TestConditionedShearSearchAndRetryFallback:
+    """Verify conditioned Stage-1/2 search objective and single-threaded >=30s CBC retry fallback."""
+
+    @staticmethod
+    def _build_horizontal_only_slack_formulation(
+        *,
+        n_rooms: int = 22,
+        w_transverse: float = 1_000_000.0,
+    ) -> tuple[SolveTreeNode, ClusterFormulation]:
+        rooms = tuple(range(1, n_rooms + 1))
+        node = SolveTreeNode(
+            node_id=f"large_horiz_only_{n_rooms}",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset(rooms),
+        )
+        ae_horiz = ActiveEdge(
+            edge_id="e_horiz",
+            src=1,
+            dst=2,
+            direction=(1, 0, 0),
+            min_length=1,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+        )
+        chain_edges = tuple(
+            ActiveEdge(
+                edge_id=f"e_{i}_{i + 1}",
+                src=i,
+                dst=i + 1,
+                direction=(1, 0, 0),
+                min_length=1,
+                associated_rooms=frozenset({i, i + 1}),
+                associated_children=frozenset(),
+                allow_transverse_slack=False,
+            )
+            for i in range(2, n_rooms)
+        )
+        inv = ClusterInventory(
+            node=node,
+            rooms=rooms,
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(ae_horiz, *chain_edges),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        return node, ClusterFormulation(inventory=inv, w_transverse=w_transverse)
+
+    def test_conditioned_shear_objective_activation_polish_ranking_and_cleanup(self) -> None:
+        """Large (>20) clusters activate _conditioned_shear_obj out of Stage 0, keep it across polish, rank via model.obj, and restore model.obj."""
+        from contextlib import contextmanager
+
+        import pyomo.environ as pyo
+
+        from romutil.layout.milp.cluster import (
+            SolvedClusterExtraction,
+            _extract_objective_value,
+            solve_cluster_with_cutting_planes,
+        )
+
+        # Case 1: Large cluster (>20) escalating Stage 0 -> Stage 1 keeps _conditioned_shear_obj
+        # across fixed_transverse_slack_stretch_polish, ranks incumbents via canonical model.obj,
+        # and restores model.obj in finally.
+        node, form = TestLargeClusterBoundedStage1AndIterativePolish._build_large_mixed_slack_formulation(
+            n_rooms=22,
+            w_transverse=1_000_000.0,
+        )
+        sheared_coords = {1: (0, 0, 0), 2: (1, 0, 1), **{r: (r - 1, 0, 1) for r in range(3, 23)}}
+        stage1_ext = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.FEASIBLE)
+        polish_p1_ext = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.FEASIBLE)
+        polish_p2_ext = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.OPTIMAL)
+
+        orig_polish = form.fixed_transverse_slack_stretch_polish
+        polish_exit_states: list[tuple[bool, bool, bool]] = []
+
+        @contextmanager
+        def spy_polish(extraction: SolvedClusterExtraction | None = None):
+            with orig_polish(extraction) as active:
+                yield active
+            polish_exit_states.append(
+                (
+                    hasattr(form.model, "_conditioned_shear_obj")
+                    and bool(form.model._conditioned_shear_obj.active),
+                    bool(form.model.obj.active),
+                    hasattr(form.model, "_stretch_polish_obj"),
+                )
+            )
+
+        observed_objectives: list[tuple[list[str], float | None, float | None]] = []
+        step = 0
+
+        def mock_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal step
+            step += 1
+            active_names = [
+                o.name for o in form.model.component_objects(pyo.Objective, active=True)
+            ]
+            if step == 1:
+                assert active_names == ["obj"]
+                assert not hasattr(form.model, "_conditioned_shear_obj")
+                raise LayoutInfeasibleError("Stage 0 infeasible")
+            if step == 2:
+                assert active_names == ["_conditioned_shear_obj"]
+                assert not form.model.obj.active
+                TestLargeClusterBoundedStage1AndIterativePolish._set_stretch(form, 2.0)
+                sp_vx, sm_vx = form._edge_transverse_slack[("e_vert", "x")]
+                sp_vx.set_value(1.0)
+                sm_vx.set_value(0.0)
+                observed_objectives.append(
+                    (
+                        active_names,
+                        float(pyo.value(form.model._conditioned_shear_obj)),
+                        _extract_objective_value(form),
+                    )
+                )
+                return stage1_ext
+            if step == 3:
+                assert active_names == ["_stretch_polish_obj"]
+                assert not form.model._conditioned_shear_obj.active
+                assert not form.model.obj.active
+                TestLargeClusterBoundedStage1AndIterativePolish._set_stretch(form, 1.0)
+                observed_objectives.append((active_names, None, _extract_objective_value(form)))
+                return polish_p1_ext
+            assert active_names == ["_stretch_polish_obj"]
+            assert not form.model._conditioned_shear_obj.active
+            assert not form.model.obj.active
+            TestLargeClusterBoundedStage1AndIterativePolish._set_stretch(form, 0.5)
+            observed_objectives.append((active_names, None, _extract_objective_value(form)))
+            return polish_p2_ext
+
+        with (
+            patch("time.monotonic", side_effect=[float(i) for i in range(20)]),
+            patch.object(form, "fixed_transverse_slack_stretch_polish", side_effect=spy_polish),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            res = solve_cluster_with_cutting_planes(
+                formulation=form,
+                node=node,
+                options=LayoutOptions(timeout_seconds=15),
+                total_cluster_budget=60.0,
+            )
+
+        assert res is polish_p2_ext
+        assert observed_objectives == [
+            (["_conditioned_shear_obj"], 20.0 + 2000.0, 20.0 + 1_000_000.0),
+            (["_stretch_polish_obj"], None, 10.0 + 1_000_000.0),
+            (["_stretch_polish_obj"], None, 5.0 + 1_000_000.0),
+        ]
+        assert polish_exit_states == [(True, False, False)]
+        assert not hasattr(form.model, "_conditioned_shear_obj")
+        assert not hasattr(form.model, "_stretch_polish_obj")
+        assert form.model.obj.active
+        assert _extract_objective_value(form) == pytest.approx(5.0 + 1_000_000.0)
+
+        # Case 2: Large cluster (>20) with no vertical slack escalates directly Stage 0 -> Stage 2
+        # and still activates _conditioned_shear_obj, ranks via model.obj, and restores model.obj.
+        node_h, form_h = self._build_horizontal_only_slack_formulation(
+            n_rooms=22,
+            w_transverse=1_000_000.0,
+        )
+        horiz_coords = {1: (0, 0, 0), 2: (1, 1, 0), **{r: (r - 1, 1, 0) for r in range(3, 23)}}
+        stage2_ext = SolvedClusterExtraction(horiz_coords, {}, SolverStatus.FEASIBLE)
+        polish_h_ext = SolvedClusterExtraction(horiz_coords, {}, SolverStatus.OPTIMAL)
+        h_step = 0
+        h_active_objs: list[list[str]] = []
+
+        def mock_solve_h(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal h_step
+            h_step += 1
+            active_names = [
+                o.name for o in form_h.model.component_objects(pyo.Objective, active=True)
+            ]
+            h_active_objs.append(active_names)
+            if h_step == 1:
+                raise LayoutInfeasibleError("Stage 0 horizontal-only infeasible")
+            if h_step == 2:
+                assert not hasattr(form_h.model, "transverse_slack_ub")
+                sp_hy, sm_hy = form_h._edge_transverse_slack[("e_horiz", "y")]
+                assert not sp_hy.fixed and not sm_hy.fixed
+                sp_hy.set_value(1.0)
+                sm_hy.set_value(0.0)
+                TestLargeClusterBoundedStage1AndIterativePolish._set_stretch(form_h, 2.0)
+                assert pyo.value(form_h.model._conditioned_shear_obj) == pytest.approx(
+                    20.0 + 2000.0
+                )
+                assert _extract_objective_value(form_h) == pytest.approx(20.0 + 1_000_000.0)
+                return stage2_ext
+            TestLargeClusterBoundedStage1AndIterativePolish._set_stretch(form_h, 0.5)
+            return polish_h_ext
+
+        with (
+            patch("time.monotonic", side_effect=[float(i) for i in range(20)]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_h),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            res_h = solve_cluster_with_cutting_planes(
+                formulation=form_h,
+                node=node_h,
+                options=LayoutOptions(timeout_seconds=15),
+                total_cluster_budget=60.0,
+            )
+
+        assert res_h is polish_h_ext
+        assert h_active_objs == [
+            ["obj"],
+            ["_conditioned_shear_obj"],
+            ["_stretch_polish_obj"],
+            ["_stretch_polish_obj"],
+        ]
+        assert not hasattr(form_h.model, "_conditioned_shear_obj")
+        assert form_h.model.obj.active
+
+        # Case 3: Cluster with <= 20 entities keeps model.obj active without creating _conditioned_shear_obj.
+        small_node, small_form = TestLargeClusterBoundedStage1AndIterativePolish._build_large_mixed_slack_formulation(
+            n_rooms=20,
+            w_transverse=1_000_000.0,
+        )
+        small_coords = {1: (0, 0, 0), 2: (1, 0, 1), **{r: (r - 1, 0, 1) for r in range(3, 21)}}
+        small_ext = SolvedClusterExtraction(small_coords, {}, SolverStatus.OPTIMAL)
+        small_step = 0
+        small_seen_cond: list[bool] = []
+
+        def mock_solve_small(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal small_step
+            small_step += 1
+            small_seen_cond.append(hasattr(small_form.model, "_conditioned_shear_obj"))
+            if small_step == 1:
+                raise LayoutInfeasibleError("Small Stage 0 infeasible")
+            if small_step == 2:
+                assert small_form.model.obj.active
+                sp_vx, sm_vx = small_form._edge_transverse_slack[("e_vert", "x")]
+                sp_vx.set_value(1.0)
+                sm_vx.set_value(0.0)
+                return small_ext
+            return small_ext
+
+        with (
+            patch("time.monotonic", side_effect=[float(i) for i in range(10)]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_small),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            res_small = solve_cluster_with_cutting_planes(
+                formulation=small_form,
+                node=small_node,
+                options=LayoutOptions(timeout_seconds=15),
+                total_cluster_budget=60.0,
+            )
+
+        assert res_small is small_ext
+        assert small_seen_cond == [False, False, False]
+        assert not hasattr(small_form.model, "_conditioned_shear_obj")
+        assert small_form.model.obj.active
+
+        # Case 4: Canonical model.obj rejects a lower conditioned-weight sheared candidate in favor
+        # of a lower canonical-objective zero-shear incumbent.
+        node_rank, form_rank = TestLargeClusterBoundedStage1AndIterativePolish._build_large_mixed_slack_formulation(
+            n_rooms=22,
+            w_transverse=1_000_000.0,
+        )
+        zero_coords = {1: (0, 0, 0), 2: (0, 0, 1), **{r: (r - 2, 0, 1) for r in range(3, 23)}}
+        zero_clean = SolvedClusterExtraction(zero_coords, {}, SolverStatus.TIMEOUT)
+        sheared_conv = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.OPTIMAL)
+        rank_step = 0
+
+        def mock_solve_rank(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal rank_step
+            rank_step += 1
+            if rank_step == 1:
+                raise LayoutSolverError("Stage 0 timeout")
+            if rank_step == 2:
+                assert form_rank.model._conditioned_shear_obj.active
+                assert not form_rank.model.obj.active
+                TestLargeClusterBoundedStage1AndIterativePolish._set_stretch(form_rank, 0.0)
+                form_rank.model.s_stretch_3[0].set_value(50.0)
+                sp_vx, sm_vx = form_rank._edge_transverse_slack[("e_vert", "x")]
+                sp_vx.set_value(0.0)
+                sm_vx.set_value(0.0)
+                assert pyo.value(form_rank.model._conditioned_shear_obj) == pytest.approx(5000.0)
+                assert _extract_objective_value(form_rank) == pytest.approx(5000.0)
+                return zero_clean
+            assert form_rank.model._conditioned_shear_obj.active
+            assert not form_rank.model.obj.active
+            TestLargeClusterBoundedStage1AndIterativePolish._set_stretch(form_rank, 0.0)
+            form_rank.model.s_stretch_3[0].set_value(0.0)
+            sp_vx, sm_vx = form_rank._edge_transverse_slack[("e_vert", "x")]
+            sp_vx.set_value(1.0)
+            sm_vx.set_value(0.0)
+            assert pyo.value(form_rank.model._conditioned_shear_obj) == pytest.approx(2000.0)
+            assert _extract_objective_value(form_rank) == pytest.approx(1_000_000.0)
+            return sheared_conv
+
+        with (
+            patch("time.monotonic", side_effect=[float(i) for i in range(10)]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_rank),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            res_rank = solve_cluster_with_cutting_planes(
+                formulation=form_rank,
+                node=node_rank,
+                options=LayoutOptions(timeout_seconds=15),
+                total_cluster_budget=60.0,
+            )
+
+        assert res_rank is zero_clean
+        assert rank_step == 3
+        assert not hasattr(form_rank.model, "_conditioned_shear_obj")
+        assert form_rank.model.obj.active
+
+    def test_large_multithreaded_cluster_drops_threads_on_escalated_cbc_retry(self) -> None:
+        """Large (>50-entity) CBC passes keep threads=4 initially and drop to threads=1 on >=30s escalated retry."""
+        from romutil.layout.milp.cluster import SolvedClusterExtraction, solve_cluster_with_cutting_planes
+
+        large_node = SolveTreeNode(
+            node_id="large_mt_retry",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset(range(1, 53)),
+        )
+        mock_formulation = MagicMock()
+        mock_formulation.clearance_builder.inject_clearance_cuts.return_value = 1
+
+        # Case 1: next_timeout >= 30 drops retry threads from 4 to 1 while keeping initial pass at 4.
+        recorded_calls: list[tuple[int, int]] = []
+        solve_idx = 0
+
+        def mock_solve_retry(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal solve_idx
+            solve_idx += 1
+            recorded_calls.append(
+                (kwargs["options"].timeout_seconds, kwargs["solver_options"]["threads"])
+            )
+            if solve_idx == 2:
+                raise LayoutSolverError("intermediateNonInteger stall at threads=4")
+            return SolvedClusterExtraction(
+                raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0)},
+                raw_child_offsets={},
+                solver_status=SolverStatus.OPTIMAL,
+            )
+
+        det_idx = 0
+
+        def mock_detect(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal det_idx
+            det_idx += 1
+            if det_idx == 1:
+                return [ClearanceViolation(category="parent_room", item_a=1, item_b=2)]
+            return []
+
+        with (
+            patch("romutil.layout.milp.cluster.os.cpu_count", return_value=8),
+            patch("time.monotonic", side_effect=[float(i) for i in range(10)]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_retry),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            ext = solve_cluster_with_cutting_planes(
+                formulation=mock_formulation,
+                node=large_node,
+                options=LayoutOptions(),
+                total_cluster_budget=200.0,
+            )
+
+        assert ext.solver_status == SolverStatus.OPTIMAL
+        assert recorded_calls == [
+            (199, 4),
+            (8, 4),
+            (30, 1),
+            (196, 4),
+        ]
+
+        # Case 2: Escalated retry bounded below 30s (next_timeout=25) retains threads=4.
+        recorded_sub30: list[tuple[int, int]] = []
+        solve_idx_sub30 = 0
+
+        def mock_solve_sub30(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal solve_idx_sub30
+            solve_idx_sub30 += 1
+            recorded_sub30.append(
+                (kwargs["options"].timeout_seconds, kwargs["solver_options"]["threads"])
+            )
+            if solve_idx_sub30 == 2:
+                raise LayoutSolverError("short pass failure")
+            return SolvedClusterExtraction(
+                raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0)},
+                raw_child_offsets={},
+                solver_status=SolverStatus.OPTIMAL,
+            )
+
+        det_idx_sub30 = 0
+
+        def mock_detect_sub30(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal det_idx_sub30
+            det_idx_sub30 += 1
+            if det_idx_sub30 == 1:
+                return [ClearanceViolation(category="parent_room", item_a=1, item_b=2)]
+            return []
+
+        with (
+            patch("romutil.layout.milp.cluster.os.cpu_count", return_value=8),
+            patch("time.monotonic", side_effect=[0.0, 0.0, 1.0, 15.0, 20.0]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_sub30),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect_sub30),
+        ):
+            ext_sub30 = solve_cluster_with_cutting_planes(
+                formulation=mock_formulation,
+                node=large_node,
+                options=LayoutOptions(),
+                total_cluster_budget=40.0,
+            )
+
+        assert ext_sub30.solver_status == SolverStatus.OPTIMAL
+        assert recorded_sub30 == [
+            (40, 4),
+            (8, 4),
+            (25, 4),
+            (20, 4),
+        ]

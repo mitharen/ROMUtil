@@ -3516,3 +3516,153 @@ class TestTransverseSlackUpperBoundFormulation:
         assert not hasattr(form.model, "_stretch_polish_obj")
         assert form.model.obj.active
         form.clear_transverse_slack_upper_bound()
+
+
+class TestConditionedShearSearchObjectiveFormulation:
+    """Verify conditioned shear search objective lifecycle and fixed-shear polish preservation."""
+
+    def test_activate_and_restore_conditioned_shear_objective(self) -> None:
+        """Guards no-slack and invalid search weights, swaps active objective, preserves model.obj, and restores."""
+        node_no_slack = SolveTreeNode(
+            node_id="p_cond_no_slack",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+        )
+        ae_rigid = ActiveEdge(
+            edge_id="e_rigid",
+            src=1,
+            dst=2,
+            direction=(1, 0, 0),
+            min_length=1,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+            allow_transverse_slack=False,
+        )
+        inv_no_slack = ClusterInventory(
+            node=node_no_slack,
+            rooms=(1, 2),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(ae_rigid,),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        form_no_slack = ClusterFormulation(inventory=inv_no_slack)
+        assert form_no_slack.activate_conditioned_shear_objective() is False
+        assert not hasattr(form_no_slack.model, "_conditioned_shear_obj")
+        assert form_no_slack.model.obj.active
+
+        form = TestFixedShearStretchPolishFormulation._build_mixed_slack_formulation()
+        assert form.w_transverse > 2000.0
+        assert form.activate_conditioned_shear_objective(0.0) is False
+        assert form.activate_conditioned_shear_objective(-50.0) is False
+        assert form.activate_conditioned_shear_objective(form.w_transverse) is False
+        assert form.activate_conditioned_shear_objective(form.w_transverse + 500.0) is False
+        assert not hasattr(form.model, "_conditioned_shear_obj")
+        assert form.model.obj.active
+
+        # Activate default conditioned shear objective (search_weight=2000.0)
+        assert form.activate_conditioned_shear_objective() is True
+        assert not form.model.obj.active
+        assert hasattr(form.model, "_conditioned_shear_obj")
+        assert form.model._conditioned_shear_obj.active
+        active_objs = [o.name for o in form.model.component_objects(pyo.Objective, active=True)]
+        assert active_objs == ["_conditioned_shear_obj"]
+
+        # Set sample variable values and verify conditioned vs canonical objective evaluation
+        form.model.s_stretch_1[0].set_value(1.0)
+        form.model.s_stretch_2[0].set_value(0.0)
+        form.model.s_stretch_3[0].set_value(0.0)
+        form.model.s_stretch_1[1].set_value(0.0)
+        form.model.s_stretch_2[1].set_value(0.0)
+        form.model.s_stretch_3[1].set_value(0.0)
+        sp_vx, sm_vx = form._edge_transverse_slack[("e_vert", "x")]
+        sp_vy, sm_vy = form._edge_transverse_slack[("e_vert", "y")]
+        sp_hy, sm_hy = form._edge_transverse_slack[("e_horiz", "y")]
+        sp_vx.set_value(2.0)
+        sm_vx.set_value(0.0)
+        sp_vy.set_value(0.0)
+        sm_vy.set_value(1.0)
+        sp_hy.set_value(0.0)
+        sm_hy.set_value(0.0)
+
+        assert pyo.value(form.model._conditioned_shear_obj) == pytest.approx(10.0 + 2000.0 * 3.0)
+        assert pyo.value(form.model.obj) == pytest.approx(10.0 + form.w_transverse * 3.0)
+
+        # Idempotent re-activation replaces _conditioned_shear_obj cleanly
+        assert form.activate_conditioned_shear_objective(search_weight=1500.0) is True
+        assert not form.model.obj.active
+        assert form.model._conditioned_shear_obj.active
+        assert pyo.value(form.model._conditioned_shear_obj) == pytest.approx(10.0 + 1500.0 * 3.0)
+        assert pyo.value(form.model.obj) == pytest.approx(10.0 + form.w_transverse * 3.0)
+
+        # Restore deletes _conditioned_shear_obj, reactivates model.obj, and is idempotent
+        form.restore_base_objective()
+        assert not hasattr(form.model, "_conditioned_shear_obj")
+        assert form.model.obj.active
+        form.restore_base_objective()
+        assert not hasattr(form.model, "_conditioned_shear_obj")
+        assert form.model.obj.active
+
+    def test_fixed_transverse_slack_stretch_polish_preserves_conditioned_shear_objective(self) -> None:
+        """Suspends active _conditioned_shear_obj during polish and restores it on normal exit and exception."""
+        form = TestFixedShearStretchPolishFormulation._build_mixed_slack_formulation()
+        form.lock_transverse_slack()
+        assert form.unlock_vertical_transverse_slack() is True
+        assert form.activate_conditioned_shear_objective(search_weight=2000.0) is True
+
+        sheared_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (2, -1, 1), 3: (3, -1, 1)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+
+        # Normal exit restores _conditioned_shear_obj while keeping model.obj deactivated
+        with form.fixed_transverse_slack_stretch_polish(sheared_ext) as active:
+            assert active is True
+            assert not form.model._conditioned_shear_obj.active
+            assert not form.model.obj.active
+            assert hasattr(form.model, "_stretch_polish_obj")
+            assert form.model._stretch_polish_obj.active
+            active_objs = [o.name for o in form.model.component_objects(pyo.Objective, active=True)]
+            assert active_objs == ["_stretch_polish_obj"]
+            solve_and_extract(form, options=LayoutOptions(timeout_seconds=10))
+            assert pyo.value(form.model._stretch_polish_obj) == pytest.approx(0.0)
+
+        assert not hasattr(form.model, "_stretch_polish_obj")
+        assert hasattr(form.model, "_conditioned_shear_obj")
+        assert form.model._conditioned_shear_obj.active
+        assert not form.model.obj.active
+        active_after = [o.name for o in form.model.component_objects(pyo.Objective, active=True)]
+        assert active_after == ["_conditioned_shear_obj"]
+
+        # Exception exit also restores _conditioned_shear_obj, keeps model.obj deactivated, and unfixes slack
+        with pytest.raises(RuntimeError, match="conditioned polish failure"):
+            with form.fixed_transverse_slack_stretch_polish(sheared_ext) as active:
+                assert active is True
+                assert not form.model._conditioned_shear_obj.active
+                assert not form.model.obj.active
+                form.model.s_stretch_1[0].set_value(1.0)
+                form.model.s_stretch_2[0].set_value(0.0)
+                form.model.s_stretch_3[0].set_value(0.0)
+                form.model.s_stretch_1[1].set_value(0.0)
+                form.model.s_stretch_2[1].set_value(0.0)
+                form.model.s_stretch_3[1].set_value(0.0)
+                raise RuntimeError("conditioned polish failure")
+
+        assert not hasattr(form.model, "_stretch_polish_obj")
+        assert hasattr(form.model, "_conditioned_shear_obj")
+        assert form.model._conditioned_shear_obj.active
+        assert not form.model.obj.active
+        sp_x, sm_x = form._edge_transverse_slack[("e_vert", "x")]
+        sp_y, sm_y = form._edge_transverse_slack[("e_vert", "y")]
+        assert not sp_x.fixed and not sm_x.fixed
+        assert not sp_y.fixed and not sm_y.fixed
+        assert pyo.value(form.model.obj) == pytest.approx(10.0 + form.w_transverse * 3.0)
+
+        form.restore_base_objective()
+        assert not hasattr(form.model, "_conditioned_shear_obj")
+        assert form.model.obj.active
