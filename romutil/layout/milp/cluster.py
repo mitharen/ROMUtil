@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from enum import Enum
 from pathlib import Path
@@ -212,6 +213,7 @@ def _run_convergence_solve(
     solver_name: str,
     ratio_gap: float,
     remaining_budget: float,
+    reference_extraction: SolvedClusterExtraction | None = None,
 ) -> SolvedClusterExtraction:
     """Execute a full-budget convergence MILP pass warm-started from current coordinates."""
     conv_timeout = max(1, int(round(remaining_budget)))
@@ -232,14 +234,20 @@ def _run_convergence_solve(
         getattr(options, "warmstart", False)
         and _has_populated_warmstart_coordinates(formulation)
     )
-    return solve_and_extract(
-        formulation=formulation,
-        solver_name=solver_name,
-        options=conv_options,
-        max_solutions=None,
-        solver_options=conv_solver_options if conv_solver_options else None,
-        warmstart=conv_warmstart,
+    polish_ctx: AbstractContextManager[Any] = (
+        formulation.fixed_transverse_slack_stretch_polish(reference_extraction)
+        if isinstance(formulation, ClusterFormulation) and reference_extraction is not None
+        else nullcontext()
     )
+    with polish_ctx:
+        return solve_and_extract(
+            formulation=formulation,
+            solver_name=solver_name,
+            options=conv_options,
+            max_solutions=None,
+            solver_options=conv_solver_options if conv_solver_options else None,
+            warmstart=conv_warmstart,
+        )
 
 
 def solve_cluster_with_cutting_planes(
@@ -270,9 +278,15 @@ def solve_cluster_with_cutting_planes(
          so low-budget models are never mutated with potentially infeasible cuts. If resolving
          crossings re-introduces physical collisions, immediately falls back to PHYSICAL_CLEARANCE
          (self-healing).
-      3. CONVERGENCE: When both physical collisions and corridor crossings are zero, runs a final
-         convergence optimization pass warm-started from the clean incumbent using the full
-         remaining cluster budget and no early solution limits. If violations reappear during
+      3. CONVERGENCE: When both physical collisions and corridor crossings are zero (or when
+         iteration 0 escalated to nonzero transverse shear), runs a final convergence optimization
+         pass warm-started from the clean incumbent using the full remaining cluster budget and no
+         early solution limits. On sheared clusters with unfixed nonzero transverse shear, both
+         pre-unit-crossing and final CONVERGENCE passes apply lexicographic fixed-shear pure-stretch
+         polishing via ``ClusterFormulation.fixed_transverse_slack_stretch_polish``, temporarily
+         locking unfixed transverse slack variables to canonical integer shear and minimizing pure
+         ``stretch_expr`` so ``w_transverse`` does not swamp ``ratio_gap`` (restoring ``model.obj``,
+         slack lower bounds, and unfixed states afterward). If violations reappear during
          convergence, falls back to the appropriate clearance phase.
       4. DONE: Reached when an extraction is verified clean or a verified clean/physical
          incumbent is preserved under budget exhaustion or non-planar unit-edge crossings.
@@ -521,6 +535,11 @@ def solve_cluster_with_cutting_planes(
                 and iteration == 0
                 and extraction.solver_status == SolverStatus.OPTIMAL
                 and effective_max_solutions is None
+                and not (
+                    has_slack
+                    and slack_stage > 0
+                    and formulation.has_nonzero_transverse_shear(extraction)
+                )
             ):
                 phase = ClusterSolvePhase.DONE
                 break
@@ -615,6 +634,7 @@ def solve_cluster_with_cutting_planes(
                                     solver_name=solver_name,
                                     ratio_gap=ratio_gap,
                                     remaining_budget=conv_budget,
+                                    reference_extraction=extraction,
                                 )
                                 conv_physical, conv_crossings, conv_compacted = (
                                     _detect_and_partition_violations(formulation, conv_extraction)
@@ -707,6 +727,7 @@ def solve_cluster_with_cutting_planes(
                         solver_name=solver_name,
                         ratio_gap=ratio_gap,
                         remaining_budget=conv_budget,
+                        reference_extraction=extraction,
                     )
                     final_physical, final_crossings, final_compacted = (
                         _detect_and_partition_violations(formulation, final_extraction)

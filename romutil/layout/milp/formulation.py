@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any
 
 import pyomo.environ as pyo
 
 from romutil.layout.geometry import BoundingBox3D
 from romutil.layout.milp.clearance import ClearanceConstraintBuilder
+from romutil.layout.milp.clearance_boxes import extract_entity_coord
 from romutil.layout.milp.inventory import (
     ActiveEdge,
     ClusterInventory,
@@ -16,6 +19,9 @@ from romutil.layout.milp.inventory import (
     get_child_strictly_interior_rooms,
 )
 from romutil.types import LayoutOptions
+
+if TYPE_CHECKING:
+    from romutil.layout.milp.solver import SolvedClusterExtraction
 
 
 def calculate_dynamic_bounds(inventory: ClusterInventory) -> int:
@@ -303,6 +309,7 @@ class ClusterFormulation:
             else 0
         )
 
+        self._stretch_expr: Any = stretch_expr
         model.obj = pyo.Objective(
             expr=stretch_expr + transverse_penalty,
             sense=pyo.minimize,
@@ -495,6 +502,100 @@ class ClusterFormulation:
         for cname in ("transverse_slack_lb", "horizontal_transverse_slack_lb"):
             if hasattr(self.model, cname):
                 self.model.del_component(cname)
+
+    def _compute_canonical_transverse_shear(
+        self,
+        extraction: SolvedClusterExtraction | None = None,
+        *,
+        unfixed_only: bool = False,
+    ) -> dict[tuple[str, str], tuple[int, int]]:
+        """Compute canonical integer (s_p, s_m) shear pairs for transverse slack edges."""
+        edge_by_id = {ae.edge_id: ae for ae in self.inventory.active_edges}
+        canonical: dict[tuple[str, str], tuple[int, int]] = {}
+        for (edge_id, axis), (sp, sm) in self._edge_transverse_slack.items():
+            if unfixed_only and sp.fixed and sm.fixed:
+                continue
+            delta: int | None = None
+            if extraction is not None and edge_id in edge_by_id:
+                ae = edge_by_id[edge_id]
+                try:
+                    src_coord = extract_entity_coord(ae.src, extraction, self.inventory)
+                    dst_coord = extract_entity_coord(ae.dst, extraction, self.inventory)
+                except KeyError:
+                    delta = None
+                else:
+                    axis_idx = 0 if axis == "x" else 1
+                    delta = int(dst_coord[axis_idx] - src_coord[axis_idx])
+            if delta is None:
+                p_cur = pyo.value(sp, exception=False) or 0.0
+                m_cur = pyo.value(sm, exception=False) or 0.0
+                delta = int(round(float(p_cur) - float(m_cur)))
+            canonical[(edge_id, axis)] = (max(0, delta), max(0, -delta))
+        return canonical
+
+    def has_nonzero_transverse_shear(
+        self,
+        extraction: SolvedClusterExtraction | None = None,
+    ) -> bool:
+        """Return True if any unfixed transverse slack edge carries nonzero canonical shear."""
+        if not self.has_transverse_slack():
+            return False
+        return any(
+            p + m > 0
+            for p, m in self._compute_canonical_transverse_shear(
+                extraction, unfixed_only=True
+            ).values()
+        )
+
+    @contextmanager
+    def fixed_transverse_slack_stretch_polish(
+        self,
+        extraction: SolvedClusterExtraction | None = None,
+    ) -> Iterator[bool]:
+        """Temporarily fix unfixed transverse slack to canonical shear and minimize pure stretch."""
+        if not self.has_transverse_slack():
+            yield False
+            return
+        canonical = self._compute_canonical_transverse_shear(extraction, unfixed_only=True)
+        if not canonical or sum(p + m for p, m in canonical.values()) == 0:
+            yield False
+            return
+
+        saved_fixed: list[tuple[Any, bool, Any, bool]] = []
+        deactivated_lbs: list[str] = []
+        try:
+            for key, (p_val, m_val) in canonical.items():
+                sp, sm = self._edge_transverse_slack[key]
+                saved_fixed.append((sp, bool(sp.fixed), sm, bool(sm.fixed)))
+                sp.fix(p_val)
+                sm.fix(m_val)
+
+            for cname in ("transverse_slack_lb", "horizontal_transverse_slack_lb"):
+                if hasattr(self.model, cname):
+                    constr = getattr(self.model, cname)
+                    if constr.active:
+                        constr.deactivate()
+                        deactivated_lbs.append(cname)
+
+            self.model.obj.deactivate()
+            self.model._stretch_polish_obj = pyo.Objective(
+                expr=self._stretch_expr,
+                sense=pyo.minimize,
+            )
+            yield True
+        finally:
+            if hasattr(self.model, "_stretch_polish_obj"):
+                self.model.del_component("_stretch_polish_obj")
+            if hasattr(self.model, "obj"):
+                self.model.obj.activate()
+            for cname in deactivated_lbs:
+                if hasattr(self.model, cname):
+                    getattr(self.model, cname).activate()
+            for sp, sp_was_fixed, sm, sm_was_fixed in saved_fixed:
+                if not sp_was_fixed:
+                    sp.unfix()
+                if not sm_was_fixed:
+                    sm.unfix()
 
     def apply_clearances(self) -> None:
         """Enforce disjunctive Big-M geometric clearance and non-overlap constraints."""
