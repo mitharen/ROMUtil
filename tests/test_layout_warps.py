@@ -676,3 +676,120 @@ class TestWarpSevererVirtualAndCanonicalCycles:
         active_pairs = {(e.src, e.dst) for e in simplified.graph.edges if not e.cut}
         assert (101, 300) in active_pairs
         assert (300, 201) in active_pairs
+
+
+class TestGlobalAxisSccWarpDetection:
+    """Verify global per-axis Tarjan SCC warp verification and single-pair parallel edge cuts."""
+
+    def test_global_scc_z_axis_warp_missed_by_cycle_basis(self) -> None:
+        """Detects and severs a multi-cycle Z-axis contradiction whose basis cycles are each satisfiable."""
+        import networkx as nx
+
+        from romutil.layout.simplification.warps import (
+            _extract_canonical_cycle_basis,
+            _find_global_axis_warp_cycle,
+        )
+
+        rooms = {v: _make_room(v) for v in (1, 2, 3, 4, 5, 6)}
+        edges = (
+            LayoutEdge(src=1, dst=2, direction=int(Direction.up)),
+            LayoutEdge(src=2, dst=3, direction=int(Direction.up)),
+            LayoutEdge(src=3, dst=1, direction=int(Direction.down)),
+            LayoutEdge(src=1, dst=4, direction=int(Direction.up)),
+            LayoutEdge(src=4, dst=5, direction=int(Direction.north)),
+            LayoutEdge(src=5, dst=3, direction=int(Direction.south)),
+            LayoutEdge(src=2, dst=6, direction=int(Direction.east)),
+            LayoutEdge(src=6, dst=4, direction=int(Direction.west)),
+        )
+        g = nx.Graph()
+        g.add_nodes_from(rooms)
+        emap: dict[tuple[int, int], list[LayoutEdge]] = {}
+        for edge in edges:
+            g.add_edge(edge.src, edge.dst)
+            emap.setdefault((min(edge.src, edge.dst), max(edge.src, edge.dst)), []).append(edge)
+
+        basis_cycles = _extract_canonical_cycle_basis(g)
+        assert len(basis_cycles) == 3
+        for cycle in basis_cycles:
+            vecs = []
+            for idx in range(len(cycle)):
+                u, v = cycle[idx], cycle[(idx + 1) % len(cycle)]
+                es = emap[(min(u, v), max(u, v))]
+                fwd = [e for e in es if e.src == u and e.dst == v]
+                chosen = fwd[0] if fwd else es[0]
+                disp = direction_to_displacement(chosen.direction)
+                if not fwd:
+                    disp = (-disp[0], -disp[1], -disp[2])
+                vecs.append(disp)
+            assert is_euclidean_satisfiable(vecs) is True
+
+        scc_cycle = _find_global_axis_warp_cycle(rooms, edges)
+        assert scc_cycle is not None
+        assert len(scc_cycle) == 5
+
+        lg = LayoutGraph(rooms=rooms, edges=edges)
+        simplified = WarpSeverer().simplify(lg)
+        assert len(simplified.severed_chords) == 1
+        assert simplified.severed_chords[0].cut is True
+        assert _find_global_axis_warp_cycle(rooms, simplified.graph.edges) is None
+
+    def test_global_scc_x_and_y_axis_warps_missed_by_cycle_basis(self) -> None:
+        """Detects and resolves multi-cycle X-axis and Y-axis SCC warps missed by single-tree cycle bases."""
+        from romutil.layout.simplification.warps import _find_global_axis_warp_cycle
+
+        rooms = {v: _make_room(v) for v in (1, 2, 3, 4, 5, 6)}
+        configs = [
+            (Direction.east, Direction.west, Direction.north, Direction.south, Direction.up, Direction.down),
+            (Direction.north, Direction.south, Direction.east, Direction.west, Direction.up, Direction.down),
+        ]
+        for d_pos, d_neg, a_pos, a_neg, b_pos, b_neg in configs:
+            edges = (
+                LayoutEdge(src=1, dst=2, direction=int(d_pos)),
+                LayoutEdge(src=2, dst=3, direction=int(d_pos)),
+                LayoutEdge(src=3, dst=1, direction=int(d_neg)),
+                LayoutEdge(src=1, dst=4, direction=int(d_pos)),
+                LayoutEdge(src=4, dst=5, direction=int(a_pos)),
+                LayoutEdge(src=5, dst=3, direction=int(a_neg)),
+                LayoutEdge(src=2, dst=6, direction=int(b_pos)),
+                LayoutEdge(src=6, dst=4, direction=int(b_neg)),
+            )
+            assert _find_global_axis_warp_cycle(rooms, edges) is not None
+            simplified = WarpSeverer().simplify(LayoutGraph(rooms=rooms, edges=edges))
+            assert len(simplified.severed_chords) == 1
+            assert _find_global_axis_warp_cycle(rooms, simplified.graph.edges) is None
+
+    def test_global_scc_parallel_multi_edge_severs_single_edge_and_preserves_connectivity(self) -> None:
+        """Parallel multi-edge contradictions cut only one conflicting edge, keeping endpoints connected."""
+        from romutil.layout.simplification.warps import _find_global_axis_warp_cycle
+
+        rooms = {1: _make_room(1), 2: _make_room(2), 3: _make_room(3)}
+        # Parallel 1 -> 2 (north) and 1 -> 2 (up) form a 2-edge Y/Z contradiction with zero graph cycles.
+        # An additional invalid-direction edge and an extra tree branch 2 -> 3 verify clean handling.
+        e_corridor = LayoutEdge(
+            src=1,
+            dst=2,
+            direction=int(Direction.north),
+            weight=2,
+            metadata={"is_corridor": True},
+        )
+        e_conflict = LayoutEdge(src=1, dst=2, direction=int(Direction.up), weight=1)
+        e_invalid = LayoutEdge(src=2, dst=3, direction=999, weight=1)
+        e_branch = LayoutEdge(src=2, dst=3, direction=int(Direction.east), weight=1)
+
+        lg = LayoutGraph(
+            rooms=rooms,
+            edges=(e_corridor, e_conflict, e_invalid, e_branch),
+        )
+        assert _find_global_axis_warp_cycle(rooms, lg.edges) is not None
+
+        simplified = WarpSeverer().simplify(lg)
+        assert len(simplified.severed_chords) == 1
+        assert simplified.severed_chords[0].src == 1
+        assert simplified.severed_chords[0].dst == 2
+        assert simplified.severed_chords[0].direction == int(Direction.up)
+        assert simplified.severed_chords[0].cut is True
+
+        active_1_2 = [e for e in simplified.graph.edges if {e.src, e.dst} == {1, 2} and not e.cut]
+        assert len(active_1_2) == 1
+        assert active_1_2[0].direction == int(Direction.north)
+        assert _find_global_axis_warp_cycle(rooms, simplified.graph.edges) is None

@@ -5,7 +5,7 @@ from __future__ import annotations
 import collections
 from dataclasses import replace
 from fractions import Fraction
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 import networkx as nx
 
@@ -265,6 +265,170 @@ def _deduplicate_virtual_room_entrances(
     return [edge for edge in active_edges if id(edge) not in severed_ids]
 
 
+def _select_best_chord_pair(
+    candidate_pairs: Sequence[tuple[int, int]],
+    undirected_edge_map: Mapping[tuple[int, int], Sequence[LayoutEdge]],
+    incoming_counts: Mapping[tuple[int, int], int],
+    bidir_degree: Mapping[int, int],
+    g: nx.Graph,
+) -> tuple[int, int]:
+    """Select the minimal-impact cycle chord to sever based on reciprocity, weight, and degree."""
+
+    def chord_score(
+        pair: tuple[int, int],
+    ) -> tuple[int, int, int, int, int, int, int, tuple[int, int]]:
+        u_node, v_node = pair
+        edges = undirected_edge_map.get(pair, [])
+        is_bidirectional = _is_bidirectional_or_corridor(u_node, v_node, edges)
+        reciprocity_rank = 1 if is_bidirectional else 0
+        min_weight = min((e.weight for e in edges), default=1)
+        max_parallel = max(
+            (incoming_counts.get((e.dst, e.direction), 0) for e in edges), default=1
+        )
+        parallel_rank = 0 if max_parallel > 1 else 1
+        b_sum = bidir_degree.get(u_node, 0) + bidir_degree.get(v_node, 0)
+        deg_sum = int(g.degree(u_node)) + int(g.degree(v_node))
+        max_deg = max(int(g.degree(u_node)), int(g.degree(v_node)))
+        return (
+            reciprocity_rank,
+            min_weight,
+            parallel_rank,
+            -max_parallel,
+            b_sum,
+            deg_sum,
+            max_deg,
+            pair,
+        )
+
+    return min(candidate_pairs, key=chord_score)
+
+
+def _find_global_axis_warp_cycle(
+    rooms: Mapping[int, Any],
+    active_edges: Sequence[LayoutEdge],
+) -> list[LayoutEdge] | None:
+    """Detect any global per-axis ordering contradiction via Tarjan SCC decomposition.
+
+    Constructs a directed inequality graph per coordinate axis (X, Y, Z) where
+    zero-step edges contribute bidirectional weak arcs and non-zero steps contribute
+    strict forward arcs. Any strict edge whose endpoints fall within the same strongly
+    connected component witnesses an unsatisfiable global warp cycle.
+    """
+    sorted_rooms = sorted(rooms)
+    for axis in (0, 1, 2):
+        dg: nx.DiGraph = nx.DiGraph()
+        dg.add_nodes_from(sorted_rooms)
+        adj: dict[int, list[tuple[int, LayoutEdge]]] = {v: [] for v in sorted_rooms}
+        strict_edges: list[tuple[int, int, LayoutEdge]] = []
+
+        for edge in active_edges:
+            if (
+                edge.cut
+                or edge.src not in rooms
+                or edge.dst not in rooms
+                or edge.src == edge.dst
+            ):
+                continue
+            try:
+                disp = direction_to_displacement(edge.direction)
+            except ValueError:
+                continue
+            step = disp[axis]
+            if step == 0:
+                adj[edge.src].append((edge.dst, edge))
+                adj[edge.dst].append((edge.src, edge))
+            elif step > 0:
+                adj[edge.src].append((edge.dst, edge))
+                strict_edges.append((edge.src, edge.dst, edge))
+            else:
+                adj[edge.dst].append((edge.src, edge))
+                strict_edges.append((edge.dst, edge.src, edge))
+
+        for u in sorted_rooms:
+            if not adj[u]:
+                continue
+            adj[u].sort(
+                key=lambda item: (
+                    item[0],
+                    item[1].src,
+                    item[1].dst,
+                    int(item[1].direction),
+                    item[1].weight,
+                )
+            )
+            for v, _e in adj[u]:
+                dg.add_edge(u, v)
+
+        scc_id: dict[int, int] = {}
+        scc_nodes: list[set[int]] = []
+        for sid, comp in enumerate(nx.strongly_connected_components(dg)):
+            comp_set = set(comp)
+            scc_nodes.append(comp_set)
+            for node in comp_set:
+                scc_id[node] = sid
+
+        contradictions = sorted(
+            (
+                (a, b, se)
+                for a, b, se in strict_edges
+                if scc_id[a] == scc_id[b]
+            ),
+            key=lambda item: (
+                item[0],
+                item[1],
+                item[2].src,
+                item[2].dst,
+                int(item[2].direction),
+                item[2].weight,
+            ),
+        )
+        if not contradictions:
+            continue
+
+        best_cycle: list[LayoutEdge] | None = None
+        best_key: tuple[int, tuple[tuple[int, int, int], ...]] | None = None
+
+        for a, b, strict_edge in contradictions:
+            scc = scc_nodes[scc_id[a]]
+            queue: collections.deque[int] = collections.deque([b])
+            parent: dict[int, tuple[int, LayoutEdge] | None] = {b: None}
+            while queue:
+                curr = queue.popleft()
+                if curr == a:
+                    break
+                for nxt, edge in adj[curr]:
+                    if nxt not in scc or edge is strict_edge or nxt in parent:
+                        continue
+                    parent[nxt] = (curr, edge)
+                    queue.append(nxt)
+                    if nxt == a:
+                        break
+            if a not in parent:
+                continue
+            path_edges: list[LayoutEdge] = []
+            cur = a
+            while cur != b:
+                step_info = parent[cur]
+                assert step_info is not None
+                prev_node, prev_edge = step_info
+                path_edges.append(prev_edge)
+                cur = prev_node
+            path_edges.reverse()
+            cycle_edges = [strict_edge, *path_edges]
+            key = (
+                len(cycle_edges),
+                tuple((e.src, e.dst, int(e.direction)) for e in cycle_edges),
+            )
+            if best_key is None or key < best_key:
+                best_key = key
+                best_cycle = cycle_edges
+
+        if best_cycle is not None:
+            return best_cycle
+
+    return None
+
+
 class WarpSeverer:
     """Graph simplifier detecting non-Euclidean warp cycles and severing minimal chords."""
 
@@ -352,91 +516,99 @@ class WarpSeverer:
                     bidir_degree[v_pair] += 1
 
             cycles = _extract_canonical_cycle_basis(g)
-            if not cycles:
-                break
-
-            # Deterministic ordering of cycles by length and vertex IDs
-            cycles.sort(key=lambda c: (len(c), sorted(c)))
-
             found_warp = False
-            for cycle in cycles:
-                p = len(cycle)
-                cycle_vectors: list[tuple[int, int, int]] = []
-                cycle_steps_valid = True
+            if cycles:
+                # Deterministic ordering of cycles by length and vertex IDs
+                cycles.sort(key=lambda c: (len(c), sorted(c)))
 
-                for i in range(p):
-                    u = cycle[i]
-                    v = cycle[(i + 1) % p]
-                    pair = (min(u, v), max(u, v))
-                    edges_between = undirected_edge_map[pair]
+                for cycle in cycles:
+                    p = len(cycle)
+                    cycle_vectors: list[tuple[int, int, int]] = []
+                    cycle_steps_valid = True
 
-                    fwd_edges = [e for e in edges_between if e.src == u and e.dst == v]
-                    edge = fwd_edges[0] if fwd_edges else edges_between[0]
-                    reverse = not bool(fwd_edges)
+                    for i in range(p):
+                        u = cycle[i]
+                        v = cycle[(i + 1) % p]
+                        pair = (min(u, v), max(u, v))
+                        edges_between = undirected_edge_map[pair]
 
-                    try:
-                        vec = direction_to_displacement(edge.direction)
-                        if reverse:
-                            vec = (-vec[0], -vec[1], -vec[2])
-                    except ValueError:
-                        cycle_steps_valid = False
+                        fwd_edges = [e for e in edges_between if e.src == u and e.dst == v]
+                        edge = fwd_edges[0] if fwd_edges else edges_between[0]
+                        reverse = not bool(fwd_edges)
+
+                        try:
+                            vec = direction_to_displacement(edge.direction)
+                            if reverse:
+                                vec = (-vec[0], -vec[1], -vec[2])
+                        except ValueError:
+                            cycle_steps_valid = False
+                            break
+                        cycle_vectors.append(vec)
+
+                    if not cycle_steps_valid:
+                        continue
+
+                    if not is_euclidean_satisfiable(cycle_vectors):
+                        found_warp = True
+
+                        # Select minimal chord in the cycle to sever
+                        candidate_pairs = [
+                            (
+                                min(cycle[i], cycle[(i + 1) % p]),
+                                max(cycle[i], cycle[(i + 1) % p]),
+                            )
+                            for i in range(p)
+                        ]
+
+                        best_pair = _select_best_chord_pair(
+                            candidate_pairs,
+                            undirected_edge_map,
+                            incoming_counts,
+                            bidir_degree,
+                            g,
+                        )
+                        edges_to_sever = list(undirected_edge_map[best_pair])
+
+                        for edge in edges_to_sever:
+                            severed_edge = replace(edge, cut=True)
+                            severed_chords.append(severed_edge)
+                            active_edges.remove(edge)
+
+                        # Recompute cycle basis with the severed chord removed
                         break
-                    cycle_vectors.append(vec)
-
-                if not cycle_steps_valid:
-                    continue
-
-                if not is_euclidean_satisfiable(cycle_vectors):
-                    found_warp = True
-
-                    # Select minimal chord in the cycle to sever
-                    candidate_pairs = [
-                        (
-                            min(cycle[i], cycle[(i + 1) % p]),
-                            max(cycle[i], cycle[(i + 1) % p]),
-                        )
-                        for i in range(p)
-                    ]
-
-                    def chord_score(
-                        pair: tuple[int, int],
-                    ) -> tuple[int, int, int, int, int, int, int, tuple[int, int]]:
-                        u_node, v_node = pair
-                        edges = undirected_edge_map.get(pair, [])
-                        is_bidirectional = _is_bidirectional_or_corridor(u_node, v_node, edges)
-                        reciprocity_rank = 1 if is_bidirectional else 0
-                        min_weight = min((e.weight for e in edges), default=1)
-                        max_parallel = max(
-                            (incoming_counts[(e.dst, e.direction)] for e in edges), default=1
-                        )
-                        parallel_rank = 0 if max_parallel > 1 else 1
-                        b_sum = bidir_degree[u_node] + bidir_degree[v_node]
-                        deg_sum = g.degree(u_node) + g.degree(v_node)
-                        max_deg = max(g.degree(u_node), g.degree(v_node))
-                        return (
-                            reciprocity_rank,
-                            min_weight,
-                            parallel_rank,
-                            -max_parallel,
-                            b_sum,
-                            deg_sum,
-                            max_deg,
-                            pair,
-                        )
-
-                    best_pair = min(candidate_pairs, key=chord_score)
-                    edges_to_sever = list(undirected_edge_map[best_pair])
-
-                    for edge in edges_to_sever:
-                        severed_edge = replace(edge, cut=True)
-                        severed_chords.append(severed_edge)
-                        active_edges.remove(edge)
-
-                    # Recompute cycle basis with the severed chord removed
-                    break
 
             if not found_warp:
-                break
+                scc_cycle = _find_global_axis_warp_cycle(graph.rooms, active_edges)
+                if scc_cycle is None:
+                    break
+                candidate_pairs = [
+                    (min(e.src, e.dst), max(e.src, e.dst)) for e in scc_cycle
+                ]
+                unique_pairs = set(candidate_pairs)
+                if len(unique_pairs) == 1:
+                    edge_to_cut = min(
+                        scc_cycle,
+                        key=lambda e: (
+                            1 if _is_corridor_edge(e) else 0,
+                            e.weight,
+                            -e.src,
+                            -e.dst,
+                            -int(e.direction),
+                        ),
+                    )
+                    severed_chords.append(replace(edge_to_cut, cut=True))
+                    active_edges.remove(edge_to_cut)
+                else:
+                    best_pair = _select_best_chord_pair(
+                        candidate_pairs,
+                        undirected_edge_map,
+                        incoming_counts,
+                        bidir_degree,
+                        g,
+                    )
+                    for edge in list(undirected_edge_map[best_pair]):
+                        severed_chords.append(replace(edge, cut=True))
+                        active_edges.remove(edge)
 
         active_edges = _deduplicate_virtual_room_entrances(
             graph, active_edges, severed_chords

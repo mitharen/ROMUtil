@@ -5961,3 +5961,303 @@ class TestClusterClearanceStateMachine:
             )
 
         assert ext_low_rem is clean_low
+
+
+class TestStagedVerticalShearAndSubBoxTimeout:
+    """Verify 3-stage vertical-first shear escalation, capped sheared convergence, and sub-box scaling."""
+
+    def test_staged_vertical_first_shear_escalation_with_infeasible_cuts_and_cleanup(self) -> None:
+        """Escalates 0 -> 1 -> 2 with proven_infeasible lower-bound cuts and cleans up on exit."""
+        from romutil.layout.milp.cluster import SolvedClusterExtraction, solve_cluster_with_cutting_planes
+
+        node = SolveTreeNode(node_id="staged_shear", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2, 3}))
+        ae_vert = ActiveEdge(
+            edge_id="e_vert",
+            src=1,
+            dst=2,
+            direction=(0, 0, 1),
+            min_length=1,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+        )
+        ae_horiz = ActiveEdge(
+            edge_id="e_horiz",
+            src=2,
+            dst=3,
+            direction=(1, 0, 0),
+            min_length=1,
+            associated_rooms=frozenset({2, 3}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+        )
+        inv = ClusterInventory(
+            node=node,
+            rooms=(1, 2, 3),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(ae_vert, ae_horiz),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        form = ClusterFormulation(inventory=inv)
+
+        observed: list[tuple[bool, bool, bool, bool]] = []
+        clean_ext = SolvedClusterExtraction({1: (0, 0, 0), 2: (0, 0, 1), 3: (1, 0, 1)}, {}, SolverStatus.OPTIMAL)
+
+        def mock_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            vert_fixed = all(
+                v.fixed
+                for axis in ("x", "y")
+                for v in form._edge_transverse_slack[("e_vert", axis)]
+            )
+            horiz_fixed = all(v.fixed for v in form._edge_transverse_slack[("e_horiz", "y")])
+            has_lb = hasattr(form.model, "transverse_slack_lb")
+            has_hlb = hasattr(form.model, "horizontal_transverse_slack_lb")
+            observed.append((vert_fixed, horiz_fixed, has_lb, has_hlb))
+            if len(observed) == 1:
+                raise LayoutInfeasibleError("Stage 0 zero-shear infeasible")
+            if len(observed) == 2:
+                raise LayoutInfeasibleError("Stage 1 vertical-only shear infeasible")
+            return clean_ext
+
+        with (
+            patch("time.monotonic", side_effect=[float(i) for i in range(10)]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            ext = solve_cluster_with_cutting_planes(
+                formulation=form,
+                node=node,
+                total_cluster_budget=30.0,
+            )
+
+        assert ext is clean_ext
+        assert observed == [
+            (True, True, False, False),
+            (False, True, True, False),
+            (False, False, True, True),
+        ]
+        # finally: cleans up both temporary lower-bound cuts and leaves all slack variables unfixed
+        assert not hasattr(form.model, "transverse_slack_lb")
+        assert not hasattr(form.model, "horizontal_transverse_slack_lb")
+        assert not any(v.fixed for pair in form._edge_transverse_slack.values() for v in pair)
+
+        # Case 2: Stage 1 (vertical shear) succeeds -> stops at stage 1, finally unlocks remaining horizontal slack
+        form_s1 = ClusterFormulation(inventory=inv)
+        s1_calls = 0
+
+        def mock_solve_stage1(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal s1_calls
+            s1_calls += 1
+            if s1_calls == 1:
+                raise LayoutInfeasibleError("Stage 0 infeasible")
+            assert not any(
+                v.fixed
+                for axis in ("x", "y")
+                for v in form_s1._edge_transverse_slack[("e_vert", axis)]
+            )
+            assert all(v.fixed for v in form_s1._edge_transverse_slack[("e_horiz", "y")])
+            assert hasattr(form_s1.model, "transverse_slack_lb")
+            assert not hasattr(form_s1.model, "horizontal_transverse_slack_lb")
+            return clean_ext
+
+        with (
+            patch("time.monotonic", side_effect=[float(i) for i in range(10)]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_stage1),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            ext_s1 = solve_cluster_with_cutting_planes(
+                formulation=form_s1,
+                node=node,
+                total_cluster_budget=30.0,
+            )
+
+        assert ext_s1 is clean_ext
+        assert s1_calls == 2
+        assert not hasattr(form_s1.model, "transverse_slack_lb")
+        assert not any(v.fixed for pair in form_s1._edge_transverse_slack.values() for v in pair)
+
+    def test_convergence_timeout_capped_only_when_shear_unlocked_mid_solve(self) -> None:
+        """CONVERGENCE budget is capped to max(30, base_timeout) only when shear was unlocked mid-solve."""
+        from romutil.layout.milp.cluster import SolvedClusterExtraction, solve_cluster_with_cutting_planes
+
+        node = SolveTreeNode(node_id="conv_cap", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({1, 2}))
+        ae_horiz = ActiveEdge(
+            edge_id="e_horiz",
+            src=1,
+            dst=2,
+            direction=(1, 0, 0),
+            min_length=1,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+        )
+        inv = ClusterInventory(
+            node=node,
+            rooms=(1, 2),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(ae_horiz,),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        clean_ext = SolvedClusterExtraction({1: (0, 0, 0), 2: (1, 0, 0)}, {}, SolverStatus.OPTIMAL)
+
+        # Case 1: Zero-shear solve (slack_stage == 0) receives full uncapped remaining budget in CONVERGENCE.
+        form_zero = ClusterFormulation(inventory=inv)
+        timeouts_zero: list[int] = []
+
+        def mock_solve_zero(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            timeouts_zero.append(kwargs["options"].timeout_seconds)
+            return clean_ext
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 1.0, 2.0]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_zero),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            solve_cluster_with_cutting_planes(
+                formulation=form_zero,
+                node=node,
+                options=LayoutOptions(timeout_seconds=10, max_solutions=1),
+                total_cluster_budget=120.0,
+            )
+
+        assert timeouts_zero == [119, 118]
+
+        # Case 2: Shear unlocked mid-solve (slack_stage > 0) caps CONVERGENCE timeout to max(30, base_timeout) = 30.
+        form_sheared = ClusterFormulation(inventory=inv)
+        timeouts_sheared: list[int] = []
+
+        def mock_solve_sheared(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            timeouts_sheared.append(kwargs["options"].timeout_seconds)
+            if len(timeouts_sheared) == 1:
+                raise LayoutInfeasibleError("Force shear unlock")
+            return clean_ext
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 1.0, 2.0]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_sheared),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            solve_cluster_with_cutting_planes(
+                formulation=form_sheared,
+                node=node,
+                options=LayoutOptions(timeout_seconds=10, max_solutions=1),
+                total_cluster_budget=120.0,
+            )
+
+        # Pass 0 (119s) -> Infeasible -> Retry with shear (119s) -> CONVERGENCE capped to 30s!
+        assert timeouts_sheared == [119, 119, 30]
+
+    def test_adaptive_cluster_timeout_accounts_for_sub_boxes(self) -> None:
+        """compute_adaptive_cluster_timeout scales with n_sub_boxes // 4 and solve_cluster forwards it."""
+        from romutil.layout.milp.cluster import compute_adaptive_cluster_timeout
+
+        node = SolveTreeNode(
+            node_id="sb_scale",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset(range(5)),
+            children=(
+                SolveTreeNode(node_id="c0", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({100})),
+                SolveTreeNode(node_id="c1", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({101})),
+            ),
+        )
+        assert compute_adaptive_cluster_timeout(node, n_sub_boxes=0) == 10
+        # n_entities = 5 + max(2, 160 // 4) = 45 -> int(10 * (45 / 20)) = 22
+        assert compute_adaptive_cluster_timeout(node, n_sub_boxes=160) == 22
+
+        # Verify solve_cluster computes n_sub_boxes from inventory and forwards updated timeout
+        c0_sbs = tuple(BoundingBox3D(i * 2, i * 2, 0, 0, 0, 0) for i in range(40))
+        c1_sbs = tuple(BoundingBox3D(i * 2, i * 2, 2, 2, 0, 0) for i in range(40))
+        c_sols = {
+            "c0": NodeSolution("c0", {100: Coord3D(0, 0, 0)}, sub_boxes=c0_sbs),
+            "c1": NodeSolution("c1", {101: Coord3D(0, 2, 0)}, sub_boxes=c1_sbs),
+        }
+        graph = _make_graph([0, 1, 2, 3, 4, 100, 101], [])
+        captured_budgets: list[float] = []
+
+        def fake_cutting_planes(*args: Any, **kwargs: Any) -> Any:
+            from romutil.layout.milp.cluster import SolvedClusterExtraction
+
+            captured_budgets.append(kwargs["total_cluster_budget"])
+            return SolvedClusterExtraction(
+                raw_parent_coords={i: (i, 0, 0) for i in range(5)},
+                raw_child_offsets={"c0": (0, 5, 0), "c1": (0, 10, 0)},
+                solver_status=SolverStatus.OPTIMAL,
+            )
+
+        with patch(
+            "romutil.layout.milp.cluster.solve_cluster_with_cutting_planes",
+            side_effect=fake_cutting_planes,
+        ):
+            solve_cluster(node=node, child_solutions=c_sols, graph=graph, options=LayoutOptions(timeout_seconds=10))
+
+        # 80 sub-boxes -> n_entities = 5 + max(2, 80 // 4) = 25 -> int(10 * 25 / 20) = 12
+        assert captured_budgets == [12.0]
+
+    def test_solve_cluster_sheared_convergence_caps_below_sub_box_scaled_budget(self) -> None:
+        """solve_cluster preserves caller base_timeout so sheared CONVERGENCE caps below scaled t_cluster."""
+        from romutil.layout.milp.cluster import SolvedClusterExtraction
+
+        node = SolveTreeNode(
+            node_id="sb_sheared_cap",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset(range(1, 11)),
+            children=(
+                SolveTreeNode(
+                    node_id="c0",
+                    node_type=TreeNodeType.SERIES_LOOP,
+                    rooms=frozenset({100}),
+                    metadata={"cut_type": CutType.SPLIT_PAIR, "poles": (1, 2), "cut_contract": SplitPairCut(poles=(1, 2))},
+                ),
+                SolveTreeNode(node_id="c1", node_type=TreeNodeType.RIGID_CLUSTER, rooms=frozenset({101})),
+            ),
+        )
+        c0_sbs = tuple(BoundingBox3D(i * 2, i * 2, 10, 10, 0, 0) for i in range(140))
+        c1_sbs = tuple(BoundingBox3D(i * 2, i * 2, 20, 20, 0, 0) for i in range(140))
+        c_sols = {
+            "c0": NodeSolution(
+                "c0",
+                {100: Coord3D(0, 10, 0)},
+                port_coordinates={1: Coord3D(0, 0, 0), 2: Coord3D(2, 0, 0)},
+                sub_boxes=c0_sbs,
+            ),
+            "c1": NodeSolution("c1", {101: Coord3D(0, 20, 0)}, sub_boxes=c1_sbs),
+        }
+        graph = _make_graph([*range(1, 11), 100, 101], [(1, 2, Direction.east, 1)])
+        clean_ext = SolvedClusterExtraction(
+            raw_parent_coords={i: (i, 0, 0) for i in range(1, 11)},
+            raw_child_offsets={"c0": (0, 0, 0), "c1": (0, 30, 0)},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        recorded_timeouts: list[int] = []
+
+        def mock_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            recorded_timeouts.append(kwargs["options"].timeout_seconds)
+            if len(recorded_timeouts) == 1:
+                raise LayoutInfeasibleError("Trigger shear unlock mid-solve")
+            return clean_ext
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 1.0, 2.0]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            solve_cluster(
+                node=node,
+                child_solutions=c_sols,
+                graph=graph,
+                options=LayoutOptions(timeout_seconds=10, max_solutions=1),
+            )
+
+        # n_sub_boxes=280 -> n_entities=10 + 70 = 80 -> t_cluster = 40s (rem=39, 38).
+        # Caller base_timeout=10s is preserved so sheared CONVERGENCE caps at max(30, 10) = 30s < 38s.
+        assert recorded_timeouts == [39, 39, 30]

@@ -18,17 +18,25 @@ from romutil.layout.ir import (
     TreeNodeType,
     TreeSolution,
 )
-from romutil.layout.milp.cluster import solve_cluster
+from romutil.layout.milp.cluster import (
+    compute_adaptive_cluster_timeout,
+    solve_cluster,
+    solve_cluster_with_cutting_planes,
+)
+from romutil.layout.milp.constraints import add_disjunctive_box_separation
+from romutil.layout.milp.formulation import formulate_cluster_model
 from romutil.layout.milp.inventory import (
     _collect_extended_footprints,
     _expand_room_cells,
     get_child_boundary_ports,
     get_child_coordinate,
+    inventory_cluster,
 )
+from romutil.layout.milp.normalization import normalize_cluster_solution
 from romutil.layout.protocols import TreeSolver
 from romutil.layout.simplification.warps import direction_to_displacement
 from romutil.models import Direction, Room
-from romutil.types import Coord3D, LayoutOptions, SolverStatus
+from romutil.types import Coord3D, LayoutOptions, LayoutSolverError, SolverStatus
 
 _MAX_DYNAMIC_BRIDGE_SPLIT_DEPTH = 4
 
@@ -76,6 +84,54 @@ def _ray_hits_box(
         return max_y > origin.y and min_x <= origin.x <= max_x
     if ry < 0:
         return min_y < origin.y and min_x <= origin.x <= max_x
+    return False
+
+
+def _ray_hits_box_with_extent(
+    origin: Coord3D,
+    ext: tuple[int, int],
+    direction: tuple[int, int, int],
+    box: tuple[int, int, int, int, int, int],
+) -> bool:
+    """Return True if the open planar cardinal ray past anchor extent intersects box."""
+    rx, ry, _rz = direction
+    lo, hi = ext
+    min_x, max_x, min_y, max_y, min_z, max_z = box
+    if not (min_z <= origin.z <= max_z):
+        return False
+    if rx > 0:
+        return max_x > origin.x + hi and max_y >= origin.y - lo and min_y <= origin.y + hi
+    if rx < 0:
+        return min_x < origin.x - lo and max_y >= origin.y - lo and min_y <= origin.y + hi
+    if ry > 0:
+        return max_y > origin.y + hi and max_x >= origin.x - lo and min_x <= origin.x + hi
+    if ry < 0:
+        return min_y < origin.y - lo and max_x >= origin.x - lo and min_x <= origin.x + hi
+    return False
+
+
+def _ray_continues_beyond_neighbor(
+    anchor_vnum: int,
+    direction: tuple[int, int, int],
+    subtree_rooms: set[int],
+    graph: LayoutGraph,
+) -> bool:
+    """Return True if an outward neighbor along direction continues further along the same ray."""
+    for edge in graph.edges:
+        if edge.cut:
+            continue
+        nbr: int | None = None
+        if edge.src == anchor_vnum and edge.dst not in subtree_rooms:
+            if _safe_displacement(edge.direction) == direction:
+                nbr = edge.dst
+        elif edge.dst == anchor_vnum and edge.src not in subtree_rooms:
+            ed = _safe_displacement(edge.direction)
+            if ed is not None and (-ed[0], -ed[1], -ed[2]) == direction:
+                nbr = edge.src
+        if nbr is not None and _has_uncut_outward_edge_in_direction(
+            nbr, direction, subtree_rooms | {anchor_vnum}, graph
+        ):
+            return True
     return False
 
 
@@ -253,6 +309,7 @@ def _try_detach_articulation_ray_blocking_subchild(
             continue
         if sc.node_id in sibling_connected:
             continue
+        sc_disp = _safe_displacement(sc.cut_contract.direction)
         off = _as_coord3d(child_offsets.get(sc.node_id))
         for sb in child_sub_boxes.get(sc.node_id, ()):
             box = (
@@ -263,7 +320,16 @@ def _try_detach_articulation_ray_blocking_subchild(
                 off.z + sb.min_z,
                 off.z + sb.max_z,
             )
-            if any(_ray_hits_box(origin, direction, box) for direction in out_dirs):
+            if any(
+                _ray_hits_box(origin, direction, box)
+                and not (
+                    sc_disp is not None
+                    and sc_disp[2] == 0
+                    and (sc_disp[0] * direction[0] + sc_disp[1] * direction[1]) != 0
+                    and _ray_continues_beyond_neighbor(anchor_vnum, direction, subtree_rooms, graph)
+                )
+                for direction in out_dirs
+            ):
                 base_node = SolveTreeNode(
                     node_id=f"{child.node_id}__base",
                     node_type=child.node_type,
@@ -273,6 +339,202 @@ def _try_detach_articulation_ray_blocking_subchild(
                 )
                 return base_node, sc
     return None
+
+
+_RAY_ALLOWED_DIRS: dict[tuple[int, int, int], tuple[str, ...]] = {
+    (1, 0, 0): ("l", "a", "b", "u", "d"),
+    (-1, 0, 0): ("r", "a", "b", "u", "d"),
+    (0, 1, 0): ("r", "l", "b", "u", "d"),
+    (0, -1, 0): ("r", "l", "a", "u", "d"),
+}
+
+
+def _try_resolve_articulation_ray_blockage(
+    node: SolveTreeNode,
+    node_sol: NodeSolution,
+    child_solutions_map: Mapping[str, NodeSolution],
+    graph: LayoutGraph,
+    options: LayoutOptions | None,
+    solver_name: str = "cbc",
+) -> NodeSolution | None:
+    """Re-solve an ArticulationPointCut cluster with semi-infinite open-ray clearance."""
+    contract = node.cut_contract
+    if not isinstance(contract, ArticulationPointCut):
+        return None
+    if _try_detach_articulation_ray_blocking_subchild(node, node_sol, graph) is not None:
+        return None
+
+    anchor = contract.anchor_vnum
+    origin = get_child_coordinate(node_sol, anchor)
+    if origin is None:
+        return None
+
+    subtree_rooms = _collect_subtree_rooms(node)
+    out_dirs = [
+        d
+        for d in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0))
+        if _has_uncut_outward_edge_in_direction(anchor, d, subtree_rooms, graph)
+    ]
+    if not out_dirs:
+        return None
+
+    _cu, _rs, room_extents = _collect_extended_footprints(graph, options)
+    anchor_ext = room_extents.get(anchor, (0, 0))
+    child_offsets = node_sol.metadata.get("child_offsets", {})
+    child_sub_boxes = node_sol.metadata.get("child_sub_boxes", {})
+
+    blocked_dirs: list[tuple[int, int, int]] = []
+    for d in out_dirs:
+        is_blocked = False
+        for r_vnum, pt in node_sol.local_coordinates.items():
+            if r_vnum == anchor:
+                continue
+            r_lo, r_hi = room_extents.get(r_vnum, (0, 0))
+            r_box = (pt.x - r_lo, pt.x + r_hi, pt.y - r_lo, pt.y + r_hi, pt.z, pt.z)
+            if _ray_hits_box_with_extent(origin, anchor_ext, d, r_box):
+                is_blocked = True
+                break
+
+        if not is_blocked:
+            for edge in graph.edges:
+                if edge.cut:
+                    continue
+                if (
+                    edge.src in node.rooms
+                    and edge.dst in node.rooms
+                    and edge.src != anchor
+                    and edge.dst != anchor
+                ):
+                    p1 = node_sol.local_coordinates.get(edge.src)
+                    p2 = node_sol.local_coordinates.get(edge.dst)
+                    if p1 is not None and p2 is not None:
+                        e_box = (
+                            min(p1.x, p2.x),
+                            max(p1.x, p2.x),
+                            min(p1.y, p2.y),
+                            max(p1.y, p2.y),
+                            min(p1.z, p2.z),
+                            max(p1.z, p2.z),
+                        )
+                        if _ray_hits_box_with_extent(origin, anchor_ext, d, e_box):
+                            is_blocked = True
+                            break
+
+        if not is_blocked:
+            for cid, sbs in child_sub_boxes.items():
+                off = _as_coord3d(child_offsets.get(cid))
+                for sb in sbs:
+                    sb_box = (
+                        off.x + sb.min_x,
+                        off.x + sb.max_x,
+                        off.y + sb.min_y,
+                        off.y + sb.max_y,
+                        off.z + sb.min_z,
+                        off.z + sb.max_z,
+                    )
+                    if _ray_hits_box_with_extent(origin, anchor_ext, d, sb_box):
+                        is_blocked = True
+                        break
+                if is_blocked:
+                    break
+
+        if is_blocked:
+            blocked_dirs.append(d)
+
+    if not blocked_dirs:
+        return None
+
+    inv = inventory_cluster(
+        node=node,
+        child_solutions=child_solutions_map,
+        graph=graph,
+        options=options,
+        boundary_ports=frozenset(get_child_boundary_ports(node)),
+    )
+    n_sub_boxes = sum(len(sbs) for sbs in inv.child_sub_boxes.values())
+    t_cluster = compute_adaptive_cluster_timeout(node, options, n_sub_boxes=n_sub_boxes)
+    form = formulate_cluster_model(inv, options)
+    if anchor not in form.local_rooms:
+        return None
+
+    ax, ay, az = form.get_point(anchor)
+    lo, hi = inv.room_extents.get(anchor, (0, 0))
+
+    def get_ray_box(d: tuple[int, int, int]) -> tuple[Any, Any, Any, Any, Any, Any]:
+        if d == (1, 0, 0):
+            return (ax + hi + 1, form.m_coord, ay - lo, ay + hi, az, az)
+        if d == (-1, 0, 0):
+            return (-form.m_coord, ax - lo - 1, ay - lo, ay + hi, az, az)
+        if d == (0, 1, 0):
+            return (ax - lo, ax + hi, ay + hi + 1, form.m_coord, az, az)
+        return (ax - lo, ax + hi, -form.m_coord, ay - lo - 1, az, az)
+
+    room_pairs = [(u, d) for u in form.local_rooms if u != anchor for d in blocked_dirs]
+    sb_pairs = [
+        ((sc.node_id, k), d)
+        for sc in inv.children
+        for k in range(len(inv.child_sub_boxes.get(sc.node_id, ())))
+        for d in blocked_dirs
+    ]
+    corr_pairs = [
+        (idx, d)
+        for idx, ae in enumerate(inv.active_edges)
+        if anchor not in ae.associated_rooms
+        and ae.src != anchor
+        and ae.dst != anchor
+        and sum(1 for c in ae.direction if c != 0) == 1
+        for d in blocked_dirs
+    ]
+
+    add_disjunctive_box_separation(
+        model=form.model,
+        pairs=room_pairs,
+        get_box_a=form.get_room_box,
+        get_box_b=get_ray_box,
+        prefix="ray_room",
+        m_big=form.m_big,
+        allowed_directions={pair: _RAY_ALLOWED_DIRS[pair[1]] for pair in room_pairs},
+    )
+    add_disjunctive_box_separation(
+        model=form.model,
+        pairs=sb_pairs,
+        get_box_a=form.get_child_sub_box,
+        get_box_b=get_ray_box,
+        prefix="ray_sb",
+        m_big=form.m_big,
+        allowed_directions={pair: _RAY_ALLOWED_DIRS[pair[1]] for pair in sb_pairs},
+    )
+    add_disjunctive_box_separation(
+        model=form.model,
+        pairs=corr_pairs,
+        get_box_a=lambda idx: form.get_corridor_envelope_box(inv.active_edges[idx], interior=False),
+        get_box_b=get_ray_box,
+        prefix="ray_corr",
+        m_big=form.m_big,
+        allowed_directions={pair: _RAY_ALLOWED_DIRS[pair[1]] for pair in corr_pairs},
+    )
+
+    try:
+        extraction = solve_cluster_with_cutting_planes(
+            formulation=form,
+            node=node,
+            options=options,
+            solver_name=solver_name,
+            total_cluster_budget=float(t_cluster),
+        )
+    except LayoutSolverError:
+        return None
+
+    return normalize_cluster_solution(
+        extraction=extraction,
+        node=node,
+        children=inv.children,
+        child_solutions=child_solutions_map,
+        child_sub_boxes=inv.child_sub_boxes,
+        active_edges=inv.active_edges,
+        graph=graph,
+        room_extents=inv.room_extents,
+    )
 
 
 def _try_split_ray_blocked_child(
@@ -737,6 +999,24 @@ class HierarchicalTreeSolver(TreeSolver):
                 child_sol = _solve_node(child, g)
                 child_solutions_map[child.node_id] = child_sol
 
+            def _maybe_resolve_rays(
+                target_node: SolveTreeNode,
+                sol: NodeSolution,
+                c_sols: Mapping[str, NodeSolution],
+            ) -> NodeSolution:
+                if isinstance(target_node.cut_contract, ArticulationPointCut):
+                    resolved = _try_resolve_articulation_ray_blockage(
+                        node=target_node,
+                        node_sol=sol,
+                        child_solutions_map=c_sols,
+                        graph=g,
+                        options=options,
+                        solver_name=self.solver_name,
+                    )
+                    if resolved is not None:
+                        return resolved
+                return sol
+
             if node.node_type == TreeNodeType.WORLD_ROOT or not node.children:
                 cluster_sol = solve_cluster(
                     node=node,
@@ -745,6 +1025,7 @@ class HierarchicalTreeSolver(TreeSolver):
                     options=options,
                     solver_name=self.solver_name,
                 )
+                cluster_sol = _maybe_resolve_rays(node, cluster_sol, child_solutions_map)
                 solutions[node.node_id] = cluster_sol
                 return cluster_sol
 
@@ -768,6 +1049,7 @@ class HierarchicalTreeSolver(TreeSolver):
                     options=options,
                     solver_name=self.solver_name,
                 )
+                cluster_sol = _maybe_resolve_rays(node, cluster_sol, child_solutions_map)
                 solutions[node.node_id] = cluster_sol
                 return cluster_sol
 
@@ -778,6 +1060,9 @@ class HierarchicalTreeSolver(TreeSolver):
                 graph=g,
                 options=options,
                 solver_name=self.solver_name,
+            )
+            cluster_sol = _maybe_resolve_rays(
+                effective_node, cluster_sol, effective_child_solutions
             )
 
             updated_meta = dict(cluster_sol.metadata)

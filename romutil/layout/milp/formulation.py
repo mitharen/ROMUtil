@@ -444,6 +444,58 @@ class ClusterFormulation:
                 for var_data in getattr(self.model, attr).values():
                     var_data.unfix()
 
+    def unlock_vertical_transverse_slack(self) -> bool:
+        """Unfix transverse shear slack variables only for vertical (dz != 0) active edges."""
+        vertical_ids = {
+            ae.edge_id
+            for ae in self.inventory.active_edges
+            if ae.direction[2] != 0 and ae.allow_transverse_slack
+        }
+        if not vertical_ids:
+            return False
+        unfixed_any = False
+        for (edge_id, _axis), (sp, sm) in self._edge_transverse_slack.items():
+            if edge_id in vertical_ids and (sp.fixed or sm.fixed):
+                sp.unfix()
+                sm.unfix()
+                unfixed_any = True
+        return unfixed_any
+
+    def enforce_min_transverse_slack(
+        self,
+        min_total: int = 1,
+        *,
+        horizontal_only: bool = False,
+    ) -> bool:
+        """Enforce a minimum total transverse shear slack to prune infeasible zero-shear regions."""
+        if horizontal_only:
+            horiz_ids = {
+                ae.edge_id
+                for ae in self.inventory.active_edges
+                if ae.direction[2] == 0 and ae.allow_transverse_slack
+            }
+            svars = [
+                v
+                for (eid, _axis), pair in self._edge_transverse_slack.items()
+                if eid in horiz_ids
+                for v in pair
+            ]
+            cname = "horizontal_transverse_slack_lb"
+        else:
+            svars = [v for pair in self._edge_transverse_slack.values() for v in pair]
+            cname = "transverse_slack_lb"
+
+        if not svars or hasattr(self.model, cname):
+            return False
+        setattr(self.model, cname, pyo.Constraint(expr=sum(svars) >= min_total))
+        return True
+
+    def clear_transverse_slack_lower_bounds(self) -> None:
+        """Remove any temporary transverse slack lower-bound constraints from the model."""
+        for cname in ("transverse_slack_lb", "horizontal_transverse_slack_lb"):
+            if hasattr(self.model, cname):
+                self.model.del_component(cname)
+
     def apply_clearances(self) -> None:
         """Enforce disjunctive Big-M geometric clearance and non-overlap constraints."""
         self.clearance_builder.build()

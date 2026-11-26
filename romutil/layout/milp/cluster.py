@@ -45,21 +45,25 @@ class ClusterSolvePhase(str, Enum):
 def compute_adaptive_cluster_timeout(
     node: SolveTreeNode,
     options: LayoutOptions | None = None,
+    *,
+    n_sub_boxes: int = 0,
 ) -> int:
     """Compute adaptive solver timeout limit scaled to cluster entity complexity.
 
-    Scales linearly with the total count of constituent rooms and child clusters
-    beyond a 20-entity baseline to ensure large composite clusters receive sufficient
-    solver budget for integer convergence.
+    Scales linearly with the total count of constituent rooms and child complexity
+    (taking into account decomposed child sub-box counts) beyond a 20-entity baseline
+    to ensure large composite clusters receive sufficient solver budget for integer
+    convergence.
 
     Args:
         node: SolveTreeNode representing the cluster to lay out.
         options: Optional layout configuration parameters containing base timeout.
+        n_sub_boxes: Total count of decomposed child keep-out sub-boxes in the cluster.
 
     Returns:
         Adaptive timeout duration in seconds.
     """
-    n_entities = len(node.rooms) + len(node.children)
+    n_entities = len(node.rooms) + max(len(node.children), n_sub_boxes // 4)
     base_timeout = (
         options.timeout_seconds
         if options is not None and options.timeout_seconds
@@ -349,10 +353,31 @@ def solve_cluster_with_cutting_planes(
     physical_converged = False
     intermediate_timeouts = 0
 
-    transverse_slack_locked = False
-    if isinstance(formulation, ClusterFormulation) and formulation.has_transverse_slack():
+    has_slack = isinstance(formulation, ClusterFormulation) and formulation.has_transverse_slack()
+    slack_stage = 0 if has_slack else 2
+    if has_slack:
         formulation.lock_transverse_slack()
-        transverse_slack_locked = True
+
+    def _escalate_transverse_slack(*, proven_infeasible: bool = False) -> bool:
+        nonlocal slack_stage
+        if not has_slack or slack_stage >= 2:
+            return False
+        if slack_stage == 0:
+            if proven_infeasible:
+                formulation.enforce_min_transverse_slack(1)
+            if formulation.unlock_vertical_transverse_slack():
+                slack_stage = 1
+                return True
+            formulation.unlock_transverse_slack()
+            slack_stage = 2
+            return True
+        if slack_stage == 1:
+            if proven_infeasible:
+                formulation.enforce_min_transverse_slack(1, horizontal_only=True)
+            formulation.unlock_transverse_slack()
+            slack_stage = 2
+            return True
+        return False
 
     try:
         for iteration in range(max_iterations):
@@ -431,9 +456,7 @@ def solve_cluster_with_cutting_planes(
                         finish_with_incumbent = True
                         phase = ClusterSolvePhase.DONE
                         break
-                    if transverse_slack_locked:
-                        formulation.unlock_transverse_slack()
-                        transverse_slack_locked = False
+                    if _escalate_transverse_slack(proven_infeasible=True):
                         continue
                     raise
                 except LayoutSolverError:
@@ -450,9 +473,7 @@ def solve_cluster_with_cutting_planes(
                         pass_timeout = min(max(1, int(round(rem))), max(pass_timeout * 2, 20))
                         continue
                     if iteration == 0:
-                        if transverse_slack_locked:
-                            formulation.unlock_transverse_slack()
-                            transverse_slack_locked = False
+                        if _escalate_transverse_slack(proven_infeasible=False):
                             continue
                         raise
                     rem = total_cluster_budget - (time.monotonic() - t_start)
@@ -465,9 +486,7 @@ def solve_cluster_with_cutting_planes(
                         raise
                     next_timeout = min(max(1, int(round(rem))), max(pass_timeout * 2, 30))
                     if pass_timeout >= int(round(rem)) or next_timeout <= pass_timeout:
-                        if transverse_slack_locked:
-                            formulation.unlock_transverse_slack()
-                            transverse_slack_locked = False
+                        if _escalate_transverse_slack(proven_infeasible=False):
                             pass_timeout = min(pass_timeout, max(1, int(round(rem))))
                             continue
                         raise
@@ -542,9 +561,7 @@ def solve_cluster_with_cutting_planes(
                         extraction = verified_incumbent
                         phase = ClusterSolvePhase.DONE
                         break
-                    if transverse_slack_locked:
-                        formulation.unlock_transverse_slack()
-                        transverse_slack_locked = False
+                    if _escalate_transverse_slack(proven_infeasible=False):
                         continue
                     if iteration > 0 and intermediate_timeout < remaining_budget - 1.0:
                         intermediate_timeout = remaining_budget
@@ -587,12 +604,17 @@ def solve_cluster_with_cutting_planes(
                         remaining_budget = total_cluster_budget - (time.monotonic() - t_start)
                         if remaining_budget >= 1.0:
                             try:
+                                conv_budget = (
+                                    min(remaining_budget, max(30.0, base_timeout))
+                                    if (has_slack and slack_stage > 0)
+                                    else remaining_budget
+                                )
                                 conv_extraction = _run_convergence_solve(
                                     formulation=formulation,
                                     options=options,
                                     solver_name=solver_name,
                                     ratio_gap=ratio_gap,
-                                    remaining_budget=remaining_budget,
+                                    remaining_budget=conv_budget,
                                 )
                                 conv_physical, conv_crossings, conv_compacted = (
                                     _detect_and_partition_violations(formulation, conv_extraction)
@@ -674,12 +696,17 @@ def solve_cluster_with_cutting_planes(
             remaining_budget = total_cluster_budget - elapsed
             if remaining_budget >= 1.0:
                 try:
+                    conv_budget = (
+                        min(remaining_budget, max(30.0, base_timeout))
+                        if (has_slack and slack_stage > 0)
+                        else remaining_budget
+                    )
                     final_extraction = _run_convergence_solve(
                         formulation=formulation,
                         options=options,
                         solver_name=solver_name,
                         ratio_gap=ratio_gap,
-                        remaining_budget=remaining_budget,
+                        remaining_budget=conv_budget,
                     )
                     final_physical, final_crossings, final_compacted = (
                         _detect_and_partition_violations(formulation, final_extraction)
@@ -773,8 +800,10 @@ def solve_cluster_with_cutting_planes(
                     f"MILP solver failed to resolve all geometric collisions within {max_iterations} iterations for cluster '{node.node_id}'."
                 )
     finally:
-        if transverse_slack_locked:
-            formulation.unlock_transverse_slack()
+        if has_slack:
+            formulation.clear_transverse_slack_lower_bounds()
+            if slack_stage < 2:
+                formulation.unlock_transverse_slack()
     return extraction
 
 
@@ -844,30 +873,29 @@ def solve_cluster(
             is_boundary_port=False,
         )
 
-    t_cluster = compute_adaptive_cluster_timeout(node, options)
-    if options is not None:
-        cluster_options = replace(options, timeout_seconds=t_cluster)
-    else:
-        cluster_options = LayoutOptions(timeout_seconds=t_cluster)
-
     try:
         # Stage 1: Inventory & Interface Classification
         inventory = inventory_cluster(
             node=node,
             child_solutions=child_solutions,
             graph=graph,
-            options=cluster_options,
+            options=options,
             boundary_ports=boundary_ports,
         )
 
+        n_sub_boxes = sum(len(sbs) for sbs in inventory.child_sub_boxes.values())
+        t_cluster = compute_adaptive_cluster_timeout(
+            node, options, n_sub_boxes=n_sub_boxes
+        )
+
         # Stage 2: Basic MILP Formulation
-        formulation = formulate_cluster_model(inventory=inventory, options=cluster_options)
+        formulation = formulate_cluster_model(inventory=inventory, options=options)
 
         # Stage 3: Iterative Cutting-Plane Clearance & Solve
         extraction = solve_cluster_with_cutting_planes(
             formulation=formulation,
             node=node,
-            options=cluster_options,
+            options=options,
             solver_name=solver_name,
             total_cluster_budget=float(t_cluster),
         )
