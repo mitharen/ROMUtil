@@ -3410,3 +3410,109 @@ class TestFixedShearStretchPolishFormulation:
         assert sp_h.fixed and sm_h.fixed and sp_h.value == 0 and sm_h.value == 0
         # Preserved canonical .value allows model.obj to evaluate stretch + w_transverse * 3
         assert pyo.value(form.model.obj) == pytest.approx(15.0 + form.w_transverse * 3.0)
+
+
+
+class TestTransverseSlackUpperBoundFormulation:
+    """Verify transverse slack upper-bound enforcement, cleanup, and polish suspension."""
+
+    def test_enforce_max_transverse_slack_and_clear_idempotency(self) -> None:
+        """enforce_max_transverse_slack attaches/replaces ub, enforces cap, and clears idempotently."""
+        from romutil.layout.milp.solver import LayoutInfeasibleError
+
+        node_no_slack = SolveTreeNode(
+            node_id="p_no_ub_slack",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+        )
+        ae_rigid = ActiveEdge(
+            edge_id="e_rigid",
+            src=1,
+            dst=2,
+            direction=(1, 0, 0),
+            min_length=1,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+            allow_transverse_slack=False,
+        )
+        inv_no_slack = ClusterInventory(
+            node=node_no_slack,
+            rooms=(1, 2),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(ae_rigid,),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        form_no_slack = ClusterFormulation(inventory=inv_no_slack)
+        assert form_no_slack.enforce_max_transverse_slack(4) is False
+        assert not hasattr(form_no_slack.model, "transverse_slack_ub")
+
+        form = TestFixedShearStretchPolishFormulation._build_mixed_slack_formulation()
+        assert form.enforce_max_transverse_slack(-1) is False
+        assert not hasattr(form.model, "transverse_slack_ub")
+
+        assert form.enforce_max_transverse_slack(4) is True
+        assert hasattr(form.model, "transverse_slack_ub")
+        assert pyo.value(form.model.transverse_slack_ub.upper) == 4
+
+        # Calling again replaces the existing upper bound cleanly
+        assert form.enforce_max_transverse_slack(2) is True
+        assert pyo.value(form.model.transverse_slack_ub.upper) == 2
+
+        assert form.enforce_min_transverse_slack(1) is True
+        solve_and_extract(form, options=LayoutOptions(timeout_seconds=10))
+        total_slack = sum(
+            float(pyo.value(v))
+            for pair in form._edge_transverse_slack.values()
+            for v in pair
+        )
+        assert 1.0 - 1e-6 <= total_slack <= 2.0 + 1e-6
+
+        # Replacing upper bound with 0 while lower bound >= 1 is active renders the model infeasible
+        assert form.enforce_max_transverse_slack(0) is True
+        assert pyo.value(form.model.transverse_slack_ub.upper) == 0
+        with pytest.raises(LayoutInfeasibleError):
+            solve_and_extract(form, options=LayoutOptions(timeout_seconds=10))
+
+        form.clear_transverse_slack_upper_bound()
+        assert not hasattr(form.model, "transverse_slack_ub")
+        # Safe idempotent call when already absent
+        form.clear_transverse_slack_upper_bound()
+        form.clear_transverse_slack_lower_bounds()
+
+    def test_fixed_transverse_slack_stretch_polish_suspends_and_restores_upper_bound(self) -> None:
+        """fixed_transverse_slack_stretch_polish deactivates and restores transverse_slack_ub."""
+        form = TestFixedShearStretchPolishFormulation._build_mixed_slack_formulation()
+        form.lock_transverse_slack()
+        assert form.unlock_vertical_transverse_slack() is True
+        assert form.enforce_max_transverse_slack(4) is True
+
+        # Total canonical shear on e_vert is |2| + |-3| = 5 > 4, requiring ub suspension
+        sheared_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (2, -3, 1), 3: (3, -3, 1)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        with form.fixed_transverse_slack_stretch_polish(sheared_ext) as active:
+            assert active is True
+            assert hasattr(form.model, "transverse_slack_ub")
+            assert not form.model.transverse_slack_ub.active
+            solve_and_extract(form, options=LayoutOptions(timeout_seconds=10))
+
+        assert hasattr(form.model, "transverse_slack_ub")
+        assert form.model.transverse_slack_ub.active
+
+        with pytest.raises(RuntimeError, match="upper bound polish failure"):
+            with form.fixed_transverse_slack_stretch_polish(sheared_ext) as active:
+                assert active is True
+                assert not form.model.transverse_slack_ub.active
+                raise RuntimeError("upper bound polish failure")
+
+        assert form.model.transverse_slack_ub.active
+        assert not hasattr(form.model, "_stretch_polish_obj")
+        assert form.model.obj.active
+        form.clear_transverse_slack_upper_bound()

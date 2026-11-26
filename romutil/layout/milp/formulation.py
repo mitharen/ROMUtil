@@ -503,6 +503,21 @@ class ClusterFormulation:
             if hasattr(self.model, cname):
                 self.model.del_component(cname)
 
+    def enforce_max_transverse_slack(self, max_total: int) -> bool:
+        """Enforce a maximum total transverse shear slack bound across all slack variables."""
+        svars = [v for pair in self._edge_transverse_slack.values() for v in pair]
+        if not svars or max_total < 0:
+            return False
+        if hasattr(self.model, "transverse_slack_ub"):
+            self.model.del_component("transverse_slack_ub")
+        self.model.transverse_slack_ub = pyo.Constraint(expr=sum(svars) <= max_total)
+        return True
+
+    def clear_transverse_slack_upper_bound(self) -> None:
+        """Remove any temporary transverse slack upper-bound constraint from the model."""
+        if hasattr(self.model, "transverse_slack_ub"):
+            self.model.del_component("transverse_slack_ub")
+
     def _compute_canonical_transverse_shear(
         self,
         extraction: SolvedClusterExtraction | None = None,
@@ -562,7 +577,7 @@ class ClusterFormulation:
             return
 
         saved_fixed: list[tuple[Any, bool, Any, bool]] = []
-        deactivated_lbs: list[str] = []
+        deactivated_bounds: list[str] = []
         try:
             for key, (p_val, m_val) in canonical.items():
                 sp, sm = self._edge_transverse_slack[key]
@@ -570,12 +585,16 @@ class ClusterFormulation:
                 sp.fix(p_val)
                 sm.fix(m_val)
 
-            for cname in ("transverse_slack_lb", "horizontal_transverse_slack_lb"):
+            for cname in (
+                "transverse_slack_lb",
+                "horizontal_transverse_slack_lb",
+                "transverse_slack_ub",
+            ):
                 if hasattr(self.model, cname):
                     constr = getattr(self.model, cname)
                     if constr.active:
                         constr.deactivate()
-                        deactivated_lbs.append(cname)
+                        deactivated_bounds.append(cname)
 
             self.model.obj.deactivate()
             self.model._stretch_polish_obj = pyo.Objective(
@@ -588,7 +607,7 @@ class ClusterFormulation:
                 self.model.del_component("_stretch_polish_obj")
             if hasattr(self.model, "obj"):
                 self.model.obj.activate()
-            for cname in deactivated_lbs:
+            for cname in deactivated_bounds:
                 if hasattr(self.model, cname):
                     getattr(self.model, cname).activate()
             for sp, sp_was_fixed, sm, sm_was_fixed in saved_fixed:

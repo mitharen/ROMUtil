@@ -236,6 +236,14 @@ def _has_compacted_crossing(
     return bool(_compacted_crossings(crossings, active_edges))
 
 
+def _extract_scalar_pyomo_value(component: Any) -> float | None:
+    """Return the scalar float value from a Pyomo objective or expression, if available."""
+    val = pyo.value(component, exception=False)
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        return float(val)
+    return None
+
+
 def _extract_objective_value(formulation: Any) -> float | None:
     """Return the scalar objective value from a solved ClusterFormulation, if available."""
     if not isinstance(formulation, ClusterFormulation):
@@ -243,10 +251,7 @@ def _extract_objective_value(formulation: Any) -> float | None:
     model = getattr(formulation, "model", None)
     if model is None or not hasattr(model, "obj"):
         return None
-    val = pyo.value(model.obj, exception=False)
-    if isinstance(val, (int, float)) and not isinstance(val, bool):
-        return float(val)
-    return None
+    return _extract_scalar_pyomo_value(model.obj)
 
 
 def _select_verified_incumbent(
@@ -301,6 +306,214 @@ def _build_cbc_solver_options(ratio_gap: float, threads: int) -> dict[str, Any]:
     }
 
 
+def _snapshot_stretch_vars(formulation: ClusterFormulation) -> dict[str, dict[Any, Any]]:
+    """Snapshot current piecewise-linear stretch variable values from the formulation model."""
+    model = formulation.model
+    snapshot: dict[str, dict[Any, Any]] = {}
+    for name in ("s_stretch_1", "s_stretch_2", "s_stretch_3"):
+        if hasattr(model, name):
+            comp = getattr(model, name)
+            snapshot[name] = {k: pyo.value(v, exception=False) for k, v in comp.items()}
+    return snapshot
+
+
+def _restore_stretch_vars(
+    formulation: ClusterFormulation,
+    snapshot: dict[str, dict[Any, Any]],
+) -> None:
+    """Restore piecewise-linear stretch variable values onto the formulation model."""
+    model = formulation.model
+    for name, values in snapshot.items():
+        if hasattr(model, name):
+            comp = getattr(model, name)
+            for k, val in values.items():
+                if k in comp:
+                    comp[k].set_value(val)
+
+
+def _build_convergence_pass_config(
+    formulation: ClusterFormulation,
+    options: LayoutOptions | None,
+    solver_name: str,
+    timeout_seconds: int,
+    ratio_gap: float,
+    threads: int,
+) -> tuple[LayoutOptions, dict[str, Any] | None, bool]:
+    """Build pass options, solver options, and warmstart flag for a convergence pass."""
+    pass_opts = (
+        replace(options, timeout_seconds=timeout_seconds)
+        if options is not None
+        else LayoutOptions(timeout_seconds=timeout_seconds)
+    )
+    solver_opts = (
+        _build_cbc_solver_options(ratio_gap=ratio_gap, threads=threads)
+        if solver_name == "cbc"
+        else None
+    )
+    warmstart = bool(
+        getattr(options, "warmstart", False)
+        and _has_populated_warmstart_coordinates(formulation)
+    )
+    return pass_opts, solver_opts, warmstart
+
+
+def _evaluate_polish_candidate(
+    formulation: ClusterFormulation,
+    cand: SolvedClusterExtraction,
+) -> tuple[float | None, bool, int]:
+    """Detect violations, extract stretch value, and inject clearance cuts for a polish candidate."""
+    phys, _cross, comp = _detect_and_partition_violations(formulation, cand)
+    st = _extract_scalar_pyomo_value(formulation.model._stretch_polish_obj)
+    if phys or comp:
+        cuts = formulation.clearance_builder.inject_clearance_cuts(
+            [*phys, *comp],
+            extraction=cand if phys else None,
+        )
+        return st, False, cuts
+    return st, True, 0
+
+
+def _run_iterative_fixed_shear_polish(
+    formulation: ClusterFormulation,
+    options: LayoutOptions | None,
+    solver_name: str,
+    ratio_gap: float,
+    remaining_budget: float,
+    reference_extraction: SolvedClusterExtraction,
+    n_entities: int,
+) -> SolvedClusterExtraction:
+    """Clear compact collisions and tighten stretch iteratively inside fixed-shear polish."""
+    with formulation.fixed_transverse_slack_stretch_polish(reference_extraction) as active:
+        if not active:
+            pass_opts, solver_opts, warmstart = _build_convergence_pass_config(
+                formulation=formulation,
+                options=options,
+                solver_name=solver_name,
+                timeout_seconds=max(1, int(round(remaining_budget))),
+                ratio_gap=ratio_gap,
+                threads=min(4, os.cpu_count() or 1),
+            )
+            return solve_and_extract(
+                formulation=formulation,
+                solver_name=solver_name,
+                options=pass_opts,
+                max_solutions=None,
+                solver_options=solver_opts,
+                warmstart=warmstart,
+            )
+
+        t0 = time.monotonic()
+        best_clean: SolvedClusterExtraction | None = None
+        best_clean_stretch: float | None = None
+        best_stretch_snap: dict[str, dict[Any, Any]] | None = None
+        last_is_best = False
+
+        # Phase 1: Fast compact-region clearance inside fixed-shear context (up to 15 passes).
+        threads_fast = 1 if n_entities <= 50 else min(4, os.cpu_count() or 1)
+        fast_timeout = 15.0
+        for _ in range(15):
+            rem = remaining_budget - (time.monotonic() - t0)
+            if rem < 2.0:
+                break
+            pass_to = max(1, int(round(min(rem, fast_timeout))))
+            pass_opts, solver_opts, warmstart = _build_convergence_pass_config(
+                formulation=formulation,
+                options=options,
+                solver_name=solver_name,
+                timeout_seconds=pass_to,
+                ratio_gap=max(ratio_gap, 0.20),
+                threads=threads_fast,
+            )
+            try:
+                cand = solve_and_extract(
+                    formulation=formulation,
+                    solver_name=solver_name,
+                    options=pass_opts,
+                    max_solutions=None,
+                    solver_options=solver_opts,
+                    warmstart=warmstart,
+                )
+            except LayoutInfeasibleError:
+                last_is_best = False
+                break
+            except LayoutSolverError:
+                last_is_best = False
+                rem_after = remaining_budget - (time.monotonic() - t0)
+                if rem_after >= 2.0 and pass_to < int(round(rem)):
+                    fast_timeout = min(rem_after, max(fast_timeout * 2.0, 30.0))
+                    continue
+                break
+
+            st, is_clean, cuts = _evaluate_polish_candidate(formulation, cand)
+            if not is_clean:
+                last_is_best = False
+                if cuts == 0:
+                    break
+                continue
+
+            best_clean = cand
+            best_clean_stretch = st
+            best_stretch_snap = _snapshot_stretch_vars(formulation)
+            last_is_best = True
+            break
+
+        # Phase 2: Tight convergence at target ratio_gap (up to 5 passes).
+        if best_clean is not None and not (
+            best_clean.solver_status == SolverStatus.OPTIMAL and ratio_gap >= 0.20
+        ):
+            threads_final = min(4, os.cpu_count() or 1)
+            for _ in range(5):
+                rem = remaining_budget - (time.monotonic() - t0)
+                if rem < 2.0:
+                    break
+                pass_to = max(1, int(round(rem)))
+                pass_opts, solver_opts, warmstart = _build_convergence_pass_config(
+                    formulation=formulation,
+                    options=options,
+                    solver_name=solver_name,
+                    timeout_seconds=pass_to,
+                    ratio_gap=ratio_gap,
+                    threads=threads_final,
+                )
+                try:
+                    cand = solve_and_extract(
+                        formulation=formulation,
+                        solver_name=solver_name,
+                        options=pass_opts,
+                        max_solutions=None,
+                        solver_options=solver_opts,
+                        warmstart=warmstart,
+                    )
+                except LayoutSolverError:
+                    last_is_best = False
+                    break
+
+                st, is_clean, cuts = _evaluate_polish_candidate(formulation, cand)
+                if not is_clean:
+                    last_is_best = False
+                    if cuts == 0:
+                        break
+                    continue
+
+                if best_clean_stretch is None or (st is not None and st <= best_clean_stretch):
+                    best_clean = cand
+                    best_clean_stretch = st
+                    best_stretch_snap = _snapshot_stretch_vars(formulation)
+                    last_is_best = True
+                else:
+                    last_is_best = False
+                break
+
+        if best_clean is not None and not last_is_best and best_stretch_snap is not None:
+            _restore_stretch_vars(formulation, best_stretch_snap)
+
+    if best_clean is None:
+        raise LayoutSolverError(
+            "Fixed-shear stretch polish did not find a clean candidate within budget."
+        )
+    return best_clean
+
+
 def _run_convergence_solve(
     formulation: ClusterFormulation,
     options: LayoutOptions | None,
@@ -310,23 +523,26 @@ def _run_convergence_solve(
     reference_extraction: SolvedClusterExtraction | None = None,
 ) -> SolvedClusterExtraction:
     """Execute a full-budget convergence MILP pass warm-started from current coordinates."""
-    conv_timeout = max(1, int(round(remaining_budget)))
-    conv_options = (
-        replace(options, timeout_seconds=conv_timeout)
-        if options is not None
-        else LayoutOptions(timeout_seconds=conv_timeout)
-    )
-    conv_solver_options = (
-        _build_cbc_solver_options(
-            ratio_gap=ratio_gap,
-            threads=min(4, os.cpu_count() or 1),
-        )
-        if solver_name == "cbc"
-        else {}
-    )
-    conv_warmstart = (
-        getattr(options, "warmstart", False)
-        and _has_populated_warmstart_coordinates(formulation)
+    if isinstance(formulation, ClusterFormulation) and reference_extraction is not None:
+        n_entities = len(formulation.inventory.rooms) + len(formulation.inventory.children)
+        if n_entities > 20 and formulation.has_nonzero_transverse_shear(reference_extraction):
+            return _run_iterative_fixed_shear_polish(
+                formulation=formulation,
+                options=options,
+                solver_name=solver_name,
+                ratio_gap=ratio_gap,
+                remaining_budget=remaining_budget,
+                reference_extraction=reference_extraction,
+                n_entities=n_entities,
+            )
+
+    conv_opts, conv_solver_options, conv_warmstart = _build_convergence_pass_config(
+        formulation=formulation,
+        options=options,
+        solver_name=solver_name,
+        timeout_seconds=max(1, int(round(remaining_budget))),
+        ratio_gap=ratio_gap,
+        threads=min(4, os.cpu_count() or 1),
     )
     polish_ctx: AbstractContextManager[Any] = (
         formulation.fixed_transverse_slack_stretch_polish(reference_extraction)
@@ -337,9 +553,9 @@ def _run_convergence_solve(
         return solve_and_extract(
             formulation=formulation,
             solver_name=solver_name,
-            options=conv_options,
+            options=conv_opts,
             max_solutions=None,
-            solver_options=conv_solver_options if conv_solver_options else None,
+            solver_options=conv_solver_options,
             warmstart=conv_warmstart,
         )
 
@@ -378,16 +594,24 @@ def solve_cluster_with_cutting_planes(
          early solution limits. On sheared clusters with unfixed nonzero transverse shear, both
          pre-unit-crossing and final CONVERGENCE passes apply lexicographic fixed-shear pure-stretch
          polishing via ``ClusterFormulation.fixed_transverse_slack_stretch_polish``, temporarily
-         locking unfixed transverse slack variables to canonical integer shear and minimizing pure
-         ``stretch_expr`` so ``w_transverse`` does not swamp ``ratio_gap`` (restoring ``model.obj``,
-         slack lower bounds, and unfixed states afterward). If violations reappear during
-         convergence, falls back to the appropriate clearance phase.
+         locking unfixed transverse slack variables to canonical integer shear, deactivating slack
+         lower and upper bounds, and minimizing pure ``stretch_expr`` so ``w_transverse`` does not
+         swamp ``ratio_gap`` (restoring ``model.obj``, slack bounds, and unfixed states afterward).
+         On large sheared clusters (``> 20`` entities), convergence delegates to iterative
+         fixed-shear polishing that clears compact physical and mandatory-crossing collisions inside
+         the fixed-shear context before tightening to ``ratio_gap``, snapshotting and restoring
+         stretch variables when tightening does not improve or encounters collisions. If violations
+         reappear during convergence, falls back to the appropriate clearance phase.
       4. DONE: Reached when an extraction is verified clean or a verified clean/physical
          incumbent is preserved under budget exhaustion or non-planar unit-edge crossings.
 
-    For medium clusters (``<= 50`` entities), intermediate CBC cutting-plane passes run
-    single-threaded to reduce multi-threaded branch-and-bound overhead, while Pass 0,
-    CONVERGENCE, and larger clusters use up to 4 threads. When
+    For large clusters (``> 20`` entities), Stage-1 vertical transverse shear escalation initially
+    caps total transverse slack to ``4 * coord_unit`` via ``enforce_max_transverse_slack`` to
+    prevent large-shear branch-and-bound thrashing, relaxing via
+    ``clear_transverse_slack_upper_bound`` to unbounded Stage 1 before ever adding
+    ``horizontal_transverse_slack_lb`` or escalating to Stage 2. For medium clusters (``<= 50``
+    entities), intermediate CBC cutting-plane passes run single-threaded to reduce multi-threaded
+    branch-and-bound overhead, while Pass 0, CONVERGENCE, and larger clusters use up to 4 threads. When
     ``options.intermediate_ratio_gap`` is unspecified on ``> 20``-entity clusters, the
     intermediate ``ratioGap`` adaptively relaxes after intermediate ``TIMEOUT`` extractions
     (``0.20 -> 0.50 -> 0.80``) while keeping ``ratio_gap`` on Pass 0 and CONVERGENCE. When an
@@ -463,11 +687,12 @@ def solve_cluster_with_cutting_planes(
 
     has_slack = isinstance(formulation, ClusterFormulation) and formulation.has_transverse_slack()
     slack_stage = 0 if has_slack else 2
+    stage1_shear_cap_active = False
     if has_slack:
         formulation.lock_transverse_slack()
 
     def _escalate_transverse_slack(*, proven_infeasible: bool = False) -> bool:
-        nonlocal slack_stage
+        nonlocal slack_stage, stage1_shear_cap_active
         if not has_slack or slack_stage >= 2:
             return False
         if slack_stage == 0:
@@ -475,11 +700,18 @@ def solve_cluster_with_cutting_planes(
                 formulation.enforce_min_transverse_slack(1)
             if formulation.unlock_vertical_transverse_slack():
                 slack_stage = 1
+                if n_entities > 20:
+                    coord_unit = max(1, int(getattr(formulation.inventory, "coord_unit", 1)))
+                    stage1_shear_cap_active = formulation.enforce_max_transverse_slack(4 * coord_unit)
                 return True
             formulation.unlock_transverse_slack()
             slack_stage = 2
             return True
         if slack_stage == 1:
+            if stage1_shear_cap_active:
+                formulation.clear_transverse_slack_upper_bound()
+                stage1_shear_cap_active = False
+                return True
             if proven_infeasible:
                 formulation.enforce_min_transverse_slack(1, horizontal_only=True)
             formulation.unlock_transverse_slack()
@@ -933,6 +1165,7 @@ def solve_cluster_with_cutting_planes(
     finally:
         if has_slack:
             formulation.clear_transverse_slack_lower_bounds()
+            formulation.clear_transverse_slack_upper_bound()
             if slack_stage < 2:
                 formulation.unlock_transverse_slack()
     return extraction
