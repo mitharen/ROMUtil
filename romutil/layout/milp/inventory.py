@@ -198,6 +198,14 @@ def get_child_contract_interface_rooms(child: SolveTreeNode) -> set[int]:
         raw_anchor = child.metadata.get("anchor_vnum")
         if raw_anchor is not None:
             ports.add(int(raw_anchor))
+
+    if "boundary_ports" in child.metadata:
+        for p in child.metadata["boundary_ports"]:
+            ports.add(int(p))
+    contract_ports = getattr(child.cut_contract, "boundary_ports", None)
+    if contract_ports:
+        for p in contract_ports:
+            ports.add(int(p))
     return ports
 
 
@@ -1083,6 +1091,96 @@ class GatewayCutHandler:
 
         return active_edges, gateway_anchors, new_aligned
 
+    def _process_severed_gateway_edges(
+        self,
+    ) -> tuple[list[ActiveEdge], dict[str, set[int]], set[str]]:
+        """Build gateway active edges for severed edges touching parent or external port rooms."""
+        active_edges: list[ActiveEdge] = []
+        gateway_anchors: dict[str, set[int]] = {c.node_id: set() for c in self.children}
+        new_aligned: set[str] = set()
+
+        severed_pairs: set[frozenset[int]] = set()
+        for raw_e in self.node.metadata.get("severed_bridge_edges", ()):
+            severed_pairs.add(frozenset(raw_e))
+        for child in self.children:
+            for raw_e in child.metadata.get("severed_bridge_edges", ()):
+                severed_pairs.add(frozenset(raw_e))
+
+        if not severed_pairs:
+            return active_edges, gateway_anchors, new_aligned
+
+        child_owned: dict[str, set[int]] = {}
+        for child in self.children:
+            c_sol = self.child_solutions.get(child.node_id)
+            if not c_sol:
+                continue
+            c_all_coords = get_all_child_coordinates(c_sol)
+            ext_anchors: set[int] = set()
+            contract = child.cut_contract
+            if isinstance(contract, SplitPairCut):
+                ext_anchors.update(contract.poles)
+            elif isinstance(contract, (ArticulationPointCut, BridgeCut)):
+                anc = getattr(contract, "anchor_vnum", None)
+                if anc is not None and anc not in c_sol.local_coordinates:
+                    ext_anchors.add(int(anc))
+            child_owned[child.node_id] = {
+                r
+                for r in c_all_coords
+                if r not in self.room_set and r not in ext_anchors
+            }
+
+        for edge in self.graph.edges:
+            if edge.cut:
+                continue
+            edge_pair = frozenset({edge.src, edge.dst})
+            if edge_pair not in severed_pairs or edge_pair in self.seen_edges:
+                continue
+            try:
+                disp = direction_to_displacement(edge.direction)
+            except ValueError:
+                continue
+
+            for child in self.children:
+                owned = child_owned.get(child.node_id)
+                if not owned:
+                    continue
+                if edge.src in self.room_set and edge.dst in owned:
+                    self.seen_edges.add(edge_pair)
+                    active_edges.append(
+                        ActiveEdge(
+                            edge_id=f"gw_{child.node_id}_{edge.src}_{edge.dst}",
+                            src=edge.src,
+                            dst=(child.node_id, edge.dst),
+                            direction=disp,
+                            min_length=max(1, edge.weight),
+                            associated_rooms=frozenset({edge.src}),
+                            associated_children=frozenset({child.node_id}),
+                            allow_transverse_slack=True,
+                        )
+                    )
+                    gateway_anchors[child.node_id].add(edge.src)
+                    new_aligned.add(child.node_id)
+                    break
+                if edge.dst in self.room_set and edge.src in owned:
+                    self.seen_edges.add(edge_pair)
+                    active_edges.append(
+                        ActiveEdge(
+                            edge_id=f"gw_{child.node_id}_{edge.src}_{edge.dst}",
+                            src=(child.node_id, edge.src),
+                            dst=edge.dst,
+                            direction=disp,
+                            min_length=max(1, edge.weight),
+                            associated_rooms=frozenset({edge.dst}),
+                            associated_children=frozenset({child.node_id}),
+                            allow_transverse_slack=True,
+                        )
+                    )
+                    gateway_anchors[child.node_id].add(edge.dst)
+                    new_aligned.add(child.node_id)
+                    break
+
+        return active_edges, gateway_anchors, new_aligned
+
     def process(
         self,
         aligned_children: set[str] | None = None,
@@ -1102,17 +1200,20 @@ class GatewayCutHandler:
         brg_edges, gw_anchors_brg, brg_aligned = self.process_doorway_bridges(
             aligned_children=combined_aligned,
         )
-        edges = [*art_edges, *brg_edges]
+        sev_edges, gw_anchors_sev, sev_aligned = self._process_severed_gateway_edges()
+        edges = [*art_edges, *brg_edges, *sev_edges]
         all_gw_anchors: dict[str, set[int]] = {c.node_id: set() for c in self.children}
         for k, v in gw_anchors_art.items():
             all_gw_anchors[k].update(v)
         for k, v in gw_anchors_brg.items():
             all_gw_anchors[k].update(v)
+        for k, v in gw_anchors_sev.items():
+            all_gw_anchors[k].update(v)
 
         return GatewayCutResult(
             active_edges=tuple(edges),
             gateway_anchors={k: frozenset(v) for k, v in all_gw_anchors.items()},
-            aligned_children=frozenset(art_aligned | brg_aligned),
+            aligned_children=frozenset(art_aligned | brg_aligned | sev_aligned),
             equated_children=frozenset(equated),
         )
 
@@ -1126,12 +1227,16 @@ class InterChildBridgeHandler:
         child_solutions: Mapping[str, NodeSolution],
         graph: LayoutGraph,
         seen_edges: set[frozenset[int]] | None = None,
+        all_local_rooms: frozenset[int] | None = None,
     ) -> None:
         self.node = node
         self.child_solutions = child_solutions
         self.graph = graph
         self.children = tuple(node.children)
         self.seen_edges = seen_edges if seen_edges is not None else set()
+        self.all_local_rooms = (
+            all_local_rooms if all_local_rooms is not None else frozenset(node.rooms)
+        )
 
     def process(
         self,
@@ -1166,8 +1271,8 @@ class InterChildBridgeHandler:
                 for edge in child.metadata["severed_bridge_edges"]:
                     severed_bridge_edges.add(frozenset(edge))
 
-        # Build map of available interface coordinates for each child (excluding parent rooms)
-        parent_rooms = set(self.node.rooms)
+        # Build map of available interface coordinates for each child (excluding parent and external port rooms)
+        parent_rooms = set(self.all_local_rooms)
         child_coords: dict[str, dict[int, Coord3D]] = {}
         for child in self.children:
             cid = child.node_id
@@ -1278,8 +1383,6 @@ class InterChildBridgeHandler:
                 for c1_id in room_to_children[u]:
                     for c2_id in room_to_children[v]:
                         if c1_id == c2_id:
-                            continue
-                        if frozenset({c1_id, c2_id}) in equated_children:
                             continue
                         bridge_key = frozenset({(c1_id, u), (c2_id, v)})
                         if bridge_key in seen_bridges:
@@ -1566,8 +1669,6 @@ def inventory_cluster(
     coord_unit, room_scales, room_extents = _collect_extended_footprints(graph, options)
 
     aligned_children: set[str] = set()
-    if not rooms and child_ids:
-        aligned_children.add(child_ids[0])
 
     gateway_anchors: dict[str, set[int]] = {c.node_id: set() for c in children}
     room_anchored_children: dict[int, list[str]] = {}
@@ -1580,6 +1681,8 @@ def inventory_cluster(
 
     external_ports = {p for p in boundary_ports if p not in child_strictly_interior}
     all_local_rooms = frozenset(rooms) | external_ports
+    if not all_local_rooms and child_ids:
+        aligned_children.add(child_ids[0])
 
     seen_edges: set[frozenset[int]] = set()
 
@@ -1630,6 +1733,7 @@ def inventory_cluster(
         child_solutions=child_solutions,
         graph=graph,
         seen_edges=seen_edges,
+        all_local_rooms=all_local_rooms,
     )
     bridge_res = bridge_handler.process(
         aligned_children=aligned_children,
