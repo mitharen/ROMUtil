@@ -201,24 +201,25 @@ flowchart LR
 
 #### Stage 1: Ingestion (`LayoutGraph`)
 - Ingests immutable `WorldGraph` records into internal `LayoutGraph`.
-- Extracts topological edges `LayoutEdge(src, dst, direction, weight=1, cut=False)` while preserving original exit metadata.
-- Filters or encapsulates out-of-area exits without introducing floating decision variables.
+- Extracts topological edges `LayoutEdge(src, dst, direction, weight=1, cut=False)` while filtering out negative sentinel destinations (`dst_vnum < 0`, such as ROM `-1` look-only description stubs) and preserving non-negative destinations (including DikuMUD Alfa VNUM `0`); raw `Exit` tuples on `WorldGraph` remain untouched for rendering and export.
+- Synthesizes unit indoor (`TerrainType.INSIDE`) virtual anchor rooms in `LayoutGraph.virtual_rooms` for unloaded non-negative external destinations referenced by $\ge 2$ distinct rooms along $\ge 2$ distinct directions, coupling disconnected wings around shared external landmarks while leaving single-source and purely parallel single-direction external stubs unpromoted.
 
 #### Stage 2: Simplification (`GraphSimplifier`)
 Simplifies graph complexity while preserving topological invariants, outputting a `SimplifiedGraph`:
 - **`HallwayCompactor` (Degree-2 Compression)**:
-  - Identifies maximal paths of rooms with degree 2 having reciprocal collinear exits (e.g. East-West or North-South) whose intermediate terrain scale does not exceed either endpoint scale.
+  - Identifies maximal paths of rooms with degree 2 having reciprocal collinear exits (e.g. East-West or North-South) whose intermediate terrain scale does not exceed either endpoint scale, excluding virtual anchor rooms from compaction.
   - Compresses paths into single virtual edges representing `CorridorSegment` chains with terrain-aware minimum step lengths and transverse footprint extents.
   - Retains intermediate room sequences in corridor metadata for monotonic cumulative linear decompression during assembly.
   - Reduces the combinatorial decision vertex count prior to tree decomposition and MILP solving while preserving scale boundaries as explicit transition vertices.
 - **`WarpSeverer` (Cycle Relaxation & Non-Euclidean Chord Cuts)**:
-  - Extracts the cycle basis across active graph edges and evaluates directional vector sums $\sum_{e \in \text{cycle}} \Delta \mathbf{p}(e)$ to detect spatial warp cycles.
+  - Extracts a deterministic canonical cycle basis independently per biconnected component ($\ge 3$ vertices, rooted at each component's minimum vertex ID over canonically sorted nodes and edges) and evaluates directional vector sums $\sum_{e \in \text{cycle}} \Delta \mathbf{p}(e)$ to detect spatial warp cycles without cross-block perturbation from unrelated articulation wings.
   - Cycles with non-zero vector sums (or sign contradictions preventing positive integer closure $\sum L_e \mathbf{d}_e = \mathbf{0}$) represent non-Euclidean contradictions.
   - Severing applies a stratified chord selection priority to preserve core street networks:
     1. *Reciprocity rank*: One-way / non-reciprocal exits (e.g. teleports, chutes, one-way ladders) are severed before bidirectional physical streets or collapsed corridors.
     2. *Edge weight*: Shorter atomic connections are severed before expanded macro-corridors.
     3. *Degree sum & max degree*: Peripheral, low-degree connections are severed before central arterial intersections and town squares.
     4. *Canonical vertex ordering*: Deterministic tie-breaking on sorted endpoint identifiers.
+  - Following cycle severing, deduplicates any remaining `(dst, direction)` entrance buckets into `virtual_rooms` shared by $\ge 2$ distinct source rooms, retaining the highest-priority source (ranked by reciprocity/corridor status, edge weight, undirected degree, and lowest VNUM) and severing excess same-direction entrances to avoid overlapping room placements.
   - Minimal cut chords (`LayoutEdge.cut = True`) resolve contradictory loops into Euclidean-satisfiable topologies while preserving connection stubs and exit metadata for rendering.
 - **`ChainedSimplifier`**: Sequentially chains multiple simplifier passes (e.g., `HallwayCompactor` followed by `WarpSeverer`).
 
@@ -270,7 +271,7 @@ Reconstructs global coordinates from tree solutions via `HierarchicalLayoutAssem
 - **Articulation & Gateway Coherence**: Preserves consistent positioning across cut-vertices and split-pair gateway rooms shared across parent and child nodes.
 - **Corridor Decompression**: Expands compressed `CorridorSegment` chains, linearly interpolating intermediate room coordinates between solved corridor endpoints.
 - **Shelf Packing for Disconnected Components**: Arranges independent graph components along the X-axis using 1D bounding-box shelf packing with configurable padding $\Delta_{\text{pad}} \ge 2$, guaranteeing zero cross-component overlap.
-- **Global Normalization**: Offsets all coordinates so $\min(x) = 0$, $\min(y) = 0$, and $\min(z) = 0$.
+- **Virtual Anchor Stripping & Global Normalization**: Strips synthesized `virtual_rooms` from assembled coordinates and scale maps after shelf packing and corridor decompression, then offsets remaining real rooms so $\min(x) = 0$, $\min(y) = 0$, and $\min(z) = 0$.
 - **Result Contract**: Returns a `SolvedLayout` containing `coordinates` (`Mapping[int, Coord3D]`), `room_scales` (`Mapping[int, int]`), `coord_unit`, and `LayoutDiagnostics` (`SolverStatus`, execution duration).
 
 #### Convenience Factory Method

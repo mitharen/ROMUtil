@@ -264,6 +264,12 @@ class HierarchicalLayoutAssembler(LayoutAssembler):
                 )
                 global_coords.update(expanded)
 
+        virtual_rooms = base_graph.virtual_rooms if base_graph is not None else frozenset()
+        if virtual_rooms:
+            for vnum in virtual_rooms:
+                global_coords.pop(vnum, None)
+                room_scales.pop(vnum, None)
+
         # 5. Coordinate Normalization
         normalized_coords: dict[int, Coord3D] = {}
         if global_coords:

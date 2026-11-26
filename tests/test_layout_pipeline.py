@@ -418,3 +418,136 @@ class TestTerrainRoomScalingPipeline:
         assert_corridor_non_penetration(uniform, wg)
         assert uniform.coordinates[2].x - uniform.coordinates[1].x == 1
         assert uniform.coordinates[2].y - uniform.coordinates[3].y == 1
+
+
+class TestVirtualAnchorsAndSentinels:
+    """Tests for negative sentinel exit filtering and virtual anchor synthesis/stripping."""
+
+    def test_from_world_graph_filters_negative_sentinels_and_preserves_zero(self) -> None:
+        """Negative sentinel exits are excluded from LayoutGraph while VNUM 0 and WorldGraph exits stay intact."""
+        from romutil.models import Direction
+
+        ex_to_zero = Exit(direction=Direction.north, dst_vnum=0)
+        ex_neg_one = Exit(direction=Direction.south, dst_vnum=-1)
+        ex_neg_two = Exit(direction=Direction.down, dst_vnum=-2)
+        ex_to_unloaded_zero = Exit(direction=Direction.east, dst_vnum=0)
+
+        r0 = Room(vnum=0, name="The Void", description="", exits=())
+        r1 = Room(vnum=1, name="R1", description="", exits=(ex_to_zero, ex_neg_one))
+        r2 = Room(vnum=2, name="R2", description="", exits=(ex_neg_two,))
+        wg_with_zero = WorldGraph(
+            rooms={0: r0, 1: r1, 2: r2},
+            exits=(ex_to_zero, ex_neg_one, ex_neg_two),
+        )
+
+        lg = LayoutGraph.from_world_graph(wg_with_zero)
+        assert LayoutEdge(src=1, dst=0, direction=Direction.north) in lg.edges
+        assert all(edge.dst >= 0 for edge in lg.edges)
+        assert lg.virtual_rooms == frozenset()
+        # WorldGraph and Room.exits remain untouched
+        assert wg_with_zero.rooms[1].exits == (ex_to_zero, ex_neg_one)
+        assert wg_with_zero.rooms[2].exits == (ex_neg_two,)
+
+        # Unloaded dst_vnum == 0 is also preserved as a normal external edge
+        r_ext = Room(vnum=10, name="R10", description="", exits=(ex_to_unloaded_zero, ex_neg_one))
+        wg_unloaded_zero = WorldGraph(rooms={10: r_ext}, exits=(ex_to_unloaded_zero, ex_neg_one))
+        lg_unloaded = LayoutGraph.from_world_graph(wg_unloaded_zero)
+        assert lg_unloaded.edges == (LayoutEdge(src=10, dst=0, direction=Direction.east),)
+        assert 0 not in lg_unloaded.rooms
+        assert lg_unloaded.virtual_rooms == frozenset()
+
+    def test_from_world_graph_virtual_anchor_synthesis_thresholds(self) -> None:
+        """Virtual rooms are synthesized iff >= 2 distinct rooms exit to unloaded dst >= 0 along >= 2 directions."""
+        from romutil.models import Direction, TerrainType
+
+        # Coercion in LayoutGraph.__post_init__
+        coerced = LayoutGraph(rooms={}, edges=(), virtual_rooms=[9000])  # type: ignore[arg-type]
+        assert isinstance(coerced.virtual_rooms, frozenset)
+        assert coerced.virtual_rooms == frozenset({9000})
+
+        r1 = Room(
+            vnum=1,
+            name="R1",
+            description="",
+            exits=(
+                Exit(direction=Direction.north, dst_vnum=9000),  # promoted (with r2 East)
+                Exit(direction=Direction.north, dst_vnum=9001),  # single-source multi-dir -> NOT promoted
+                Exit(direction=Direction.east, dst_vnum=9001),
+                Exit(direction=Direction.up, dst_vnum=9002),     # multi-source single-dir -> NOT promoted
+                Exit(direction=Direction.north, dst_vnum=-1),    # negative sentinel -> never promoted
+            ),
+        )
+        r2 = Room(
+            vnum=2,
+            name="R2",
+            description="",
+            exits=(
+                Exit(direction=Direction.east, dst_vnum=9000),
+                Exit(direction=Direction.up, dst_vnum=9002),
+                Exit(direction=Direction.east, dst_vnum=-1),
+            ),
+        )
+        wg = WorldGraph(
+            rooms={1: r1, 2: r2},
+            exits=tuple(ex for r in (r1, r2) for ex in r.exits),
+        )
+
+        lg = LayoutGraph.from_world_graph(wg)
+        assert lg.virtual_rooms == frozenset({9000})
+        assert 9000 in lg.rooms
+        assert lg.rooms[9000].name == "<external:9000>"
+        assert lg.rooms[9000].sector == 0
+        assert lg.rooms[9000].terrain == TerrainType.INSIDE
+        assert lg.rooms[9000].exits == ()
+        assert 9001 not in lg.rooms
+        assert 9002 not in lg.rooms
+        assert -1 not in lg.rooms
+        assert all(edge.dst != -1 for edge in lg.edges)
+
+    def test_identity_layout_assembler_strips_virtual_rooms(self) -> None:
+        """IdentityLayoutAssembler strips virtual_rooms from final coordinates."""
+        r1 = Room(vnum=1, name="R1", description="")
+        r9000 = Room(vnum=9000, name="<external:9000>", description="")
+        lg = LayoutGraph(rooms={1: r1, 9000: r9000}, edges=(), virtual_rooms=frozenset({9000}))
+
+        node = SolveTreeNode(node_id="root", node_type="block", rooms=frozenset({1, 9000}))
+        sol = TreeSolution(
+            node_solutions={
+                "root": NodeSolution(
+                    node_id="root",
+                    local_coordinates={1: Coord3D(0, 0, 0), 9000: Coord3D(0, 1, 0)},
+                )
+            }
+        )
+        assembler = IdentityLayoutAssembler()
+
+        # Case 1: virtual_rooms taken from tree.graph
+        tree_with_graph = SolveTree(root=node, graph=lg)
+        simp_empty = SimplifiedGraph(graph=LayoutGraph(rooms={}, edges=()))
+        res1 = assembler.assemble(tree_with_graph, sol, simp_empty, LayoutOptions())
+        assert set(res1.coordinates.keys()) == {1}
+        assert 9000 not in res1.coordinates
+
+        # Case 2: tree.graph is None -> falls back to simplified.graph
+        tree_no_graph = SolveTree(root=node, graph=None)
+        simp_with_graph = SimplifiedGraph(graph=lg)
+        res2 = assembler.assemble(tree_no_graph, sol, simp_with_graph, LayoutOptions())
+        assert set(res2.coordinates.keys()) == {1}
+        assert 9000 not in res2.coordinates
+
+    def test_virtual_anchor_pulls_disconnected_rooms_into_l_corner(self) -> None:
+        """Disconnected rooms 1 --N--> 9000 and 2 --E--> 9000 solve into an exact L-corner."""
+        from romutil.models import Direction
+
+        r1 = Room(vnum=1, name="South Spur", description="", exits=(Exit(Direction.north, 9000),))
+        r2 = Room(vnum=2, name="West Spur", description="", exits=(Exit(Direction.east, 9000),))
+        wg = WorldGraph(rooms={1: r1, 2: r2}, exits=(r1.exits[0], r2.exits[0]))
+
+        layout = HierarchicalLayoutSolver.production().solve(wg, LayoutOptions(timeout_seconds=15))
+        assert layout.diagnostics.status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE)
+        assert set(layout.coordinates.keys()) == {1, 2}
+        assert 9000 not in layout.coordinates
+        assert 9000 not in layout.room_scales
+        assert layout.coordinates[1].x == layout.coordinates[2].x + 1
+        assert layout.coordinates[1].y == layout.coordinates[2].y - 1
+        assert layout.coordinates[1].z == layout.coordinates[2].z

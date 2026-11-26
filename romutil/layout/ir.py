@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import collections
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Collection, Mapping, Sequence
 
 from romutil.layout.geometry.primitives import BoundingBox3D
-from romutil.models import Room
+from romutil.models import Room, TerrainType
 from romutil.types import Coord3D, WorldGraph
 
 
@@ -83,17 +84,24 @@ class LayoutGraph:
     rooms: Mapping[int, Room]
     edges: Sequence[LayoutEdge]
     coord_unit: int | None = None
+    virtual_rooms: frozenset[int] = frozenset()
 
     def __post_init__(self) -> None:
         if not isinstance(self.edges, tuple):
             object.__setattr__(self, "edges", tuple(self.edges))
+        if not isinstance(self.virtual_rooms, frozenset):
+            object.__setattr__(self, "virtual_rooms", frozenset(self.virtual_rooms))
 
     @classmethod
     def from_world_graph(cls, graph: WorldGraph) -> LayoutGraph:
         """Convert a WorldGraph into a LayoutGraph."""
         edges: list[LayoutEdge] = []
+        ext_sources: dict[int, set[int]] = collections.defaultdict(set)
+        ext_dirs: dict[int, set[int]] = collections.defaultdict(set)
         for room in graph.rooms.values():
             for exit_def in room.exits:
+                if exit_def.dst_vnum < 0:
+                    continue
                 edges.append(
                     LayoutEdge(
                         src=room.vnum,
@@ -101,7 +109,29 @@ class LayoutGraph:
                         direction=exit_def.direction,
                     )
                 )
-        return cls(rooms=dict(graph.rooms), edges=tuple(edges))
+                if exit_def.dst_vnum not in graph.rooms:
+                    ext_sources[exit_def.dst_vnum].add(room.vnum)
+                    ext_dirs[exit_def.dst_vnum].add(int(exit_def.direction))
+
+        rooms = dict(graph.rooms)
+        virtual_rooms: set[int] = set()
+        for dst in sorted(ext_sources):
+            if len(ext_sources[dst]) >= 2 and len(ext_dirs[dst]) >= 2:
+                rooms[dst] = Room(
+                    vnum=dst,
+                    name=f"<external:{dst}>",
+                    description="",
+                    sector=0,
+                    terrain=TerrainType.INSIDE,
+                    exits=(),
+                )
+                virtual_rooms.add(dst)
+
+        return cls(
+            rooms=rooms,
+            edges=tuple(edges),
+            virtual_rooms=frozenset(virtual_rooms),
+        )
 
 
 @dataclass(frozen=True)
