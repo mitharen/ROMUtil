@@ -3165,3 +3165,248 @@ class TestStagedTransverseSlackFormulation:
         form_vert = ClusterFormulation(inventory=inv_vert_only)
         assert form_vert.enforce_min_transverse_slack(1, horizontal_only=True) is False
         assert not hasattr(form_vert.model, "horizontal_transverse_slack_lb")
+
+
+class TestFixedShearStretchPolishFormulation:
+    """Verify canonical transverse shear detection and fixed-shear stretch polish context."""
+
+    @staticmethod
+    def _build_mixed_slack_formulation() -> ClusterFormulation:
+        node = SolveTreeNode(
+            node_id="p_stretch_polish",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3}),
+        )
+        ae_vert = ActiveEdge(
+            edge_id="e_vert",
+            src=1,
+            dst=2,
+            direction=(0, 0, 1),
+            min_length=1,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+        )
+        ae_horiz = ActiveEdge(
+            edge_id="e_horiz",
+            src=2,
+            dst=3,
+            direction=(1, 0, 0),
+            min_length=1,
+            associated_rooms=frozenset({2, 3}),
+            associated_children=frozenset(),
+            allow_transverse_slack=True,
+        )
+        inv = ClusterInventory(
+            node=node,
+            rooms=(1, 2, 3),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(ae_vert, ae_horiz),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        return ClusterFormulation(inventory=inv)
+
+    def test_has_nonzero_transverse_shear_and_polish_noop_cases(self) -> None:
+        """Returns False when formulation lacks slack, all slack is fixed, or shear is zero."""
+        node_no_slack = SolveTreeNode(
+            node_id="p_no_slack",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2}),
+        )
+        ae_rigid = ActiveEdge(
+            edge_id="e_rigid",
+            src=1,
+            dst=2,
+            direction=(1, 0, 0),
+            min_length=1,
+            associated_rooms=frozenset({1, 2}),
+            associated_children=frozenset(),
+            allow_transverse_slack=False,
+        )
+        inv_no_slack = ClusterInventory(
+            node=node_no_slack,
+            rooms=(1, 2),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=(ae_rigid,),
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        form_no_slack = ClusterFormulation(inventory=inv_no_slack)
+        assert form_no_slack.has_nonzero_transverse_shear() is False
+        with form_no_slack.fixed_transverse_slack_stretch_polish() as active:
+            assert active is False
+        assert not hasattr(form_no_slack.model, "_stretch_polish_obj")
+        assert form_no_slack.model.obj.active
+
+        # Stage 0: all slack variables are fixed -> returns False even with sheared coords
+        form = self._build_mixed_slack_formulation()
+        form.lock_transverse_slack()
+        sheared_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (2, -3, 1), 3: (3, 1, 1)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        assert form.has_nonzero_transverse_shear(sheared_ext) is False
+        with form.fixed_transverse_slack_stretch_polish(sheared_ext) as active:
+            assert active is False
+        assert not hasattr(form.model, "_stretch_polish_obj")
+        assert form.model.obj.active
+
+        # Unfixed slack with zero-shear extraction -> returns False
+        form.unlock_transverse_slack()
+        zero_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (0, 0, 1), 3: (1, 0, 1)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        assert form.has_nonzero_transverse_shear(zero_ext) is False
+        with form.fixed_transverse_slack_stretch_polish(zero_ext) as active:
+            assert active is False
+        assert not hasattr(form.model, "_stretch_polish_obj")
+        assert form.model.obj.active
+
+    def test_fixed_transverse_slack_stretch_polish_canonical_partial_and_objective_swap(self) -> None:
+        """Locks unfixed slack to canonical integer shear, swaps objectives/LBs, and restores state."""
+        form = self._build_mixed_slack_formulation()
+        form.lock_transverse_slack()
+        # Stage 1: only vertical edge slack is unfixed; horizontal edge stays locked
+        assert form.unlock_vertical_transverse_slack() is True
+        assert form.enforce_min_transverse_slack(1) is True
+        assert form.enforce_min_transverse_slack(1, horizontal_only=True) is True
+
+        # e_vert has dx=+2 -> (2, 0) and dy=-3 -> (0, 3); e_horiz remains fixed at (0, 0)
+        sheared_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (2, -3, 1), 3: (3, -3, 1)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        assert form.has_nonzero_transverse_shear(sheared_ext) is True
+
+        with form.fixed_transverse_slack_stretch_polish(sheared_ext) as active:
+            assert active is True
+            sp_x, sm_x = form._edge_transverse_slack[("e_vert", "x")]
+            sp_y, sm_y = form._edge_transverse_slack[("e_vert", "y")]
+            sp_h, sm_h = form._edge_transverse_slack[("e_horiz", "y")]
+
+            assert sp_x.fixed and sp_x.value == 2
+            assert sm_x.fixed and sm_x.value == 0
+            assert sp_y.fixed and sp_y.value == 0
+            assert sm_y.fixed and sm_y.value == 3
+            assert sp_h.fixed and sp_h.value == 0
+            assert sm_h.fixed and sm_h.value == 0
+
+            assert not form.model.obj.active
+            assert hasattr(form.model, "_stretch_polish_obj")
+            assert form.model._stretch_polish_obj.active
+            active_objs = [o.name for o in form.model.component_objects(pyo.Objective, active=True)]
+            assert active_objs == ["_stretch_polish_obj"]
+
+            assert not form.model.transverse_slack_lb.active
+            assert not form.model.horizontal_transverse_slack_lb.active
+
+            solve_and_extract(form, options=LayoutOptions(timeout_seconds=10))
+            assert pyo.value(form.model._stretch_polish_obj) == pytest.approx(0.0)
+
+        # Restored state: _stretch_polish_obj removed, model.obj and lower bounds reactivated,
+        # stage-1 vertical slack unfixed (canonical values preserved), horizontal slack still fixed
+        assert not hasattr(form.model, "_stretch_polish_obj")
+        assert form.model.obj.active
+        assert form.model.transverse_slack_lb.active
+        assert form.model.horizontal_transverse_slack_lb.active
+
+        sp_x, sm_x = form._edge_transverse_slack[("e_vert", "x")]
+        sp_y, sm_y = form._edge_transverse_slack[("e_vert", "y")]
+        sp_h, sm_h = form._edge_transverse_slack[("e_horiz", "y")]
+        assert not sp_x.fixed and not sm_x.fixed
+        assert not sp_y.fixed and not sm_y.fixed
+        assert sp_x.value == 2 and sm_x.value == 0
+        assert sp_y.value == 0 and sm_y.value == 3
+        assert sp_h.fixed and sm_h.fixed and sp_h.value == 0 and sm_h.value == 0
+
+    def test_canonical_transverse_shear_pyomo_value_fallback(self) -> None:
+        """Falls back to Pyomo variable values when extraction is None or lacks endpoint coords."""
+        form = self._build_mixed_slack_formulation()
+        form.unlock_transverse_slack()
+        sp_vx, sm_vx = form._edge_transverse_slack[("e_vert", "x")]
+        sp_vy, sm_vy = form._edge_transverse_slack[("e_vert", "y")]
+        sp_hy, sm_hy = form._edge_transverse_slack[("e_horiz", "y")]
+
+        # Non-minimal Pyomo values (3.0 - 1.0 = +2 -> (2, 0)) and negative delta (-4 -> (0, 4))
+        sp_vx.set_value(3.0)
+        sm_vx.set_value(1.0)
+        sp_vy.set_value(0.0)
+        sm_vy.set_value(0.0)
+        sp_hy.set_value(0.0)
+        sm_hy.set_value(4.0)
+
+        assert form.has_nonzero_transverse_shear(None) is True
+        with form.fixed_transverse_slack_stretch_polish(None) as active:
+            assert active is True
+            assert sp_vx.fixed and sp_vx.value == 2 and sm_vx.value == 0
+            assert sp_vy.fixed and sp_vy.value == 0 and sm_vy.value == 0
+            assert sp_hy.fixed and sp_hy.value == 0 and sm_hy.value == 4
+
+        # Missing endpoint in extraction triggers KeyError and falls back to Pyomo values
+        incomplete_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        sp_vx.set_value(0.0)
+        sm_vx.set_value(1.0)
+        sp_hy.set_value(0.0)
+        sm_hy.set_value(0.0)
+        assert form._compute_canonical_transverse_shear(incomplete_ext) == {
+            ("e_vert", "x"): (0, 1),
+            ("e_vert", "y"): (0, 0),
+            ("e_horiz", "y"): (0, 0),
+        }
+
+    def test_fixed_transverse_slack_stretch_polish_cleanup_on_exception(self) -> None:
+        """Exception inside polish block still removes temp objective, restores LBs, and unfixes slack."""
+        form = self._build_mixed_slack_formulation()
+        form.lock_transverse_slack()
+        assert form.unlock_vertical_transverse_slack() is True
+        assert form.enforce_min_transverse_slack(1) is True
+        assert form.enforce_min_transverse_slack(1, horizontal_only=True) is True
+
+        sheared_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (1, -2, 1), 3: (2, -2, 1)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        with pytest.raises(RuntimeError, match="polish failure"):
+            with form.fixed_transverse_slack_stretch_polish(sheared_ext) as active:
+                assert active is True
+                form.model.s_stretch_1[0].set_value(1.5)
+                form.model.s_stretch_2[0].set_value(0.0)
+                form.model.s_stretch_3[0].set_value(0.0)
+                form.model.s_stretch_1[1].set_value(0.0)
+                form.model.s_stretch_2[1].set_value(0.0)
+                form.model.s_stretch_3[1].set_value(0.0)
+                raise RuntimeError("polish failure")
+
+        assert not hasattr(form.model, "_stretch_polish_obj")
+        assert form.model.obj.active
+        assert form.model.transverse_slack_lb.active
+        assert form.model.horizontal_transverse_slack_lb.active
+
+        sp_x, sm_x = form._edge_transverse_slack[("e_vert", "x")]
+        sp_y, sm_y = form._edge_transverse_slack[("e_vert", "y")]
+        sp_h, sm_h = form._edge_transverse_slack[("e_horiz", "y")]
+        assert not sp_x.fixed and not sm_x.fixed
+        assert not sp_y.fixed and not sm_y.fixed
+        assert sp_x.value == 1 and sm_x.value == 0
+        assert sp_y.value == 0 and sm_y.value == 2
+        assert sp_h.fixed and sm_h.fixed and sp_h.value == 0 and sm_h.value == 0
+        # Preserved canonical .value allows model.obj to evaluate stretch + w_transverse * 3
+        assert pyo.value(form.model.obj) == pytest.approx(15.0 + form.w_transverse * 3.0)

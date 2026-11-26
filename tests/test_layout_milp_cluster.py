@@ -6261,3 +6261,349 @@ class TestStagedVerticalShearAndSubBoxTimeout:
         # n_sub_boxes=280 -> n_entities=10 + 70 = 80 -> t_cluster = 40s (rem=39, 38).
         # Caller base_timeout=10s is preserved so sheared CONVERGENCE caps at max(30, 10) = 30s < 38s.
         assert recorded_timeouts == [39, 39, 30]
+
+
+class TestLexicographicShearedStretchPolishCluster:
+    """Verify lexicographic fixed-shear pure-stretch polishing during cluster convergence."""
+
+    @staticmethod
+    def _build_triangle_sheared_formulation(
+        *,
+        w_transverse: float | None = 1_000_000.0,
+    ) -> tuple[SolveTreeNode, ClusterFormulation]:
+        node = SolveTreeNode(
+            node_id="sheared_polish_tri",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset({1, 2, 3}),
+        )
+        edges = (
+            ActiveEdge(
+                edge_id="e12",
+                src=1,
+                dst=2,
+                direction=(1, 0, 0),
+                min_length=1,
+                associated_rooms=frozenset({1, 2}),
+                associated_children=frozenset(),
+                allow_transverse_slack=False,
+            ),
+            ActiveEdge(
+                edge_id="e23",
+                src=2,
+                dst=3,
+                direction=(0, 1, 0),
+                min_length=1,
+                associated_rooms=frozenset({2, 3}),
+                associated_children=frozenset(),
+                allow_transverse_slack=False,
+            ),
+            ActiveEdge(
+                edge_id="e13",
+                src=1,
+                dst=3,
+                direction=(0, 1, 0),
+                min_length=1,
+                associated_rooms=frozenset({1, 3}),
+                associated_children=frozenset(),
+                allow_transverse_slack=True,
+            ),
+        )
+        inv = ClusterInventory(
+            node=node,
+            rooms=(1, 2, 3),
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=edges,
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+        return node, ClusterFormulation(inventory=inv, w_transverse=w_transverse)
+
+    def test_run_convergence_solve_activates_fixed_shear_polish_on_sheared_formulation(self) -> None:
+        """_run_convergence_solve enables fixed-shear pure-stretch polish only with sheared ClusterFormulation."""
+        from romutil.layout.milp.cluster import SolvedClusterExtraction, _run_convergence_solve
+
+        _node, form = self._build_triangle_sheared_formulation()
+        form.unlock_transverse_slack()
+        ref_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0), 3: (1, 1, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        observed_states: list[tuple[bool, bool, bool, int | None, int | None]] = []
+
+        def mock_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            sp, sm = form._edge_transverse_slack[("e13", "x")]
+            observed_states.append(
+                (
+                    hasattr(form.model, "_stretch_polish_obj"),
+                    bool(form.model.obj.active),
+                    bool(sp.fixed and sm.fixed),
+                    sp.value,
+                    sm.value,
+                )
+            )
+            return ref_ext
+
+        with patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve):
+            _run_convergence_solve(
+                formulation=form,
+                options=LayoutOptions(timeout_seconds=10),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=10.0,
+                reference_extraction=ref_ext,
+            )
+            # Without reference_extraction, polish is not triggered
+            _run_convergence_solve(
+                formulation=form,
+                options=LayoutOptions(timeout_seconds=10),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=10.0,
+                reference_extraction=None,
+            )
+            # Non-ClusterFormulation mock skips polish safely
+            mock_form = MagicMock()
+            _run_convergence_solve(
+                formulation=mock_form,
+                options=LayoutOptions(timeout_seconds=10),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=10.0,
+                reference_extraction=ref_ext,
+            )
+
+        assert observed_states[0] == (True, False, True, 1, 0)
+        assert observed_states[1] == (False, True, False, 1, 0)
+        assert not hasattr(form.model, "_stretch_polish_obj")
+        assert form.model.obj.active
+        sp, sm = form._edge_transverse_slack[("e13", "x")]
+        assert not sp.fixed and not sm.fixed
+
+    def test_cutting_planes_invokes_stretch_polish_on_iter0_escalation_and_pre_unit_convergence(self) -> None:
+        """Polishes stretch on iter-0 shear escalation CONVERGENCE and pre-unit-crossing CONVERGENCE."""
+        from romutil.layout.milp.cluster import (
+            SolvedClusterExtraction,
+            _extract_objective_value,
+            solve_cluster_with_cutting_planes,
+        )
+
+        # Case 1: Iteration 0 escalates to nonzero shear with zero collisions -> enters CONVERGENCE
+        # with fixed-shear stretch polish, beating unpolished incumbent via _extract_objective_value.
+        node_c1, form_c1 = self._build_triangle_sheared_formulation(w_transverse=1_000_000.0)
+        unpol_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (3, 0, 0), 3: (3, 1, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        pol_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (3, 0, 0), 3: (3, 1, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        c1_calls = 0
+        c1_polish_active: list[bool] = []
+
+        def _set_stretch(form: ClusterFormulation, s1_edge0: float) -> None:
+            for idx in range(3):
+                form.model.s_stretch_1[idx].set_value(s1_edge0 if idx == 0 else 0.0)
+                form.model.s_stretch_2[idx].set_value(0.0)
+                form.model.s_stretch_3[idx].set_value(0.0)
+
+        def mock_solve_c1(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal c1_calls
+            c1_calls += 1
+            if c1_calls == 1:
+                raise LayoutInfeasibleError("Stage 0 infeasible")
+            is_polished = hasattr(form_c1.model, "_stretch_polish_obj")
+            c1_polish_active.append(is_polished)
+            sp, sm = form_c1._edge_transverse_slack[("e13", "x")]
+            if c1_calls == 2:
+                assert not is_polished
+                assert hasattr(form_c1.model, "transverse_slack_lb")
+                assert form_c1.model.transverse_slack_lb.active
+                _set_stretch(form_c1, 2.0)
+                sp.set_value(3.0)
+                sm.set_value(0.0)
+                return unpol_ext
+            assert is_polished
+            assert not form_c1.model.obj.active
+            assert not form_c1.model.transverse_slack_lb.active
+            assert sp.fixed and sp.value == 3 and sm.fixed and sm.value == 0
+            _set_stretch(form_c1, 0.5)
+            return pol_ext
+
+        with (
+            patch("time.monotonic", side_effect=[0.0, 1.0, 2.0]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_c1),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            ext_c1 = solve_cluster_with_cutting_planes(
+                formulation=form_c1,
+                node=node_c1,
+                options=LayoutOptions(timeout_seconds=10),
+                total_cluster_budget=60.0,
+            )
+
+        assert ext_c1 is pol_ext
+        assert c1_polish_active == [False, True]
+        assert _extract_objective_value(form_c1) == pytest.approx(5.0 + 1_000_000.0 * 3.0)
+        assert form_c1.model.obj.active
+        assert not hasattr(form_c1.model, "_stretch_polish_obj")
+        assert not hasattr(form_c1.model, "transverse_slack_lb")
+
+        # Case 2: Pre-unit-crossing CONVERGENCE inside CROSSING_CLEARANCE activates fixed-shear polish.
+        node_c2, form_c2 = self._build_triangle_sheared_formulation(w_transverse=1_000_000.0)
+        phys_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (1, 0, 0), 3: (1, 1, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        cross_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (2, 0, 0), 3: (2, 1, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.FEASIBLE,
+        )
+        clean_ext = SolvedClusterExtraction(
+            raw_parent_coords={1: (0, 0, 0), 2: (2, 0, 0), 3: (2, 1, 0)},
+            raw_child_offsets={},
+            solver_status=SolverStatus.OPTIMAL,
+        )
+        phys_viol = ClearanceViolation(category="parent_room", item_a=1, item_b=2)
+        unit_viol = ClearanceViolation(category="corridor_crossing", item_a=0, item_b=1)
+
+        c2_solve_calls = 0
+        c2_polish_flags: list[bool] = []
+
+        def mock_solve_c2(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal c2_solve_calls
+            c2_solve_calls += 1
+            if c2_solve_calls == 1:
+                raise LayoutInfeasibleError("Stage 0 infeasible")
+            is_polished = hasattr(form_c2.model, "_stretch_polish_obj")
+            c2_polish_flags.append(is_polished)
+            if c2_solve_calls == 2:
+                return phys_ext
+            if c2_solve_calls == 3:
+                return cross_ext
+            sp, sm = form_c2._edge_transverse_slack[("e13", "x")]
+            assert is_polished
+            assert not form_c2.model.obj.active
+            assert sp.fixed and sp.value == 2 and sm.fixed and sm.value == 0
+            _set_stretch(form_c2, 1.0)
+            return clean_ext
+
+        c2_det_calls = 0
+
+        def mock_detect_c2(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal c2_det_calls
+            c2_det_calls += 1
+            if c2_det_calls == 1:
+                return [phys_viol]
+            if c2_det_calls == 2:
+                return [unit_viol]
+            return []
+
+        with (
+            patch("time.monotonic", side_effect=[float(i) for i in range(10)]),
+            patch.object(form_c2.clearance_builder, "inject_clearance_cuts", return_value=1),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_c2),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect_c2),
+        ):
+            ext_c2 = solve_cluster_with_cutting_planes(
+                formulation=form_c2,
+                node=node_c2,
+                options=LayoutOptions(timeout_seconds=10, max_solutions=1),
+                total_cluster_budget=60.0,
+            )
+
+        assert ext_c2 is clean_ext
+        assert c2_polish_flags == [False, False, True]
+        assert _extract_objective_value(form_c2) == pytest.approx(10.0 + 1_000_000.0 * 2.0)
+
+    def test_real_cbc_sheared_cluster_polishes_stretch_despite_large_w_transverse(self) -> None:
+        """Real CBC sheared cluster polishes suboptimal stretch where w_transverse swamps ratio_gap."""
+        import os
+
+        import pyomo.environ as pyo
+
+        from romutil.layout.milp.clearance import detect_cluster_collisions
+        from romutil.layout.milp.cluster import (
+            _build_cbc_solver_options,
+            _extract_objective_value,
+            solve_cluster_with_cutting_planes,
+        )
+
+        rooms = (1, 2, 3, 4, 5, 6, 7, 8)
+        edges = (
+            ActiveEdge("e12", 1, 2, (1, 0, 0), 1, frozenset({1, 2}), frozenset(), allow_transverse_slack=False),
+            ActiveEdge("e23", 2, 3, (0, 1, 0), 1, frozenset({2, 3}), frozenset(), allow_transverse_slack=False),
+            ActiveEdge("e13", 1, 3, (0, 1, 0), 1, frozenset({1, 3}), frozenset(), allow_transverse_slack=True),
+            ActiveEdge("e34", 3, 4, (1, 0, 0), 1, frozenset({3, 4}), frozenset(), allow_transverse_slack=False),
+            ActiveEdge("e45", 4, 5, (0, -1, 0), 2, frozenset({4, 5}), frozenset(), allow_transverse_slack=False),
+            ActiveEdge("e16", 1, 6, (0, -1, 0), 1, frozenset({1, 6}), frozenset(), allow_transverse_slack=False),
+            ActiveEdge("e67", 6, 7, (1, 0, 0), 10, frozenset({6, 7}), frozenset(), allow_transverse_slack=False),
+            ActiveEdge("e78", 7, 8, (0, 1, 0), 1, frozenset({7, 8}), frozenset(), allow_transverse_slack=False),
+        )
+        node = SolveTreeNode(
+            node_id="real_cbc_sheared_polish",
+            node_type=TreeNodeType.RIGID_CLUSTER,
+            rooms=frozenset(rooms),
+        )
+        inv = ClusterInventory(
+            node=node,
+            rooms=rooms,
+            children=(),
+            child_solutions={},
+            boundary_ports=frozenset(),
+            active_edges=edges,
+            child_alignments=(),
+            gateway_anchors={},
+            aligned_children=frozenset(),
+            equated_children=frozenset(),
+        )
+
+        # Baseline single-pass CBC solve with w_transverse=1e6 stops within ratio_gap=0.05 at stretch=20.
+        form_unpol = ClusterFormulation(inventory=inv, w_transverse=1_000_000.0)
+        form_unpol.apply_clearances()
+        form_unpol.unlock_transverse_slack()
+        unpol_ext = solve_and_extract(
+            formulation=form_unpol,
+            options=LayoutOptions(timeout_seconds=10, ratio_gap=0.05),
+            solver_options=_build_cbc_solver_options(
+                ratio_gap=0.05,
+                threads=min(4, os.cpu_count() or 1),
+            ),
+        )
+        unpol_stretch = float(pyo.value(form_unpol._stretch_expr))
+        unpol_obj = _extract_objective_value(form_unpol)
+        assert unpol_ext.solver_status == SolverStatus.OPTIMAL
+        assert unpol_obj is not None
+
+        # Cutting-plane solver escalates on iter 0 and polishes pure stretch in CONVERGENCE down to 10.
+        form_pol = ClusterFormulation(inventory=inv, w_transverse=1_000_000.0)
+        form_pol.apply_clearances()
+        pol_ext = solve_cluster_with_cutting_planes(
+            formulation=form_pol,
+            node=node,
+            options=LayoutOptions(timeout_seconds=10, ratio_gap=0.05),
+            total_cluster_budget=15.0,
+        )
+        pol_stretch = float(pyo.value(form_pol._stretch_expr))
+        pol_obj = _extract_objective_value(form_pol)
+
+        assert pol_ext.solver_status == SolverStatus.OPTIMAL
+        assert detect_cluster_collisions(form_pol, pol_ext) == []
+        assert pol_stretch < unpol_stretch
+        assert pol_stretch == pytest.approx(10.0)
+        assert pol_obj is not None
+        assert pol_obj == pytest.approx(pol_stretch + 1_000_000.0)
+        assert pol_obj < unpol_obj
+        assert not hasattr(form_pol.model, "_stretch_polish_obj")
+        assert form_pol.model.obj.active
+        assert not hasattr(form_pol.model, "transverse_slack_lb")
+        assert not any(v.fixed for pair in form_pol._edge_transverse_slack.values() for v in pair)
