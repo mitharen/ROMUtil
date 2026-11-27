@@ -408,20 +408,26 @@ def _run_iterative_fixed_shear_polish(
         best_stretch_snap: dict[str, dict[Any, Any]] | None = None
         last_is_best = False
 
-        # Phase 1: Fast compact-region clearance inside fixed-shear context (up to 15 passes).
+        # Phase 1: Fast compact-region clearance inside fixed-shear context (15 passes <=50, 20 passes >50).
         threads_fast = 1 if n_entities <= 50 else min(4, os.cpu_count() or 1)
-        fast_timeout = 15.0
-        for _ in range(15):
+        fast_timeout = 8.0 if n_entities > 50 else 15.0
+        max_phase1_iters = 20 if n_entities > 50 else 15
+        escalation_floor = 16.0 if n_entities > 50 else 30.0
+        p1_timeouts = 0
+        last_p1_ratio_gap = max(ratio_gap, 0.20)
+        for _ in range(max_phase1_iters):
             rem = remaining_budget - (time.monotonic() - t0)
             if rem < 2.0:
                 break
             pass_to = max(1, int(round(min(rem, fast_timeout))))
+            p1_ratio_gap = max(ratio_gap, 0.40 if p1_timeouts >= 1 else 0.20)
+            last_p1_ratio_gap = p1_ratio_gap
             pass_opts, solver_opts, warmstart = _build_convergence_pass_config(
                 formulation=formulation,
                 options=options,
                 solver_name=solver_name,
                 timeout_seconds=pass_to,
-                ratio_gap=max(ratio_gap, 0.20),
+                ratio_gap=p1_ratio_gap,
                 threads=threads_fast,
             )
             try:
@@ -440,9 +446,12 @@ def _run_iterative_fixed_shear_polish(
                 last_is_best = False
                 rem_after = remaining_budget - (time.monotonic() - t0)
                 if rem_after >= 2.0 and pass_to < int(round(rem)):
-                    fast_timeout = min(rem_after, max(fast_timeout * 2.0, 30.0))
+                    fast_timeout = min(rem_after, max(fast_timeout * 2.0, escalation_floor))
                     continue
                 break
+
+            if cand.solver_status == SolverStatus.TIMEOUT:
+                p1_timeouts += 1
 
             st, is_clean, cuts = _evaluate_polish_candidate(formulation, cand)
             if not is_clean:
@@ -459,14 +468,22 @@ def _run_iterative_fixed_shear_polish(
 
         # Phase 2: Tight convergence at target ratio_gap (up to 5 passes).
         if best_clean is not None and not (
-            best_clean.solver_status == SolverStatus.OPTIMAL and ratio_gap >= 0.20
+            best_clean.solver_status == SolverStatus.OPTIMAL and last_p1_ratio_gap <= ratio_gap
         ):
             threads_final = min(4, os.cpu_count() or 1)
+            phase2_cap = (
+                max(30.0, float(options.timeout_seconds))
+                if n_entities > 50 and options is not None and options.timeout_seconds
+                else None
+            )
             for _ in range(5):
                 rem = remaining_budget - (time.monotonic() - t0)
                 if rem < 2.0:
                     break
-                pass_to = max(1, int(round(rem)))
+                pass_to = max(
+                    1,
+                    int(round(min(rem, phase2_cap) if phase2_cap is not None else rem)),
+                )
                 pass_opts, solver_opts, warmstart = _build_convergence_pass_config(
                     formulation=formulation,
                     options=options,
@@ -560,6 +577,27 @@ def _run_convergence_solve(
         )
 
 
+def _compute_convergence_budget(
+    remaining_budget: float,
+    base_timeout: float,
+    n_entities: int,
+    formulation: ClusterFormulation,
+    extraction: SolvedClusterExtraction | None,
+    *,
+    has_slack: bool,
+    slack_stage: int,
+) -> float:
+    """Compute time budget for pre-unit-crossing and final CONVERGENCE passes."""
+    if has_slack and slack_stage > 0:
+        conv_cap = (
+            max(30.0, base_timeout * 2.0)
+            if (n_entities > 50 and formulation.has_nonzero_transverse_shear(extraction))
+            else max(30.0, base_timeout)
+        )
+        return min(remaining_budget, conv_cap)
+    return remaining_budget
+
+
 def solve_cluster_with_cutting_planes(
     formulation: ClusterFormulation,
     node: SolveTreeNode,
@@ -600,8 +638,13 @@ def solve_cluster_with_cutting_planes(
          On large sheared clusters (``> 20`` entities), convergence delegates to iterative
          fixed-shear polishing that clears compact physical and mandatory-crossing collisions inside
          the fixed-shear context before tightening to ``ratio_gap``, snapshotting and restoring
-         stretch variables when tightening does not improve or encounters collisions. If violations
-         reappear during convergence, falls back to the appropriate clearance phase.
+         stretch variables when tightening does not improve or encounters collisions; when
+         transverse slack was unlocked mid-solve, convergence passes are bounded by
+         ``max(30.0, base_timeout)`` (or ``max(30.0, 2 * base_timeout)`` on ``> 50``-entity
+         clusters with nonzero transverse shear, where Phase 1 uses an ``8s`` initial timeout with
+         ``0.20 -> 0.40`` adaptive ``ratioGap`` relaxation after a ``TIMEOUT`` candidate across up
+         to 20 passes while Phase 2 passes remain capped at ``max(30.0, base_timeout)``). If
+         violations reappear during convergence, falls back to the appropriate clearance phase.
       4. DONE: Reached when an extraction is verified clean or a verified clean/physical
          incumbent is preserved under budget exhaustion or non-planar unit-edge crossings.
 
@@ -977,10 +1020,14 @@ def solve_cluster_with_cutting_planes(
                         remaining_budget = total_cluster_budget - (time.monotonic() - t_start)
                         if remaining_budget >= 1.0:
                             try:
-                                conv_budget = (
-                                    min(remaining_budget, max(30.0, base_timeout))
-                                    if (has_slack and slack_stage > 0)
-                                    else remaining_budget
+                                conv_budget = _compute_convergence_budget(
+                                    remaining_budget=remaining_budget,
+                                    base_timeout=base_timeout,
+                                    n_entities=n_entities,
+                                    formulation=formulation,
+                                    extraction=extraction,
+                                    has_slack=has_slack,
+                                    slack_stage=slack_stage,
                                 )
                                 conv_extraction = _run_convergence_solve(
                                     formulation=formulation,
@@ -1070,10 +1117,14 @@ def solve_cluster_with_cutting_planes(
             remaining_budget = total_cluster_budget - elapsed
             if remaining_budget >= 1.0:
                 try:
-                    conv_budget = (
-                        min(remaining_budget, max(30.0, base_timeout))
-                        if (has_slack and slack_stage > 0)
-                        else remaining_budget
+                    conv_budget = _compute_convergence_budget(
+                        remaining_budget=remaining_budget,
+                        base_timeout=base_timeout,
+                        n_entities=n_entities,
+                        formulation=formulation,
+                        extraction=extraction,
+                        has_slack=has_slack,
+                        slack_stage=slack_stage,
                     )
                     final_extraction = _run_convergence_solve(
                         formulation=formulation,
