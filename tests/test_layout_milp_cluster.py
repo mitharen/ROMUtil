@@ -7658,3 +7658,258 @@ class TestConditionedShearSearchAndRetryFallback:
             (25, 4),
             (20, 4),
         ]
+
+
+class TestAdaptivePhase1PolishAndConvergenceBudget:
+    """Verify adaptive Phase-1 polish timeout/gap and 2x convergence budget on >50-entity sheared clusters."""
+
+    def test_large_52_entity_iterative_polish_adapts_phase1_timeout_and_gap_and_caps_phase2(self) -> None:
+        """On >50-entity sheared clusters, Phase 1 starts at 8s/0.20, escalates to 16s, relaxes gap to 0.40 on TIMEOUT, allows 20 passes, and caps Phase 2 at base_timeout."""
+        from romutil.layout.milp.cluster import SolvedClusterExtraction, _run_convergence_solve
+
+        _node, form = TestLargeClusterBoundedStage1AndIterativePolish._build_large_mixed_slack_formulation(
+            n_rooms=52
+        )
+        form.unlock_vertical_transverse_slack()
+        sheared_coords = {1: (0, 0, 0), 2: (1, 0, 1), **{r: (r - 1, 0, 1) for r in range(3, 53)}}
+        ref_ext = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.FEASIBLE)
+        coll_timeout_ext = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.TIMEOUT)
+        phase1_clean = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.FEASIBLE)
+        phase2_clean = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.OPTIMAL)
+        phys_viol = ClearanceViolation(category="parent_room", item_a=1, item_b=3)
+
+        calls: list[tuple[int, float, int]] = []
+        solve_step = 0
+
+        def mock_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal solve_step
+            solve_step += 1
+            sopts = kwargs["solver_options"]
+            calls.append((kwargs["options"].timeout_seconds, sopts["ratioGap"], sopts["threads"]))
+            if solve_step == 1:
+                raise LayoutSolverError("Phase 1 8s timeout")
+            if solve_step == 2:
+                TestLargeClusterBoundedStage1AndIterativePolish._set_stretch(form, 3.0)
+                return coll_timeout_ext
+            if solve_step == 3:
+                TestLargeClusterBoundedStage1AndIterativePolish._set_stretch(form, 2.0)
+                return phase1_clean
+            TestLargeClusterBoundedStage1AndIterativePolish._set_stretch(form, 0.5)
+            return phase2_clean
+
+        det_step = 0
+
+        def mock_detect(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal det_step
+            det_step += 1
+            return [phys_viol] if det_step == 1 else []
+
+        with (
+            patch("romutil.layout.milp.cluster.os.cpu_count", return_value=8),
+            patch("time.monotonic", side_effect=[0.0, 0.0, 8.0, 8.0, 24.0, 25.0]),
+            patch.object(form.clearance_builder, "inject_clearance_cuts", return_value=1),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+        ):
+            res = _run_convergence_solve(
+                formulation=form,
+                options=LayoutOptions(timeout_seconds=60),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=120.0,
+                reference_extraction=ref_ext,
+            )
+
+        assert res is phase2_clean
+        assert calls == [
+            (8, 0.20, 4),
+            (16, 0.20, 4),
+            (16, 0.40, 4),
+            (60, 0.05, 4),
+        ]
+
+        # Phase 2 cap enforces at least 30s when options.timeout_seconds < 30 and remaining_budget > 30
+        _node_floor, form_floor = TestLargeClusterBoundedStage1AndIterativePolish._build_large_mixed_slack_formulation(
+            n_rooms=52
+        )
+        form_floor.unlock_vertical_transverse_slack()
+        floor_calls: list[int] = []
+        floor_step = 0
+
+        def mock_solve_floor(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal floor_step
+            floor_step += 1
+            floor_calls.append(kwargs["options"].timeout_seconds)
+            if floor_step == 1:
+                TestLargeClusterBoundedStage1AndIterativePolish._set_stretch(form_floor, 1.5)
+                return phase1_clean
+            TestLargeClusterBoundedStage1AndIterativePolish._set_stretch(form_floor, 0.5)
+            return phase2_clean
+
+        with (
+            patch("romutil.layout.milp.cluster.os.cpu_count", return_value=8),
+            patch("time.monotonic", side_effect=[0.0, 0.0, 1.0]),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_floor),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+        ):
+            res_floor = _run_convergence_solve(
+                formulation=form_floor,
+                options=LayoutOptions(timeout_seconds=20),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=50.0,
+                reference_extraction=ref_ext,
+            )
+
+        assert res_floor is phase2_clean
+        assert floor_calls == [8, 30]
+
+        # Phase 1 on >50-entity clusters allows up to 20 passes (succeeding on pass 17 after 16 collisions)
+        _node_20, form_20 = TestLargeClusterBoundedStage1AndIterativePolish._build_large_mixed_slack_formulation(
+            n_rooms=52
+        )
+        form_20.unlock_vertical_transverse_slack()
+        iter_step = 0
+
+        def mock_solve_20(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+            nonlocal iter_step
+            iter_step += 1
+            if iter_step <= 17:
+                TestLargeClusterBoundedStage1AndIterativePolish._set_stretch(form_20, 2.0)
+                return phase1_clean
+            TestLargeClusterBoundedStage1AndIterativePolish._set_stretch(form_20, 0.5)
+            return phase2_clean
+
+        det_20_step = 0
+
+        def mock_detect_20(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+            nonlocal det_20_step
+            det_20_step += 1
+            return [phys_viol] if det_20_step <= 16 else []
+
+        with (
+            patch("romutil.layout.milp.cluster.os.cpu_count", return_value=8),
+            patch("time.monotonic", side_effect=[float(i) * 0.5 for i in range(19)]),
+            patch.object(form_20.clearance_builder, "inject_clearance_cuts", return_value=1),
+            patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve_20),
+            patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect_20),
+        ):
+            res_20 = _run_convergence_solve(
+                formulation=form_20,
+                options=LayoutOptions(timeout_seconds=60),
+                solver_name="cbc",
+                ratio_gap=0.05,
+                remaining_budget=120.0,
+                reference_extraction=ref_ext,
+            )
+
+        assert res_20 is phase2_clean
+        assert iter_step == 18
+
+    def test_cutting_planes_scales_convergence_budget_for_large_sheared_clusters(self) -> None:
+        """solve_cluster_with_cutting_planes grants 2*base_timeout convergence budget only to >50-entity nonzero-shear clusters."""
+        from romutil.layout.milp.cluster import SolvedClusterExtraction, solve_cluster_with_cutting_planes
+
+        def _capture_final_convergence_budget(
+            *,
+            n_rooms: int,
+            sheared: bool,
+        ) -> float:
+            node, form = TestLargeClusterBoundedStage1AndIterativePolish._build_large_mixed_slack_formulation(
+                n_rooms=n_rooms
+            )
+            coords = (
+                {1: (0, 0, 0), 2: (1, 0, 1), **{r: (r - 1, 0, 1) for r in range(3, n_rooms + 1)}}
+                if sheared
+                else {1: (0, 0, 0), 2: (0, 0, 1), **{r: (r - 2, 0, 1) for r in range(3, n_rooms + 1)}}
+            )
+            # Use SolverStatus.FEASIBLE so zero-shear Stage 1 enters final CONVERGENCE without iter-0 fast exit.
+            stage1_ext = SolvedClusterExtraction(coords, {}, SolverStatus.FEASIBLE)
+            final_ext = SolvedClusterExtraction(coords, {}, SolverStatus.OPTIMAL)
+            stage_step = 0
+
+            def mock_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+                nonlocal stage_step
+                stage_step += 1
+                if stage_step == 1:
+                    raise LayoutInfeasibleError("Stage 0 infeasible")
+                return stage1_ext
+
+            captured_budgets: list[float] = []
+
+            def mock_conv_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+                captured_budgets.append(float(kwargs["remaining_budget"]))
+                return final_ext
+
+            with (
+                patch("time.monotonic", side_effect=[0.0, 1.0, 10.0, 12.0]),
+                patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+                patch("romutil.layout.milp.cluster.detect_cluster_collisions", return_value=[]),
+                patch("romutil.layout.milp.cluster._run_convergence_solve", side_effect=mock_conv_solve),
+            ):
+                ext = solve_cluster_with_cutting_planes(
+                    formulation=form,
+                    node=node,
+                    options=LayoutOptions(timeout_seconds=60),
+                    total_cluster_budget=210.0,
+                )
+
+            assert ext is final_ext
+            assert len(captured_budgets) == 1
+            return captured_budgets[0]
+
+        # Final CONVERGENCE: >50 nonzero-shear -> 120.0; >50 zero-shear -> 60.0; <=50 nonzero-shear -> 60.0
+        assert _capture_final_convergence_budget(n_rooms=52, sheared=True) == pytest.approx(120.0)
+        assert _capture_final_convergence_budget(n_rooms=52, sheared=False) == pytest.approx(60.0)
+        assert _capture_final_convergence_budget(n_rooms=50, sheared=True) == pytest.approx(60.0)
+
+        # Pre-unit-crossing CONVERGENCE inside CROSSING_CLEARANCE follows the identical budget rule
+        def _capture_pre_unit_convergence_budget(*, n_rooms: int) -> float:
+            node, form = TestLargeClusterBoundedStage1AndIterativePolish._build_large_mixed_slack_formulation(
+                n_rooms=n_rooms
+            )
+            sheared_coords = {1: (0, 0, 0), 2: (1, 0, 1), **{r: (r - 1, 0, 1) for r in range(3, n_rooms + 1)}}
+            stage1_cross_ext = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.TIMEOUT)
+            conv_clean_ext = SolvedClusterExtraction(sheared_coords, {}, SolverStatus.OPTIMAL)
+            unit_viol = ClearanceViolation(category="corridor_crossing", item_a=0, item_b=1)
+            stage_step = 0
+
+            def mock_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+                nonlocal stage_step
+                stage_step += 1
+                if stage_step == 1:
+                    raise LayoutInfeasibleError("Stage 0 infeasible")
+                return stage1_cross_ext
+
+            det_step = 0
+
+            def mock_detect(*args: Any, **kwargs: Any) -> list[ClearanceViolation]:
+                nonlocal det_step
+                det_step += 1
+                return [unit_viol] if det_step == 1 else []
+
+            captured_budgets: list[float] = []
+
+            def mock_conv_solve(*args: Any, **kwargs: Any) -> SolvedClusterExtraction:
+                captured_budgets.append(float(kwargs["remaining_budget"]))
+                return conv_clean_ext
+
+            with (
+                patch("time.monotonic", side_effect=[0.0, 1.0, 10.0]),
+                patch("romutil.layout.milp.cluster.solve_and_extract", side_effect=mock_solve),
+                patch("romutil.layout.milp.cluster.detect_cluster_collisions", side_effect=mock_detect),
+                patch("romutil.layout.milp.cluster._run_convergence_solve", side_effect=mock_conv_solve),
+            ):
+                ext = solve_cluster_with_cutting_planes(
+                    formulation=form,
+                    node=node,
+                    options=LayoutOptions(timeout_seconds=60),
+                    total_cluster_budget=210.0,
+                )
+
+            assert ext is conv_clean_ext
+            assert len(captured_budgets) == 1
+            return captured_budgets[0]
+
+        assert _capture_pre_unit_convergence_budget(n_rooms=52) == pytest.approx(120.0)
+        assert _capture_pre_unit_convergence_budget(n_rooms=50) == pytest.approx(60.0)
